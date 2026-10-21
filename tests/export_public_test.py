@@ -88,17 +88,29 @@ check("sync --push: published as one new commit", (rc, public_log()), (0, ["Docs
 check("  with the edit", "A new line." in (public_file("README.md") or ""), True)
 check("  and the deletion", public_file("tools/README.md"), None)
 check("  and no dev history (dev's message isn't there)", any("dev:" in m for m in public_log()), False)
+check("  and never the publish workflow (export-ignore)", public_file(".github/workflows/publish.yml"), None)
+
+# --from-head: HEAD's subject, unless it carries something personal
+(dev / "README.md").write_text((dev / "README.md").read_text() + "\nAnother line.\n")
+sh("git", "-C", str(dev), "commit", "-qam", "Docs: another line")
+rc, out = sh("bash", script, "sync", "--from-head", "--push", env=env)
+check("--from-head: HEAD's subject is the public message", (rc, public_log()[0]), (0, "Docs: another line"))
+(dev / "README.md").write_text((dev / "README.md").read_text() + "\nA third line.\n")
+sh("git", "-C", str(dev), "commit", "-qam", f"Docs, as {WORD} asked")
+rc, out = sh("bash", script, "sync", "--from-head", "--push", env=env)
+check("--from-head: a personal subject becomes a generic message",
+      (rc, public_log()[0].startswith("Update, "), WORD in " ".join(public_log())), (0, True, False))
 
 # fails closed
 (dev / "aprs.py").write_text((dev / "aprs.py").read_text() + f"\n# {WORD}\n")
 sh("git", "-C", str(dev), "commit", "-qam", "dev: a leak")
 rc, out = sh("bash", script, "sync", "--push", env=env)
-check("a personal string in the tree: refused, nothing published", (rc, len(public_log())), (1, 2))
+check("a personal string in the tree: refused, nothing published", (rc, len(public_log())), (1, 4))
 sh("git", "-C", str(dev), "revert", "--no-edit", "-q", "HEAD")
 rc, out = sh("bash", script, "sync", "-m", f"fix for {WORD}", "--push", env=env)
-check("a personal string in the message: refused", (rc, len(public_log())), (1, 2))
+check("a personal string in the message: refused", (rc, len(public_log())), (1, 4))
 rc, out = sh("bash", script, "sync", "--push", env=dict(env, RANCH_RADIO_CONFIG=str(T / "nowhere")))
-check("no private leak scan: refused, nothing exported", (rc, "nothing exported" in out, len(public_log())), (1, True, 2))
+check("no private leak scan: refused, nothing exported", (rc, "nothing exported" in out, len(public_log())), (1, True, 4))
 
 # uncommitted changes are listed, not exported
 (dev / "README.md").write_text((dev / "README.md").read_text() + "\nNot committed.\n")

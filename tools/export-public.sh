@@ -2,10 +2,12 @@
 # Publish this checkout's committed code (HEAD, via git archive: tracked files
 # only, no history) to the public repository.
 #
-#   tools/export-public.sh sync [-m MESSAGE] [--push]
+#   tools/export-public.sh sync [-m MESSAGE | --from-head] [--push]
 #       Clone the public repo, replace its tree with HEAD's (deletions too),
 #       check it, and commit it as one new commit. Shows the change; pushes
-#       only with --push. Nothing changed: says so and stops.
+#       only with --push. Nothing changed: says so and stops. --from-head:
+#       the message is HEAD's subject, or a generic one if that carries
+#       anything personal (what the publish workflow uses).
 #   tools/export-public.sh snapshot OUT
 #       A fresh one-commit repository in OUT (the first publish).
 #
@@ -40,10 +42,14 @@ check_tree() {   # $1: a repository whose staged tree is the export
   python3 "$SCAN" "$1" >/dev/null || { python3 "$SCAN" "$1" | tail -20; die "private leak scan found personal data"; }
 }
 
-check_message() {   # $1: the commit message
+message_ok() {   # $1: a commit message; true when the leak scan finds nothing in it
   local t; t=$(mktemp -d)
   printf '%s\n' "$1" > "$t/COMMIT_MESSAGE"
-  python3 "$SCAN" "$t" >/dev/null || { python3 "$SCAN" "$t" | head -5; die "the commit message carries personal data"; }
+  python3 "$SCAN" "$t" >/dev/null
+}
+
+check_message() {
+  message_ok "$1" || die "the commit message carries personal data"
 }
 
 fill() {   # $1: a directory; replace its tree with HEAD's (keeps .git), then stage it
@@ -69,6 +75,10 @@ case "$cmd" in
     while [[ $# -gt 0 ]]; do
       case "$1" in
         -m) MSG="${2:?-m needs a message}"; shift 2 ;;
+        --from-head)
+          MSG=$(git -C "$DEV" log -1 --format=%s)
+          message_ok "$MSG" || { echo "(HEAD's subject isn't publishable; a generic message instead)"; MSG="Update, $(date +%Y-%m-%d)"; }
+          shift ;;
         --push) PUSH=1; shift ;;
         *) usage ;;
       esac
