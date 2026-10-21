@@ -1,0 +1,42 @@
+{
+  "host": "linux-station",
+  "os": "linux",
+  "repo": "~/ranch-radio",
+  "python": "/usr/bin/python3",
+  "note": "Example: a Linux station with two radios (a G90 on a Digirig, a QMX), Mesh, a UV-PRO packet hub and its control add-on, and the Omarchy bar.",
+  "radios": [
+    {"id": "g90", "name": "G90", "rig": "g90", "device": "/dev/g90",
+     "description": "Radio Remote for the Xiegu G90 (via Digirig)",
+     "web": 7301, "rigctl": 4533, "lane": 4537,
+     "tx_timeout": 60, "auto_tune": true, "winlink_mode": "USB+DATA",
+     "codec_db": "default=-32,40m=-32,20m=-32", "voice_codec_db": "default=-32",
+     "codec_mixer": "Device:Speaker", "codec_min_db": -36, "codec_save": true,
+     "audio_in": "alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback",
+     "audio_out": "alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo",
+     "dropins": {"digirig-mixer.conf": [
+       "ExecStartPre=-/usr/bin/amixer -q -c Device cset name=Auto\\x20Gain\\x20Control off",
+       "ExecStartPre=-/usr/bin/pactl set-source-volume alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback 0.1",
+       "ExecStartPre=-/usr/bin/pactl set-sink-volume alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo 100%"]}},
+    {"id": "qmx", "name": "QMX", "rig": "qmx", "device": "/dev/qmx",
+     "description": "Radio Remote for the QRP Labs QMX (USB)", "jtdx_profile": "QMX",
+     "web": 7302, "rigctl": 4534, "lane": 4538,
+     "tx_timeout": 60, "winlink_mode": "USB",
+     "audio_in": "alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo",
+     "audio_out": "alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo"}
+  ],
+  "station": {"https": true},
+  "packet": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
+             "tnc": "bt:00:11:22:33:44:55", "mycall": "N9ABC", "allow_calls": ["N9ABC"], "tx": true},
+  "winlink": {"pat": "~/.local/bin/pat", "pat_port": 8095, "lane_port": 4539,
+              "ardopcf": "~/.local/bin/ardopcf", "ardop_port": 8515,
+              "ardop_logs": "~/.local/state/radio-remote/ardop"},
+  "mesh": {"port": "/dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560", "keys": ["HomeNet=~/.config/ranch-radio/keys/mesh_channel"]},
+  "addons": {
+    "uvpro": {"enabled": true, "address": "00:11:22:33:44:55", "calls": ["N9ABC"],
+              "hub": "http://127.0.0.1:7310", "control": "tcp:127.0.0.1:8002"}
+  },
+  "integrations": {"omarchy-bar": {}},
+  "manual_restart": {
+    "uvpro-hub.service": "an abrupt hub restart can lock the UV-PRO out of RFCOMM 1 for 8+ min until the radio is power-cycled (linux-station, 2026-10-16): restart it only with someone at the radio"
+  }
+}

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07090d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ranch Radio">
+<link rel="manifest" href="static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="static/icons/icon-180.png">
+<title>Ranch Radio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2307090d' stroke='%2339e1c6' stroke-width='2'/%3E%3Cpath d='M7 18c3-8 6 4 9-4s6 4 9-2' fill='none' stroke='%2339e1c6' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="static/app.css">
+<link rel="stylesheet" href="static/station.css">
+<link rel="stylesheet" href="static/modules.css">
+</head>
+<body>
+<div class="tx-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13.5"/><path d="M7 18c3-8 6 4 9-4s6 4 9-2"/></svg>
+    <span class="brand-name">IC-7300</span><span class="brand-sub">Remote</span>
+  </div>
+  <nav class="st-nav" id="rr-nav" hidden aria-label="Views"></nav>
+  <span id="conn" class="pill pill-wait"><i></i><b>Connecting</b></span>
+  <span id="sim-badge" class="pill pill-ghost" hidden>Simulator</span>
+  <span id="rx-only-badge" class="pill pill-ghost" hidden>Receive only</span>
+  <div class="spacer"></div>
+  <span id="rtt" class="stat" title="Round-trip latency to the station"></span>
+  <span id="utc" class="stat clock"></span>
+  <button id="power-btn" class="icon-btn" title="Radio power" aria-label="Radio power">
+    <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 7.2a8 8 0 1 0 11.2 0"/></svg>
+  </button>
+</header>
+
+<main class="grid">
+  <!-- VFO -->
+  <section class="panel vfo">
+    <div class="vfo-head">
+      <span class="label" id="vfo-label">VFO A</span>
+      <button class="chip lock-btn" id="btn-lock" role="switch" aria-checked="true" title="Lock tuning and levels so scrolling the page can't change them (L)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path class="shackle" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        <span>LOCKED</span>
+      </button>
+      <div class="spacer"></div>
+      <div class="badges">
+        <span class="badge" id="b-mode">USB</span>
+        <span class="badge" id="b-filter">FIL1</span>
+        <span class="badge badge-data" id="b-data" hidden>DATA</span>
+        <span class="badge badge-split" id="b-split" hidden>SPLIT</span>
+        <span class="badge badge-tx" id="b-tx" hidden>ON AIR</span>
+        <span class="badge badge-data" id="b-usbsrc" hidden title="The radio takes its transmit audio from USB for this page's voice; put back after the unkey">USB AUDIO</span>
+      </div>
+    </div>
+    <div class="freq" id="freq" tabindex="0" title="Scroll a digit to tune · click to type a frequency"></div>
+    <form class="freq-entry" id="freq-entry" hidden>
+      <input id="freq-input" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="14.074 or 7074">
+      <span class="hint">MHz or kHz · Enter</span>
+    </form>
+    <div class="vfo-foot">
+      <div class="sub-vfo">
+        <span class="label" id="vfo-b-label">VFO B</span>
+        <span class="sub-freq" id="freq-b"></span>
+      </div>
+      <div class="seg">
+        <button class="chip" id="btn-ab" title="Select VFO A / B">A/B</button>
+        <button class="chip" id="btn-swap" title="Swap VFO A and B">A⇄B</button>
+        <button class="chip" id="btn-split" title="Split: transmit on VFO B">SPLIT</button>
+      </div>
+      <div class="step">
+        <span class="label">Step</span>
+        <div class="seg" id="steps"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Meters -->
+  <section class="panel meters">
+    <div class="meter-top">
+      <span class="label">Signal</span>
+      <span class="s-read"><b id="s-units">S0</b><small id="s-dbm">−127 dBm</small></span>
+    </div>
+    <canvas id="smeter" class="smeter"></canvas>
+    <div class="tx-meters">
+      <div class="tm"><span class="label">PO</span><div class="bar"><i id="m-po"></i></div><span class="tv" id="v-po">0 W</span></div>
+      <div class="tm"><span class="label">SWR</span><div class="bar"><i id="m-swr"></i></div><span class="tv" id="v-swr">1.0</span></div>
+      <div class="tm"><span class="label">ALC</span><div class="bar"><i id="m-alc"></i></div><span class="tv" id="v-alc">0%</span></div>
+    </div>
+  </section>
+
+  <!-- Scope -->
+  <section class="panel scope">
+    <div class="scope-head">
+      <span class="label">Spectrum</span>
+      <div class="seg" id="spans"></div>
+      <div class="seg">
+        <button class="chip" id="btn-center">CENTER</button>
+        <button class="chip" id="btn-fixed">FIXED</button>
+      </div>
+      <div class="spacer"></div>
+      <span class="scope-range" id="scope-range"></span>
+    </div>
+    <div class="scope-body" id="scope-body">
+      <canvas id="spectrum"></canvas>
+      <canvas id="waterfall"></canvas>
+      <div class="scope-cursor" id="scope-cursor" hidden><span></span></div>
+      <div class="scope-empty" id="scope-empty">Waiting for scope data…</div>
+    </div>
+  </section>
+
+  <!-- Band / mode -->
+  <section class="panel bandmode">
+    <span class="label">Band</span>
+    <div class="chips" id="bands"></div>
+    <span class="label">Mode</span>
+    <div class="chips" id="modes"></div>
+    <div class="row-2">
+      <div>
+        <span class="label">Filter</span>
+        <div class="seg" id="filters"></div>
+      </div>
+      <div>
+        <span class="label">AGC</span>
+        <div class="seg" id="agcs"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Knobs + DSP -->
+  <section class="panel levels">
+    <div class="levels-head">
+      <span class="label">Levels</span>
+      <div class="seg" id="level-style">
+        <button class="chip" data-v="dials" title="Show levels as dials">DIALS</button>
+        <button class="chip" data-v="sliders" title="Show levels as sliders">SLIDERS</button>
+      </div>
+    </div>
+    <div class="knobs" id="knobs">
+      <div class="knob" data-key="af" data-label="AF Gain"></div>
+      <div class="knob" data-key="rf" data-label="RF Gain"></div>
+      <div class="knob" data-key="sql" data-label="Squelch"></div>
+      <div class="knob knob-warm" data-key="power" data-label="RF Power" data-unit="W"></div>
+    </div>
+    <div class="toggles">
+      <button class="tog" id="t-preamp"><span>P.AMP</span><small>OFF</small></button>
+      <button class="tog" id="t-att"><span>ATT</span><small>OFF</small></button>
+      <button class="tog" id="t-nb"><span>NB</span><small>OFF</small></button>
+      <button class="tog" id="t-nr"><span>NR</span><small>OFF</small></button>
+      <button class="tog" id="t-tuner"><span>ATU</span><small>OFF</small></button>
+      <button class="tog tog-warm" id="t-tune"><span>TUNE</span><small>TX</small></button>
+    </div>
+  </section>
+
+  <!-- Audio + TX -->
+  <section class="panel txpanel">
+    <div class="audio-row">
+      <button class="tog wide" id="btn-listen">
+        <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="wave" d="M16.5 8.5a5 5 0 0 1 0 7"/><path class="wave" d="M19 6a8.5 8.5 0 0 1 0 12"/></svg>
+        <span>Listen</span>
+      </button>
+      <button class="tog" id="btn-mic" title="Send this device's microphone while transmitting">
+        <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg>
+        <span>Mic</span>
+      </button>
+    </div>
+    <label class="vol">
+      <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/></svg>
+      <input type="range" id="vol" min="0" max="100" value="70">
+      <span class="audio-level"><i id="audio-level"></i></span>
+      <button class="chip chip-mini" id="btn-agc" title="Automatic gain: boost quiet audio to a steady level">AGC</button>
+    </label>
+    <div class="txl" id="txl" hidden title="Transmit audio level into the radio, per band: Winlink while a session is armed, Voice while this page's PTT is held">
+      <div class="txl-head">
+        <span class="label">TX level</span>
+        <div class="seg" id="txl-use"></div>
+      </div>
+      <div class="txl-ctl">
+        <button class="chip chip-mini" id="txl-down" title="1 dB quieter" aria-label="1 dB quieter">−</button>
+        <span class="stat txl-val" id="txl-val"></span>
+        <button class="chip chip-mini" id="txl-up" title="1 dB louder" aria-label="1 dB louder">+</button>
+        <button class="chip chip-mini" id="txl-tone" title="Test tone: while on, PTT sends a steady 1 kHz tone instead of the mic, for setting the level by power and ALC">Tone</button>
+        <button class="chip chip-mini" id="txl-save" title="Save this level for this band in the host file">Save</button>
+      </div>
+      <div class="stat txl-note" id="txl-note" aria-live="polite"></div>
+    </div>
+    <div class="arm-row">
+      <button class="arm" id="btn-arm" role="switch" aria-checked="false">
+        <span class="arm-track"><span class="arm-thumb"></span></span>
+        <span class="arm-text">TX <b>SAFE</b></span>
+      </button>
+      <span class="tx-timer" id="tx-timer"></span>
+    </div>
+    <button class="ptt" id="ptt" disabled>
+      <span class="ptt-ring" id="ptt-ring"></span>
+      <span class="ptt-main">PTT</span>
+      <span class="ptt-sub" id="ptt-sub">arm TX to transmit</span>
+    </button>
+  </section>
+
+  <!-- Winlink (Pat as the engine; shown only when the server runs it) -->
+  <section class="panel winlink" id="winlink" hidden>
+    <div class="wl-head">
+      <span class="label">Winlink</span>
+      <span class="wl-call" id="wl-mycall"></span>
+      <span class="wl-state" id="wl-state">Idle</span>
+      <span class="spacer"></span>
+      <span class="stat wl-id" id="wl-id"></span>
+      <span class="stat" id="wl-codec" title="USB codec output level"></span>
+      <button class="chip chip-mini" id="wl-power" title="Stop Pat; arming a radio for the station still works">Switch off</button>
+    </div>
+    <div class="wl-cols">
+      <div class="wl-mail">
+        <div class="wl-bar">
+          <div class="seg" id="wl-boxes">
+            <button class="chip on" data-v="in">Inbox</button>
+            <button class="chip" data-v="out">Outbox</button>
+            <button class="chip" data-v="sent">Sent</button>
+            <button class="chip" data-v="archive">Archive</button>
+          </div>
+          <button class="chip chip-mini" id="wl-compose-btn">Compose</button>
+        </div>
+        <div class="wl-list" id="wl-list"></div>
+        <div class="wl-read" id="wl-read" hidden>
+          <div class="wl-read-head" id="wl-read-head"></div>
+          <pre class="wl-body" id="wl-body"></pre>
+        </div>
+        <form class="wl-compose" id="wl-compose" hidden>
+          <input id="wl-to" placeholder="To (callsigns or email, space separated)" autocomplete="off" spellcheck="false" required>
+          <input id="wl-subject" placeholder="Subject" autocomplete="off" required>
+          <textarea id="wl-text" rows="7" placeholder="Message"></textarea>
+          <input type="file" id="wl-files" multiple>
+          <div class="wl-row">
+            <button type="submit" class="chip on">Queue in outbox</button>
+            <button type="button" class="chip" id="wl-compose-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+      <div class="wl-session">
+        <div class="wl-bar">
+          <select id="wl-band" title="Band"></select>
+          <button class="chip chip-mini" id="wl-gw-refresh">Gateways</button>
+        </div>
+        <div class="wl-gateways" id="wl-gateways"></div>
+        <input id="wl-url" class="wl-url" placeholder="ardop:///CALL?bw=2000MAX&amp;freq=kHz" autocomplete="off" spellcheck="false">
+        <div class="wl-row">
+          <button class="chip wl-connect" id="wl-connect">Connect</button>
+          <button class="chip" id="wl-stop" disabled>Stop</button>
+        </div>
+        <div class="wl-prompt" id="wl-prompt" hidden>
+          <span id="wl-prompt-msg"></span>
+          <button class="chip" data-v="continue">Send anyway</button>
+          <button class="chip" data-v="abort">Abort</button>
+        </div>
+        <pre class="wl-log" id="wl-log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Meshtastic (a LoRa node of its own; shown only when the server has one) -->
+  <section class="panel mesh" id="mesh" hidden>
+    <div class="wl-head">
+      <span class="label">Mesh</span>
+      <span class="wl-call" id="mesh-me"></span>
+      <span class="mesh-state" id="mesh-state">Not connected</span>
+      <span class="spacer"></span>
+      <span id="mesh-key"></span>
+      <button class="chip chip-mini" id="mesh-cfg-btn" title="The node's settings: name, role, LoRa, position, ...">Settings</button>
+      <button class="chip chip-mini" id="mesh-power" title="Close the link to the node and free its port">Switch off</button>
+    </div>
+    <div class="mesh-cfg" id="mesh-cfg" hidden>
+      <div class="wl-bar"><div class="seg" id="mesh-cfg-tabs"></div></div>
+      <form class="mesh-cfg-form" id="mesh-cfg-form" autocomplete="off"></form>
+      <div class="wl-row">
+        <button class="chip on" id="mesh-cfg-save" disabled>Save to node</button>
+        <button class="chip" id="mesh-cfg-revert" disabled>Revert</button>
+        <span class="wl-dim" id="mesh-cfg-note"></span>
+      </div>
+    </div>
+    <div class="wl-cols mesh-cols" id="mesh-main">
+      <div class="wl-mail">
+        <div class="wl-bar"><div class="seg" id="mesh-tabs"></div></div>
+        <div class="mesh-list" id="mesh-list"></div>
+        <div class="mesh-to" id="mesh-to" hidden></div>
+        <form class="wl-row mesh-form" id="mesh-form">
+          <input id="mesh-text" class="wl-url" placeholder="Message" autocomplete="off" maxlength="400">
+          <span class="stat" id="mesh-count"></span>
+          <button type="submit" class="chip on" id="mesh-send" disabled>Send</button>
+        </form>
+        <div class="mesh-map" id="mesh-map"></div>
+      </div>
+      <div class="wl-session">
+        <div class="wl-bar">
+          <input id="mesh-find" class="wl-url" placeholder="Find a node" autocomplete="off" spellcheck="false">
+          <button class="chip chip-mini" id="mesh-all" title="Only nodes heard in the last day">Recent</button>
+          <span class="stat" id="mesh-count-nodes"></span>
+        </div>
+        <div class="mesh-card" id="mesh-card" hidden></div>
+        <div class="wl-gateways mesh-nodes" id="mesh-nodes"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modules (static/modules.js): every module, its state here, add and remove -->
+  <section class="panel modules-panel" id="modules" hidden></section>
+</main>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="overlay-card">
+    <div class="spinner"></div>
+    <div id="overlay-msg">Connecting to station…</div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script src="static/common.js"></script>
+<script src="static/app.js"></script>
+<script src="static/winlink.js"></script>
+<script src="static/meshmap.js"></script>
+<script src="static/mesh.js"></script>
+<script src="static/addons.js"></script>
+<script src="static/modules.js"></script>
+<script src="static/tabs.js"></script>
+</body>
+</html>

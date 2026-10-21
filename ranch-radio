@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Ranch Radio: ./ranch-radio --help"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+# Run under the checkout's own venv when it has one (install.sh makes it), so
+# `ranch-radio` on the PATH sees the same packages as the radio server.
+VENV_PY = os.path.join(HERE, ".venv", "bin", "python")
+if os.path.exists(VENV_PY) and os.path.realpath(sys.prefix) != os.path.realpath(os.path.join(HERE, ".venv")) \
+        and not os.environ.get("RANCH_RADIO_NO_VENV"):
+    os.execv(VENV_PY, [VENV_PY, os.path.realpath(__file__)] + sys.argv[1:])
+
+sys.path.insert(0, HERE)
+
+from ranch_radio.cli import main  # noqa: E402
+
+sys.exit(main())

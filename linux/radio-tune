@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Tune a Radio Remote radio's ATU now: radio-tune <host> [port] [label].
+
+Sends rigctl "G TUNE" to the server (default port 4532), which keys the
+radio's tuner under its own safety: it refuses while anyone is transmitting
+or when the server runs --no-tx. For a button after a change that needs a
+retune (2026-10-13). Shows the result as a desktop notification.
+"""
+import shutil
+import socket
+import subprocess
+import sys
+
+
+
+def say(msg, urgent=False):
+    print(msg)
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "-a", "Radio Remote", *(["-u", "critical"] if urgent else []),
+                        "ATU tune", msg])
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    host = sys.argv[1]
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 4532
+    name = sys.argv[3] if len(sys.argv) > 3 else host    # the bar entry's label, for the notification
+    try:
+        with socket.create_connection((host, port), timeout=5) as s:
+            s.sendall(b"G TUNE\n")
+            reply = s.makefile().readline().strip()
+    except OSError as e:
+        say(f"{name}: can't reach {host}:{port} ({e})", urgent=True)
+        sys.exit(1)
+    if reply == "RPRT 0":
+        say(f"{name}: tuning")
+    else:
+        say(f"{name}: tune refused ({reply}); transmitting, or transmit is off", urgent=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Git hook (post-merge and post-rewrite): after a `git pull` that changed
+# linux/omarchy/, re-run install.sh so the bar and launchers follow the repo
+# without anyone remembering to. install.sh links it as both hooks; it does
+# nothing when the pull didn't touch linux/omarchy/. Never fails the pull.
+top=$(git rev-parse --show-toplevel) || exit 0
+git rev-parse -q --verify ORIG_HEAD >/dev/null || exit 0
+git diff --quiet ORIG_HEAD HEAD -- linux/omarchy/ && exit 0
+echo "linux/omarchy/ changed: re-running install.sh"
+bash "$top/linux/omarchy/install.sh" || echo "install.sh failed; run it by hand" >&2
+exit 0

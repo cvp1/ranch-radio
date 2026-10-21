@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UV-PRO Packet</title>
+<!-- ?v=: change it when these files change, so no browser keeps an old copy -->
+<link rel="stylesheet" href="static/app.css?v=m2-3">
+<style>
+:root {
+  --bg: #07090d; --panel: rgba(255,255,255,.028); --line: rgba(255,255,255,.075);
+  --text: #e7edf3; --muted: #8a95a1; --dim: #4b5560; --accent: #39e1c6; --warm: #ffb547;
+  --tx: #ff4d5e; --radius: 14px;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  --sans: "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 18px;
+  border-bottom: 1px solid var(--line); }
+h1 { font-size: 16px; margin: 0 12px 0 0; letter-spacing: .02em; }
+.pill { display: inline-flex; gap: 7px; align-items: center; padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12.5px; }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.ok { color: var(--accent); } .warn { color: var(--warm); } .bad { color: var(--tx); }
+button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 9px; padding: 5px 12px; cursor: pointer; }
+button.on { border-color: var(--tx); color: var(--tx); }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; padding: 14px 18px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
+section.wide { grid-column: 1 / -1; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+td, th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--dim); font-weight: 500; }
+.mono { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.tx-row td { color: var(--tx); }
+.muted { color: var(--muted); }
+.empty { color: var(--dim); font-style: italic; }
+/* APRS tabs (aprs.js) */
+nav.tabs { display: flex; gap: 6px; padding: 10px 18px 0; }
+nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
+.tab-body { padding: 14px 18px; }
+.tab-body[hidden] { display: none; }
+.aprs-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+.aprs-bar input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 9px; padding: 5px 10px; min-width: 200px; }
+.aprs-bar button.cur { border-color: var(--accent); color: var(--accent); }
+.aprs-bar .muted { font-size: 12px; margin-left: auto; }
+#st-table th { cursor: pointer; user-select: none; white-space: nowrap; }
+#st-table th.sorted { color: var(--accent); }
+#st-table tr.st-row { cursor: pointer; }
+#st-table tr.st-row:hover td, #st-table tr.sel td { background: rgba(255,255,255,.04); }
+.glyph { display: inline-block; min-width: 18px; padding: 0 3px; border-radius: 5px; text-align: center;
+  font: 700 10.5px/16px var(--mono); background: #6b7280; color: #0b0f14; }
+.glyph.k-wx { background: #60a5fa; } .glyph.k-obj { background: #c084fc; } .glyph.k-is { background: rgba(167,139,250,.55); }
+.glyph.k-rf { background: var(--accent); }
+.via { color: var(--muted); font-size: 12px; }
+/* The map sits beside the station list (above it on a narrow screen); the
+   Map tab moves the same map to full size. */
+.st-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.st-list { max-height: calc(100vh - 230px); overflow: auto; }
+.st-mapslot .mesh-map { height: calc(100vh - 230px); min-height: 360px; position: sticky; top: 10px; }
+#map-full .mesh-map { height: calc(100vh - 190px); min-height: 360px; }
+@media (max-width: 1000px) {
+  .st-split { grid-template-columns: 1fr; }
+  .st-mapslot { order: -1; }
+  .st-mapslot .mesh-map { height: 45vh; min-height: 260px; position: relative; }
+  .st-list { max-height: none; }
+}
+#aprs-detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); overflow-y: auto; z-index: 20;
+  background: #0d1117; border-left: 1px solid var(--line); padding: 14px 16px; box-shadow: -10px 0 30px rgba(0,0,0,.5); }
+#aprs-detail h3 { margin: 0 0 4px; font: 600 16px var(--mono); display: flex; gap: 8px; align-items: center; }
+#aprs-detail .close { margin-left: auto; }
+#aprs-detail dl { display: grid; grid-template-columns: 110px 1fr; gap: 3px 10px; margin: 10px 0; font-size: 12.5px; }
+#aprs-detail dt { color: var(--dim); } #aprs-detail dd { margin: 0; word-break: break-word; }
+#aprs-detail h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>UV-PRO Packet</h1>
+  <span class="pill" id="radio"><i></i><span>radio …</span></span>
+  <span class="pill" id="tx"><i></i><span>transmit …</span></span>
+  <button id="txbtn" hidden></button>
+  <span class="pill muted" id="clients">clients …</span>
+  <span class="pill muted" id="counts"></span>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-tab="stations">Stations</button><button data-tab="map">Map</button>
+  <button data-tab="messages">Messages</button><button data-tab="raw">Raw</button>
+</nav>
+<div class="tab-body" id="aprs-stations" data-tab="stations" hidden>
+  <div class="aprs-bar">
+    <input id="st-filter" type="search" placeholder="Filter: call, comment, status, digi">
+    <span id="st-chips"></span>
+    <span class="muted" id="st-note"></span>
+  </div>
+  <div class="st-split">
+    <section class="st-list"><table id="st-table"></table></section>
+    <div class="st-mapslot" id="st-mapslot"><div class="mesh-map" id="aprs-mapbox"></div></div>
+  </div>
+</div>
+<div class="tab-body" id="aprs-map" data-tab="map" hidden><div id="map-full"></div></div>
+<div class="tab-body" id="aprs-messages" data-tab="messages" hidden>
+  <div class="aprs-bar"><input id="msg-with" type="search" placeholder="With a station (call)">
+    <span class="muted">Read only: sending comes with messaging (M3)</span></div>
+  <section><table id="msg-table"></table></section>
+</div>
+<aside id="aprs-detail" hidden></aside>
+<main class="tab-body" id="tab-raw" data-tab="raw" hidden>
+  <section id="msgs-sec" hidden class="wide"><h2>APRS messages for you</h2><table id="msgs"></table></section>
+  <section><h2>Heard stations</h2><table id="heard"></table></section>
+  <section><h2>Connected-mode links (Winlink)</h2><table id="links"></table>
+    <p class="muted" id="ports" style="margin:10px 0 0;font-size:12px"></p></section>
+  <section class="wide"><h2>Traffic</h2><table id="recent"></table></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ago = t => { if (!t) return "never"; const s = Math.round(Date.now()/1000 - t);
+  return s < 60 ? s + "s ago" : s < 3600 ? Math.round(s/60) + "m ago" : Math.round(s/3600) + "h ago"; };
+const clock = t => new Date(t*1000).toLocaleTimeString([], {hour12:false});
+function pill(el, cls, text) { el.className = "pill " + cls; el.querySelector("span").textContent = text; }
+function rows(el, head, list, fn, empty) {
+  el.innerHTML = list.length ? "<tr>" + head.map(h => `<th>${h}</th>`).join("") + "</tr>" + list.map(fn).join("")
+                             : `<tr><td class="empty">${empty}</td></tr>`;
+}
+let txEnabled = false, txAllowed = false;
+$("txbtn").onclick = async () => {
+  const want = !txEnabled;
+  if (want && !confirm("Allow the hub to transmit under your callsign?")) return;
+  const r = await fetch("api/tx", {method: "POST", headers: {"content-type": "application/json", "X-Ranch-Radio": "1"},
+                                   body: JSON.stringify({enabled: want})});
+  if (!r.ok) alert((await r.json()).error || "refused");
+  refresh();
+};
+async function refresh() {
+  let s;
+  try { s = await (await fetch("api/status")).json(); }
+  catch (e) { pill($("radio"), "bad", "hub not answering"); return; }
+  const r = s.radio;
+  if (r.lent) pill($("radio"), "warn", `radio lent to ${r.lent.to} · back by ${new Date(r.lent.until * 1000).toLocaleTimeString()}`);
+  else pill($("radio"), r.up ? "ok" : "bad",
+       r.up ? `radio linked · last packet ${ago(r.last_rx)}` : `radio not linked${r.error ? " · " + r.error : ""}`);
+  txEnabled = s.tx.enabled; txAllowed = s.tx.allowed_by_start;
+  pill($("tx"), txEnabled ? "bad" : "ok",
+       txEnabled ? `transmit ON as ${s.tx.allow_calls.join("/")}` : "receive only");
+  const b = $("txbtn");
+  b.hidden = !txEnabled && !txAllowed;
+  b.textContent = txEnabled ? "Stop transmitting" : "Allow transmit";
+  b.className = txEnabled ? "on" : "";
+  const agw = s.clients.agw.map(c => c.calls.length ? c.calls.join(",") : "AGW").join(" · ");
+  $("clients").textContent = `AGWPE ${s.clients.agw.length}${agw ? " (" + agw + ")" : ""} · KISS ${s.clients.kiss.length}`;
+  const c = s.counts;
+  $("counts").textContent = `rx ${c.rx_frames||0} · tx ${c.tx_frames||0}` + (c.tx_refused ? ` · refused ${c.tx_refused}` : "");
+  $("ports").textContent = `Apps on this Mac: AGWPE ${s.ports.bind}:${s.ports.agw} (Pat, YAAC) · KISS TCP ${s.ports.bind}:${s.ports.kiss}`;
+  $("msgs-sec").hidden = !s.messages.length;
+  rows($("msgs"), ["time", "from", "to", "message"], s.messages,
+       m => `<tr><td>${clock(m.t)}</td><td>${esc(m.from)}</td><td>${esc(m.to)}</td><td>${esc(m.text)}</td></tr>`, "");
+  rows($("heard"), ["station", "last", "#", "path", "last packet"], s.heard,
+       h => `<tr><td>${esc(h.station)}</td><td>${ago(h.last)}</td><td>${h.count}</td>
+             <td>${h.direct ? "direct" : "digi"}</td><td class="mono">${esc(h.text.split(":").slice(1).join(":").slice(0,80))}</td></tr>`,
+       "nothing heard yet");
+  rows($("links"), ["local", "remote", "state", "in/out bytes", "resent"], s.links,
+       l => `<tr><td>${esc(l.local)}</td><td>${esc(l.remote)}</td><td>${l.state}</td>
+             <td>${l.bytes_in}/${l.bytes_out}</td><td>${l.i_resent}</td></tr>`, "no links");
+  rows($("recent"), ["time", "", "frame"], s.recent,
+       p => `<tr class="${p.dir === "tx" ? "tx-row" : ""}"><td>${clock(p.t)}</td><td>${p.dir.toUpperCase()}</td>
+             <td class="mono">${esc(p.text)}</td></tr>`, "no traffic yet");
+}
+refresh(); setInterval(refresh, 2000);
+</script>
+<script src="static/meshmap.js?v=m2-3"></script>
+<script src="static/aprs.js?v=m2-3"></script>
+</body>
+</html>

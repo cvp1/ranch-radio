@@ -1,0 +1,11 @@
+# Meshtastic node on USB (Heltec V4 / ESP32-S3 native USB): stable
+# /dev/meshtastic, owned by the operator (no uucp group needed). 303a:1001 is
+# every ESP32-S3 board, so this matches the node's own USB serial number:
+# `udevadm info -q property -n /dev/ttyACM0 | grep ID_SERIAL_SHORT`. On a
+# Heltec V4 with firmware 2.7.17 or later that is the MAC with colons
+# (80:F1:B2:A6:FD:78), the same as the ESP32-S3 bootloader shows while
+# flashing, so the rule also covers esptool. Firmware 2.7.15 and older report
+# it without colons (80F1B2A6FD78); add a second line for that if needed. Fill in:
+#   sed "s/@USER@/$USER/; s/@SERIAL@/80:F1:B2:A6:FD:78/" linux/udev/99-meshtastic.rules | sudo tee /etc/udev/rules.d/99-meshtastic.rules
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=tty
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", ATTRS{serial}=="@SERIAL@", OWNER="@USER@", SYMLINK+="meshtastic"

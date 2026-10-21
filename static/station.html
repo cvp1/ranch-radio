@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07090d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Station">
+<link rel="manifest" href="static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="static/icons/icon-180.png">
+<title>Ranch Radio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2307090d' stroke='%2339e1c6' stroke-width='2'/%3E%3Cpath d='M7 18c3-8 6 4 9-4s6 4 9-2' fill='none' stroke='%2339e1c6' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="static/app.css">
+<link rel="stylesheet" href="static/station.css">
+<link rel="stylesheet" href="static/modules.css">
+</head>
+<body class="station">
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13.5"/><path d="M7 18c3-8 6 4 9-4s6 4 9-2"/></svg>
+    <span class="brand-name" id="st-name">Station</span>
+  </div>
+  <nav class="st-nav" id="st-nav" aria-label="Sections"></nav>
+  <div class="spacer"></div>
+  <span id="conn" class="pill pill-wait"><i></i><b>Connecting</b></span>
+  <span id="utc" class="stat clock"></span>
+</header>
+
+<!-- Every connected HF radio at a glance, on the views that hide its page
+     (review 2026-10-18): frequency, mode, on air, and Release TX. -->
+<div class="st-strip" id="st-strip" hidden aria-live="polite"></div>
+
+<main class="st-main">
+  <!-- Overview: every radio and service, with its ports -->
+  <section class="st-view" id="view-home" hidden>
+    <div class="st-cards" id="st-cards"></div>
+    <p class="st-help" id="st-help"></p>
+  </section>
+
+  <!-- One frame per connected HF radio: its own Radio Remote page -->
+  <section class="st-view st-frames" id="view-radio" hidden></section>
+
+  <section class="st-view" id="view-winlink" hidden>
+    <div class="grid st-grid">
+  <section class="panel winlink" id="winlink" hidden>
+    <div class="wl-head">
+      <span class="label">Winlink</span>
+      <span class="wl-call" id="wl-mycall"></span>
+      <span class="wl-state" id="wl-state">Idle</span>
+      <span class="spacer"></span>
+      <span class="stat wl-id" id="wl-id"></span>
+      <span class="stat" id="wl-codec" title="USB codec output level"></span>
+      <button class="chip chip-mini" id="wl-power" title="Stop Pat; arming a radio for the station still works">Switch off</button>
+    </div>
+    <div class="wl-cols">
+      <div class="wl-mail">
+        <div class="wl-bar">
+          <div class="seg" id="wl-boxes">
+            <button class="chip on" data-v="in">Inbox</button>
+            <button class="chip" data-v="out">Outbox</button>
+            <button class="chip" data-v="sent">Sent</button>
+            <button class="chip" data-v="archive">Archive</button>
+          </div>
+          <button class="chip chip-mini" id="wl-compose-btn">Compose</button>
+        </div>
+        <div class="wl-list" id="wl-list"></div>
+        <div class="wl-read" id="wl-read" hidden>
+          <div class="wl-read-head" id="wl-read-head"></div>
+          <pre class="wl-body" id="wl-body"></pre>
+        </div>
+        <form class="wl-compose" id="wl-compose" hidden>
+          <input id="wl-to" placeholder="To (callsigns or email, space separated)" autocomplete="off" spellcheck="false" required>
+          <input id="wl-subject" placeholder="Subject" autocomplete="off" required>
+          <textarea id="wl-text" rows="7" placeholder="Message"></textarea>
+          <input type="file" id="wl-files" multiple>
+          <div class="wl-row">
+            <button type="submit" class="chip on">Queue in outbox</button>
+            <button type="button" class="chip" id="wl-compose-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+      <div class="wl-session">
+        <div class="wl-bar">
+          <select id="wl-via" title="Which radio the session goes out on"></select>
+          <select id="wl-band" title="Band"></select>
+          <button class="chip chip-mini" id="wl-gw-refresh">Gateways</button>
+        </div>
+        <div class="wl-gateways" id="wl-gateways"></div>
+        <input id="wl-url" class="wl-url" placeholder="ardop:///CALL?bw=2000MAX&amp;freq=kHz" autocomplete="off" spellcheck="false">
+        <div class="wl-row">
+          <button class="chip wl-connect" id="wl-connect">Connect</button>
+          <button class="chip" id="wl-stop" disabled>Stop</button>
+        </div>
+        <div class="wl-prompt" id="wl-prompt" hidden>
+          <span id="wl-prompt-msg"></span>
+          <button class="chip" data-v="continue">Send anyway</button>
+          <button class="chip" data-v="abort">Abort</button>
+        </div>
+        <pre class="wl-log" id="wl-log"></pre>
+      </div>
+    </div>
+  </section>
+    </div>
+  </section>
+
+  <section class="st-view" id="view-mesh" hidden>
+    <div class="grid st-grid">
+  <section class="panel mesh" id="mesh" hidden>
+    <div class="wl-head">
+      <span class="label">Mesh</span>
+      <span class="wl-call" id="mesh-me"></span>
+      <span class="mesh-state" id="mesh-state">Not connected</span>
+      <span class="spacer"></span>
+      <span id="mesh-key"></span>
+      <button class="chip chip-mini" id="mesh-cfg-btn" title="The node's settings: name, role, LoRa, position, ...">Settings</button>
+      <button class="chip chip-mini" id="mesh-power" title="Close the link to the node and free its port">Switch off</button>
+    </div>
+    <div class="mesh-cfg" id="mesh-cfg" hidden>
+      <div class="wl-bar"><div class="seg" id="mesh-cfg-tabs"></div></div>
+      <form class="mesh-cfg-form" id="mesh-cfg-form" autocomplete="off"></form>
+      <div class="wl-row">
+        <button class="chip on" id="mesh-cfg-save" disabled>Save to node</button>
+        <button class="chip" id="mesh-cfg-revert" disabled>Revert</button>
+        <span class="wl-dim" id="mesh-cfg-note"></span>
+      </div>
+    </div>
+    <div class="wl-cols mesh-cols" id="mesh-main">
+      <div class="wl-mail">
+        <div class="wl-bar"><div class="seg" id="mesh-tabs"></div></div>
+        <div class="mesh-list" id="mesh-list"></div>
+        <div class="mesh-to" id="mesh-to" hidden></div>
+        <form class="wl-row mesh-form" id="mesh-form">
+          <input id="mesh-text" class="wl-url" placeholder="Message" autocomplete="off" maxlength="400">
+          <span class="stat" id="mesh-count"></span>
+          <button type="submit" class="chip on" id="mesh-send" disabled>Send</button>
+        </form>
+        <div class="mesh-map" id="mesh-map"></div>
+      </div>
+      <div class="wl-session">
+        <div class="wl-bar">
+          <input id="mesh-find" class="wl-url" placeholder="Find a node" autocomplete="off" spellcheck="false">
+          <button class="chip chip-mini" id="mesh-all" title="Only nodes heard in the last day">Recent</button>
+          <span class="stat" id="mesh-count-nodes"></span>
+        </div>
+        <div class="mesh-card" id="mesh-card" hidden></div>
+        <div class="wl-gateways mesh-nodes" id="mesh-nodes"></div>
+      </div>
+    </div>
+  </section>
+    </div>
+  </section>
+
+  <section class="st-view st-frames" id="view-packet" hidden></section>
+
+  <!-- Modules (static/modules.js): every module, its state here, add and remove -->
+  <section class="st-view" id="view-modules" hidden>
+    <div class="panel modules-panel" id="modules" hidden></div>
+  </section>
+</main>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="static/common.js"></script>
+<script src="static/station.js"></script>
+<script src="static/winlink.js"></script>
+<script src="static/meshmap.js"></script>
+<script src="static/mesh.js"></script>
+<script src="static/addons.js"></script>
+<script src="static/modules.js"></script>
+<script>station.start();</script>
+</body>
+</html>

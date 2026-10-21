@@ -1,0 +1,52 @@
+/* The Modules tab (static/modules.js), on the radio page and the station page. */
+
+/* Radio page: the tab is a view of its own, like Winlink and Mesh. */
+body[data-view]:not([data-view="modules"]) #modules { display: none; }
+body[data-view="modules"] .grid > .panel:not(#modules) { display: none; }
+body[data-view="modules"] #modules { grid-column: 1 / -1; }
+
+.modules-panel { padding: 16px 18px; }
+.mod-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.mod-top .label { margin: 0; }
+.mod-group { margin-top: 14px; }
+.mod-group > .label, .mod-group > summary.label { display: block; margin: 0 0 6px; cursor: default; }
+details.mod-group > summary.label { cursor: pointer; }
+
+.mod-row { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; background: var(--panel); }
+.mod-row.broken, .mod-row.pending, .mod-row.removed, .mod-row.install_pending { border-color: rgba(var(--warm-rgb), .35); }
+.mod-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mod-head .spacer { flex: 1; }
+.mod-title { font-weight: 600; color: var(--text); }
+.mod-state { font: 600 11px var(--mono); letter-spacing: .03em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.mod-state.ok { color: var(--accent); border-color: rgba(var(--accent-rgb), .35); }
+.mod-state.warn { color: var(--warm); border-color: rgba(var(--warm-rgb), .4); }
+.mod-state.bad { color: var(--tx); border-color: rgba(var(--tx-rgb), .45); }
+.mod-state.off, .mod-state.idle { color: var(--dim); }
+.mod-detail { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+.mod-needs { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+.mod-need { margin: 3px 0; color: var(--muted); }
+.mod-need b { display: inline-block; width: 1.2em; font-family: var(--mono); }
+.mod-need.ok b { color: var(--accent); }
+.mod-need.missing { color: var(--text); }
+.mod-need.missing b { color: var(--tx); }
+.mod-need.warn b, .mod-need.unchecked b { color: var(--warm); }
+.mod-fix { margin: 3px 0 0 1.2em; color: var(--muted); font-size: 12.5px; }
+.mod-cmd { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.mod-cmd code { font: 500 12px var(--mono); color: var(--text); background: rgba(0,0,0,.3); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 8px; overflow-x: auto; white-space: pre; max-width: 100%; user-select: all; }
+
+.mod-form, .mod-plan-box { margin-top: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-hi); background: rgba(0,0,0,.2); }
+.mod-plan-box.refused { border-color: rgba(var(--tx-rgb), .45); }
+.mod-plan-box.done { border-color: rgba(var(--accent-rgb), .45); }
+.mod-field { display: grid; gap: 3px; margin-bottom: 10px; }
+.mod-field span { font: 600 12px var(--mono); color: var(--text); }
+.mod-field input { font: 500 13px var(--mono); color: var(--text); background: rgba(0,0,0,.35); border: 1px solid var(--line-hi);
+  border-radius: 8px; padding: 6px 8px; }
+.mod-field small { color: var(--muted); font-size: 12px; }
+.mod-err { color: var(--tx); font-style: normal; font-size: 12px; }
+.mod-err:empty { display: none; }
+.mod-note { color: var(--muted); font-size: 12.5px; margin: 6px 0; }
+.mod-diff { font: 500 12px var(--mono); white-space: pre; overflow-x: auto; background: rgba(0,0,0,.35); border-radius: 8px;
+  padding: 8px; color: var(--text); max-height: 320px; }
+.mod-actions { display: flex; gap: 8px; margin-top: 8px; }

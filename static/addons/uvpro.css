@@ -1,0 +1,51 @@
+/* UV-PRO add-on panel (static/addons/uvpro.js). Builds on app.css. */
+.uv-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.uv-items { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.uv-act { font: 700 11px var(--mono); padding: 2px 8px; border-radius: 6px; color: var(--dim); border: 1px solid var(--line); }
+.uv-act.rx { color: #4ade80; border-color: rgba(74,222,128,.45); }
+.uv-act.sq { color: var(--warm); border-color: rgba(var(--warm-rgb), .45); }
+.uv-selfkey { color: #fff; background: #b91c1c; border-color: #b91c1c; font-weight: 700; }
+.uv-act.tx { color: #fff; background: #ff4d5e; border-color: #ff4d5e; }
+.uv-ch { font: 500 12.5px var(--mono); color: var(--muted); }
+.uv-ch b { color: var(--dim); margin-right: 2px; }
+.uv-ch.cur, .uv-ch.cur b { color: var(--accent); }
+.uv-f { color: var(--text); }
+.uv-table-wrap { overflow-x: auto; margin-top: 10px; max-height: 60vh; overflow-y: auto; }
+.uv-table { width: 100%; border-collapse: collapse; font: 12.5px var(--mono); color: var(--muted); }
+.uv-table th { position: sticky; top: 0; background: rgba(10,12,16,.95); text-align: left; font-weight: 600;
+  color: var(--dim); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.uv-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.uv-table tr[data-id] { cursor: pointer; }
+.uv-table tr[data-id]:hover td { background: rgba(255,255,255,.03); color: var(--text); }
+.uv-table tr.sel td { background: rgba(var(--accent-rgb), .08); color: var(--text); }
+.uv-table tr.cur td.nm { color: var(--accent); }
+.uv-table td.f { color: var(--text); }
+.uv-table td.ab { display: flex; gap: 4px; }
+.uv-tag { font: 700 10px var(--mono); color: var(--accent); margin-left: 4px; }
+.uv-editor { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.uv-form { margin-top: 12px; }
+.mesh-cfg-form label.bad { color: #ff8a8a; }
+.uv-chirp-bar { margin-top: 10px; }
+.uv-ro .uv-ro-v { font: 500 12.5px var(--mono); color: var(--muted); padding: 4px 2px; }
+.uv-import { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.uv-import-table td:last-child { white-space: normal; }
+.uv-imp-refused td { color: #ff8a8a; }
+.uv-imp-same td { color: var(--dim); }
+.uv-imp-change td:nth-child(3) { color: var(--accent); }
+.uv-lock { font-size: 11px; margin-left: 4px; cursor: help; }
+
+/* Radio pane */
+.uv-radio { padding-top: 6px; }
+.uv-radio input:not([type=range]), .uv-radio select {
+  font: 12px var(--mono); color: var(--text); background: rgba(0,0,0,.3);
+  border: 1px solid var(--line-hi); border-radius: 8px; padding: 5px 7px; user-select: text; }
+.uv-radio :disabled { opacity: .4; }
+.uv-radio input[type=range] { accent-color: var(--accent); }
+.uv-radio .wl-head { margin-top: 12px; }
+.uv-radio .wl-head:first-child { margin-top: 0; }
+.uv-radio .wl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.uv-radio input.bad { border-color: var(--warn, #f87171); }
+.uv-inline { display: inline-flex; align-items: center; gap: 8px; }
+.uv-vol { width: 180px; }
+.uv-vfo-f { font-family: var(--mono); }
+.uv-mem tr.uv-vfo td { border-top: 1px dashed var(--line); font-style: italic; }

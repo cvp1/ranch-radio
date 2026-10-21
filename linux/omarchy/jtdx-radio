@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# jtdx-radio: start JTDX with the profile for whichever radio is plugged in.
+# The Omarchy bar module (jtdx.qml) and the JTDX menu entry call it.
+#
+#   jtdx-radio            the radio that's plugged in; asks if both are;
+#                         with none, JTDX's default profile, untouched
+#   jtdx-radio g90|qmx    that radio's profile
+#   jtdx-radio pick       always ask
+#   jtdx-radio status     one line of JSON for the bar: {"state":..., "tooltip":...}
+#
+# Each radio has its own JTDX profile (its own .ini): the G90 is JTDX's
+# default ~/.config/JTDX.ini, the QMX is `jtdx --rig-name=QMX`
+# (~/.config/JTDX - QMX.ini). Before starting, the profile's rig port is set
+# to that radio's own rigctl port (not the shared 4532, which follows the
+# radio connected longest), and its audio devices are matched to the names
+# PipeWire uses right now: a replugged USB sound card can come back as
+# "...analog-stereo.2", and JTDX then shows the device as missing.
+#
+# With no radio plugged in here, JTDX starts on its default profile and the
+# .ini is left alone: linux-laptop has no radios of its own, and its default
+# profile drives linux-station's G90 over the network (linux/remote-audio/).
+#
+# If JTDX is already running it is focused, not restarted; if it's running
+# the other radio's profile, say so rather than close it (it may be on air).
+#
+# A radio's sound card must never be the desktop's default: desktop sounds
+# would go out on air while transmitting. Picking one in the audio menu makes
+# WirePlumber remember it (linux-station, 2026-10-16: the Digirig, earlier the QMX),
+# so before starting, a radio default is put back to LAPTOP_SINK/LAPTOP_SOURCE
+# (if this machine has them; else its first device that isn't a radio). The
+# remote-audio pipes (g90_tx_camano, ic7300_rx_dogma, ...) count as radios.
+# JTDX and the radio servers name their devices, so they don't need it.
+set -u
+# The radios come from the installed station.json via `ranch-radio radios`
+# (rendered from hosts/<host>.json); without it, the built-in list below.
+REPO="${RADIO_REPO:-$HOME/ranch-radio}"
+RADIOS=()
+if list=$("$REPO/ranch-radio" radios --format jtdx 2>/dev/null) && [[ -n "$list" ]]; then
+  while IFS= read -r line; do [[ -n "$line" ]] && RADIOS+=("$line"); done <<<"$list"
+fi
+#        id   name  device     rig-name  rigctl  PipeWire node (without any .N suffix)
+(( ${#RADIOS[@]} )) || RADIOS=("g90|G90|/dev/g90||4533|alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback|alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo"
+          "qmx|QMX|/dev/qmx|QMX|4534|alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo|alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo")
+LAPTOP_SINK="${LAPTOP_SINK:-audio_effect.t2-152-speakers}"     # linux-station (T2 MacBook)
+LAPTOP_SOURCE="${LAPTOP_SOURCE:-audio_effect.t2-152-mic}"
+
+notify() { notify-send -a JTDX "JTDX" "$1" 2>/dev/null || echo "$1" >&2; }
+
+radio() {   # $1 = id; sets id name dev rig port src sink
+  local r
+  for r in "${RADIOS[@]}"; do
+    IFS='|' read -r id name dev rig port src sink <<<"$r"
+    [[ "$id" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+plugged() {   # ids of the radios plugged in now
+  local r i d
+  for r in "${RADIOS[@]}"; do
+    IFS='|' read -r i _ d _ <<<"$r"
+    [[ -e "$d" ]] && echo "$i"
+  done
+}
+
+ini_for() { [[ -n "$1" ]] && echo "$HOME/.config/JTDX - $1.ini" || echo "$HOME/.config/JTDX.ini"; }
+
+running_rig() {   # prints the --rig-name of the running JTDX ("" = default); fails if none
+  local pid
+  pid=$(pgrep -x jtdx | head -n1)
+  [[ -n "$pid" ]] || return 1
+  tr '\0' '\n' </proc/"$pid"/cmdline |
+    awk 'n { print; exit } /^--rig-name=/ { sub(/^--rig-name=/, ""); print; exit } /^(--rig-name|-r)$/ { n = 1 }'
+  return 0
+}
+
+current_node() {   # $1 = sinks|sources, $2 = base name -> the live name, or nothing
+  pactl list short "$1" 2>/dev/null | awk -v b="$2" '$2 == b || index($2, b ".") == 1 { print $2; exit }'
+}
+
+fix_profile() {   # point the profile at this radio's port and live audio names
+  local ini live_src live_sink
+  ini=$(ini_for "$rig")
+  [[ -f "$ini" ]] || { notify "No JTDX profile for the $name yet ($ini). Starting JTDX to create it: set Radio and Audio, then OK."; return 0; }
+  live_src=$(current_node sources "$src")
+  live_sink=$(current_node sinks "$sink")
+  [[ -n "$live_src" && -n "$live_sink" ]] ||
+    notify "The $name's sound card isn't showing in PipeWire; check JTDX's Audio settings."
+  python3 - "$ini" "$port" "$live_src" "$live_sink" <<'PY'
+import os, re, sys
+path, port, src, sink = sys.argv[1:]
+want = {"CATNetworkPort": f"127.0.0.1:{port}"}
+if src: want["SoundInName"] = src
+if sink: want["SoundOutName"] = sink
+text = open(path, encoding="utf-8").read()
+new = text
+for key, val in want.items():
+    new = re.sub(rf"(?m)^{key}=.*$", lambda m: f"{key}={val}", new)
+if new != text:
+    open(path + ".bak", "w", encoding="utf-8").write(text)
+    tmp = path + ".tmp"
+    open(tmp, "w", encoding="utf-8").write(new)
+    os.replace(tmp, path)
+PY
+}
+
+is_radio_node() {   # $1 = a PipeWire node name: is it any radio's sound card?
+  local r s k
+  for r in "${RADIOS[@]}"; do
+    IFS='|' read -r _ _ _ _ _ s k <<<"$r"
+    [[ "$1" == "$s" || "$1" == "$s".* || "$1" == "$k" || "$1" == "$k".* ]] && return 0
+  done
+  [[ "$1" =~ ^[a-z0-9]+_(rx|tx)_[a-z0-9-]+$ ]]   # a remote-audio pipe
+}
+
+laptop_node() {   # $1 = sinks|sources, $2 = preferred -> it if present, else the first non-radio node
+  local n
+  while read -r _ n _; do
+    [[ "$n" == "$2" ]] && { echo "$n"; return; }
+  done < <(pactl list short "$1" 2>/dev/null)
+  while read -r _ n _; do
+    [[ "$n" == *.monitor ]] || is_radio_node "$n" || { echo "$n"; return; }
+  done < <(pactl list short "$1" 2>/dev/null)
+}
+
+guard_defaults() {   # put a radio default back on the laptop
+  local cur moved=()
+  local to
+  cur=$(pactl get-default-sink 2>/dev/null)
+  if is_radio_node "$cur"; then
+    to=$(laptop_node sinks "$LAPTOP_SINK")
+    [[ -n "$to" ]] && pactl set-default-sink "$to" 2>/dev/null && moved+=(speaker)
+  fi
+  cur=$(pactl get-default-source 2>/dev/null)
+  if is_radio_node "$cur"; then
+    to=$(laptop_node sources "$LAPTOP_SOURCE")
+    [[ -n "$to" ]] && pactl set-default-source "$to" 2>/dev/null && moved+=(mic)
+  fi
+  (( ${#moved[@]} )) && notify "A radio was the desktop's default ${moved[*]}; set back to this computer's own."
+  return 0
+}
+
+launch() {   # $1 = id
+  radio "$1" || { notify "Unknown radio: $1"; exit 1; }
+  guard_defaults
+  if [[ ! -e "$dev" ]]; then
+    notify "The $name isn't plugged in."
+    exit 1
+  fi
+  local have
+  if have=$(running_rig); then
+    if [[ "$have" == "$rig" ]]; then
+      omarchy-launch-or-focus JTDX true
+      exit 0
+    fi
+    notify "JTDX is already running for the ${have:-G90}. Close it first, then start it again for the $name."
+    exit 1
+  fi
+  fix_profile
+  local args=()
+  [[ -n "$rig" ]] && args=(--rig-name="$rig")
+  setsid -f uwsm-app -- jtdx "${args[@]}" >/dev/null 2>&1 </dev/null ||
+    setsid -f jtdx "${args[@]}" >/dev/null 2>&1 </dev/null
+}
+
+start_default() {   # no radio here: JTDX's default profile, .ini untouched
+  guard_defaults
+  if running_rig >/dev/null; then
+    omarchy-launch-or-focus JTDX true
+    exit 0
+  fi
+  setsid -f uwsm-app -- jtdx >/dev/null 2>&1 </dev/null ||
+    setsid -f jtdx >/dev/null 2>&1 </dev/null
+}
+
+pick() {   # $@ = ids to offer
+  local opts=() i choice
+  for i in "$@"; do radio "$i" && opts+=("$name"); done
+  choice=$(omarchy-menu-select "JTDX for which radio?" "${opts[@]}") || exit 0
+  for i in "$@"; do radio "$i" && [[ "$name" == "$choice" ]] && { launch "$i"; return; }; done
+}
+
+status() {
+  local ids have names=()
+  mapfile -t ids < <(plugged)
+  for i in "${ids[@]}"; do radio "$i" && names+=("$name"); done
+  if have=$(running_rig); then
+    local who=G90
+    [[ -n "$have" ]] && who="$have"
+    printf '{"state":"running","tooltip":"JTDX running (%s)"}\n' "$who"
+  elif (( ${#ids[@]} == 0 )); then
+    printf '{"state":"none","tooltip":"Start JTDX (default profile: no radio plugged in here)"}\n'
+  else
+    local IFS=/
+    printf '{"state":"ready","tooltip":"Start JTDX (%s)"}\n' "${names[*]}"
+  fi
+}
+
+case "${1:-}" in
+  status) status ;;
+  pick)
+    mapfile -t ids < <(plugged)
+    (( ${#ids[@]} )) || { notify "No radio plugged in (G90 or QMX)."; exit 1; }
+    pick "${ids[@]}" ;;
+  "")
+    mapfile -t ids < <(plugged)
+    case ${#ids[@]} in
+      0) start_default ;;
+      1) launch "${ids[0]}" ;;
+      *) pick "${ids[@]}" ;;
+    esac ;;
+  *) launch "$1" ;;
+esac

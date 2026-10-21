@@ -1,0 +1,58 @@
+/* Station page (station.html): navigation, overview cards, radio frames.
+   Builds on app.css (colours, topbar, panels, chips). */
+
+body.station { overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+.station .topbar { flex: none; gap: 14px; width: 100%; }
+.st-nav { display: flex; gap: 4px; padding: 3px; border-radius: 12px; overflow-x: auto; scrollbar-width: none;
+  background: rgba(0,0,0,.25); border: 1px solid var(--line); }
+.st-tab { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 12px; border-radius: 9px;
+  color: var(--muted); text-decoration: none; font: 600 13px var(--sans); white-space: nowrap; }
+.st-tab small { font: 500 10.5px var(--mono); color: var(--dim); }
+.st-tab:hover { color: var(--text); background: rgba(255,255,255,.04); }
+.st-tab.on { color: var(--accent); background: rgba(var(--accent-rgb), .1); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .35); }
+.st-tab.on small { color: rgba(var(--accent-rgb), .75); }
+.st-tab.off { opacity: .6; }
+.st-dot { width: 7px; height: 7px; border-radius: 50%; align-self: center; background: var(--dim); flex: none; }
+.st-dot.ok { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+.st-dot.tx { background: #ff4d5e; box-shadow: 0 0 8px #ff4d5e; }
+.st-dot.off { background: #5b6170; }
+.st-badge { min-width: 16px; padding: 0 5px; border-radius: 8px; font: 700 10px var(--mono); text-align: center;
+  align-self: center; background: rgba(var(--warm-rgb), .25); color: var(--warm); }
+
+.st-main { flex: 1; min-height: 0; position: relative; }
+.st-view { position: absolute; inset: 0; overflow-y: auto; }
+.st-view[hidden] { display: none; }
+.st-frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg, #07090d); }
+.st-frames iframe[hidden] { display: none; }
+.st-grid { padding-top: 0; }
+.st-grid > .panel.addon { grid-column: 1 / -1; }   /* an add-on's view: the full width, not one of 12 columns */
+.st-empty { padding: 40px; color: var(--dim); text-align: center; }
+
+.st-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; padding: 18px 20px 6px; }
+.st-card { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 14px; text-decoration: none;
+  border: 1px solid var(--line); background: var(--panel, rgba(255,255,255,.02)); color: var(--muted); font-size: 13px; }
+a.st-card:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text); }
+.st-card.off { opacity: .6; }
+.st-card.tx { border-color: rgba(255,77,94,.5); }
+.st-card-head { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 15px; }
+.st-card code { font: 600 12px var(--mono); color: var(--text); }
+.st-help { padding: 4px 22px; color: var(--dim); font-size: 12.5px; }
+.st-help code { font: 600 12px var(--mono); color: var(--muted); }
+#wl-via { font: 13px var(--mono); color: var(--text); background: rgba(0,0,0,.3);
+  border: 1px solid var(--line-hi); border-radius: 8px; padding: 4px 8px; height: 30px; max-width: 16em; }
+
+@media (max-width: 860px) {
+  .station .topbar { flex-wrap: wrap; }
+  .st-nav { order: 5; width: 100%; }
+}
+
+/* The radio strip: one line per connected HF radio, on non-radio views. */
+.st-strip { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 16px;
+  border-bottom: 1px solid var(--line); font: 500 12px var(--mono); color: var(--muted); }
+.st-strip .sr { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; }
+.st-strip .sr b { color: var(--text); font-weight: 600; }
+.st-strip .sr .f { color: var(--accent); }
+.st-strip .sr.tx .f, .st-strip .sr .air { color: #ff4d5e; }
+.st-strip .sr .air { font-weight: 700; letter-spacing: .04em; }
+.st-strip button { height: 22px; padding: 0 8px; border-radius: 7px; border: 1px solid #ff4d5e;
+  background: rgba(255,77,94,.12); color: #ff4d5e; font: 600 11px var(--mono); cursor: pointer; }

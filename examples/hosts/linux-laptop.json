@@ -1,0 +1,18 @@
+{
+  "host": "linux-laptop",
+  "os": "linux",
+  "repo": "~/ranch-radio",
+  "python": "/usr/bin/python3",
+  "note": "Example: a Linux laptop with a QMX, Mesh as a mobile node (a node on the cable first, else Bluetooth), and the Omarchy bar.",
+  "mesh": {"port": "/dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560", "keys": ["HomeNet=~/.config/ranch-radio/keys/mesh_channel"]},
+  "radios": [
+    {"id": "qmx", "name": "QMX", "rig": "qmx", "device": "/dev/qmx",
+     "description": "Radio Remote for the QRP Labs QMX (USB)", "jtdx_profile": "QMX",
+     "web": 7302, "rigctl": 4534, "lane": 4538,
+     "tx_timeout": 60, "winlink_mode": "USB",
+     "audio_in": "alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo",
+     "audio_out": "alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo"}
+  ],
+  "station": {"https": true},
+  "integrations": {"omarchy-bar": {}}
+}

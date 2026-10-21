@@ -1,0 +1,22 @@
+{
+  "name": "linux-station",
+  "radios": [
+    {"id": "g90", "name": "G90", "device": "/dev/g90", "unit": "g90-remote.service",
+     "web": 7301, "rigctl": 4533, "lane": 4537,
+     "audio_in": "alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback",
+     "audio_out": "alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo"},
+    {"id": "qmx", "name": "QMX", "device": "/dev/qmx", "unit": "qmx-remote.service",
+     "web": 7302, "rigctl": 4534, "lane": 4538,
+     "audio_in": "alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo",
+     "audio_out": "alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo"}
+  ],
+  "packet": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000"},
+  "winlink": {"pat": "~/.local/bin/pat", "pat_port": 8095, "lane_port": 4539,
+              "ardopcf": "~/.local/bin/ardopcf", "ardop_port": 8515,
+              "ardop_logs": "~/.local/state/radio-remote/ardop"},
+  "mesh": {"port": "/dev/meshtastic", "keys": ["HomeNet=~/.config/ranch-radio/keys/mesh_channel"]},
+  "addons": {
+    "uvpro": {"enabled": true, "address": "00:11:22:33:44:55", "calls": ["N9ABC"],
+              "hub": "http://127.0.0.1:7310", "control": "tcp:127.0.0.1:8002"}
+  }
+}

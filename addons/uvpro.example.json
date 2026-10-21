@@ -1,0 +1,11 @@
+{
+  "uvpro": {
+    "enabled": true,
+    "address": "00:11:22:33:44:55",
+    "calls": [
+      "N9ABC"
+    ],
+    "hub": "http://127.0.0.1:7310",
+    "control": "tcp:127.0.0.1:8002"
+  }
+}

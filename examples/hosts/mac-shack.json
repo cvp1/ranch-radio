@@ -1,0 +1,32 @@
+{
+  "host": "mac-shack",
+  "os": "macos",
+  "repo": "~/ranch-radio",
+  "python": "~/ranch-radio/.venv/bin/python",
+  "note": "Example: a Mac with one radio (an IC-7300 over USB). One radio, so no station: its server carries Winlink, Mesh and the MD-UV390 (OpenGD77 add-on) itself.",
+  "radios": [
+    {"id": "ic7300", "name": "IC-7300", "label": "org.ranch-radio.ic7300-remote",
+     "device": "/dev/cu.usbserial-21210",
+     "https": true, "tx_timeout": 60, "auto_tune": true,
+     "rigctl_host": "0.0.0.0",
+     "tls_names": ["mac-shack", "192.168.1.21"],
+     "lane": 4533,
+     "codec_db": "default=-38,80m=-38,40m=-44,20m=-50",
+     "voice_codec_db": "default=-38,20m=-32", "codec_save": true,
+     "log": "~/ranch-radio/server.log",
+     "path": "/opt/homebrew/bin:/usr/bin:/bin"}
+  ],
+  "winlink": {"pat": "pat",
+              "ardop_logs": "~/Library/Logs/ardopcf",
+              "ardopcf": {"label": "org.ranch-radio.ardopcf", "bin": "~/bin/ardopcf", "port": 8515,
+                          "audio_in": "USB Audio CODEC", "audio_out": "USB Audio CODEC",
+                          "hostcommands": "CONSOLELOG 2"}},
+  "mesh": {"port": "ble:NODEM_7720", "keys": ["HomeNet=~/.config/ranch-radio/keys/mesh_channel"]},
+  "addons": {
+    "opengd77": {"enabled": true, "port": "auto", "label": "MD-UV390", "poll": 2,
+                 "dmrconf": "/opt/homebrew/bin/dmrconf"}
+  },
+  "integrations": {
+    "macos-widget": {"label": "org.ranch-radio.ic7300-widget", "app": "~/Applications/ic7300-widget.app"}
+  }
+}

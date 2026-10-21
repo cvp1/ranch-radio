@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# radio-server: control + status for the Radio Remote station (systemd user units).
+# Linux twin of macos/widget; the Omarchy bar module (radio.qml) calls it.
+#
+#   radio-server status    one line of JSON: {"state":..., "tooltip":...}
+#   radio-server toggle    on <-> off
+#   radio-server on        the station, and each radio's server when it is plugged in
+#   radio-server off       all of it, and plugging a radio in no longer starts its server
+#   radio-server restart
+#   radio-server open      open the station page
+#
+# States, same as the macOS widget:
+#   running   station up, at least one radio connected and served   (green)
+#   noradio   station up, no radio connected (or its server failed) (red)
+#   starting  station active, web port not answering yet            (orange)
+#   off       station stopped; the radios are free for other apps   (gray)
+#
+# The station (station.service) is the page on 7300 and the shared rigctl
+# port 4532 (the radio connected longest). Each radio's server starts when it
+# is plugged in (its units are WantedBy its device) and answers on its own
+# rigctl port too (G90 4533, QMX 4534 on linux-station; the list is the station's).
+#
+# Settings (env, or the module's "env" in shell.json):
+#   RADIO_WEB_PORT (7300)  RADIO_URL (https://<hostname>:<port>/)  RADIO_REPO (~/ranch-radio)
+set -u
+SHARED=4532
+PORT="${RADIO_WEB_PORT:-7300}"
+URL="${RADIO_URL:-https://$(hostname):$PORT/}"
+REPO="${RADIO_REPO:-$HOME/ranch-radio}"
+STATION=station.service
+
+# The radios (id:name:device:own rigctl port) come from the installed
+# station.json via `ranch-radio radios`, which ranch-radio renders from
+# hosts/<host>.json. Without it (not installed yet), the built-in list.
+RADIOS=()
+if list=$("$REPO/ranch-radio" radios --format server 2>/dev/null) && [[ -n "$list" ]]; then
+  while IFS= read -r line; do [[ -n "$line" ]] && RADIOS+=("$line"); done <<<"$list"
+fi
+(( ${#RADIOS[@]} )) || RADIOS=("g90:G90:/dev/g90:4533" "qmx:QMX:/dev/qmx:4534")
+
+radio_units() { local r; for r in "${RADIOS[@]}"; do echo "${r%%:*}-remote.socket" "${r%%:*}-remote.service"; done; }
+
+# A missing unit is installed from this host's file when it has one
+# (`ranch-radio install --apply` writes files, never links). Otherwise it is
+# linked from the repo, as before; "disable" on a linked unit deletes that
+# link too (linux-station, 2026-10-13), so re-link whatever is missing.
+ensure_units() {
+  local f u relinked=0 missing=0 r
+  for u in "$STATION" $(radio_units); do
+    systemctl --user cat "$u" >/dev/null 2>&1 || missing=1
+  done
+  (( missing )) || return 0
+  if "$REPO/ranch-radio" where >/dev/null 2>&1; then
+    "$REPO/ranch-radio" install --apply >/dev/null || return 1
+    systemctl --user daemon-reload
+    return 0
+  fi
+  for f in "$REPO/linux/$STATION" "$REPO"/{g90,qmx}-remote.{socket,service}; do
+    u=$(basename "$f")
+    [[ -f "$f" ]] || continue
+    systemctl --user cat "$u" >/dev/null 2>&1 && continue
+    systemctl --user link "$f" >/dev/null || return 1
+    relinked=1
+  done
+  (( relinked )) && systemctl --user daemon-reload
+  return 0
+}
+
+
+on() {
+  ensure_units || return 1
+  # shellcheck disable=SC2046
+  systemctl --user enable $(radio_units) >/dev/null 2>&1
+  systemctl --user enable --now "$STATION"
+  local r id dev
+  for r in "${RADIOS[@]}"; do
+    IFS=: read -r id _ dev _ <<<"$r"
+    [[ -e "$dev" ]] && systemctl --user start "$id-remote.socket" "$id-remote.service"
+  done
+  return 0
+}
+
+off() {
+  # shellcheck disable=SC2046
+  systemctl --user disable --now "$STATION" $(radio_units) 2>/dev/null
+  return 0
+}
+
+json_escape() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '%s' "${s//$'\n'/\\n}"; }
+
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+# A radio's rigctl port, without connecting: a probe connection is a client
+# to the radio's server (it logged two lines per bar refresh).
+bound() { [[ -n "$(ss -Htln "sport = :$1" 2>/dev/null)" ]]; }
+
+status() {
+  local active state tip="" r id name dev own served=0 first="" best="" t shared
+  active=$(systemctl --user is-active "$STATION" 2>/dev/null)
+  # The shared port goes to the radio whose server has run longest.
+  for r in "${RADIOS[@]}"; do
+    IFS=: read -r id name dev own <<<"$r"
+    if systemctl --user is-active --quiet "$id-remote.service" && bound "$own"; then
+      served=$((served + 1))
+      t=$(systemctl --user show -p ActiveEnterTimestampMonotonic --value "$id-remote.service")
+      if [[ -z "$best" || "$t" -lt "$best" ]]; then best=$t; first=$id; fi
+    fi
+  done
+  for r in "${RADIOS[@]}"; do
+    IFS=: read -r id name dev own <<<"$r"
+    if [[ ! -e "$dev" ]]; then
+      tip+=$'\n'"$name: not connected"
+    elif systemctl --user is-active --quiet "$id-remote.service"; then
+      shared=""; [[ "$id" == "$first" ]] && shared=" + $SHARED (shared)"
+      tip+=$'\n'"$name: rigctl $own$shared"
+    elif [[ "$(systemctl --user is-active "$id-remote.service")" == failed ]]; then
+      tip+=$'\n'"$name: server failed (journalctl --user -u $id-remote)"
+    else
+      tip+=$'\n'"$name: connected, server off"
+    fi
+  done
+
+  if [[ "$active" != "active" && "$active" != "activating" && "$active" != "reloading" ]]; then
+    state=off; tip="Ranch Radio station is OFF$tip"
+    [[ "$active" == "failed" ]] && tip+=$'\n'"(last run failed: journalctl --user -u station)"
+  elif ! listening "$PORT"; then
+    state=starting; tip="Ranch Radio station is starting$tip"
+  elif (( served )); then
+    state=running; tip="Ranch Radio station is ON$tip"
+  else
+    state=noradio; tip="Ranch Radio station is ON, no radio served$tip"
+  fi
+  tip+=$'\n'"Left-click: turn $([[ $state == off ]] && echo on || echo off)  ·  Right-click: open page  ·  Middle-click: restart"
+  printf '{"state":"%s","tooltip":"%s"}\n' "$state" "$(json_escape "$tip")"
+}
+
+restart() {
+  ensure_units || return 1
+  # Restart is "on, freshly": enable as on() does. Without it, off then
+  # restart left the station running with every radio disabled, so a radio
+  # plugged in later never got its server (linux-station, 2026-10-21: the QMX).
+  # shellcheck disable=SC2046
+  systemctl --user enable $(radio_units) >/dev/null 2>&1
+  systemctl --user enable "$STATION" >/dev/null 2>&1
+  systemctl --user restart "$STATION"
+  local r id dev
+  for r in "${RADIOS[@]}"; do
+    IFS=: read -r id _ dev _ <<<"$r"
+    [[ -e "$dev" ]] && systemctl --user restart "$id-remote.service"
+  done
+  return 0
+}
+
+case "${1:-status}" in
+  status)  status ;;
+  on)      on ;;
+  off)     off ;;
+  toggle)  if [[ "$(systemctl --user is-active "$STATION")" =~ ^(active|activating|reloading)$ ]]
+           then off; else on; fi ;;
+  restart) restart ;;
+  open)    xdg-open "$URL" >/dev/null 2>&1 & ;;
+  *)       echo "usage: radio-server [status|toggle|on|off|restart|open]" >&2; exit 2 ;;
+esac

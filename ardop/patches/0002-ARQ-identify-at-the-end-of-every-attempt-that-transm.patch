@@ -1,0 +1,403 @@
+From 07e31137c2b05981c9d4b821a382db4f23354d44 Mon Sep 17 00:00:00 2001
+From: cvp1 <54213066+cvp1@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 11:07:44 -0700
+Subject: [PATCH 2/2] ARQ: identify at the end of every attempt that
+ transmitted
+
+47 CFR 97.119(a) requires an ID at the end of each communication. An ARQ
+attempt that ended without the END/DISC handshake sent no IDFrame: a
+connect attempt nobody answered (ConReq repeats exhausted), an attempt or
+session the host ABORTed, or a session whose DISC was never acknowledged.
+The only ID left was the DISC-state "10 minute ID" ~9 minutes later, after
+the host had moved on (and which a host that keys the radio only during an
+attempt refuses, so it never went on air).
+
+SendFinalIDIfOwed() sends the IDFrame (+ CW ID if enabled) in those three
+paths if anything was transmitted since the last IDFrame, BEFORE the host
+is told DISCONNECTED / NEWSTATE DISC, so the host sees the attempt end only
+after the ID. SendID() resets LastIDFrameTime, so no later 10 minute ID.
+An ABORT/DISCONNECT that arrives during that ID is absorbed (it cannot cut
+off the next ARQCALL); GetNextARQFrame() is a no-op while it is sent.
+
+test/python/test_final_id.py runs ardopcf with NOSOUND devices as its host
+and checks each ending (baseline 2/7, patched 7/7).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+(cherry picked from commit 9099263059b460e5bc53e17741cb6805a2da7efd)
+---
+ src/common/ARQ.c             |  43 ++++++
+ test/python/test_final_id.py | 284 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 327 insertions(+)
+ create mode 100644 test/python/test_final_id.py
+
+diff --git a/src/common/ARQ.c b/src/common/ARQ.c
+index 1b44fa7..4b97d00 100644
+--- a/src/common/ARQ.c
++++ b/src/common/ARQ.c
+@@ -344,16 +344,57 @@ void SetARDOPProtocolState(int value)
+ 
+ // Function to Get the next ARQ frame returns TRUE if frame repeating is enable
+ 
++// Station identification at the end of an ARQ attempt or session that ends
++// without the END/DISC handshake (which already sends an IDFrame).
++//
++// 47 CFR 97.119(a) (US) requires an ID at the end of each communication.
++// Without this, a connect attempt that got no answer, an attempt or session
++// the host ABORTed, or a session whose DISC was never acknowledged ends with
++// no ID; the only one left is the "10 minute ID" sent from the DISC state
++// ~9 minutes later, after the host (and any operator watching it) has moved
++// on, and which a host that keys the radio only during an attempt will refuse.
++//
++// Send the IDFrame (and CW ID if enabled) now, if anything was transmitted
++// since the last IDFrame.  Call it BEFORE SetARDOPProtocolState(DISC) and
++// before DISCONNECTED is queued, so that the host sees the attempt end only
++// after the ID has been sent.  SendID() resets LastIDFrameTime, so the 10
++// minute ID is not also sent later.
++static BOOL blnSendingFinalID = FALSE;
++
++static void SendFinalIDIfOwed(char * reason)
++{
++	if (LastIDFrameTime == 0)
++		return;  // nothing transmitted since the last IDFrame
++	blnSendingFinalID = TRUE;  // GetNextARQFrame() is a no-op until done
++	blnEnbARQRpt = FALSE;
++	tmrFinalID = 0;
++	// SendID will default to Callsign if ARQStationLocal is not valid.
++	if (!SendID(&ARQStationLocal, reason))
++		// Sound is playing (an ABORT received while transmitting).  The
++		// IDFrame is still owed: send it as soon as the current frame ends.
++		tmrFinalID = Now + 100;
++	blnSendingFinalID = FALSE;
++	// An ABORT or DISCONNECT from the host while the ID was being sent is
++	// satisfied by the attempt ending now; don't let it cut off the next one.
++	blnAbort = FALSE;
++	blnARQDisconnect = FALSE;
++}
++
+ BOOL GetNextARQFrame()
+ {
+ 	// Dim bytToMod(-1) As Byte
+ 
+ 	char HostCmd[80];
+ 
++	if (blnSendingFinalID)
++		return FALSE;  // an ABORT received while sending the final ID
++
+ 	if (blnAbort)  // handles ABORT (aka Dirty Disconnect)
+ 	{
+ 		// if (DebugLog) ;(("[ARDOPprotocol.GetNextARQFrame] ABORT...going to ProtocolState DISC, return FALSE")
+ 
++		if (ProtocolState != DISC)
++			SendFinalIDIfOwed("ABORT after transmitting");
+ 		ClearDataToSend();
+ 
+ 		SetARDOPProtocolState(DISC);
+@@ -373,6 +414,7 @@ BOOL GetNextARQFrame()
+ 
+ 		if (intRepeatCount > 5)  // do 5 tries then force disconnect
+ 		{
++			SendFinalIDIfOwed("DISC not acknowledged");
+ 			QueueCommandToHost("DISCONNECTED");
+ 			ZF_LOGI("[STATUS: END NOT RECEIVED CLOSING ARQ SESSION WITH %s]", ARQStationRemote.str);
+ 			snprintf(HostCmd, sizeof(HostCmd), "STATUS END NOT RECEIVED CLOSING ARQ SESSION WITH %s", ARQStationRemote.str);
+@@ -403,6 +445,7 @@ BOOL GetNextARQFrame()
+ 		intRepeatCount++;
+ 		if (intRepeatCount > ARQConReqRepeats)
+ 		{
++			SendFinalIDIfOwed("ConReq not answered");
+ 			ClearDataToSend();
+ 			SetARDOPProtocolState(DISC);
+ 			intRepeatCount = 0;
+diff --git a/test/python/test_final_id.py b/test/python/test_final_id.py
+new file mode 100644
+index 0000000..a0da964
+--- /dev/null
++++ b/test/python/test_final_id.py
+@@ -0,0 +1,284 @@
++#!/usr/bin/env python3
++"""Station identification at the end of every ARQ attempt that transmitted.
++
++47 CFR 97.119(a) requires a station to identify at the end of each
++communication.  ardopcf sends an IDFrame (+ CW ID) when an ARQ session ends
++normally (END/DISC handshake, ARQ timeout), but historically not when:
++
++  - a connect attempt gets no answer (ConReq repeats exhausted),
++  - the host ABORTs a connect attempt or session after transmitting,
++  - DISC repeats are exhausted (remote never answered our DISC).
++
++In those cases the only ID left is the "10 minute ID" fired ~9 minutes later
++from the DISC state, long after the host (and any operator watching it) has
++moved on.  This script runs ardopcf with NOSOUND audio devices (nothing is
++transmitted; no sound card is opened) on a pair of free TCP ports, acts as
++its host, and checks that each of those endings sends the ID BEFORE ardopcf
++reports NEWSTATE DISC to the host, i.e. while the host still considers the
++attempt in progress.
++
++Usage (from test/python):  python3 test_final_id.py [--ardopcf PATH] [-v]
++Exit status 0 = all passed.
++"""
++
++import argparse
++import os
++import select
++import socket
++import subprocess
++import sys
++import tempfile
++import time
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++DEFAULT_BIN = os.path.join(HERE, "..", "..", "ardopcf")
++MYCALL = "N0CALL"
++TARGET = "AA0TST"
++VERBOSE = False
++
++
++def free_port_pair():
++    for _ in range(50):
++        s = socket.socket()
++        s.bind(("127.0.0.1", 0))
++        p = s.getsockname()[1]
++        s.close()
++        if p < 65000:  # either parity: Linux hands out odd ports here
++            t = socket.socket()
++            try:
++                t.bind(("127.0.0.1", p + 1))
++                return p
++            except OSError:
++                continue
++            finally:
++                t.close()
++    raise RuntimeError("no free port pair")
++
++
++class Tnc:
++    """One ardopcf process (NOSOUND) and a host connection to it."""
++
++    def __init__(self, binary):
++        self.port = free_port_pair()
++        self.tmp = tempfile.mkdtemp(prefix="ardop-finalid-")
++        self.proc = subprocess.Popen(
++            [binary, "--logdir", self.tmp, str(self.port), "NOSOUND", "NOSOUND"],
++            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        self.cmd = self._connect(self.port)
++        self.data = self._connect(self.port + 1)
++        self.buf = b""
++        self.dbuf = b""
++        self.events = []          # (t, kind, text) in arrival order
++        self.t0 = time.monotonic()
++
++    @staticmethod
++    def _connect(port):
++        end = time.monotonic() + 10
++        while True:
++            try:
++                return socket.create_connection(("127.0.0.1", port), timeout=1)
++            except OSError:
++                if time.monotonic() > end:
++                    raise
++                time.sleep(0.1)
++
++    def close(self):
++        for s in (self.cmd, self.data):
++            try:
++                s.close()
++            except OSError:
++                pass
++        self.proc.terminate()
++        try:
++            self.proc.wait(5)
++        except subprocess.TimeoutExpired:
++            self.proc.kill()
++
++    def send(self, line):
++        if VERBOSE:
++            print(f"  > {line}")
++        self.cmd.sendall(line.encode() + b"\r")
++
++    def pump(self, timeout):
++        """Read whatever arrives within timeout; record events."""
++        r, _, _ = select.select([self.cmd, self.data], [], [], timeout)
++        now = time.monotonic() - self.t0
++        for s in r:
++            chunk = s.recv(65536)
++            if not chunk:
++                raise RuntimeError("ardopcf closed the host connection")
++            if s is self.cmd:
++                self.buf += chunk
++                while b"\r" in self.buf:
++                    line, self.buf = self.buf.split(b"\r", 1)
++                    text = line.decode(errors="replace").strip()
++                    self.events.append((now, "cmd", text))
++                    if VERBOSE:
++                        print(f"  < {now:6.2f} {text}")
++            else:
++                self.dbuf += chunk
++                while len(self.dbuf) >= 2:
++                    n = int.from_bytes(self.dbuf[:2], "big")
++                    if len(self.dbuf) < 2 + n:
++                        break
++                    frame, self.dbuf = self.dbuf[2:2 + n], self.dbuf[2 + n:]
++                    tag = frame[:3].decode(errors="replace")
++                    self.events.append((now, "data", tag + " " + frame[3:].decode(errors="replace")))
++                    if VERBOSE:
++                        print(f"  < {now:6.2f} [data {tag}] {frame[3:]!r}")
++
++    def wait_for(self, text, timeout, since=0):
++        end = time.monotonic() + timeout
++        while time.monotonic() < end:
++            for i, (_, kind, t) in enumerate(self.events[since:], since):
++                if kind == "cmd" and t.startswith(text):
++                    return i
++            self.pump(0.1)
++        raise AssertionError(f"timed out waiting for {text!r}")
++
++    def settle(self, seconds):
++        end = time.monotonic() + seconds
++        while time.monotonic() < end:
++            self.pump(0.05)
++
++    def setup(self, cwid=True):
++        self.send("INITIALIZE")
++        self.send("PROTOCOLMODE ARQ")
++        self.send(f"MYCALL {MYCALL}")
++        self.send("GRIDSQUARE FN31")
++        self.send("LISTEN FALSE")
++        self.send(f"CWID {'TRUE' if cwid else 'FALSE'}")
++        self.wait_for("CWID now", 5)
++        self.settle(0.2)
++        self.mark = len(self.events)
++
++
++def ids_and_ptt_before_disc(tnc, start):
++    """Events between start and the first NEWSTATE DISC after it."""
++    disc = tnc.wait_for("NEWSTATE DISC", 60, start)
++    tnc.settle(0.5)               # let any data-port frames catch up
++    window = tnc.events[start:disc]
++    after = tnc.events[disc + 1:]
++    return window, after
++
++
++def count(events, kind, prefix):
++    return sum(1 for _, k, t in events if k == kind and t.startswith(prefix))
++
++
++def run_case(binary, name, fn):
++    tnc = Tnc(binary)
++    try:
++        fn(tnc)
++        print(f"PASS {name}")
++        return True
++    except AssertionError as e:
++        print(f"FAIL {name}: {e}")
++        return False
++    finally:
++        tnc.close()
++
++
++# --- cases ---
++
++def case_failed_connect(tnc):
++    """No answer to ConReq: ID (frame + CW) goes out before NEWSTATE DISC."""
++    tnc.setup()
++    tnc.send(f"ARQCALL {TARGET} 2")
++    tnc.wait_for("NEWSTATE ISS", 5, tnc.mark)
++    window, after = ids_and_ptt_before_disc(tnc, tnc.mark)
++    assert count(window, "data", "IDF") == 1, \
++        f"expected one IDF before NEWSTATE DISC, got {count(window, 'data', 'IDF')}"
++    assert count(after, "data", "IDF") == 0, "IDF arrived only after NEWSTATE DISC"
++    # 2 ConReq + IDFrame + CW ID
++    n = count(window, "cmd", "PTT TRUE")
++    assert n == 4, f"expected 4 PTT TRUE (2 ConReq, IDFrame, CW ID) before DISC, got {n}"
++
++
++def case_failed_connect_no_cwid(tnc):
++    tnc.setup(cwid=False)
++    tnc.send(f"ARQCALL {TARGET} 2")
++    window, _ = ids_and_ptt_before_disc(tnc, tnc.mark)
++    assert count(window, "data", "IDF") == 1, "expected one IDF before NEWSTATE DISC"
++    n = count(window, "cmd", "PTT TRUE")
++    assert n == 3, f"expected 3 PTT TRUE (2 ConReq, IDFrame) before DISC, got {n}"
++
++
++def case_abort_during_connect(tnc):
++    """Host ABORT after a ConReq went out: still identify before DISC."""
++    tnc.setup()
++    tnc.send(f"ARQCALL {TARGET} 5")
++    tnc.wait_for("PTT FALSE", 5, tnc.mark)
++    tnc.send("ABORT")
++    window, _ = ids_and_ptt_before_disc(tnc, tnc.mark)
++    assert count(window, "data", "IDF") == 1, "expected one IDF before NEWSTATE DISC after ABORT"
++
++
++def case_disconnect_during_connect(tnc):
++    """Host DISCONNECT during a connect attempt: DISC repeats, then ID, then DISC."""
++    tnc.setup()
++    tnc.send(f"ARQCALL {TARGET} 5")
++    tnc.wait_for("PTT FALSE", 5, tnc.mark)
++    tnc.send("DISCONNECT")
++    window, _ = ids_and_ptt_before_disc(tnc, tnc.mark)
++    assert count(window, "data", "IDF") == 1, "expected one IDF before NEWSTATE DISC after DISCONNECT"
++
++
++def case_next_call_not_aborted(tnc):
++    """An attempt that ended with an ID leaves the TNC ready: the next
++    ARQCALL sends its ConReq repeats instead of being cut off."""
++    tnc.setup()
++    tnc.send(f"ARQCALL {TARGET} 2")
++    ids_and_ptt_before_disc(tnc, tnc.mark)
++    start = len(tnc.events)
++    tnc.send(f"ARQCALL {TARGET} 3")
++    window, _ = ids_and_ptt_before_disc(tnc, start)
++    n = count(window, "cmd", "PTT TRUE")
++    assert n == 5, f"expected 5 PTT TRUE (3 ConReq, IDFrame, CW ID) on the 2nd attempt, got {n}"
++
++
++def case_abort_idle_sends_nothing(tnc):
++    """ABORT with nothing transmitted since the last ID must not key at all."""
++    tnc.setup()
++    tnc.send("ABORT")
++    tnc.wait_for("ABORT", 5, tnc.mark)
++    tnc.settle(1.0)
++    assert count(tnc.events[tnc.mark:], "cmd", "PTT TRUE") == 0, "keyed on an idle ABORT"
++    assert count(tnc.events[tnc.mark:], "data", "IDF") == 0, "sent an ID on an idle ABORT"
++
++
++def case_sendid_still_works(tnc):
++    tnc.setup()
++    tnc.send("SENDID")
++    end = time.monotonic() + 5
++    while time.monotonic() < end and count(tnc.events[tnc.mark:], "data", "IDF") == 0:
++        tnc.pump(0.1)
++    assert count(tnc.events[tnc.mark:], "data", "IDF") == 1, "SENDID sent no IDF"
++
++
++CASES = [
++    ("failed connect identifies before DISC", case_failed_connect),
++    ("failed connect identifies (CWID off)", case_failed_connect_no_cwid),
++    ("ABORT during connect identifies before DISC", case_abort_during_connect),
++    ("DISCONNECT during connect identifies before DISC", case_disconnect_during_connect),
++    ("next ARQCALL after an ID is not aborted", case_next_call_not_aborted),
++    ("ABORT with nothing sent does not key", case_abort_idle_sends_nothing),
++    ("SENDID still sends an ID", case_sendid_still_works),
++]
++
++
++def main():
++    global VERBOSE
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--ardopcf", default=DEFAULT_BIN)
++    ap.add_argument("-v", "--verbose", action="store_true")
++    a = ap.parse_args()
++    VERBOSE = a.verbose
++    binary = os.path.abspath(a.ardopcf)
++    results = [run_case(binary, name, fn) for name, fn in CASES]
++    print(f"{sum(results)}/{len(results)} passed")
++    return 0 if all(results) else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.55.0
+

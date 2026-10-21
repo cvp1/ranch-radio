@@ -1,0 +1,6 @@
+# QRP Labs QMX / QMX+: stable /dev/qmx, owned by the operator (no uucp group
+# needed). The QMX reports no USB serial number, so this matches on
+# vendor/product: fine with one QMX plugged in. @USER@ is filled in by:
+#   sed "s/@USER@/$USER/" linux/udev/99-qmx.rules | sudo tee /etc/udev/rules.d/99-qmx.rules
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=tty
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="a34c", OWNER="@USER@", SYMLINK+="qmx"

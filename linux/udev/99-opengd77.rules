@@ -1,0 +1,7 @@
+# TYT MD-UV380 / MD-UV390 (and other radios) running OpenGD77: stable
+# /dev/opengd77, owned by the operator (no uucp group needed). OpenGD77's USB
+# device is 1FC9:0094 on every radio it supports (USB_DEVICE/App/usbd_desc.c),
+# so this matches one OpenGD77 radio plugged in. @USER@ is filled in by:
+#   sed "s/@USER@/$USER/" linux/udev/99-opengd77.rules | sudo tee /etc/udev/rules.d/99-opengd77.rules
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=tty
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1fc9", ATTRS{idProduct}=="0094", OWNER="@USER@", SYMLINK+="opengd77"

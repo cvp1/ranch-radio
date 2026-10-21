@@ -1,0 +1,8 @@
+certs/
+__pycache__/
+.venv/
+server.log
+ardop/build/
+packet-logs/
+hosts/.levels.lock
+hosts/.host.lock
