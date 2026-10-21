@@ -85,6 +85,8 @@ case "$cmd" in
     done
     check_message "$MSG"
     WORK=$(mktemp -d "${TMPDIR:-/tmp}/ranch-radio-public.XXXXXX")
+    KEEP=0                                # a dry run with changes keeps it to inspect
+    trap '[[ "$KEEP" == 1 ]] || rm -rf "$WORK"' EXIT
     git clone -q "$PUBLIC" "$WORK" || die "can't clone $PUBLIC"
     fill "$WORK"
     check_tree "$WORK"
@@ -99,6 +101,7 @@ case "$cmd" in
       git -C "$WORK" push -q origin HEAD || die "push failed"
       echo "Published: $(git -C "$WORK" log -1 --format=%h) on $PUBLIC"
     else
+      KEEP=1
       echo "Not pushed (dry run). Publish with: tools/export-public.sh sync -m \"$MSG\" --push"
       echo "(the checked commit is in $WORK)"
     fi

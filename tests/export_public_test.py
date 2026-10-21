@@ -50,7 +50,8 @@ hits = [str(p) for p in Path(sys.argv[1]).rglob("*") if p.is_file() and ".git" n
         and any(x.search(p.read_text(errors="replace")) for x in pats)]
 print("\\n".join(hits) or "clean"); sys.exit(1 if hits else 0)
 ''')
-env = dict(os.environ, RANCH_RADIO_CONFIG=str(conf), RANCH_RADIO_PUBLIC=str(public))
+(T / "tmp").mkdir()
+env = dict(os.environ, RANCH_RADIO_CONFIG=str(conf), RANCH_RADIO_PUBLIC=str(public), TMPDIR=str(T / "tmp"))
 script = str(dev / "tools/export-public.sh")
 
 
@@ -101,6 +102,12 @@ rc, out = sh("bash", script, "sync", "--from-head", "--push", env=env)
 check("--from-head: a personal subject becomes a generic message",
       (rc, public_log()[0].startswith("Update, "), WORD in " ".join(public_log())), (0, True, False))
 
+# temp clones: removed after a push or "current"; kept after a dry run with changes
+tmpdir = T / "tmpdir"
+tmpdir.mkdir()
+rc, out = sh("bash", script, "sync", env=dict(env, TMPDIR=str(tmpdir)))
+check("no leftover clone after a sync with nothing new", list(tmpdir.iterdir()), [])
+
 # fails closed
 (dev / "aprs.py").write_text((dev / "aprs.py").read_text() + f"\n# {WORD}\n")
 sh("git", "-C", str(dev), "commit", "-qam", "dev: a leak")
@@ -119,4 +126,6 @@ check("uncommitted changes: listed", "Not exported (uncommitted" in out and "REA
 check("  and not exported", "Not committed." in (public_file("README.md") or ""), False)
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
+import shutil  # noqa: E402
+shutil.rmtree(T, ignore_errors=True)
 sys.exit(1 if fails else 0)
