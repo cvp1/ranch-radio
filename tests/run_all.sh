@@ -3,6 +3,7 @@
 # Every tests/*_test.py once, plus the rig-specific second runs, plus the
 # Hamlib contract test for both rigs. Logs per run in $LOGDIR.
 #   bash tests/run_all.sh            (LOGDIR defaults to /tmp/rr-suite)
+#   RR_SKIP="a_test b_test" bash tests/run_all.sh   (skip those, by name)
 set -u
 cd "$(dirname "$0")/.."
 LOGDIR="${LOGDIR:-/tmp/rr-suite}"
@@ -22,6 +23,7 @@ run() {   # name, command...
 
 for t in tests/*_test.py; do
   name=$(basename "$t" .py)
+  [[ " ${RR_SKIP:-} " == *" $name "* ]] && { echo "SKIP $name"; continue; }
   py="$PY"
   [[ $name == uvpro_bridge_test && -x "$BENLINK" ]] && py="$BENLINK"
   run "$name" "$py" "$t"
