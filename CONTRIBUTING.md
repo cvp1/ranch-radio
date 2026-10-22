@@ -13,19 +13,14 @@ directly except the maintainer's own tooling.
    draft until it's ready.
 4. CI runs the full suite on every push to the pull request. It must be
    green before anything else happens.
-5. The maintainer reviews and approves. Approved pull requests are merged
-   automatically within about 15 minutes, after a final privacy check.
-   **Don't press Merge yourself**; the merge has to go through that check.
+5. Co-contributors merge their own pull request once CI is green (the
+   `tests` check is required; no approval is needed). Use **Create a merge
+   commit**, then delete the branch. Ask for a review when you want a
+   second pair of eyes, especially for installers, CI, the safety tests,
+   the web guard or station ID.
 
-Labels you may see:
-
-| Label | Meaning |
-|---|---|
-| `quick-review` | CI is green and the change is small; waiting on the maintainer's approval |
-| `careful-review` | It touches a sensitive area (installers, CI, safety tests, the web guard, station ID) or is large; it gets a closer look |
-| `needs-rebase` | It conflicts with `main`: rebase onto `main` and push again |
-
-A push after approval needs a fresh approval, so finish your edits first.
+If GitHub says the branch conflicts with `main`, rebase onto `main` and
+push again.
 
 ## Running the tests
 
