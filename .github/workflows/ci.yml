@@ -1,0 +1,41 @@
+# The test suite on every pull request (and every push to main).
+# Required to pass before a pull request can land. It runs with no secrets:
+# pull-request code never sees anything private.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main, "ci-*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System packages (Hamlib for the rigctl contract test)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libhamlib-utils
+      - name: Python packages
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r requirements.txt
+          python -m venv ~/.local/share/venvs/benlink
+          ~/.local/share/venvs/benlink/bin/pip install -q "benlink @ git+https://github.com/khusmann/benlink@c4b9d22112402ea193d376f412bc028d1778fdb4"
+      - name: Public hygiene
+        run: python tests/public_hygiene_test.py
+      - name: Test suite
+        env:
+          CHROME: /usr/bin/google-chrome
+          LOGDIR: ${{ runner.temp }}/rr-suite
+        run: bash tests/run_all.sh
+      - name: Logs of failed tests
+        if: failure()
+        run: for f in "$RUNNER_TEMP"/rr-suite/*.log; do grep -q . "$f" && { echo "::group::$(basename "$f")"; tail -40 "$f"; echo "::endgroup::"; }; done
