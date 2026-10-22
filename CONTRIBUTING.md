@@ -51,3 +51,5 @@ on `PATH`). The rigctl contract tests need Hamlib's `rigctld`.
 
 By contributing you agree your work is released under the repository's MIT
 license.
+
+<!-- lander smoke test; this pull request is closed unmerged -->
