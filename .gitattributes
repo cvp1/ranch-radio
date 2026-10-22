@@ -1,3 +1,0 @@
-# Never exported to the public repo (tools/export-public.sh uses git archive):
-# the workflow that publishes from here holds the deploy keys' secrets' names.
-.github/workflows/publish.yml export-ignore
