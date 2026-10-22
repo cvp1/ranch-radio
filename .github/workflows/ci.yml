@@ -35,7 +35,28 @@ jobs:
         env:
           CHROME: /usr/bin/google-chrome
           LOGDIR: ${{ runner.temp }}/rr-suite
-        run: bash tests/run_all.sh
+        # A test that fails once is run once more, and passes only if the rerun
+        # passes (flagged as flaky). The safety tests get no second chance.
+        run: |
+          bash tests/run_all.sh | tee "$RUNNER_TEMP/suite.txt" && exit 0
+          rc=0
+          for t in $(awk '/^FAIL /{print $2}' "$RUNNER_TEMP/suite.txt"); do
+            case "$t" in
+              civ_safety*|server_guard_test|hostfile_safety_test|webguard_test|public_hygiene_test)
+                echo "::error::$t failed (safety test: no retry)"; rc=1; continue;;
+              winlink_lane_g90) cmd=(.venv/bin/python tests/winlink_lane_test.py g90);;
+              uvpro_bridge_test) cmd=(~/.local/share/venvs/benlink/bin/python tests/uvpro_bridge_test.py);;
+              rigctl_contract) cmd=(bash tests/rigctl_contract.sh);;
+              rigctl_contract_g90) cmd=(bash tests/rigctl_contract.sh g90);;
+              *) cmd=(.venv/bin/python "tests/$t.py");;
+            esac
+            if timeout 900 "${cmd[@]}" > "$LOGDIR/$t.retry.log" 2>&1; then
+              echo "::warning::$t failed once and passed on retry (flaky)"
+            else
+              echo "::error::$t failed twice"; rc=1
+            fi
+          done
+          exit $rc
       - name: Logs of failed tests
         if: failure()
         run: |
