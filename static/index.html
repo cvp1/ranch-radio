@@ -171,6 +171,20 @@
       <span class="audio-level"><i id="audio-level"></i></span>
       <button class="chip chip-mini" id="btn-agc" title="Automatic gain: boost quiet audio to a steady level">AGC</button>
     </label>
+    <div class="txl" id="micl" hidden title="This device's microphone: its own gain, saved per mic">
+      <div class="txl-head">
+        <span class="label">Mic</span>
+        <select id="mic-dev" class="mic-dev" aria-label="Microphone"></select>
+      </div>
+      <div class="mic-meter" id="mic-meter" title="Speech level: aim for the marked band; the peak never passes the line (the test tone's peak)"><i></i><b></b><span class="mic-zone"></span></div>
+      <div class="txl-ctl">
+        <button class="chip chip-mini" id="micg-down" title="Mic gain 1 dB down" aria-label="Mic gain 1 dB down">−</button>
+        <span class="stat txl-val" id="micg-val"></span>
+        <button class="chip chip-mini" id="micg-up" title="Mic gain 1 dB up" aria-label="Mic gain 1 dB up">+</button>
+        <button class="chip chip-mini" id="mic-check" title="Talk normally for 5 seconds: sets this mic's gain">Mic check</button>
+      </div>
+      <div class="stat txl-note" id="mic-note" aria-live="polite"></div>
+    </div>
     <div class="txl" id="txl" hidden title="Transmit audio level into the radio, per band: Winlink while a session is armed, Voice while this page's PTT is held">
       <div class="txl-head">
         <span class="label">TX level</span>

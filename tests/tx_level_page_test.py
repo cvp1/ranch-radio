@@ -208,6 +208,46 @@ try:
         m2 = re.search(r"(\d+) kB of microphone audio sent \((\d+) kB arrived\)", text)
         check("the server logs what arrived and what it forwarded", bool(m2 and int(m2.group(1)) > 0), True)
         check("mic on is logged with the device", "page " in text and ": mic on: " in text, True)
+        check("the browser's own auto gain is off", "AGC false" in text, True)
+        lines = [l for l in text.splitlines() if "voice: page PTT released" in l]
+        m = re.search(r"audio (-?\d+) dBFS RMS \(peak (-?\d+|-inf)\)", lines[-1] if lines else "")
+        check("the mic's peak is held at or under the tone's -12 dBFS (the limiter)",
+              bool(m) and (m.group(2) == "-inf" or int(m.group(2)) <= -12), True)
+        check("the page ends the transmission with a level verdict", "voice level \"" in text, True)
+
+        print("\n# mic level: the row, the meter, the gain per device")
+        check("the mic row is shown with the mic on", b.js(f"({VISIBLE})('#micl')"), True)
+        check("the device list names the mic in use",
+              b.js("[...document.querySelectorAll('#mic-dev option')].some((o) => o.value === micLevel.label)"), True)
+        b.wait("!!micLevel.lvl")
+        check("the meter gets levels", b.js("typeof micLevel.lvl.rms"), "number")
+        if SHOTS:
+            b.js("document.querySelector('#micl').scrollIntoView({block: 'center'})")
+            b.screenshot(os.path.join(SHOTS, "mic-row.png"))
+        g0 = b.js("micLevel.gainDb")
+        b.js("document.querySelector('#micg-up').click(); document.querySelector('#micg-up').click()")
+        check("+ raises the gain 1 dB a press", b.js("micLevel.gainDb"), g0 + 2)
+        check("kept for this mic", b.js("micLevel.profile(micLevel.label).gainDb"), g0 + 2)
+        check("another mic keeps its own (none yet)", b.js("micLevel.profile('Apple EarPods')"), None)
+        b.js("document.querySelector('#micg-down').click(); document.querySelector('#micg-down').click()")
+        # The analysis, on known levels: speech is the power mean above the gate.
+        a = b.js("micLevel.analyse([...Array(20).fill({rms: -30, peak: -14, gr: 0}), "
+                 "...Array(10).fill({rms: -70, peak: -60, gr: 0})])")
+        check("analyse: 2 s of speech at -30 dBFS, floor -70",
+              (a["speechS"], round(a["rms"]), a["floor"], a["limiting"]), (2, -30, -70, 0))
+        b.js("micLevel.tx = [...Array(30).fill({rms: -40, peak: -30, gr: 0})]; micLevel.txDone()")
+        check("verdict: quiet", "quiet" in b.js(f"({TEXT})('#mic-note')"), True)
+        b.js("micLevel.tx = [...Array(30).fill({rms: -16, peak: -12, gr: 9})]; micLevel.txDone()")
+        check("verdict: hot", "hot" in b.js(f"({TEXT})('#mic-note')"), True)
+        b.js("micLevel.tx = [...Array(30).fill({rms: -24, peak: -12, gr: 1})]; micLevel.txDone()")
+        check("verdict: good", b.js(f"({TEXT})('#mic-note')"), "Last transmission: good level (-24 dBFS).")
+        print("\n# Mic check: the gain that puts this speech at -24 dBFS")
+        b.js("micLevel.CHECK_S = 1; micLevel.check(); "
+             "setTimeout(() => { micLevel.checking = Array(10).fill({rms: -34, peak: -20, gr: 0}); }, 300)")
+        b.wait("!document.querySelector('#mic-check').disabled && micLevel.checking === null", timeout=5)
+        check("speech at -34 with gain 0: gain +10 dB", b.js("micLevel.gainDb"), g0 + 10)
+        check("saved as checked", bool(b.js("micLevel.profile(micLevel.label).checked")), True)
+        b.js("micLevel.step(-10)")
 
         print("\n# test tone: a steady 1 kHz instead of the mic, measured in the log")
         b.js("document.querySelector('#txl-tone').click()")

@@ -816,21 +816,29 @@ const audio = {
       return false;
     }
     if (!this.ctx) { await this.start(); setListen(true); }
-    this.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+    this.micStream = await micLevel.open();
     this.resume();
     const src = this.ctx.createMediaStreamSource(this.micStream);
     this.mic = new AudioWorkletNode(this.ctx, "mic-capture");
+    // Speech band only: rumble, wind and handling noise below, and nothing above
+    // what SSB carries (also the anti-alias for the 16 kHz the radio gets).
+    const hp = new BiquadFilterNode(this.ctx, { type: "highpass", frequency: 150, Q: 0.707 });
+    const lp = new BiquadFilterNode(this.ctx, { type: "lowpass", frequency: 2900, Q: 0.707 });
     const sink = this.ctx.createGain(); sink.gain.value = 0;
-    src.connect(this.mic).connect(sink).connect(this.ctx.destination);
+    src.connect(hp).connect(lp).connect(this.mic).connect(sink).connect(this.ctx.destination);
     this.micFrames = 0; this.micSent = 0;
     this.mic.port.onmessage = (e) => {
+      if (!(e.data instanceof ArrayBuffer)) { micLevel.report(e.data.lvl); return; }
       this.micFrames++;
       if (this.tone) return;                           // the test tone goes out instead
       if (pttHeld && S.tx && this.ws && this.ws.readyState === 1) { this.ws.send(e.data); this.micSent++; }
     };
     const t = this.micStream.getAudioTracks()[0];
+    micLevel.attach(t, this.mic);
+    const st = t && t.getSettings ? t.getSettings() : {};
     pageLog(`mic on: "${t ? t.label : "no track"}" ${t ? t.readyState : ""}${t && t.muted ? " MUTED" : ""}, ` +
+      `gain ${micLevel.gainDb} dB, AGC ${st.autoGainControl}, echo cancel ${st.echoCancellation}, ` +
+      `noise suppr ${st.noiseSuppression}, ` +
       `audio ${this.ctx.state} ${this.ctx.sampleRate} Hz, socket ${this.ws ? this.ws.readyState : "none"}`);
     return true;
   },
@@ -843,7 +851,7 @@ const audio = {
     this.resume();
     const osc = this.ctx.createOscillator(); osc.frequency.value = 1000;
     const g = this.ctx.createGain(); g.gain.value = 0.25;
-    const node = new AudioWorkletNode(this.ctx, "mic-capture");
+    const node = new AudioWorkletNode(this.ctx, "mic-capture", { processorOptions: { raw: true } });
     const sink = this.ctx.createGain(); sink.gain.value = 0;
     osc.connect(g).connect(node).connect(sink).connect(this.ctx.destination);
     osc.start();
@@ -880,6 +888,7 @@ const audio = {
     pageLog(`voice${this.tone ? " (test tone)" : ""}: mic frames ${this.micFrames}, sent ${this.micSent}; track ${t ? t.readyState : "none"}` +
       `${t && t.muted ? " MUTED" : ""}; audio ${this.ctx ? this.ctx.state : "none"}; socket ` +
       `${this.ws ? this.ws.readyState : "none"}; S.tx ${!!S.tx}`);
+    if (!this.tone) micLevel.txDone();
     this.micFrames = 0; this.micSent = 0;
   },
 
@@ -887,6 +896,197 @@ const audio = {
     if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
     if (this.mic) this.mic.disconnect();
     this.mic = null; this.micStream = null;
+    micLevel.attach(null, null);
+  },
+};
+
+// ============================================================ mic level
+
+// The page's mic, per device. Each mic (its browser label: a PC's headset jack,
+// Apple EarPods, the built-in mic) keeps its own gain, so speech arrives at the
+// level the TX level was set for with the test tone: about TARGET dBFS RMS, its
+// peaks held at CEIL (the tone's peak) by the limiter in worklet.js. The
+// browser's own auto gain is off: it rides up in pauses and swings the level
+// under the radio's ALC. Echo cancellation only for a built-in mic, which can
+// hear the speaker; on a headset it only garbles. Mic check sets the gain from
+// 5 s of normal speech; every page transmission ends with a verdict.
+const micLevel = {
+  TARGET: -24, CEIL: -12, MIN: -20, MAX: 30, CHECK_S: 5,
+  GATE: -50,                 // dBFS after gain: quieter is a pause, not speech
+  gainDb: 0, label: "", node: null, track: null, lvl: null, checking: null, tx: null,
+
+  db: (x) => (x > 0 ? 20 * Math.log10(x) : -120),
+  profiles() { return store.get("micProfiles", {}); },
+  profile(label) { return this.profiles()[label || "default"] || null; },
+  saveProfile(label, p) {
+    const all = this.profiles(); all[label || "default"] = { ...(all[label || "default"] || {}), ...p };
+    store.set("micProfiles", all);
+  },
+  builtIn: (label) => /built-?in|internal|macbook|imac|mac mini|studio display|webcam|camera|array/i.test(label || ""),
+  bluetooth: (label) => /airpods|bluetooth|hands-?free|\bhfp\b|\bbt\b/i.test(label || ""),
+
+  // getUserMedia for the chosen mic, falling back to the default if it is gone.
+  async open() {
+    const want = store.get("micDevice", "");
+    let id;
+    if (want && navigator.mediaDevices.enumerateDevices) {
+      const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+      const d = devs.find((x) => x.label === want);
+      id = d && d.deviceId;
+      if (!d && devs.some((x) => x.label)) toast(`"${want}" isn't connected: using the default mic.`, "warn");
+    }
+    const ec = this.builtIn(want);
+    const c = (deviceId) => ({ audio: { ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      echoCancellation: ec, noiseSuppression: true, autoGainControl: false, channelCount: 1 } });
+    try { return await navigator.mediaDevices.getUserMedia(c(id)); }
+    catch (e) {
+      if (!id) throw e;
+      pageLog(`mic: "${want}" failed (${e.name}), using the default`);
+      return navigator.mediaDevices.getUserMedia(c(undefined));
+    }
+  },
+
+  attach(track, node) {
+    this.track = track; this.node = node; this.lvl = null; this.checking = null; this.tx = null;
+    if (track) {
+      this.label = track.label || "default";
+      const p = this.profile(this.label);
+      this.gainDb = p ? p.gainDb : 0;
+      this.send();
+      track.onended = () => {
+        toast(`The mic "${this.label}" went away (unplugged?). Mic is off.`, "warn");
+        audio.micOff(); on($("#btn-mic"), false); renderTx();
+      };
+      if (this.bluetooth(this.label))
+        toast("A Bluetooth mic sends narrow phone-call audio and adds delay. A wired mic sounds clearer on the air.", "warn");
+      if (this.builtIn(this.label) && CFG.audio)
+        toast("Built-in mic: it hears the room and the speaker. A headset mic is clearer.", "info");
+      this.devices();
+    }
+    this.render();
+  },
+
+  async devices() {
+    const sel = $("#mic-dev");
+    if (!navigator.mediaDevices.enumerateDevices) return;
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" && d.label);
+    const seen = new Set();
+    sel.replaceChildren(...devs.filter((d) => !seen.has(d.label) && seen.add(d.label)).map((d) => {
+      const o = document.createElement("option");
+      o.value = d.label;
+      const p = this.profile(d.label);
+      o.textContent = d.label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)$/i, "") + (p && p.checked ? "" : " (not checked)");
+      return o;
+    }));
+    sel.value = this.label;
+  },
+
+  async choose(label) {
+    store.set("micDevice", label);
+    if (!audio.mic) return;
+    audio.micOff();
+    try { if (await audio.micOn()) on($("#btn-mic"), true); }
+    catch (e) { toast(`Microphone: ${e.message}`, "warn"); on($("#btn-mic"), false); }
+    renderTx();
+  },
+
+  send() { if (this.node) this.node.port.postMessage({ gainDb: this.gainDb }); },
+
+  step(d) {
+    this.gainDb = clamp(this.gainDb + d, this.MIN, this.MAX);
+    this.saveProfile(this.label, { gainDb: this.gainDb });
+    this.send(); this.render();
+  },
+
+  // One 100 ms report from the worklet: the mic's own RMS and peak (before
+  // gain) and the limiter's deepest gain (1 = not limiting).
+  report(l) {
+    const r = { rms: this.db(l.rms) + this.gainDb, peak: this.db(l.peak) + this.gainDb, gr: -this.db(l.lim) };
+    this.lvl = r;
+    if (this.checking && this.checking.length < this.CHECK_S * 10) this.checking.push(r);
+    if (this.tx && pttHeld && S.tx && this.tx.length < 3000) this.tx.push(r);   // 5 min cap
+  },
+
+  // Speech level of a run of reports: power mean over the speech, not the pauses.
+  analyse(reps) {
+    const speech = reps.filter((r) => r.rms > this.GATE);
+    const quiet = reps.filter((r) => r.rms <= this.GATE).map((r) => r.rms).sort((a, b) => a - b);
+    if (!speech.length) return { speechS: 0 };
+    const p = speech.reduce((a, r) => a + 10 ** (r.rms / 10), 0) / speech.length;
+    return {
+      speechS: speech.length / 10, rms: 10 * Math.log10(p),
+      peak: Math.max(...speech.map((r) => r.peak)),
+      limiting: speech.filter((r) => r.gr > 3).length / speech.length,
+      floor: quiet.length ? quiet[quiet.length >> 1] : null,
+    };
+  },
+
+  async check() {
+    if (!this.node) return;
+    const btn = $("#mic-check");
+    btn.disabled = true;
+    this.checking = [];
+    this.note(`Talk now, as you would on the air, for ${this.CHECK_S} seconds…`);
+    await new Promise((r) => setTimeout(r, this.CHECK_S * 1000 + 200));
+    const reps = this.checking || []; this.checking = null;
+    btn.disabled = false;
+    const a = this.analyse(reps);
+    if (a.speechS < 1) {
+      this.note(`Heard almost nothing from "${this.label}". Is it the right mic, unmuted, and close to your mouth?`, "warn");
+      pageLog(`mic check "${this.label}": no speech (${a.speechS} s)`);
+      return;
+    }
+    const was = this.gainDb;
+    this.gainDb = clamp(Math.round(was + this.TARGET - a.rms), this.MIN, this.MAX);
+    this.saveProfile(this.label, { gainDb: this.gainDb, checked: new Date().toISOString().slice(0, 10) });
+    this.send(); this.devices();
+    const pinned = this.gainDb === this.MAX ? " That is the most gain there is: this mic is very quiet, move it closer." :
+      this.gainDb === this.MIN ? " That is the least gain there is: this mic is very hot." : "";
+    const noisy = a.floor != null && a.rms - a.floor < 20
+      ? ` Background noise is only ${Math.round(a.rms - a.floor)} dB under your voice: quieter room or closer mic.` : "";
+    this.note(`Checked: gain ${was} → ${this.gainDb} dB for "${this.label}".${pinned}${noisy}`, pinned || noisy ? "warn" : "");
+    pageLog(`mic check "${this.label}": speech ${a.rms.toFixed(1)} dBFS at ${was} dB, gain now ${this.gainDb} dB` +
+      `${a.floor != null ? `, floor ${a.floor.toFixed(0)}` : ""}`);
+  },
+
+  txStart() { this.tx = this.node ? [] : null; },
+
+  // After a page transmission with the mic: was it heard clearly?
+  txDone() {
+    const reps = this.tx; this.tx = null;
+    if (!reps || reps.length < 5) return;
+    const a = this.analyse(reps);
+    let msg, warn = true;
+    if (a.speechS < 0.5) msg = "Last transmission: almost no speech reached the radio. Check the mic, or run Mic check.";
+    else if (a.rms < this.TARGET - 8) msg = `Last transmission was quiet (${Math.round(a.rms)} dBFS). Raise the mic gain or run Mic check.`;
+    else if (a.limiting > 0.3) msg = `Last transmission was hot: limited ${Math.round(a.limiting * 100)}% of the time. Lower the mic gain or back off the mic.`;
+    else { msg = `Last transmission: good level (${Math.round(a.rms)} dBFS).`; warn = false; }
+    this.note(msg, warn ? "warn" : "");
+    pageLog(`voice level "${this.label}": speech ${a.speechS} s at ${a.rms != null ? a.rms.toFixed(1) : "-"} dBFS, ` +
+      `limiting ${Math.round((a.limiting || 0) * 100)}%, gain ${this.gainDb} dB`);
+  },
+
+  note(msg, cls = "") {
+    const n = $("#mic-note");
+    n.textContent = msg; n.className = `stat txl-note ${cls}`;
+  },
+
+  render() {
+    $("#micl").hidden = !this.node;
+    $("#micg-val").textContent = `${this.gainDb > 0 ? "+" : ""}${this.gainDb} dB`;
+    $("#micg-down").disabled = this.gainDb <= this.MIN;
+    $("#micg-up").disabled = this.gainDb >= this.MAX;
+  },
+
+  // Every animation frame: the meter, -60..0 dBFS, the target band marked.
+  draw() {
+    if (!this.node) return;
+    const l = this.lvl, pct = (d) => clamp((d + 60) / 60 * 100, 0, 100);
+    const bar = $("#mic-meter i"), pk = $("#mic-meter b");
+    if (!l) { bar.style.width = "0"; pk.style.left = "0"; return; }
+    bar.style.width = `${pct(l.rms)}%`;
+    pk.style.left = `${pct(Math.min(l.peak, this.CEIL))}%`;
+    bar.className = l.gr > 6 ? "hot" : l.rms > this.GATE && l.rms < this.TARGET - 8 ? "low" : "";
   },
 };
 
@@ -1005,6 +1205,7 @@ function pttDown() {
   const mic = !!audio.mic || !!audio.tone;
   if (!mic && CFG.audio) toast("Mic is off: this page sends no audio, the radio's own mic is used. Turn Mic on to talk from here.", "warn");
   send({ t: "set", k: "tx", v: true, mic });
+  if (audio.mic && !audio.tone) micLevel.txStart();
   // Dead-man keep-alive: the server unkeys if these stop.
   pttKeepalive = setInterval(() => send({ t: "set", k: "tx", v: true, mic }), 500);
 }
@@ -1245,6 +1446,11 @@ function buildControls() {
     }
     renderTx();
   };
+  $("#mic-dev").onchange = (e) => micLevel.choose(e.target.value);
+  $("#micg-down").onclick = () => micLevel.step(-1);
+  $("#micg-up").onclick = () => micLevel.step(+1);
+  $("#mic-check").onclick = () => micLevel.check();
+  if (navigator.mediaDevices) navigator.mediaDevices.ondevicechange = () => { if (audio.mic) micLevel.devices(); };
   const agcBtn = $("#btn-agc");
   on(agcBtn, store.get("agc", true));
   agcBtn.onclick = () => { const v = !store.get("agc", true); audio.setAgc(v); on(agcBtn, v); };
@@ -1312,5 +1518,6 @@ setInterval(() => {
   renderMeters();
   tickTx();
   $("#audio-level").style.width = `${clamp(audio.level * 400, 0, 100)}%`;
+  micLevel.draw();
   requestAnimationFrame(frame);
 })();

@@ -310,6 +310,15 @@ body.tx .tx-meters { opacity: 1; }
 .txl-val.unsaved::after { content: " •"; color: #f5a524; }
 .txl-note { font-size: 11px; min-height: 14px; text-align: center; }
 .txl-note.warn { color: #f5a524; }
+.mic-dev { flex: 1; min-width: 0; max-width: 70%; height: 24px; font-size: 11px; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 6px; }
+.mic-meter { position: relative; height: 8px; border-radius: 4px; background: rgba(255,255,255,.07); overflow: hidden; }
+.mic-meter i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #3ecf8e; }
+.mic-meter i.low { background: #8a8f98; }
+.mic-meter i.hot { background: #f5a524; }
+.mic-meter b { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .7; }
+/* target speech band -32..-18 dBFS, ceiling at -12, on a -60..0 scale */
+.mic-zone { position: absolute; top: 0; bottom: 0; left: 46.7%; width: 23.3%; border-left: 1px dashed rgba(255,255,255,.35); border-right: 1px dashed rgba(255,255,255,.35); }
+.mic-meter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 80%; width: 1px; background: #e5484d; }
 .audio-level { width: 36px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.07); overflow: hidden; }
 .audio-level i { display: block; height: 100%; width: 0; background: var(--accent); }
 

@@ -53,18 +53,44 @@ class RxPlayer extends AudioWorkletProcessor {
   }
 }
 
+// Mic capture: 16 kHz 20 ms frames for the radio. The mic (not the test tone,
+// which is raw) gets this device's gain, then a peak limiter at CEIL: the same
+// -12 dBFS peak as the test tone the TX level is set with, so speech never
+// drives the radio harder than that calibration (louder only fills it in).
+// Reports the level every 100 ms for the page's meter and Mic check.
+const CEIL = 10 ** (-12 / 20);
+
 class MicCapture extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
+    this.raw = !!(options && options.processorOptions && options.processorOptions.raw);
     this.ratio = sampleRate / NET_RATE;
     this.acc = 0; this.cnt = 0; this.t = 0;
     this.out = new Int16Array(320); this.o = 0;   // 20 ms frames
+    this.gain = 1; this.lim = 1;
+    this.release = 1 - Math.exp(-1 / (sampleRate * 0.15));     // 150 ms back to unity
+    this.rSq = 0; this.rPk = 0; this.rMin = 1; this.rN = 0; this.rEvery = (sampleRate / 10) | 0;
+    this.port.onmessage = (e) => { if ("gainDb" in e.data) this.gain = 10 ** (e.data.gainDb / 20); };
   }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
     if (!ch) return true;
     for (let i = 0; i < ch.length; i++) {
-      this.acc += ch[i]; this.cnt++; this.t += 1;
+      let x = ch[i];
+      if (!this.raw) {
+        const a = Math.abs(x);
+        this.rSq += x * x; if (a > this.rPk) this.rPk = a;    // the mic itself, before gain
+        x *= this.gain;
+        const want = Math.abs(x) > CEIL ? CEIL / Math.abs(x) : 1;
+        this.lim = want < this.lim ? want : this.lim + (1 - this.lim) * this.release;
+        x = Math.max(-CEIL, Math.min(CEIL, x * this.lim));
+        if (this.lim < this.rMin) this.rMin = this.lim;
+        if (++this.rN >= this.rEvery) {
+          this.port.postMessage({ lvl: { rms: Math.sqrt(this.rSq / this.rN), peak: this.rPk, lim: this.rMin } });
+          this.rSq = 0; this.rPk = 0; this.rMin = 1; this.rN = 0;
+        }
+      }
+      this.acc += x; this.cnt++; this.t += 1;
       if (this.t >= this.ratio) {
         this.t -= this.ratio;
         const v = this.acc / this.cnt;
