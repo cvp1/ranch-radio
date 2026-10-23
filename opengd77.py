@@ -106,8 +106,10 @@ def find_port(usb_id=USB_ID):
                     return "/dev/" + os.path.basename(tty)
         return None
     try:                                                      # macOS (absolute: launchd's PATH has no /usr/sbin)
+        # errors="replace": ioreg prints some properties raw (a USB network
+        # adapter's IOMACAddress), and those bytes need not be UTF-8
         out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOUSBHostDevice", "-l", "-w0"],
-                             capture_output=True, text=True, timeout=5).stdout
+                             capture_output=True, text=True, errors="replace", timeout=5).stdout
     except (OSError, subprocess.SubprocessError) as e:      # not "no radio": say what broke
         raise OpenGD77Error(f"USB lookup failed (ioreg): {e}")
     return _mac_port(out, vid, pid)

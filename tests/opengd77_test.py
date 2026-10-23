@@ -101,7 +101,16 @@ try:
     lookup = "no error" if not os.path.isdir("/sys/class/tty") else "skipped on Linux"
 except g.OpenGD77Error as e:
     lookup = str(e)
+raw_mac = b'    | |   "IOMACAddress" = <"N$8-\xdfH">\n' + IOREG.encode()
+def ioreg_raw_bytes(cmd, **k):                # what ioreg prints: decoded the way the caller asked
+    return g.subprocess.CompletedProcess(cmd, 0, raw_mac.decode(errors=k.get("errors") or "strict"), "")
+g.subprocess.run = ioreg_raw_bytes
+try:
+    found = g.find_port() if not os.path.isdir("/sys/class/tty") else "/dev/cu.usbmodem4A2B1"
+except ValueError as e:
+    found = f"{type(e).__name__}: {e}"
 g.subprocess.run = real_run
+check("non-UTF-8 bytes elsewhere in ioreg (a MAC address) don't hide the radio", found, "/dev/cu.usbmodem4A2B1")
 check("a broken USB lookup says so (not 'no radio')",
       lookup.startswith("USB lookup failed") or lookup == "skipped on Linux", True)
 r = g.OpenGD77("auto")
