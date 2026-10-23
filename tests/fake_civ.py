@@ -139,15 +139,21 @@ class FakeCiv:
         return self
 
     def stop(self):
+        # Queued replies are dropped, not answered: with an ack delay a slow
+        # machine can hold a backlog longer than any join timeout, and a reply
+        # thread still running after the close below would write into the
+        # next fake, which gets the same fd numbers (a stale "transmitting"
+        # reply made civ_safety_test's F2 split check flaky on CI).
         self._stop.set()
         self._work.put(None)
         for th in self._threads:
-            th.join(timeout=2)
-        for fd in (self.master, self._slave):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+            th.join(timeout=5)
+        with self.lock:                 # _send writes only under the lock, after checking _stop
+            for fd in (self.master, self._slave):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     # -- wire --
 
@@ -157,6 +163,8 @@ class FakeCiv:
             r, _, _ = select.select([self.master], [], [], 0.1)
             if not r:
                 continue
+            if self._stop.is_set():
+                break
             try:
                 chunk = os.read(self.master, 4096)
             except OSError:
@@ -184,18 +192,23 @@ class FakeCiv:
 
     def _send(self, cmd, data=b""):
         frame = b"\xfe\xfe" + bytes([CTRL, self.addr, cmd]) + data + b"\xfd"
-        try:
-            os.write(self.master, frame)
-        except OSError:
-            pass
+        with self.lock:
+            if self._stop.is_set():
+                return                  # stopped: the fd may already belong to another pty
+            try:
+                os.write(self.master, frame)
+            except OSError:
+                pass
 
     def _worker(self):
         while True:
             f = self._work.get()
-            if f is None:
+            if f is None or self._stop.is_set():
                 return
             if self.ack_delay_s:
                 time.sleep(self.ack_delay_s)
+                if self._stop.is_set():
+                    return
             try:
                 self._answer(f)
             except Exception as e:   # a bad frame must not kill the fake
