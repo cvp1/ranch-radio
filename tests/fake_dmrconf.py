@@ -59,6 +59,14 @@ elif args and args[0] == "read":
 elif args and args[0] == "verify":
     if os.path.exists(os.path.join(d, "crash")):           # qdmr 0.15.1 with openuv380
         _log()
+        # A deliberate crash: leave no core, so systemd-coredump (and Omarchy's
+        # crash watcher on top of it) never sees it. PR_SET_DUMPABLE=0 stops even
+        # a piped core_pattern, which ignores RLIMIT_CORE; the rlimit covers macOS.
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if sys.platform.startswith("linux"):
+            import ctypes
+            ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)             # PR_SET_DUMPABLE, 0
         os.kill(os.getpid(), signal.SIGSEGV)
     with open(args[-1]) as f:
         if "BAD" in f.read():
