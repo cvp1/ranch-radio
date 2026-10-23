@@ -147,6 +147,23 @@ def wait_for(pred, timeout=4.0, step=0.05):
     return pred()
 
 
+def settled_on(c, fake, hz, hold_s=1.5, timeout=12.0):
+    """Wait until the radio and the server both say `hz`, and keep saying it
+    for `hold_s`. With an ack delay, a poll reply queued before an F set
+    lands after it and puts the old frequency back for a moment (the server
+    then restores it); a fixed sleep raced that on CI's Linux runners."""
+    end, since = time.monotonic() + timeout, None
+    while time.monotonic() < end:
+        if fake.state["freq"] == hz and c.cmd("f") == [str(hz)]:
+            since = since or time.monotonic()
+            if time.monotonic() - since >= hold_s:
+                return True
+        else:
+            since = None
+        time.sleep(0.1)
+    return False
+
+
 def keyed_retunes(seq):
     """Frequency sets written while the wire says the radio is keyed."""
     keyed, bad = False, []
@@ -293,7 +310,7 @@ def test_f2_split_hop_order():
         c.cmd("S 1 VFOB")
         c.cmd("F 7074000")
         c.cmd("I 7076000")
-        time.sleep(1.5)
+        check("RX settled on 7074000 before keying", settled_on(c, r.fake, 7074000), True)
         m = r.fake.mark()
         check("burst replies", c.burst(["T 1", "T 0", "I 7075000", "T 1"]), ["RPRT 0"] * 4)
         time.sleep(1.5)
