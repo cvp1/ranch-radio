@@ -35,10 +35,7 @@ jobs:
         env:
           CHROME: /usr/bin/google-chrome
           LOGDIR: ${{ runner.temp }}/rr-suite
-        # The OpenGD77 codeplug test exercises one maintainer-owned handheld
-        # (MD-UV380 on OpenGD77) and is timing-sensitive on CI runners; it
-        # still runs in the full local suite on the radio hosts.
-        run: RR_SKIP="opengd77_codeplug_test" bash tests/run_all.sh
+        run: bash tests/run_all.sh
       - name: Logs of failed tests
         if: failure()
         run: |

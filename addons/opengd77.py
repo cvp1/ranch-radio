@@ -65,6 +65,7 @@ Config (station.json "addons", or the host file's "addons" on a Mac):
 
 import asyncio
 import base64
+import functools
 import logging
 import os
 import time
@@ -126,6 +127,7 @@ class OpenGD77Addon(Addon):
         self.memory_dir = os.path.join(self.codeplugs, "memory")
         self.restart_wait = float(opts.get("restart_wait", RESTART_WAIT_S))
         self.last_change = None      # what the last change did: {at, msg, ok}
+        self._inflight = set()       # the watch's radio calls still running in a thread
         self._reset()
 
     def _reset(self):
@@ -141,6 +143,22 @@ class OpenGD77Addon(Addon):
         self.now = None              # what the radio's screen says it is on (opengd77_screen.state)
         self._now_at = 0.0
 
+    async def _watch_call(self, fn, *args):
+        """A blocking radio call from the watch, in a thread. Cancelling the
+        watch stops the waiting, not the call: the thread runs on. A job
+        must not take the port until it returns (_settle), or a late
+        open() reopens or drains the port under the job and eats its
+        replies (2026-10-23: the drain swallowed a 19-byte reply)."""
+        fut = asyncio.get_running_loop().run_in_executor(None, functools.partial(fn, *args))
+        self._inflight.add(fut)
+        fut.add_done_callback(self._inflight.discard)
+        return await asyncio.shield(fut)
+
+    async def _settle(self):
+        """Wait for every watch call still running in its thread to return."""
+        while self._inflight:
+            await asyncio.wait(set(self._inflight))
+
     async def start(self):
         self._reset()
         self.task = asyncio.ensure_future(self._supervise())
@@ -153,6 +171,7 @@ class OpenGD77Addon(Addon):
             except (asyncio.CancelledError, Exception):
                 pass
             self.task = None
+        await self._settle()
         await asyncio.to_thread(self._close)
         self._reset()
 
@@ -163,22 +182,22 @@ class OpenGD77Addon(Addon):
     async def _supervise(self):
         while True:
             try:
-                await asyncio.to_thread(self.radio.open)
-                self.info = await asyncio.to_thread(self.radio.info)
+                await self._watch_call(self.radio.open)
+                self.info = await self._watch_call(self.radio.info)
                 log.info("%s: %s, firmware %s built %s", self.radio.port, self.info["model"],
                          self.info["revision"], self.info["built"])
                 self.connected, self.error = True, None
                 self._emit_status()
                 self.emit({"info": self.info})
                 try:
-                    self.layout = await asyncio.to_thread(self.radio.layout)
+                    self.layout = await self._watch_call(self.radio.layout)
                 except (OSError, OpenGD77Error, ValueError) as e:
                     self.layout = None
                     log.warning("%s: channel and zone tables not read: %s", self.radio.port, e)
                 self.emit({"layout": self._layout_out()})
                 await self._read_memory()
                 while True:
-                    vfos = await asyncio.to_thread(self.radio.vfos)
+                    vfos = await self._watch_call(self.radio.vfos)
                     self.read_at = time.time()
                     if vfos != self.vfos:
                         self.vfos = vfos
@@ -194,7 +213,7 @@ class OpenGD77Addon(Addon):
                     log.warning("%s: %s", self.radio.port, why)
                 self.connected, self.error = False, why
                 self._emit_status()
-            await asyncio.to_thread(self._close)
+            await self._watch_call(self._close)
             await asyncio.sleep(RETRY_S)
 
     async def _read_now(self, raw=None):
@@ -202,7 +221,7 @@ class OpenGD77Addon(Addon):
         zone, channel and power over USB). Sent to pages when it changes."""
         self._now_at = time.monotonic()
         if raw is None:
-            raw = await asyncio.to_thread(self.radio.screen)
+            raw = await self._watch_call(self.radio.screen)
         now = await asyncio.to_thread(opengd77_screen.state, opengd77_screen.pixels(raw), self.layout)
         now["at"] = time.time()
         if {k: v for k, v in now.items() if k != "at"} != {k: v for k, v in (self.now or {}).items() if k != "at"}:
@@ -392,6 +411,7 @@ class OpenGD77Addon(Addon):
             except (asyncio.CancelledError, Exception):
                 pass
             self.task = None
+        await self._settle()                           # the watch's last call has returned
         await asyncio.to_thread(self._close)
         self.connected = False
         self._emit_status()
@@ -630,7 +650,7 @@ class OpenGD77Addon(Addon):
         old value until a Refresh or a change."""
         why = self._why_not_control()
         try:
-            raw = await asyncio.to_thread(self.radio.memory)
+            raw = await self._watch_call(self.radio.memory)
             same = raw == self._raw and bool((self.control or {}).get("saved"))   # just saved (a change, Refresh)
             self.control = self._memory_view(raw, same)
         except (OSError, OpenGD77Error, ValueError) as e:
