@@ -4,6 +4,9 @@
 #   bash tests/flake_hunt.sh                  4 runners x 2 passes, 2 CPUs each
 #   RUNNERS=4 PASSES=3 CPUS=2 MEMORY=1800m bash tests/flake_hunt.sh
 #   ONLY="civ_safety_test opengd77_codeplug_test" bash tests/flake_hunt.sh
+# ONLY picks tests by skipping the rest (RR_SKIP); it is NOT passed into the
+# container, where some tests read ONLY as their own scenario filter and a
+# test name matches no scenario: they ran nothing and said PASS (2026-10-23).
 # Needs Docker. The checkout is mounted read-only and copied into each
 # container, so nothing here touches the working tree. Exit 0 only when
 # every pass of every test passed: that, not one green CI run, is the bar.
@@ -21,7 +24,7 @@ if [[ -n "${ONLY:-}" ]]; then
 fi
 for r in $(seq "$RUNNERS"); do
     docker run --rm --cpus "$CPUS" --memory "$MEMORY" -v "$PWD":/src:ro -v "$OUT":/out \
-        -e PASSES="$PASSES" -e RUNNER="$r" -e RR_SKIP="${names} ${RR_SKIP:-}" -e ONLY="${ONLY:-}" "$IMAGE" bash -c '
+        -e PASSES="$PASSES" -e RUNNER="$r" -e RR_SKIP="${names} ${RR_SKIP:-}" "$IMAGE" bash -c '
         cp -r /src ~/work && rm -rf ~/work/.venv && ln -s ~/venv ~/work/.venv && cd ~/work
         for p in $(seq "$PASSES"); do
             LOGDIR=/out/r$RUNNER-p$p bash tests/run_all.sh > /out/r$RUNNER-p$p.txt 2>&1

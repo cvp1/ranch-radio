@@ -1305,9 +1305,14 @@ TESTS = [test_f1_sigterm_while_keyed, test_f1_unit_unkey_then_stop,
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY")
+    ran = 0
     for t in TESTS:
         if only and only not in t.__name__:
             continue
+        ran += 1
         t()
+    # A filter that matches nothing must not read as a pass (a gate that ran
+    # nothing said PASS, 2026-10-23).
+    check_true(f"ONLY={only!r} selects at least one scenario", ran > 0, "")
     print("\nPASS" if not fails else f"\n{fails} FAILED")
     sys.exit(1 if fails else 0)
