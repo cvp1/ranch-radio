@@ -42,9 +42,11 @@ class FakeQmx:
     # -- control --
 
     def inject(self, **kv):
-        """A change made at the radio's own front panel."""
+        """A change made at the radio's own front panel. Returns a mark taken
+        after it: every reply computed after the mark carries the change."""
         with self.lock:
             self.state.update(kv)
+        return time.monotonic()
 
     # -- queries --
 
@@ -59,6 +61,32 @@ class FakeQmx:
 
     def mark(self):
         return time.monotonic()
+
+    def count(self, cmd=None, since=0.0):
+        """How many commands (all, or one kind: "IF", "SW") arrived after
+        `since`. Each is answered as it is recorded, so a read counted here
+        was answered with the state as of then."""
+        with self.lock:
+            return sum(1 for t, c in self.cmds if t >= since and (cmd is None or c == cmd))
+
+    def quiesce(self, quiet_s=0.3, timeout=10.0):
+        """Wait until nothing is left in the pty to read and no command has
+        arrived for quiet_s: everything the server wrote is recorded. Use
+        after the server exits (its last writes may still be in the pty) and
+        before a 'nothing was written' check."""
+        end = time.monotonic() + timeout
+        last, since = -1, time.monotonic()
+        while time.monotonic() < end:
+            with self.lock:
+                n = len(self.cmds) + len(self.raw)
+            readable = (not self._stop.is_set()
+                        and bool(select.select([self.master], [], [], 0)[0]))
+            if n != last or readable:
+                last, since = n, time.monotonic()
+            elif time.monotonic() - since >= quiet_s:
+                return True
+            time.sleep(0.02)
+        return False
 
     # -- radio --
 
@@ -154,10 +182,13 @@ class FakeQmx:
                         self.last_cmd_t = now
                         out += self._reply(c)
                 if out:
-                    try:
-                        os.write(self.master, out.encode())
-                    except OSError:
-                        return
+                    with self.lock:
+                        if self._stop.is_set():
+                            return      # stopped: the fd may already belong to another pty
+                        try:
+                            os.write(self.master, out.encode())
+                        except OSError:
+                            return
             with self.lock:   # the radio's CAT timeout
                 s = self.state
                 if (s["tx"] and s["qb"] == "1"
@@ -174,7 +205,11 @@ class FakeQmx:
     def stop(self):
         self._stop.set()
         for t in self._threads:
-            t.join(1)
+            t.join(10)
+        if any(t.is_alive() for t in self._threads):
+            # Never close fds a live thread still uses: the next fake's openpty
+            # would reuse the numbers and this thread would read its frames.
+            return
         for fd in (self.master, self._slave):
             try:
                 os.close(fd)

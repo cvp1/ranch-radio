@@ -21,7 +21,7 @@ if [[ -n "${ONLY:-}" ]]; then
 fi
 for r in $(seq "$RUNNERS"); do
     docker run --rm --cpus "$CPUS" --memory "$MEMORY" -v "$PWD":/src:ro -v "$OUT":/out \
-        -e PASSES="$PASSES" -e RUNNER="$r" -e RR_SKIP="${names} ${RR_SKIP:-}" -e ONLY="${ONLY:-}" "$IMAGE" bash -c '
+        -e PASSES="$PASSES" -e RUNNER="$r" -e RR_SKIP="${names} ${RR_SKIP:-}" "$IMAGE" bash -c '
         cp -r /src ~/work && rm -rf ~/work/.venv && ln -s ~/venv ~/work/.venv && cd ~/work
         for p in $(seq "$PASSES"); do
             LOGDIR=/out/r$RUNNER-p$p bash tests/run_all.sh > /out/r$RUNNER-p$p.txt 2>&1
