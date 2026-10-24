@@ -77,7 +77,7 @@ write_host("testmac", {"host": "testmac", "os": "macos", "repo": "~/ranch-radio"
 
 
 def wait_port(p, port):
-    for _ in range(150):
+    for _ in range(600):                  # 60 s ceiling; returns once the port answers
         try:
             socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
             return p

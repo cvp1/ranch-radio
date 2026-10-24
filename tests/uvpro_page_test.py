@@ -61,7 +61,7 @@ def check(name, got, want):
 
 
 def wait_port(p):
-    for _ in range(100):
+    for _ in range(600):                  # 60 s ceiling; returns once the port answers
         try:
             socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
             return p

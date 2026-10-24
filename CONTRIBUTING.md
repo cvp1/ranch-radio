@@ -32,6 +32,33 @@ bash tests/run_all.sh                  # the full suite, one test at a time
 The page tests need Chromium or Chrome (`CHROME=/path/to/chrome` if it isn't
 on `PATH`). The rigctl contract tests need Hamlib's `rigctld`.
 
+### Tests that pass on every machine
+
+CI runs on small, busy runners, so a test that only passes on a fast laptop
+fails there. Write tests that wait for what they check:
+
+- **Wait on a condition, not a clock.** No `sleep` before a check that
+  something happened: wait for it (`tests/testkit.py` has `wait_for`). Give
+  that wait a generous ceiling; it returns as soon as the condition holds.
+  A sleep is fine for a minimum the protocol needs, or for a quiet window
+  before checking that nothing happened.
+- **Make the fakes behave like the hardware.** Reply at wire speed, never
+  queue replies without bound, and stop writing when stopped.
+- **Wait for the server, not just the fake.** A reply the fake sent may not
+  have been handled yet. Wait for something the server did in response: a
+  frame, a log line, a page event.
+- **Take ports from the OS** (`testkit.free_port()`), not from a random range.
+
+To shake out timing bugs before CI does, run the suite in Linux containers
+held to a CI runner's CPU budget (needs Docker):
+
+```sh
+bash tests/flake_hunt.sh                          # whole suite, 4 runners x 2 passes
+ONLY="civ_safety_test" PASSES=4 bash tests/flake_hunt.sh   # one test, more passes
+```
+
+It prints failures per test. The bar is none.
+
 ## Ground rules
 
 - **No transmitting in tests.** The suite drives fake radios (`tests/fake_*.py`);

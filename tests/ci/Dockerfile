@@ -10,8 +10,8 @@ RUN printf '#!/bin/sh\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usa
 RUN useradd -m runner
 USER runner
 COPY --chown=runner requirements.txt /tmp/requirements.txt
-RUN python -m venv /home/runner/venv && /home/runner/venv/bin/pip install -q -r /tmp/requirements.txt \
- && python -m venv /home/runner/.local/share/venvs/benlink \
- && /home/runner/.local/share/venvs/benlink/bin/pip install -q \
+RUN python -m venv $HOME/venv && $HOME/venv/bin/pip install -q -r /tmp/requirements.txt \
+ && python -m venv $HOME/.local/share/venvs/benlink \
+ && $HOME/.local/share/venvs/benlink/bin/pip install -q \
         "benlink @ git+https://github.com/khusmann/benlink@c4b9d22112402ea193d376f412bc028d1778fdb4"
 ENV CHROME=/usr/local/bin/chromium-ci

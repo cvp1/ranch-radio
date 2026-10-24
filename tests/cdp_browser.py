@@ -20,7 +20,7 @@ class Browser:
             [chrome, "--headless=new", f"--remote-debugging-port={cdp_port}", f"--user-data-dir={self.dir}",
              "--no-first-run", "--no-default-browser-check", f"--window-size={size}", *extra, "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
+        for _ in range(300):              # 30 s: Chromium starts slowly on a loaded 2-CPU runner
             try:
                 targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json"))
                 page = next(t for t in targets if t["type"] == "page")
@@ -62,7 +62,9 @@ class Browser:
         self.call("Page.navigate", url=url)
         time.sleep(1.5)
 
-    def wait(self, expr, timeout=10):
+    def wait(self, expr, timeout=30):
+        # A ceiling for "something is broken", not a guess at how fast the
+        # page is: it returns as soon as expr holds (CI flake, 2026-10-23).
         end = time.time() + timeout
         while time.time() < end:
             v = self.js(expr)
