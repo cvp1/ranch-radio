@@ -20,7 +20,6 @@ tests/fake_opengd77.py (a radio with RAM and flash kept apart, as the real one).
 import asyncio
 import json
 import os
-import random
 import socket
 import struct
 import subprocess
@@ -38,6 +37,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 import opengd77 as g  # noqa: E402
 import opengd77_mem as mem  # noqa: E402
 from fake_opengd77 import REAL_MEMORY, FakeOpenGD77, channel  # noqa: E402
+from testkit import free_port, wait_for  # noqa: E402
 
 fails = 0
 PINNED = "5797626"
@@ -146,7 +146,7 @@ r.set_clock(1_792_500_000)
 check("clock: C 6 7 with UTC seconds", fake.clock, 1_792_500_000)
 r.restart()
 r.close()
-time.sleep(1.2)
+check("restart: the radio went away and came back", wait_for(lambda: fake.restarts == 1, timeout=10), True)
 r.open()
 check("restart: the radio runs on the written flash", fake.ram["settings"][70], 8)
 reqs = list(fake.requests)
@@ -155,7 +155,7 @@ r.close()
 fake.stop()
 
 # ------------------------------------------------------------------ the add-on
-WEB = 19000 + random.randrange(1000)
+WEB = free_port()
 TMP = tempfile.mkdtemp(prefix="opengd77-control-")
 STATE = os.path.join(TMP, "addons.json")
 fake = FakeOpenGD77(revision=PINNED).start()
@@ -208,22 +208,60 @@ class Page:
         e = self.wait(lambda e: e.get("t") == "notice" and ("MD-UV390:" in e.get("msg", "") or
                                                              e.get("msg", "").startswith(("Rejected", "The add-on", "MD-UV390 ")))
                       and "busy" not in e.get("msg", ""), timeout, since)
+        if not e:
+            self.dump(f"no notice within {timeout} s", since)
         return e and e["msg"]
+
+    def dump(self, why, since):
+        """What a failing wait saw: every notice and status since, and the server's log."""
+        print(f"      -- {why}; since event {since}:")
+        for e in list(self.events)[since:]:
+            if e.get("t") == "notice":
+                print(f"      notice: {e.get('msg')}")
+            elif gd(e) and e.get("status"):
+                print(f"      status: {e['status']}")
+        print("      server log (last 40 lines):\n" + "\n".join("      | " + l for l in server_log(40)))
+
+
+LOG = []                          # the server's log, read as it comes (a full pipe would stall the server)
+
+
+def start_server():
+    proc = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
+                             "--rigctl-port", "0", "--addons", CFG, "--addons-state", STATE],
+                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def drain():
+        for line in proc.stdout:
+            LOG.append(line.rstrip("\n"))
+    threading.Thread(target=drain, daemon=True).start()
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    return proc
+
+
+def stop_server(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def server_log(n):
+    return [l for l in list(LOG) if " civ INFO " not in l][-n:]
 
 
 def gd(e):
     return e.get("t") == "addon" and e.get("addon") == "opengd77"
 
 
-server = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-                           "--rigctl-port", "0", "--addons", CFG, "--addons-state", STATE],
-                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-for _ in range(100):
-    try:
-        socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
-        break
-    except OSError:
-        time.sleep(0.1)
+server = start_server()
 try:
     page = Page()
     c = page.wait(lambda e: gd(e) and (e.get("control") or {}).get("settings"))
@@ -308,28 +346,16 @@ try:
         reqs = list(fake.requests)
     check("add-on: only allowlisted requests ever went out", [x[:3] for x in reqs if g.refusal(x)], [])
 finally:
-    server.terminate()
-    try:
-        out = server.communicate(timeout=10)[0]
-    except subprocess.TimeoutExpired:
-        server.kill()
-        out = server.communicate()[0]
+    stop_server(server)
     fake.stop()
 
 # an unpinned build: everything still reads, nothing is changed
 fake = FakeOpenGD77(revision="abc1234").start()
 with open(CFG, "w") as f:
     json.dump({"opengd77": {"port": fake.path, "label": "MD-UV390", "poll": 0.5, "codeplugs": CODEPLUGS}}, f)
-WEB += 1
-server = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-                           "--rigctl-port", "0", "--addons", CFG, "--addons-state", STATE],
-                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-for _ in range(100):
-    try:
-        socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
-        break
-    except OSError:
-        time.sleep(0.1)
+WEB = free_port()
+LOG.append("---- the second server (an unpinned build)")
+server = start_server()
 try:
     page = Page()
     c = page.wait(lambda e: gd(e) and (e.get("control") or {}).get("why_not"))
@@ -339,14 +365,10 @@ try:
     check("another build: a change is refused", "not the build" in (page.notice(n) or ""), True)
     check("another build: nothing but reads went out", all(x[:1] == b"R" for x in fake.requests), True)
 finally:
-    server.terminate()
-    try:
-        server.communicate(timeout=10)
-    except subprocess.TimeoutExpired:
-        server.kill()
+    stop_server(server)
     fake.stop()
 
 if fails:
-    print("\n".join(l for l in out.splitlines() if "civ INFO" not in l)[-6000:])
+    print("server log (last 40 lines):\n" + "\n".join(server_log(40)))
 print("\nPASS" if not fails else f"\n{fails} FAILED")
 sys.exit(1 if fails else 0)

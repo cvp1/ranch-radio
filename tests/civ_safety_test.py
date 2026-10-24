@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,6 +22,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
 
 from fake_civ import FakeCiv  # noqa: E402
+from testkit import free_port, wait_for  # noqa: E402
 import rigs  # noqa: E402
 
 RIG = sys.argv[1] if len(sys.argv) > 1 else "g90"
@@ -67,39 +69,101 @@ class Rig:
     """fake radio + server.py on it, for one scenario."""
 
     def __init__(self, fake_kw=None, extra=()):
+        self.fails_at_start = fails
         self.fake = FakeCiv(RIG, **(fake_kw or {})).start()
-        self.rport = 15000 + random.randrange(2000)
-        self.web = 18000 + random.randrange(2000)
+        self.rport, self.web = free_port(), free_port()
         self.proc = subprocess.Popen(
             [sys.executable, "server.py", "--rig", RIG, "--port", self.fake.path, "--no-audio",
              "--listen", str(self.web), "--host", "127.0.0.1", "--rigctl-host", "127.0.0.1",
              "--rigctl-port", str(self.rport),
              "--tx-timeout", str(TX_TIMEOUT), *extra],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for _ in range(60):
-            try:
-                socket.create_connection(("127.0.0.1", self.rport), timeout=0.2).close()
-                break
-            except OSError:
-                time.sleep(0.1)
-        # Let the server see the radio answer (connected) before driving it.
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and len(self.fake.frames) < 6:
-            time.sleep(0.05)
-        time.sleep(0.3)
+        self.lines = []                    # the server's log, read as it is written
+        self._log_reader = threading.Thread(target=self._read_log, daemon=True)
+        self._log_reader.start()
+        # Ready = listening for rigctl and the radio has answered it: waited
+        # for, not slept on (Python + aiohttp start slowly on a 2-CPU runner).
+        up = (self.wait_log("rigctl listener on", timeout=30)
+              and wait_for(lambda: len(self.fake.answered) >= 6, 30) and self.fake.caught_up())
+        if not up:
+            check_true("server started and polled the radio", False, "".join(self.lines)[-800:])
+
+    def _read_log(self):
+        for line in self.proc.stdout:
+            self.lines.append(line)
+
+    def log_mark(self):
+        return len(self.lines)
+
+    def wait_log(self, text, since=0, timeout=10.0):
+        """Wait for a server log line containing text, after line `since`."""
+        return wait_for(lambda: any(text in l for l in self.lines[since:]), timeout)
 
     def client(self):
         return Client(self.rport)
 
+    def told(self, since, n=3, timeout=15.0, poll=(0x1C, b"\x00")):
+        """Wait until the fake has answered n polls of one kind (default PTT
+        status; TUNER, SPLIT, MODE below) after `since`, a mark taken right
+        after a change: the server has been told the new state n times. Its
+        'our key is over' guard needs two receive replies in a row; 3 covers it."""
+        return fake_told(self.fake, since, n, poll, timeout, web=self.web)
+
+    def keyed(self, c, grace_s=1.3):
+        """T 1 on client c, then wait until the radio is keyed, the server has
+        been told so, and grace_s has passed since the key: the server
+        ignores a 'not transmitting' reply for 1 s after keying (a reply
+        that crossed the key command), so a test of what comes after must
+        start past it. A minimum wait, not a guess at readiness."""
+        t0 = time.monotonic()
+        ok = c.cmd("T 1") == ["RPRT 0"] and wait_for(lambda: self.fake.state["tx"] == 1, 5)
+        t = self.fake.mark()
+        ok = ok and self.told(t)
+        time.sleep(max(0.0, grace_s - (time.monotonic() - t0)))
+        return ok
+
+    def stale_reply(self):
+        """One 'not transmitting' reply that isn't true; returns once the
+        server has had it and three true replies after it."""
+        self.fake.stale_tx_reply_once()
+        wait_for(lambda: self.fake._stale_tx == 0, 10)
+        return self.told(self.fake.mark())
+
+    def settle(self, c, hold_s=0.8, timeout=15.0):
+        """Wait until the server's view (read through rigctl client c: f, t)
+        matches the fake radio and keeps matching for hold_s, and every
+        frame sent by then is answered (no out-of-date reply left to land
+        late). The barrier to use instead of a sleep
+        before taking a mark or checking state: with the fake's ack delay a
+        reply queued before a change lands after it (CI, 2026-10-23).
+        Reads only; never opens a client of its own (a client leaving
+        clears emulated split). Not while keyed on an emulated split: f
+        then reads the RX frequency while the radio sits on TX. False if
+        it never settles; check it, don't ignore it."""
+        end, since = time.monotonic() + timeout, None
+        while time.monotonic() < end:
+            st = self.fake.state           # waits until everything sent is answered
+            want = [str(st["freq"]), str(st["tx"])]
+            same = [c.cmd("f")[0], c.cmd("t")[0]] == want
+            if not same:
+                since = None
+            elif since is None:
+                since = time.monotonic()
+            elif time.monotonic() - since >= hold_s:
+                return self.fake.caught_up()
+            time.sleep(0.05)
+        return False
+
     def sigterm(self, timeout=10):
         self.proc.send_signal(signal.SIGTERM)
         try:
-            out = self.proc.communicate(timeout=timeout)[0]
+            self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-            out = self.proc.communicate()[0]
-        self.out = out
-        return out
+            self.proc.wait()
+        self._log_reader.join(timeout=5)
+        self.out = "".join(self.lines)
+        return self.out
 
     def close(self):
         if getattr(self, "out", None) is None:
@@ -107,13 +171,22 @@ class Rig:
         out = self.out
         self.fake.stop()
         logs.append(out)
+        if fails > self.fails_at_start:    # the context a failing check needs, in CI's log too
+            lines = [l.rstrip() for l in out.splitlines() if "aiohttp.access" not in l]
+            print("      server log (last 40 lines):\n" + "\n".join("      | " + l for l in lines[-40:]))
         if "Traceback" in out:
             check_true("no Traceback in server log", False, out[-800:])
         return out
 
 
-def browser(web, msgs, wait=0.6):
-    """Open the browser WebSocket, send msgs, return the notices it got."""
+def browser(web, msgs, wait=0.6, until=None):
+    """Open the browser WebSocket, send msgs, return the notices it got.
+    The page stays connected for `wait` s, or with `until` (a predicate)
+    until it holds (up to `wait`): check what the page's messages did
+    while it is still connected, since closing the page ends what it
+    started (a Winlink session disarms). until="notice": until the first
+    notice arrives (a refusal is checked by its notice, so wait for it).
+    browser.held says whether `until` held before the page closed."""
     import aiohttp, json
 
     async def go():
@@ -124,11 +197,18 @@ def browser(web, msgs, wait=0.6):
                 for m in msgs:
                     await ws.send_str(json.dumps(m))
                 end = time.monotonic() + wait
+                browser.held = False
                 while time.monotonic() < end:
-                    try:
-                        msg = await ws.receive(timeout=max(0.05, end - time.monotonic()))
-                    except asyncio.TimeoutError:
+                    if until == "notice" and notes or (callable(until) and await asyncio.to_thread(until)):
+                        browser.held = True
                         break
+                    try:
+                        msg = await ws.receive(timeout=max(0.05, min(0.1, end - time.monotonic())) if until
+                                               else max(0.05, end - time.monotonic()))
+                    except asyncio.TimeoutError:
+                        if until is None:
+                            break
+                        continue                 # quiet for 0.1 s: look at `until` again
                     if msg.type != aiohttp.WSMsgType.TEXT:
                         break
                     d = json.loads(msg.data)
@@ -138,30 +218,59 @@ def browser(web, msgs, wait=0.6):
     return asyncio.run(go())
 
 
-def wait_for(pred, timeout=4.0, step=0.05):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if pred():
-            return True
-        time.sleep(step)
-    return pred()
+TUNER, SPLIT, MODE = (0x1C, b"\x01"), (0x0F, b""), (0x26, b"\x00")   # polls, for Rig.told
 
 
-def settled_on(c, fake, hz, hold_s=1.5, timeout=12.0):
-    """Wait until the radio and the server both say `hz`, and keep saying it
-    for `hold_s`. With an ack delay, a poll reply queued before an F set
-    lands after it and puts the old frequency back for a moment (the server
-    then restores it); a fixed sleep raced that on CI's Linux runners."""
-    end, since = time.monotonic() + timeout, None
-    while time.monotonic() < end:
-        if fake.state["freq"] == hz and c.cmd("f") == [str(hz)]:
-            since = since or time.monotonic()
-            if time.monotonic() - since >= hold_s:
-                return True
-        else:
-            since = None
-        time.sleep(0.1)
-    return False
+def fake_ready(fake):
+    """The server has polled the fake and every frame so far is answered."""
+    return wait_for(lambda: len(fake.answered) >= 6, 30) and fake.caught_up()
+
+
+def data_poll(rig):
+    """The poll that reads a rig's DATA mode: 26 00 where the profile has it
+    (G90), else 1A 06 (IC-7300) -- see civ.poll_plan."""
+    return MODE if rigs.get(rig).get("mode_cmd_26") else (0x1A, b"\x06")
+
+
+POLL_KEYS = {(0x1C, b"\x00"): ("tx",), (0x1C, b"\x01"): ("tuner",), (0x0F, b""): ("split",),
+             (0x26, b"\x00"): ("mode", "data"), (0x1A, b"\x06"): ("mode", "data")}
+
+
+def _same(k, server_v, fake_v):
+    if k in ("tx", "split", "data"):
+        return bool(server_v) == bool(fake_v)
+    return server_v == fake_v
+
+
+def fake_told(fake, since, n=1, poll=None, timeout=15.0, web=None):
+    """The server has had, and handled, n replies to one poll (default the
+    DATA-mode read) since `since`. Answered isn't handled: the reply may
+    still be in the pty. The server's pump writes its next frame only once
+    a reply is handled (or after 80 ms), so three more frames from it after
+    the n-th answer mean the reply was taken in (seen 2026-10-23: armed
+    before the plain-USB reply it had been sent was read)."""
+    poll = poll or data_poll(fake.rig)
+    if not wait_for(lambda: fake.status_replies_since(since, *poll) >= n, timeout):
+        return False
+    k = len(fake.frames)
+    if not (wait_for(lambda: len(fake.frames) >= k + 3, timeout) and fake.caught_up()):
+        return False
+    if web is None:
+        return True
+    # The causal proof: the server's own state (what a page sees) says so.
+    # Frames alone aren't: under load the pump stops waiting for a reply
+    # after 80 ms and sends on, so frames can pass a reply still unread
+    # (armed in plain USB under a loaded hunt, 2026-10-23).
+    keys = POLL_KEYS.get(tuple(poll), ())
+    return wait_for(lambda: (lambda st: all(_same(k, st.get(k), fake.state[k]) for k in keys))(server_state(web)),
+                    timeout, step=0.1)
+
+
+def expect(label, get, want, timeout=8.0):
+    """check() that waits (up to timeout) for get() to equal want: for a
+    state the server reaches on its own time. Never a sleep-then-look."""
+    wait_for(lambda: get() == want, timeout)
+    check(label, get(), want)
 
 
 def keyed_retunes(seq):
@@ -183,11 +292,11 @@ def test_f1_sigterm_while_keyed():
     try:
         c = r.client()
         check("T 1 keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(0.3)
+        wait_for(lambda: r.fake.state["tx"] == 1, 5)
         check("fake radio is transmitting", r.fake.state["tx"], 1)
         t_term = time.monotonic()
         r.sigterm()
-        time.sleep(0.2)
+        r.fake.quiesce()
         ptt = r.fake.ptt_frames()
         check("last PTT frame on the wire is OFF", ptt[-1][1] if ptt else None, 0)
         check("OFF written after SIGTERM", any(v == 0 and t >= t_term for t, v in ptt), True)
@@ -247,11 +356,11 @@ def test_f1_manual_tx_left_alone_on_shutdown():
     print("\n# F1 + the operator's rule: shutdown never cuts a manual (front-panel/mic) TX")
     r = Rig()
     try:
-        r.fake.inject(tx=1)                # keyed at the radio; no CAT key from us
-        time.sleep(1.0)
+        t = r.fake.inject(tx=1)                # keyed at the radio; no CAT key from us
+        check("server told of the manual TX", r.told(t), True)
         m = r.fake.mark()
         r.sigterm()
-        time.sleep(0.2)
+        r.fake.quiesce()
         check("no OFF written for a manual transmission", [v for _, v in r.fake.ptt_frames(m)], [])
         check("radio still transmitting (operator's call)", r.fake.state["tx"], 1)
     finally:
@@ -264,14 +373,18 @@ def test_f1_manual_tx_after_our_key_left_alone():
     try:
         c = r.client()
         check("T 1 keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(1.5)
-        r.fake.inject(tx=0)                # unkeyed at the front panel
-        time.sleep(1.5)
-        r.fake.inject(tx=1)                # operator keys the mic by hand
-        time.sleep(0.8)
+        check("server sees our TX", r.settle(c), True)
+        time.sleep(1.0)                    # past the 1 s stale-reply grace after our key
+        n = r.log_mark()
+        t = r.fake.inject(tx=0)                # unkeyed at the front panel
+        check("server told of the unkey", r.told(t) and r.settle(c), True)
+        check("server released our key (after its confirm window)",
+              r.wait_log("unkeyed at the radio; releasing PTT", n), True)
+        t = r.fake.inject(tx=1)                # operator keys the mic by hand
+        check("server told of the manual TX", r.told(t) and r.settle(c), True)
         m = r.fake.mark()
         r.sigterm()
-        time.sleep(0.2)
+        r.fake.quiesce()
         check("no OFF written at shutdown", [v for _, v in r.fake.ptt_frames(m)], [])
         check("radio still transmitting (operator's call)", r.fake.state["tx"], 1)
         c.close()
@@ -310,12 +423,14 @@ def test_f2_split_hop_order():
         c.cmd("S 1 VFOB")
         c.cmd("F 7074000")
         c.cmd("I 7076000")
-        check("RX settled on 7074000 before keying", settled_on(c, r.fake, 7074000), True)
+        check("RX settled on 7074000 before keying", r.settle(c) and r.fake.state["freq"] == 7074000, True)
         m = r.fake.mark()
+        ptts = lambda: [v for k, v in r.fake.sets_since(m) if k == "ptt"]
         check("burst replies", c.burst(["T 1", "T 0", "I 7075000", "T 1"]), ["RPRT 0"] * 4)
-        time.sleep(1.5)
+        wait_for(lambda: ptts() == [1, 0, 1] and r.fake.state["tx"] == 1, 10)
         check("T 0", c.cmd("T 0"), ["RPRT 0"])
-        time.sleep(1.5)
+        wait_for(lambda: ptts() == [1, 0, 1, 0] and r.fake.state["freq"] == 7074000, 10)
+        r.fake.caught_up()
         seq = r.fake.sets_since(m)
         print("      wire:", seq)
         check("wire PTT order", [v for k, v in seq if k == "ptt"], [1, 0, 1, 0])
@@ -337,24 +452,22 @@ def test_f3_no_retune_while_keyed():
     try:
         a, b = r.client(), r.client()
         a.cmd("F 14074000")
-        time.sleep(0.8)
+        check("settled on 14074000", r.settle(a), True)
         m = r.fake.mark()
         check("A: T 1", a.cmd("T 1"), ["RPRT 0"])
-        time.sleep(0.4)
+        check("server sees the key", r.settle(a), True)
         check("B: F 7074000 while keyed -> refused", b.cmd("F 7074000"), ["RPRT -11"])
         check("B: F to the current RX (no change) -> ok", b.cmd("F 14074000"), ["RPRT 0"])
         check("B: M LSB while keyed -> refused", b.cmd("M LSB 0"), ["RPRT -11"])
-        notes = browser(r.web, [{"t": "set", "k": "freq", "v": 7074000}])
+        notes = browser(r.web, [{"t": "set", "k": "freq", "v": 7074000}], wait=10, until="notice")
         check_true("browser freq set while keyed -> refused with a notice",
                    any("transmit" in n.lower() for n in notes), str(notes))
-        time.sleep(0.4)
         check("radio still on 14074000 USB", (r.fake.state["freq"], r.fake.state["mode"]), (14074000, "USB"))
         check("A: T 0", a.cmd("T 0"), ["RPRT 0"])
-        time.sleep(0.5)
+        check("radio unkeyed, and the server knows", r.settle(a), True)
         check("no frequency set on the wire while keyed", keyed_retunes(r.fake.sets_since(m)), [])
         check("after unkey: F 7074000 accepted", b.cmd("F 7074000"), ["RPRT 0"])
-        time.sleep(0.6)
-        check("radio moved to 7074000", r.fake.state["freq"], 7074000)
+        expect("radio moved to 7074000", lambda: r.fake.state["freq"], 7074000)
         a.close(); b.close()
     finally:
         r.close()
@@ -380,25 +493,28 @@ def test_f3_jtdx_sequence_still_works():
 
 def test_f3_band_change_during_tune_waits():
     print("\n# F3 (the operator 2026-10-14): an app's band change during a tune waits for the tune to end")
-    r = Rig(fake_kw={"tune_s": 3.0})
+    r = Rig(fake_kw={"tune_s": None})      # the test ends the tune, not a timer
     try:
         c = r.client()
         c.cmd("F 14074000")
-        time.sleep(0.8)
+        check("settled on 14074000", r.settle(c), True)
         check("G TUNE", c.cmd("G TUNE"), ["RPRT 0"])
-        time.sleep(0.6)
+        t = r.fake.mark()
+        check("server told the radio is tuning", wait_for(lambda: r.fake.state["tuner"] == 2)
+              and r.told(t, n=1, poll=TUNER), True)
         m = r.fake.mark()
         check("F 7074000 during the tune -> accepted", c.cmd("F 7074000"), ["RPRT 0"])
         check("f reads the requested frequency", c.cmd("f"), ["7074000"])
         check("T 1 while the change is pending -> refused", c.cmd("T 1"), ["RPRT -11"])
-        time.sleep(1.5)
+        time.sleep(0.5)                    # quiet window: no retune may go out mid-tune
         check("radio not retuned while tuning", r.fake.state["freq"], 14074000)
-        ok = wait_for(lambda: r.fake.state["freq"] == 7074000, timeout=5)
+        r.fake.end_tune()
+        ok = wait_for(lambda: r.fake.state["freq"] == 7074000, timeout=10)
         check("radio moves to 7074000 after the tune", ok, True)
         end = r.fake.tune_ended_at
         early = [f for f in r.fake.frames if f.t >= m and f.is_freq_set() and (end is None or f.t < end)]
         check("no retune frame before the tune ended", (end is not None, early), (True, []))
-        check("f reads 7074000", c.cmd("f"), ["7074000"])
+        expect("f reads 7074000", lambda: c.cmd("f"), ["7074000"])
         c.close()
     finally:
         r.close()
@@ -414,19 +530,21 @@ def test_f4_g90_radio_split_on():
     try:
         c = r.client()
         c.cmd("F 14074000")
-        r.fake.inject(split=1)
-        time.sleep(1.0)
+        check("settled on 14074000", r.settle(c), True)
+        t = r.fake.inject(split=1)
+        check("server told of the radio's split", r.told(t, n=1, poll=SPLIT), True)
         m = r.fake.mark()
         check("T 1 with the radio's split on -> refused", c.cmd("T 1"), ["RPRT -11"])
-        time.sleep(0.5)
-        frames = [f for f in r.fake.frames if f.t >= m]
+        split_off = lambda: any(f.cmd == 0x0F and f.data == b"\x00" for f in r.fake.frames if f.t >= m)
+        wait_for(split_off)
         check("no ON written", [v for _, v in r.fake.ptt_frames(m)], [])
-        check_true("split OFF (0F 00) written", any(f.cmd == 0x0F and f.data == b"\x00" for f in frames))
+        check_true("split OFF (0F 00) written", split_off())
         wait_for(lambda: r.fake.state["split"] == 0)
-        time.sleep(0.8)                    # next poll sees split off
+        t = r.fake.mark()
+        check("server told split is off", r.told(t, n=1, poll=SPLIT), True)
         check("after split is off: T 1 keys", c.cmd("T 1"), ["RPRT 0"])
         c.cmd("T 0")
-        time.sleep(0.5)
+        expect("unkeyed", lambda: r.fake.state["tx"], 0)
         # hold: split turned on at the panel while an app is connected
         m = r.fake.mark()
         r.fake.inject(split=1)
@@ -444,18 +562,21 @@ def test_f5_key_during_tune():
     if RIG != "g90":
         return
     print("\n# F5 split PTT during an ATU tune")
-    r = Rig(fake_kw={"tune_s": 3.0})
+    r = Rig(fake_kw={"tune_s": None})      # the test ends the tune, not a timer
     try:
         c = r.client()
         c.cmd("S 1 VFOB")
         c.cmd("F 14074000")
         c.cmd("I 14076000")
-        time.sleep(1.0)
+        check("settled on 14074000", r.settle(c), True)
         m = r.fake.mark()
         check("G TUNE", c.cmd("G TUNE"), ["RPRT 0"])
-        time.sleep(0.8)                    # the radio reports tuner=2, tx=1
+        t = r.fake.mark()
+        check("server told the radio is tuning (tuner=2, tx=1)",
+              wait_for(lambda: r.fake.state["tuner"] == 2) and r.told(t, n=1, poll=TUNER) and r.told(t), True)
         check("T 1 during the tune -> refused", c.cmd("T 1"), ["RPRT -11"])
-        time.sleep(3.5)                    # tune ends
+        t = r.fake.end_tune()
+        check("server told the tune ended", r.told(t) and r.told(t, n=1, poll=TUNER), True)
         check("dial never left RX during the tune",
               [v for k, v in r.fake.sets_since(m) if k == "freq" and v != 14074000], [])
         m2 = r.fake.mark()
@@ -475,7 +596,7 @@ def test_f6_string_values():
     r = Rig(extra=("--no-tx",))
     try:
         m = r.fake.mark()
-        notes = browser(r.web, [{"t": "set", "k": "tuner", "v": "2"}])
+        notes = browser(r.web, [{"t": "set", "k": "tuner", "v": "2"}], wait=10, until="notice")
         time.sleep(0.4)
         check("--no-tx: tuner '2' writes no tune frame",
               [f for f in r.fake.frames if f.t >= m and f.cmd == 0x1C and f.data == b"\x01\x02"], [])
@@ -505,6 +626,7 @@ def _tune_cut(r, m, label):
     check_true(f"{label}: not cut before the timeout",
                first is not None and first - m >= TUNE_TIMEOUT - 0.3,
                f"after {first - m:.2f}s" if first else "")
+    wait_for(lambda: (r.fake.state["tuner"], r.fake.state["tx"]) == (1, 0), 5)   # OFF applied
     check(f"{label}: fake radio stopped tuning", (r.fake.state["tuner"], r.fake.state["tx"]), (1, 0))
 
 
@@ -594,12 +716,10 @@ def test_f8_stale_reply_keeps_split_tx():
         c.cmd("S 1 VFOB")
         c.cmd("F 14074000")
         c.cmd("I 14076000")
-        time.sleep(0.6)
+        check("settled on 14074000", r.settle(c), True)
         m = r.fake.mark()
-        check("T 1 keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(1.3)                    # past the 1 s grace
-        r.fake.stale_tx_reply_once()
-        time.sleep(1.5)
+        check("T 1 keys, past the 1 s grace", r.keyed(c), True)
+        check("stale reply delivered", r.stale_reply(), True)
         seq = r.fake.sets_since(m)
         check("no frequency change while keyed", keyed_retunes(seq), [])
         check("radio still transmitting on the TX freq",
@@ -609,8 +729,7 @@ def test_f8_stale_reply_keeps_split_tx():
         c2.close()
         m2 = r.fake.mark()
         check("T 0", c.cmd("T 0"), ["RPRT 0"])
-        time.sleep(0.6)
-        check("unkey then back to RX, once", r.fake.sets_since(m2), [("ptt", 0), ("freq", 14074000)])
+        expect("unkey then back to RX, once", lambda: r.fake.sets_since(m2), [("ptt", 0), ("freq", 14074000)])
         c.cmd("S 0 VFOA")
         c.close()
     finally:
@@ -622,14 +741,12 @@ def test_f8_stale_reply_then_shutdown_unkeys():
     r = Rig()
     try:
         c = r.client()
-        check("T 1 keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(1.3)
-        r.fake.stale_tx_reply_once()
-        time.sleep(1.0)
+        check("T 1 keys, past the 1 s grace", r.keyed(c), True)
+        check("stale reply delivered", r.stale_reply(), True)
         check("fake radio still transmitting", r.fake.state["tx"], 1)
         m = r.fake.mark()
         r.sigterm()
-        time.sleep(0.2)
+        r.fake.quiesce()
         check("OFF written at shutdown", any(v == 0 for _, v in r.fake.ptt_frames(m)), True)
         check("fake radio not transmitting after shutdown", r.fake.state["tx"], 0)
         c.close()
@@ -645,19 +762,18 @@ def test_f8_real_panel_unkey_releases():
         c.cmd("S 1 VFOB")
         c.cmd("F 14074000")
         c.cmd("I 14076000")
-        time.sleep(0.6)
-        check("T 1 keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(1.5)
-        m = r.fake.mark()
-        r.fake.inject(tx=0)                # unkeyed at the front panel, and stays so
+        check("settled on 14074000", r.settle(c), True)
+        check("T 1 keys, past the 1 s grace", r.keyed(c), True)
+        m = r.fake.inject(tx=0)            # unkeyed at the front panel, and stays so
         if RIG == "g90":                   # emulated split: the dial comes back to RX
-            ok = wait_for(lambda: ("freq", 14074000) in r.fake.sets_since(m), timeout=4)
+            ok = wait_for(lambda: ("freq", 14074000) in r.fake.sets_since(m), timeout=8)
             check("back to RX after the panel unkey", ok, True)
-            time.sleep(1.0)
+        check("server released our key (after its confirm window)",
+              r.wait_log("unkeyed at the radio; releasing PTT", timeout=10), True)
+        if RIG == "g90":
+            time.sleep(1.0)                # quiet window: a second restore would show
             check("RX restored exactly once",
                   [v for k, v in r.fake.sets_since(m) if k == "freq"].count(14074000), 1)
-        else:
-            time.sleep(2.0)
         check("no OFF written for an unkey made at the radio",
               [v for _, v in r.fake.ptt_frames(m)], [])
         c2 = r.client()
@@ -682,13 +798,14 @@ def test_f9_split_cleared_on_last_disconnect():
         c.cmd("S 1 VFOB")
         c.cmd("F 14074000")
         c.cmd("I 14076000")
+        n = r.log_mark()
         c.close()
-        time.sleep(0.5)
+        check("server saw the last client leave", r.wait_log("emulated split cleared", n), True)
         c2 = r.client()
         check("new client reads split off", c2.cmd("s", 2), ["0", "VFOA"])
         m = r.fake.mark()
         check("T 1 keys", c2.cmd("T 1"), ["RPRT 0"])
-        time.sleep(0.4)
+        wait_for(lambda: r.fake.state["tx"] == 1, 5)
         check("keyed on RX, no hop to the old TX freq",
               [v for k, v in r.fake.sets_since(m) if k == "freq"], [])
         c2.cmd("T 0")
@@ -707,16 +824,15 @@ def test_f9_cross_band_hop_refused():
         c.cmd("S 1 VFOB")
         c.cmd("I 14076000")
         c.cmd("F 7074000")
-        time.sleep(0.6)
+        check("settled on 7074000", r.settle(c), True)
         m = r.fake.mark()
         check("T 1 cross-band -> refused", c.cmd("T 1"), ["RPRT -11"])
-        time.sleep(0.4)
+        time.sleep(0.4)                    # quiet window: nothing may follow a refusal
         check("no ON and no retune written", r.fake.sets_since(m), [])
         check("radio receiving on 7074000", (r.fake.state["tx"], r.fake.state["freq"]), (0, 7074000))
         c.cmd("I 7076000")
         check("same-band split still keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(0.4)
-        check("keyed on 7076000", (r.fake.state["tx"], r.fake.state["freq"]), (1, 7076000))
+        expect("keyed on 7076000", lambda: (r.fake.state["tx"], r.fake.state["freq"]), (1, 7076000))
         c.cmd("T 0")
         c.cmd("S 0 VFOA")
         c.close()
@@ -764,14 +880,14 @@ def test_f13_g90_data_mode_applied():
     print("\n# F13 G90: DATA set through 26 00 (1A 06 is acked, ignored, and read back as an echo)")
     r = Rig(fake_kw={"g90_1a06_echo": True})
     try:
-        r.fake.inject(data=0)                  # radio in plain USB, as on linux-station 2026-10-14
-        time.sleep(1.0)
+        t = r.fake.inject(data=0)                  # radio in plain USB, as on linux-station 2026-10-14
+        check("server told of plain USB", r.told(t, n=1, poll=data_poll(RIG)), True)
         c = r.client()
         c.cmd("F 14075000")                    # an app setting: the hold wants DATA on
         ok = wait_for(lambda: r.fake.state["data"] == 1, timeout=5)
         check("radio put in DATA after the app connects", ok, True)
-        mode = c.cmd("m", 2)[0]
-        check("server reports what the radio is in", (mode, r.fake.state["data"]), ("PKTUSB", 1))
+        expect("server reports what the radio is in", lambda: (c.cmd("m", 2)[0], r.fake.state["data"]),
+               ("PKTUSB", 1))
         r.fake.inject(data=0)                  # front panel back to plain USB
         ok = wait_for(lambda: r.fake.state["data"] == 1, timeout=6)
         check("front-panel USB noticed and DATA restored", ok, True)
@@ -803,6 +919,18 @@ def server_state(web):
     return asyncio.run(go())
 
 
+def until_state(web, pred, timeout=8.0):
+    """The first page state that satisfies pred (or the last one read). Keep
+    that reading: a second read can land on the brief 'not transmitting' a
+    stale reply shows just after a key (the server's 1 s grace covers it)."""
+    end = time.monotonic() + timeout
+    while True:
+        st = server_state(web)
+        if pred(st) or time.monotonic() > end:
+            return st
+        time.sleep(0.2)
+
+
 def test_f16_swr_decode():
     # G90 replies seen on linux-station 2026-10-13/14 and what its own meter showed:
     # ~1.0 at 00 00 (the operator, 13:22-13:24), never above 1.5 on 10 m FT8 (01 04 / 01 4c).
@@ -816,17 +944,17 @@ def test_f16_swr_decode():
     try:
         c = r.client()
         c.cmd("F 14074000")
-        time.sleep(0.6)
+        check("settled on 14074000", r.settle(c), True)
         for raw, want in cases:              # key per case: stays well inside --tx-timeout
             r.fake.inject(swr_raw=raw)
             c.cmd("T 1")
-            time.sleep(1.2)                  # TX meters are polled in rotation
-            st = server_state(r.web)
-            got = swr_ratio(st.get("swr") or 0)
-            check_true(f"raw {raw.hex(' ')} -> SWR {want:.2f}", st.get("tx") and abs(got - want) < 0.02,
-                       f"page shows {got:.2f}, tx={st.get('tx')}")
+            shown = lambda: server_state(r.web)
+            ok = lambda st: st.get("tx") and abs(swr_ratio(st.get("swr") or 0) - want) < 0.02
+            st = until_state(r.web, ok)      # TX meters are polled in rotation
+            check_true(f"raw {raw.hex(' ')} -> SWR {want:.2f}", ok(st),
+                       f"page shows {swr_ratio(st.get('swr') or 0):.2f}, tx={st.get('tx')}")
             c.cmd("T 0")
-            time.sleep(0.4)
+            check("unkeyed", r.settle(c), True)
         c.close()
     finally:
         r.fake.inject(swr_raw=b"\x00\x00")
@@ -844,18 +972,18 @@ def test_tx_meters_shown():
     try:
         c = r.client()
         c.cmd("F 14074000")
-        time.sleep(0.6)
+        check("settled on 14074000", r.settle(c), True)
         r.fake.inject(po_raw=b"\x01\x28", alc_raw=b"\x00\x64", swr_raw=b"\x00\x00")
         c.cmd("T 1")
-        time.sleep(1.5)                      # three TX meters polled in rotation
-        st = server_state(r.web)
-        check("keyed", bool(st.get("tx")), True)
-        check("PO on the page (raw 01 28)", st.get("po"), 128)
-        check("ALC on the page (raw 00 64)", st.get("alc"), 64)
+        meters = lambda st: (bool(st.get("tx")), st.get("po"), st.get("alc"))
+        st = until_state(r.web, lambda st: meters(st) == (True, 128, 64))   # three TX meters in rotation
+        tx, po, alc = meters(st)
+        check("keyed", tx, True)
+        check("PO on the page (raw 01 28)", po, 128)
+        check("ALC on the page (raw 00 64)", alc, 64)
         c.cmd("T 0")
-        time.sleep(0.6)
-        st = server_state(r.web)
-        check("unkeyed: PO and ALC cleared", (st.get("po"), st.get("alc")), (0, 0))
+        st = until_state(r.web, lambda st: meters(st)[1:] == (0, 0))
+        check("unkeyed: PO and ALC cleared", meters(st)[1:], (0, 0))
         c.close()
     finally:
         r.fake.inject(po_raw=b"\x00\x00", alc_raw=b"\x00\x00")
@@ -876,16 +1004,15 @@ def test_winlink_mode_usb_data():
     if RIG != "g90":
         print("  (G90 only)")
         return
-    lane = 16000 + random.randrange(2000)
+    lane = free_port()
     r = Rig(fake_kw={"g90_1a06_echo": True},
             extra=("--winlink-rigctl-port", str(lane), "--winlink-mode", "USB+DATA"))
     try:
-        r.fake.inject(mode="USB", data=0)               # left in plain USB at the panel
-        time.sleep(1.5)                                 # the server polls it in
-        browser(r.web, [{"t": "winlink_arm", "v": True}], wait=1.5)
-        armed = wait_for(lambda: (r.fake.state["mode"], r.fake.state["data"]) == ("USB", 1))
-        check("armed: the radio is in USB-D", (armed, r.fake.state["mode"], r.fake.state["data"]),
-              (True, "USB", 1))
+        t = r.fake.inject(mode="USB", data=0)               # left in plain USB at the panel
+        check("server told of plain USB", r.told(t, n=1, poll=data_poll(RIG)), True)
+        usb_d = lambda: (r.fake.state["mode"], r.fake.state["data"]) == ("USB", 1)
+        browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until=usb_d)
+        check("armed: the radio is in USB-D while the page is open", browser.held, True)
         browser(r.web, [{"t": "winlink_arm", "v": False}], wait=1.5)
         back = wait_for(lambda: r.fake.state["data"] == 0)
         check("disarmed: plain USB again", (back, r.fake.state["mode"], r.fake.state["data"]),
@@ -901,15 +1028,15 @@ def test_winlink_arm_refused_while_another_transmits():
     2026-10-17, Sol #5; review 2026-10-18, Grok). Once the key is released,
     arming works."""
     print("\n# Winlink arm while an app transmits: refused, mode untouched")
-    lane = 16000 + random.randrange(2000)
+    lane = free_port()
     r = Rig(fake_kw={"g90_1a06_echo": True} if RIG == "g90" else None,
             extra=("--winlink-rigctl-port", str(lane), "--winlink-mode", "USB+DATA"))
     try:
-        r.fake.inject(mode="USB", data=0)
-        time.sleep(1.5)
+        t = r.fake.inject(mode="USB", data=0)
+        check("server told of plain USB", r.told(t, n=1, poll=data_poll(RIG)), True)
         app = r.client()
         check("app keys", app.cmd("T 1"), ["RPRT 0"])
-        notes = browser(r.web, [{"t": "winlink_arm", "v": True}], wait=1.5)
+        notes = browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until="notice")
         check("arm refused with a notice", any("transmitting" in n for n in notes), True)
         check("mode untouched mid-transmission", (r.fake.state["mode"], r.fake.state["data"]),
               ("USB", 0))
@@ -917,9 +1044,8 @@ def test_winlink_arm_refused_while_another_transmits():
         check("app unkeys", app.cmd("T 0"), ["RPRT 0"])
         app.close()
         wait_for(lambda: not server_state(r.web).get("tx"))   # the server has polled the unkey
-        browser(r.web, [{"t": "winlink_arm", "v": True}], wait=1.5)
-        armed = wait_for(lambda: r.fake.state["data"] == 1)
-        check("released: arming works", armed, True)
+        browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until=lambda: r.fake.state["data"] == 1)
+        check("released: arming works", browser.held, True)
         browser(r.web, [{"t": "winlink_arm", "v": False}], wait=1.5)
     finally:
         r.close()
@@ -932,18 +1058,17 @@ def test_ic7300_voice_usb_source():
     sent nothing from the page, near 0 W (mac-shack, 2026-10-18)."""
     print("\n# IC-7300: page voice in plain USB switches DATA OFF MOD to USB, then back")
     fake = FakeCiv("ic7300").start()
-    web, rport = 18000 + random.randrange(2000), 15000 + random.randrange(2000)
+    web, rport = free_port(), free_port()
     proc = subprocess.Popen(
         [sys.executable, "server.py", "--rig", "ic7300", "--port", fake.path, "--no-audio",
          "--listen", str(web), "--host", "127.0.0.1", "--rigctl-host", "127.0.0.1",
          "--rigctl-port", str(rport)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        wait_for(lambda: len(fake.frames) > 6, 6)
-        time.sleep(0.5)
-        fake.inject(mode="USB", data=0)
-        time.sleep(1.0)
+        check("server polling the radio", fake_ready(fake), True)
+        t = fake.inject(mode="USB", data=0)
+        check("server told of plain USB", fake_told(fake, t, web=web), True)
 
-        async def hold(seconds, msgs_before=()):
+        async def hold(seconds, msgs_before=(), want_key=True, want_badges=2):
             import aiohttp, json
             async with aiohttp.ClientSession() as sess:
                 async with sess.ws_connect(f"http://127.0.0.1:{web}/ws") as ws:
@@ -952,25 +1077,29 @@ def test_ic7300_voice_usb_source():
                         await ws.send_str(json.dumps(m))
                     await asyncio.sleep(0.5)
                     during = []
-                    for _ in range(int(seconds / 0.5)):
+                    keyed = lambda: fake.state["tx"] == 1
+                    for i in range(int(seconds / 0.5)):
                         await ws.send_str(json.dumps({"t": "set", "k": "tx", "v": True}))
+                        if i == 0 and want_key:      # sample only once the key is on the wire
+                            await asyncio.to_thread(wait_for, keyed, 8)
                         await asyncio.sleep(0.5)
                         during.append((fake.state["tx"], fake.state["data_off_mod"]))
                     await ws.send_str(json.dumps({"t": "set", "k": "tx", "v": False}))
-                    await asyncio.sleep(1.0)
-                    while True:                  # the page's badge events, in order
+                    end = time.monotonic() + 8
+                    while time.monotonic() < end and len(badge) < want_badges:   # badge events, in order
                         try:
                             msg = await ws.receive(timeout=0.2)
                         except asyncio.TimeoutError:
-                            break
+                            continue
                         if msg.type == aiohttp.WSMsgType.TEXT and '"t": "voice"' in msg.data:
                             badge.append(json.loads(msg.data)["usb_src"])
+                    await asyncio.to_thread(wait_for, lambda: fake.state["tx"] == 0, 8)
                     return during
         badge = []
         during = asyncio.run(hold(2.0))
         check("keyed with DATA OFF MOD at USB throughout", set(during), {(1, 0x03)})
         check("the page's USB AUDIO badge: on, then off", badge, [True, False])
-        check("after: unkeyed, back to MIC/ACC", (fake.state["tx"], fake.state["data_off_mod"]), (0, 0x02))
+        expect("after: unkeyed, back to MIC/ACC", lambda: (fake.state["tx"], fake.state["data_off_mod"]), (0, 0x02))
         seq = [(f.cmd, f.data.hex()) for f in fake.frames if f.cmd in (0x1A, 0x1C)
                and (f.data[:3] == bytes([5, 0, 0x66]) and len(f.data) == 4 or f.is_ptt())]
         order = [("src", d[-2:]) if c == 0x1A else ("ptt", d[-2:]) for c, d in seq]
@@ -978,14 +1107,15 @@ def test_ic7300_voice_usb_source():
               order[-4:], [("src", "03"), ("ptt", "01"), ("ptt", "00"), ("src", "02")])
 
         n = len([f for f in fake.frames if f.cmd == 0x1A and f.data[:3] == bytes([5, 0, 0x66]) and len(f.data) == 4])
-        fake.inject(data=1)
-        time.sleep(1.0)
-        asyncio.run(hold(1.0))
+        t = fake.inject(data=1)
+        check("server told of USB-D", fake_told(fake, t, web=web), True)
+        badge = []
+        asyncio.run(hold(1.0, want_badges=0))
         check("USB-D: DATA OFF MOD never written",
               len([f for f in fake.frames if f.cmd == 0x1A and f.data[:3] == bytes([5, 0, 0x66]) and len(f.data) == 4]), n)
 
-        fake.inject(data=0)
-        time.sleep(1.0)
+        t = fake.inject(data=0)
+        check("server told of plain USB again", fake_told(fake, t, web=web), True)
         n = len([f for f in fake.frames if f.cmd == 0x1A and f.data[:3] == bytes([5, 0, 0x66]) and len(f.data) == 4])
 
         async def hold_no_mic():
@@ -996,16 +1126,18 @@ def test_ic7300_voice_usb_source():
                     for _ in range(3):
                         await ws.send_str(json.dumps({"t": "set", "k": "tx", "v": True, "mic": False}))
                         await asyncio.sleep(0.5)
+                    await asyncio.to_thread(wait_for, lambda: fake.state["tx"] == 1, 8)
                     keyed = fake.state["tx"]
                     await ws.send_str(json.dumps({"t": "set", "k": "tx", "v": False}))
-                    await asyncio.sleep(1.0)
+                    await asyncio.to_thread(wait_for, lambda: fake.state["tx"] == 0, 8)
                     return keyed
         check("page mic off: keys", asyncio.run(hold_no_mic()), 1)
         check("page mic off: DATA OFF MOD never written (the radio's own mic)",
               len([f for f in fake.frames if f.cmd == 0x1A and f.data[:3] == bytes([5, 0, 0x66]) and len(f.data) == 4]), n)
         c = Client(rport)
         check("rigctl keys", c.cmd("T 1"), ["RPRT 0"])
-        time.sleep(0.5)
+        wait_for(lambda: fake.state["tx"] == 1, 8)
+        time.sleep(0.5)                    # quiet window: no source switch may follow
         check("an app's PTT leaves DATA OFF MOD alone", fake.state["data_off_mod"], 0x02)
         c.cmd("T 0")
         c.close()
@@ -1071,9 +1203,9 @@ def test_f17_keepalive_after_timeout_does_not_rekey():
     try:
         m = r.fake.mark()
         got = held_ptt(r.web, TX_TIMEOUT + 3, then_rekey=True)
-        ons = [v for _, v in r.fake.ptt_frames(m)]
         # key, time-limit unkey, then the deliberate release/press/release.
-        check("PTT on the wire: on, off (limit), on, off (pressed again)", ons, [1, 0, 1, 0])
+        expect("PTT on the wire: on, off (limit), on, off (pressed again)",
+               lambda: [v for _, v in r.fake.ptt_frames(m)], [1, 0, 1, 0])
         check_true("the page was told to release its button", "ptt_released" in got, str(got))
     finally:
         r.close()
@@ -1085,8 +1217,9 @@ def test_f17_keepalive_after_other_unkey_does_not_rekey():
     try:
         m = r.fake.mark()
         got = held_ptt(r.web, 4, other_unkey_at=1.5)
-        ons = [v for _, v in r.fake.ptt_frames(m)]
-        check("PTT on the wire: on, off (other operator), nothing after", ons, [1, 0])
+        r.fake.quiesce()
+        check("PTT on the wire: on, off (other operator), nothing after",
+              [v for _, v in r.fake.ptt_frames(m)], [1, 0])
         check("radio not transmitting", r.fake.state["tx"], 0)
         check_true("the page was told to release its button", "ptt_released" in got, str(got))
     finally:
@@ -1115,25 +1248,23 @@ def test_f18_no_split_or_swap_while_keyed():
     try:
         a, b = r.client(), r.client()
         a.cmd("F 14074000")
-        time.sleep(0.8)
+        check("settled on 14074000", r.settle(a), True)
         m = r.fake.mark()
         check("A: T 1", a.cmd("T 1"), ["RPRT 0"])
-        time.sleep(0.4)
+        check("server sees the key", r.settle(a), True)
         check("B: S 1 VFOB while keyed -> refused", b.cmd("S 1 VFOB"), ["RPRT -11"])
         check("B: S 0 VFOA (no change) while keyed -> ok", b.cmd("S 0 VFOA"), ["RPRT 0"])
-        notes = browser(r.web, [{"t": "swap"}])
+        notes = browser(r.web, [{"t": "swap"}], wait=10, until="notice")
         check_true("browser swap while keyed -> refused with a notice",
                    any("transmit" in n.lower() for n in notes), str(notes))
-        time.sleep(0.4)
         check("A: T 0", a.cmd("T 0"), ["RPRT 0"])
-        time.sleep(0.5)
+        expect("unkeyed", lambda: r.fake.state["tx"], 0)
         with r.fake.lock:
             frames = [f for f in r.fake.frames if f.t >= m]
         check("no split or swap on the wire while keyed", vfo_moves(frames), [])
         check("radio split still off", r.fake.state["split"], 0)
         check("after unkey: S 1 VFOB accepted", b.cmd("S 1 VFOB"), ["RPRT 0"])
-        time.sleep(0.6)
-        check("radio split on", r.fake.state["split"], 1)
+        expect("radio split on", lambda: r.fake.state["split"], 1)
         check("S 0 VFOA", b.cmd("S 0 VFOA"), ["RPRT 0"])
         a.close(); b.close()
     finally:
@@ -1146,17 +1277,16 @@ def test_ic7300_sigterm_restores_source():
     restore. It must go out after the unkey."""
     print("\n# IC-7300: SIGTERM during page voice puts DATA OFF MOD back")
     fake = FakeCiv("ic7300").start()
-    web, rport = 18000 + random.randrange(2000), 15000 + random.randrange(2000)
+    web, rport = free_port(), free_port()
     proc = subprocess.Popen(
         [sys.executable, "server.py", "--rig", "ic7300", "--port", fake.path, "--no-audio",
          "--listen", str(web), "--host", "127.0.0.1", "--rigctl-host", "127.0.0.1",
          "--rigctl-port", str(rport)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     out = ""
     try:
-        wait_for(lambda: len(fake.frames) > 6, 6)
-        time.sleep(0.5)
-        fake.inject(mode="USB", data=0)
-        time.sleep(1.0)
+        check("server polling the radio", fake_ready(fake), True)
+        t = fake.inject(mode="USB", data=0)
+        check("server told of plain USB", fake_told(fake, t, web=web), True)
 
         async def key_and_kill():
             import aiohttp, json
@@ -1166,6 +1296,7 @@ def test_ic7300_sigterm_restores_source():
                     for _ in range(3):
                         await ws.send_str(json.dumps({"t": "set", "k": "tx", "v": True, "mic": True}))
                         await asyncio.sleep(0.5)
+                    await asyncio.to_thread(wait_for, lambda: (fake.state["tx"], fake.state["data_off_mod"]) == (1, 3), 8)
                     keyed = (fake.state["tx"], fake.state["data_off_mod"])
                     proc.send_signal(signal.SIGTERM)
                     await asyncio.sleep(0.1)
@@ -1176,7 +1307,7 @@ def test_ic7300_sigterm_restores_source():
         except subprocess.TimeoutExpired:
             proc.kill()
             out = proc.communicate()[0]
-        wait_for(lambda: fake.state["data_off_mod"] == 0x02 and fake.state["tx"] == 0, 3)
+        wait_for(lambda: fake.state["data_off_mod"] == 0x02 and fake.state["tx"] == 0, 10)
         check("after SIGTERM: unkeyed, DATA OFF MOD back to MIC/ACC",
               (fake.state["tx"], fake.state["data_off_mod"]), (0, 0x02))
     finally:
@@ -1208,9 +1339,14 @@ TESTS = [test_f1_sigterm_while_keyed, test_f1_unit_unkey_then_stop,
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY")
+    ran = 0
     for t in TESTS:
         if only and only not in t.__name__:
             continue
+        ran += 1
         t()
+    # A filter that matches nothing must not read as a pass (a gate that ran
+    # nothing said PASS, 2026-10-23).
+    check_true(f"ONLY={only!r} selects at least one scenario", ran > 0, "")
     print("\nPASS" if not fails else f"\n{fails} FAILED")
     sys.exit(1 if fails else 0)

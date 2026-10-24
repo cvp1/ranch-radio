@@ -48,7 +48,7 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:62} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
-def wait_port(port, timeout=15):
+def wait_port(port, timeout=60):         # a ceiling; returns once the port answers
     end = time.time() + timeout
     while time.time() < end:
         try:

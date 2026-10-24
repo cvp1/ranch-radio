@@ -71,7 +71,17 @@ class FakeCiv:
         caps = rigs.get(rig)
         self.rig = rig
         self.addr = caps["addr"]
+        # Replies take wire time, as on the real CI-V link (10 bits a byte):
+        # an instant fake let the server poll ~25,000 frames/s and burn the
+        # CPU a CI runner needs for everything else.
+        self.byte_s = 10 / caps["baud"]
+        # A slow radio: commands that change something (answered OK) are
+        # acknowledged ack_delay_s late; reads are answered at once. Replies
+        # stay in order, so a read queued behind a slow command waits for it.
+        # (Delaying every reply made the fake answer ~4 frames/s against the
+        # server's ~17: an unbounded backlog of replies describing the past.)
         self.ack_delay_s = ack_delay_s
+        self._capture = None            # the worker's replies, held back to apply the ack delay
         self.tune_s = tune_s            # None = the tune never finishes
         self.ignore = set()             # cmd bytes or (cmd, sub) whose SETS are acked but not applied
         # Real G90 (fw 1.81, linux-station 2026-10-14): a 1A 06 set is acked, the display
@@ -81,12 +91,14 @@ class FakeCiv:
         self.g90_1a06_echo = g90_1a06_echo
         self._data_echo = None
         self.lock = threading.RLock()
-        self.state = {"freq": 14_074_000, "mode": "USB", "filter": 1, "data": 1,
+        self._state = {"freq": 14_074_000, "mode": "USB", "filter": 1, "data": 1,
                       "split": 0, "tx": 0, "tuner": 1, "freq_b": 14_074_000,
                       "swr_raw": b"\x00\x00", "po_raw": b"\x00\x00", "alc_raw": b"\x00\x00",
                       "att": 0, "data_off_mod": 0x02}   # IC-7300 default: MIC/ACC
         self.frames = []                # every frame the server wrote, in order
         self._stale_tx = 0
+        self._pending = 0               # frames received and not yet answered (or dropped)
+        self.answered = []              # (monotonic time the reply was computed, Frame), in order
         self.tune_ended_at = None       # monotonic time the last tune finished
         self._stop = threading.Event()
         self._work = queue.Queue()
@@ -98,9 +110,11 @@ class FakeCiv:
     # -- control knobs --
 
     def inject(self, **kv):
-        """A change made at the radio's front panel."""
+        """A change made at the radio's front panel. Returns a mark taken
+        after it: every reply computed after the mark carries the change."""
         with self.lock:
-            self.state.update(kv)
+            self._state.update(kv)
+        return time.monotonic()
 
     def stale_tx_reply_once(self):
         """The next 1C 00 poll reply says 'not transmitting', whatever the truth."""
@@ -128,6 +142,61 @@ class FakeCiv:
 
     def mark(self):
         return time.monotonic()
+
+    def status_replies_since(self, since, cmd=0x1C, data=b"\x00"):
+        """How many polls of one kind (default PTT status, 1C 00; 1C 01 the
+        tuner, 0F split, 26 00 mode) the fake answered after `since`. Each
+        reply carried the state as of its answer, so n of them after a
+        change means the server has been told about it n times."""
+        with self.lock:
+            return sum(1 for t, f in self.answered
+                       if t >= since and f.cmd == cmd and f.data == data)
+
+    def quiesce(self, quiet_s=0.3, timeout=10.0):
+        """Wait until nothing is left to read or answer and nothing new has
+        arrived for quiet_s: every frame the server wrote is recorded.
+        Use before a 'nothing was written' check, after the server stopped."""
+        end = time.monotonic() + timeout
+        last = (-1, -1)
+        since = time.monotonic()
+        while time.monotonic() < end:
+            with self.lock:
+                now = (len(self.frames), self._pending)
+            readable = bool(select.select([self.master], [], [], 0)[0]) if not self._stop.is_set() else False
+            if now != last or readable or now[1]:
+                last, since = now, time.monotonic()
+            elif time.monotonic() - since >= quiet_s:
+                return True
+            time.sleep(0.02)
+        return False
+
+    @property
+    def state(self):
+        """The radio's state, as a test should see it: first waits until
+        every frame the server has written is answered, so a check made
+        right after a command sees it applied (as with an instant fake) and
+        a 'nothing changed' check covers everything sent. The worker (and
+        a stopped fake) read it directly."""
+        # Not while this thread holds the lock: answering needs it.
+        if (threading.current_thread() not in self._threads and not self._stop.is_set()
+                and not self.lock._is_owned()):
+            self.caught_up()
+        return self._state
+
+    def caught_up(self, timeout=10.0):
+        """Wait until every frame the server has written so far is answered:
+        no reply describing the past is still queued to land later. (The
+        queue need not empty: a server that sends one frame per reply keeps
+        a few in flight for good once a slow ack has let them build up.)"""
+        with self.lock:
+            n = len(self.frames)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self.lock:
+                if len(self.answered) >= n:
+                    return True
+            time.sleep(0.02)
+        return False
 
     # -- lifecycle --
 
@@ -188,10 +257,17 @@ class FakeCiv:
                 f = Frame(now, body[2], body[3:])
                 with self.lock:
                     self.frames.append(f)
+                    self._pending += 1
                 self._work.put(f)
 
     def _send(self, cmd, data=b""):
         frame = b"\xfe\xfe" + bytes([CTRL, self.addr, cmd]) + data + b"\xfd"
+        if self._capture is not None:   # in the worker: written after any ack delay
+            self._capture.append((cmd, frame))
+            return
+        self._write_frame(frame)
+
+    def _write_frame(self, frame):
         with self.lock:
             if self._stop.is_set():
                 return                  # stopped: the fd may already belong to another pty
@@ -205,14 +281,23 @@ class FakeCiv:
             f = self._work.get()
             if f is None or self._stop.is_set():
                 return
-            if self.ack_delay_s:
-                time.sleep(self.ack_delay_s)
-                if self._stop.is_set():
-                    return
+            replies = self._capture = []
+            computed = time.monotonic()     # the reply describes the state as of now
             try:
                 self._answer(f)
             except Exception as e:   # a bad frame must not kill the fake
                 print("fake_civ: error on", f, e, file=sys.stderr)
+            finally:
+                self._capture = None
+                wait = self.byte_s * (len(f.data) + 6 + sum(len(fr) for _, fr in replies))
+                if self.ack_delay_s and any(cmd == OK for cmd, _ in replies):
+                    wait += self.ack_delay_s
+                time.sleep(wait)
+                for _, frame in replies:
+                    self._write_frame(frame)
+                with self.lock:
+                    self._pending -= 1
+                    self.answered.append((computed, f))
 
     def _ignored(self, cmd, sub=None):
         return cmd in self.ignore or (cmd, sub) in self.ignore
@@ -220,7 +305,7 @@ class FakeCiv:
     def _answer(self, f):
         c, d = f.cmd, f.data
         with self.lock:
-            s = self.state
+            s = self._state
             if c == 0x03:
                 return self._send(0x03, bcd_le(s["freq"], 5))
             if c == 0x04:
@@ -320,10 +405,16 @@ class FakeCiv:
                 return self._send(OK)
             return self._send(OK)
 
+    def end_tune(self):
+        """End a tune now (for tune_s=None: the test, not a timer, decides
+        when, so a slow check can't outlast it). Returns a mark after it."""
+        self._tune_done()
+        return time.monotonic()
+
     def _tune_done(self):
         with self.lock:
-            if self.state["tuner"] == 2:
-                self.state.update(tuner=1, tx=0)
+            if self._state["tuner"] == 2:
+                self._state.update(tuner=1, tx=0)
                 self.tune_ended_at = time.monotonic()
 
 

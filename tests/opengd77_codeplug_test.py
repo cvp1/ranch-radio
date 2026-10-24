@@ -19,7 +19,6 @@ against tests/fake_dmrconf.py and tests/fake_opengd77.py.
 import asyncio
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -35,6 +34,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import qdmr  # noqa: E402
 from fake_opengd77 import FakeOpenGD77  # noqa: E402
+from testkit import free_port  # noqa: E402
 
 fails = 0
 
@@ -149,7 +149,7 @@ os.makedirs(FD)
 with open(os.path.join(FD, "radio.yaml"), "w") as f:
     f.write(CODEPLUG)
 CPS = os.path.join(TMP, "codeplugs")
-WEB = 20000 + random.randrange(1000)
+WEB = free_port()
 fake = FakeOpenGD77().start()
 fake.layout_file = os.path.join(FD, "layout.json")
 CFG = os.path.join(TMP, "addons.json")
@@ -205,7 +205,43 @@ class Page:
 
     def notice(self, text, since, timeout=15):
         e = self.wait(lambda e: e.get("t") == "notice" and text in json.dumps(e), timeout, since)
+        if not e:
+            self.dump(f"no notice with {text!r} within {timeout} s", since)
         return e and json.dumps(e)
+
+    def status(self):
+        """The add-on's status as the page last heard it (a status event, or
+        the snapshot sent when it was switched on)."""
+        for e in reversed(list(self.events)):
+            if gd(e) and (e.get("status") or (e.get("snapshot") or {}).get("status")):
+                return e.get("status") or e["snapshot"]["status"]
+        return ((self.hello.get("addons") or {}).get("opengd77") or {}).get("status") or {}
+
+    def ready(self, what, timeout=20):
+        """What the page waits for before it enables Read and Write: the radio
+        connected and no job running (static/addons/opengd77.js). The LAST
+        status counts: a job's own status (connected: false) comes before its
+        notice, so a "connected" heard before the job started is never taken
+        for the watch being back after it."""
+        end = time.time() + timeout
+        while time.time() < end:
+            st = self.status()
+            if st.get("connected") is True and not st.get("busy"):
+                return True
+            time.sleep(0.05)
+        check(f"(precondition) {what}: the radio connected, not busy", self.status(), "connected, not busy")
+        self.dump(f"not ready for {what}", max(0, len(self.events) - 30))
+        return False
+
+    def dump(self, why, since):
+        """What a failing wait saw: every notice and status since, and the server's log."""
+        print(f"      -- {why}; since event {since}:")
+        for e in list(self.events)[since:]:
+            if e.get("t") == "notice":
+                print(f"      notice: {e.get('msg')}")
+            elif gd(e) and e.get("status"):
+                print(f"      status: {e['status']}")
+        print("      server log (last 40 lines):\n" + "\n".join("      | " + l for l in server_log(40)))
 
     def close(self):
         async def _c():
@@ -228,6 +264,21 @@ server = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "
                            "--addons", CFG, "--addons-state", os.path.join(TMP, "state.json")],
                           cwd=ROOT, env=dict(os.environ, FAKE_DMRCONF_DIR=FD),
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+LOG = []                          # the server's log, read as it comes (a full pipe would stall the server)
+
+
+def _drain_log():
+    for line in server.stdout:
+        LOG.append(line.rstrip("\n"))
+
+
+threading.Thread(target=_drain_log, daemon=True).start()
+
+
+def server_log(n):
+    return [l for l in list(LOG) if " civ INFO " not in l][-n:]
+
+
 for _ in range(100):
     try:
         socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
@@ -235,8 +286,8 @@ for _ in range(100):
     except OSError:
         time.sleep(0.1)
 try:
-    time.sleep(1.0)
     page = Page()
+    page.ready("the first read")
 
     # read
     n = len(page.events)
@@ -259,7 +310,7 @@ try:
     check("the YAML on request", e and e["codeplug_yaml"], CODEPLUG)
 
     open(os.path.join(FD, "old"), "w").close()
-    page.wait(connected, since=n)
+    page.ready("a read with dmrconf 0.11.3")
     n = len(page.events)
     before = [v for v in verbs() if v == "read"]
     page.send(do="codeplug_read")
@@ -269,14 +320,14 @@ try:
 
     # a read dmrconf can't decode cleanly: shown, and a write is stopped before dmrconf write
     open(os.path.join(FD, "warn"), "w").close()
-    page.wait(connected, since=n)
+    page.ready("a read with linking problems")
     n = len(page.events)
     page.send(do="codeplug_read")
     msg = page.notice("could not decode it cleanly", n)
     check("read with linking problems: says writing is blocked", bool(msg and "writing is blocked" in msg), True)
     e = page.wait(lambda e: gd(e) and (e.get("codeplug") or {}).get("problems"), since=n)
     check("  the problems reach the page", bool(e and "out of bounds" in e["codeplug"]["problems"][0]), True)
-    page.wait(connected, since=n)
+    page.ready("a write after a read with problems")
     n = len(page.events)
     before = len(calls())
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
@@ -287,6 +338,7 @@ try:
     os.remove(os.path.join(FD, "warn"))
 
     # refusals: none of them reaches dmrconf write
+    page.ready("the refusals")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=NEW)
     check("write without confirm: refused", bool(page.notice("confirm first", n)), True)
@@ -295,6 +347,7 @@ try:
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
     check("write with dmrconf 0.11.3: refused, says why", bool(page.notice("no 'openuv380' driver", n)), True)
     os.remove(os.path.join(FD, "old"))
+    page.ready("a write verify rejects")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=NEW.replace("2m Simplex", "BAD"), confirm=True)
     check("write a file verify rejects: refused with dmrconf's reason",
@@ -325,7 +378,7 @@ positioning:
     with open(os.path.join(FD, "radio.yaml"), "w") as f:
         f.write(QDMR_SPARSE)
     open(os.path.join(FD, "warn"), "w").close()
-    page.wait(connected, since=n)
+    page.ready("a write onto slots with gaps")
     n = len(page.events)
     before = len(calls())
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
@@ -334,14 +387,13 @@ positioning:
     check("  naming the empty slots", bool(msg and "empty: 3-4" in msg), True)
     check("  and only dmrconf's driver check ran", [c[2].split()[0] for c in calls()[before:]], ["--list-radios"])
 
-    page.wait(connected, since=n)
+    page.ready("a read of slots with gaps")
     n = len(page.events)
     page.send(do="codeplug_read")
     msg = page.notice("codeplug read: 3 channels", n)
     check("gaps, read: zones rebuilt from the radio", bool(msg and "zones rebuilt" in msg), True)
     check("  the made-up APRS channel dropped", bool(msg and "APRS Channel" in msg), True)
     check("  and writing is not blocked", bool(msg and "blocked" not in msg), True)
-    page.wait(connected, since=n)
     n = len(page.events)
     page.send(do="codeplug_get")
     e = page.wait(lambda e: gd(e) and e.get("codeplug_yaml"), since=n)
@@ -350,7 +402,7 @@ positioning:
     check("  no APRS channel, no revert to it", ("APRS Channel" in got, "revert:" in got), (False, False))
     check("  qdmr's own file kept beside it", any(f.endswith("-read-qdmr.yaml") for f in os.listdir(CPS)), True)
 
-    page.wait(connected, since=n)
+    page.ready("a write from that read")
     n = len(page.events)
     edited = got.replace("2m Call", "2m Simplex")
     page.send(do="codeplug_write", yaml=edited, confirm=True)
@@ -365,7 +417,7 @@ positioning:
     fake.zones = [{"name": "Home", "slots": [1, 2, 3]}]
 
     # write
-    page.wait(connected, since=n)
+    page.ready("the write")
     n = len(page.events)
     before = len(calls())
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
@@ -383,17 +435,17 @@ positioning:
 
     # verify crashes (dmrconf 0.15.1, openuv380): write's own check decides
     open(os.path.join(FD, "crash"), "w").close()
-    page.wait(connected, since=n)
+    page.ready("a write when verify crashes")
     n = len(page.events)
+    before = len(calls())                  # before the send: verify may have run by the next line
     page.send(do="codeplug_write", yaml=NEW.replace("2m Simplex", "BAD"), confirm=True)
-    before = len(calls())
     check("verify crashes, the offline encode refuses a bad file",
           bool(page.notice("encode refused the codeplug", n, timeout=20)), True)
     check("  before anything was read from or sent to the radio",
           [c[2].split()[0] for c in calls()[before:] if not c[2].startswith("--")], ["verify", "encode"])
     with open(os.path.join(FD, "radio.yaml")) as f:
         check("  and the radio keeps its codeplug", f.read(), NEW)
-    page.wait(connected, since=n)
+    page.ready("a good write when verify crashes")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=NEW.replace("2m Simplex", "2m Crash"), confirm=True)
     check("verify crashes, a good file is still written and read back",
@@ -406,13 +458,13 @@ positioning:
 
     # a channel at a power level qdmr can't write back: the read says so, writing is blocked
     fake.power = {2: 7}
-    page.wait(connected, since=n)
+    page.ready("a read with a power level qdmr can't keep")
     n = len(page.events)
     page.send(do="codeplug_read")
     msg = page.notice("codeplug read", n)
     check("power level qdmr can't keep: read says writing is blocked",
           bool(msg and "power level" in msg and "blocked" in msg), True)
-    page.wait(connected, since=n)
+    page.ready("a write with a power level qdmr can't keep")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
     check("  and a write stops before dmrconf write", bool(page.notice("Nothing was sent", n, timeout=20)), True)
@@ -421,14 +473,14 @@ positioning:
     # the radio restarts after a write (OpenGD77 does): the read-back waits for it
     with open(os.path.join(FD, "reboot"), "w") as f:
         f.write("2")
-    page.wait(connected, since=n)
+    page.ready("a write the radio restarts after")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=NEW.replace("2m Simplex", "2m Reboot"), confirm=True)
     check("radio restarts after the write: read back once it's back",
           bool(page.notice("3 channels match", n, timeout=40)), True)
     with open(os.path.join(FD, "reboot"), "w") as f:
         f.write("9")
-    page.wait(connected, since=n)
+    page.ready("a write the radio never comes back from")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
     msg = page.notice("failed", n, timeout=60)
@@ -441,7 +493,7 @@ positioning:
 
     # a read-back that differs
     open(os.path.join(FD, "drop"), "w").close()
-    page.wait(connected, since=n)
+    page.ready("a write whose read-back differs")
     n = len(page.events)
     page.send(do="codeplug_write", yaml=CODEPLUG, confirm=True)
     msg = page.notice("read-back differs", n, timeout=20)
@@ -451,11 +503,15 @@ positioning:
 
     # not an MD-UV380/390
     fake.radio_type = 7
+    n = len(page.events)
     page.send(do="power", on=False)
-    time.sleep(0.5)
+    check("(precondition) the add-on switched off", bool(page.wait(lambda e: gd(e) and e.get("on") is False, since=n)),
+          True)
     n = len(page.events)
     page.send(do="power", on=True)
-    page.wait(connected, since=n)
+    page.ready("a write on an MD-380")
+    check("  the radio now says it is an MD-380", (page.wait(lambda e: gd(e) and e.get("info"), since=n) or {})
+          .get("info", {}).get("type"), 7)
     n = len(page.events)
     before = len(calls())
     page.send(do="codeplug_write", yaml=NEW, confirm=True)
@@ -467,9 +523,13 @@ positioning:
     page.close()
 finally:
     server.terminate()
-    out = server.communicate(timeout=10)[0]
+    try:
+        server.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait()
     if fails:
-        print(out[-4000:])
+        print("server log (last 40 lines):\n" + "\n".join(server_log(40)))
     fake.stop()
     shutil.rmtree(TMP, ignore_errors=True)
 
