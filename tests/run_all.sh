@@ -14,6 +14,7 @@ pass=0; fail=0; failed=()
 
 run() {   # name, command...
   local name="$1"; shift
+  [[ " ${RR_SKIP:-} " == *" $name "* ]] && { echo "SKIP $name"; return; }
   if timeout 900 "$@" >"$LOGDIR/$name.log" 2>&1; then
     echo "PASS $name"; pass=$((pass + 1))
   else
@@ -23,7 +24,6 @@ run() {   # name, command...
 
 for t in tests/*_test.py; do
   name=$(basename "$t" .py)
-  [[ " ${RR_SKIP:-} " == *" $name "* ]] && { echo "SKIP $name"; continue; }
   py="$PY"
   [[ $name == uvpro_bridge_test && -x "$BENLINK" ]] && py="$BENLINK"
   run "$name" "$py" "$t"
