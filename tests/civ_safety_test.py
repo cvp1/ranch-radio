@@ -464,7 +464,7 @@ def test_f3_no_retune_while_keyed():
                    any("transmit" in n.lower() for n in notes), str(notes))
         check("radio still on 14074000 USB", (r.fake.state["freq"], r.fake.state["mode"]), (14074000, "USB"))
         check("A: T 0", a.cmd("T 0"), ["RPRT 0"])
-        expect("radio unkeyed", lambda: r.fake.state["tx"], 0)
+        check("radio unkeyed, and the server knows", r.settle(a), True)
         check("no frequency set on the wire while keyed", keyed_retunes(r.fake.sets_since(m)), [])
         check("after unkey: F 7074000 accepted", b.cmd("F 7074000"), ["RPRT 0"])
         expect("radio moved to 7074000", lambda: r.fake.state["freq"], 7074000)
@@ -1009,7 +1009,7 @@ def test_winlink_mode_usb_data():
             extra=("--winlink-rigctl-port", str(lane), "--winlink-mode", "USB+DATA"))
     try:
         t = r.fake.inject(mode="USB", data=0)               # left in plain USB at the panel
-        check("server told of plain USB", r.told(t), True)
+        check("server told of plain USB", r.told(t, n=1, poll=data_poll(RIG)), True)
         usb_d = lambda: (r.fake.state["mode"], r.fake.state["data"]) == ("USB", 1)
         browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until=usb_d)
         check("armed: the radio is in USB-D while the page is open", browser.held, True)
@@ -1033,7 +1033,7 @@ def test_winlink_arm_refused_while_another_transmits():
             extra=("--winlink-rigctl-port", str(lane), "--winlink-mode", "USB+DATA"))
     try:
         t = r.fake.inject(mode="USB", data=0)
-        check("server told of plain USB", r.told(t), True)
+        check("server told of plain USB", r.told(t, n=1, poll=data_poll(RIG)), True)
         app = r.client()
         check("app keys", app.cmd("T 1"), ["RPRT 0"])
         notes = browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until="notice")
