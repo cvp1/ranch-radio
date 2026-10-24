@@ -29,9 +29,10 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
 
-from ax25 import Frame, KissDecoder, U_DM, U_SABM, kiss_wrap  # noqa: E402
+from ax25 import Frame, KissDecoder, U_DISC, U_DM, U_SABM, kiss_wrap  # noqa: E402
 from ax25_link import Link  # noqa: E402
-from fake_kiss_radio import FakeKissRadio  # noqa: E402
+from fake_kiss_radio import FakeKissRadio as _FakeKissRadio  # noqa: E402
+from testkit import free_port  # noqa: E402
 
 AGW_HDR = struct.Struct("<B3xcxBx10s10sI4x")
 fails = 0
@@ -52,15 +53,29 @@ def check_true(name, cond, detail=""):
     return cond
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+# Every hub and fake radio a scenario starts, so one that raised half way
+# (a hub that didn't start) is still stopped before the next scenario: a
+# leftover reader thread on a reused fd steals the next test's bytes.
+live = []
+
+
+class FakeKissRadio(_FakeKissRadio):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        live.append(self)
+
+
+def stop_leftovers():
+    while live:
+        x = live.pop()
+        try:
+            x.stop()
+        except Exception as e:     # noqa: BLE001
+            print(f"      cleanup: {type(x).__name__}.stop raised {e!r}")
 
 
 def wait_for(pred, timeout=10.0, step=0.05):
+    """pred()'s first truthy value, or its last falsy one after timeout."""
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         v = pred()
@@ -73,7 +88,12 @@ def wait_for(pred, timeout=10.0, step=0.05):
 # ------------------------------------------------------------ the hub
 
 class HubProc:
+    START_S = 30    # a 2-CPU runner busy with other work can take this long to import aiohttp
+
     def __init__(self, radio, tx=True, extra=()):
+        self.fails_at_start = fails
+        self.stopped = False
+        live.append(self)
         self.agw, self.kiss, self.http, self.ctrl = free_port(), free_port(), free_port(), free_port()
         self.tmp = tempfile.mkdtemp(prefix="tnchub-")
         cmd = [sys.executable, os.path.join(ROOT, "tnc_hub.py"), "--tnc", radio.path,
@@ -88,10 +108,15 @@ class HubProc:
             cmd.append("--tx")
         self.log = open(os.path.join(self.tmp, "hub.log"), "w+")
         self.p = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT)
-        ok = wait_for(lambda: self._up(), 8)
+        # Up = every port listening (the "tnc_hub up" line is logged after the
+        # last one opens; radio "up" alone can come before the AGWPE, KISS and
+        # control ports exist) and the radio open.
+        ok = wait_for(lambda: self.p.poll() is None and "tnc_hub up:" in self.output()
+                      and self._up(), self.START_S)
         if not ok:
+            out = self.output()
             self.stop()
-            raise RuntimeError("hub did not start:\n" + self.output())
+            raise RuntimeError("hub did not start:\n" + out[-3000:])
 
     def _up(self):
         try:
@@ -123,11 +148,31 @@ class HubProc:
             return e.code, json.load(e)
 
     def output(self):
-        self.log.flush()
-        self.log.seek(0)
-        return self.log.read()
+        with open(self.log.name, errors="replace") as fh:
+            return fh.read()
+
+    def wait_log(self, text, since=0, timeout=10.0):
+        """Wait for a hub log line containing text, after character `since`
+        (a mark from len(hub.output())): causal evidence the hub acted."""
+        return wait_for(lambda: text in self.output()[since:], timeout)
+
+    def counts(self):
+        return self.status()["counts"]
 
     def stop(self):
+        if self.stopped:
+            return
+        self.stopped = True
+        if self in live:
+            live.remove(self)
+        if fails > self.fails_at_start:     # the context a failing check needs, in CI's log too
+            try:
+                st = self.status()
+                print(f"      hub radio: {st['radio']}, counts {st['counts']}")
+            except Exception as e:     # noqa: BLE001
+                print(f"      hub status unavailable: {e!r}")
+            lines = [l.rstrip() for l in self.output().splitlines()]
+            print("      hub log (last 40 lines):\n" + "\n".join("      | " + l for l in lines[-40:]))
         if self.p.poll() is None:
             self.p.send_signal(signal.SIGINT)
             try:
@@ -142,6 +187,10 @@ class HubProc:
 class Agw:
     def __init__(self, port):
         self.s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        # Blocking from here: with the connect timeout left on, the reader
+        # thread died silently after 5 s without traffic, and every later
+        # frame (a 'd' after a slow lossy transfer) was never seen.
+        self.s.settimeout(None)
         self.frames = []
         self.lock = threading.Lock()
         threading.Thread(target=self._rx, daemon=True).start()
@@ -178,12 +227,19 @@ class Agw:
         return wait_for(lambda: len(self.got(kind)) >= n and self.got(kind), timeout)
 
     def close(self):
+        # shutdown first: a bare close() leaves the reader blocked in recv on
+        # an fd number the next socket or pty may reuse.
+        try:
+            self.s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.s.close()
 
 
 class Kiss:
     def __init__(self, port):
         self.s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        self.s.settimeout(None)         # the reader must not die in a quiet spell (see Agw)
         self.dec = KissDecoder()
         self.frames = []
         threading.Thread(target=self._rx, daemon=True).start()
@@ -202,6 +258,12 @@ class Kiss:
         self.s.sendall(kiss_wrap(raw, cmd=cmd))
 
     def close(self):
+        # shutdown first: a bare close() leaves the reader blocked in recv on
+        # an fd number the next socket or pty may reuse.
+        try:
+            self.s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.s.close()
 
 
@@ -242,9 +304,17 @@ class SimStation:
             return
         if self.link is None or self.link.state == "disconnected":
             if f.kind == "U" and f.utype == U_SABM:
-                self.link = Link(self.call, str(f.src), self._send, self, frack=0.4, n2=6,
+                # n2 as the hub's --retries 12 in the connected scenarios: at
+                # 6 tries of 0.4 s the station gave up after ~3 s without an
+                # answer, which a starved 2-CPU runner can produce on its own.
+                self.link = Link(self.call, str(f.src), self._send, self, frack=0.4, n2=12,
                                  baud=96000, ack_delay=0.05)
                 self.link.accept(f)
+            elif f.kind == "U" and f.utype == U_DISC:
+                # AX.25 2.2, disconnected state: a DISC is answered with DM.
+                # Our UA to the hub's first DISC can be the frame that's lost;
+                # ignoring the retry left the hub retrying to the end.
+                self._send(Frame(f.src, f.dest, kind="U", utype=U_DM, pf=f.pf, command=False))
             return
         self.link.handle(f)
 
@@ -296,6 +366,31 @@ def aprs(src, info, dest="APRS", digis=()):
     return Frame.ui(src, dest, info.encode(), digis=digis).encode()
 
 
+def clients_ready(hub, kiss=0, agw_raw=0, control=0, timeout=10):
+    """Wait until the hub lists the clients a check depends on. A TCP connect
+    returns once the kernel queues it, before the hub has accepted it: a frame
+    heard in that gap reaches nobody (2026-10-23: the first of two frames went
+    missing on a busy runner)."""
+    def ok():
+        c = hub.status()["clients"]
+        return (len(c["kiss"]) >= kiss and len(c["control"]) >= control
+                and sum(1 for a in c["agw"] if a["raw"]) >= agw_raw)
+    return wait_for(ok, timeout)
+
+
+def processed(hub, n, timeout=20):
+    """Wait until the hub has decided on n frames handed to it (sent or
+    refused): its own counters, not elapsed time."""
+    return wait_for(lambda: (lambda c: c.get("tx_frames", 0) + c.get("tx_refused", 0) >= n)(hub.counts()),
+                    timeout)
+
+
+def on_air(radio, hub, timeout=10):
+    """Wait until every frame the hub counts as sent has reached the fake
+    radio ("sent by the hub" is not yet "read off the pty")."""
+    return wait_for(lambda: len(radio.transmitted()) >= hub.counts().get("tx_frames", 0), timeout)
+
+
 # ------------------------------------------------------------ scenarios
 
 def scenario_receive_fanout():
@@ -305,16 +400,16 @@ def scenario_receive_fanout():
         k = Kiss(hub.kiss)
         a = Agw(hub.agw)
         a.send("k")                    # raw monitoring on
-        time.sleep(0.3)
+        check_true("KISS client and AGWPE raw monitor are listed", bool(clients_ready(hub, kiss=1, agw_raw=1)))
         pkt = aprs("KF7ABC-9", "!4049.00N/10510.00W>test", digis=["WIDE1-1"])
         msg = aprs("KF7ABC-9", ":N9ABC-7  :hello from the trail{12")
         radio.inject(pkt)
         radio.inject(msg)
-        wait_for(lambda: len(k.frames) >= 2, 5)
+        wait_for(lambda: len(k.frames) >= 2, 10)
         check("KISS client gets both frames, byte for byte", k.frames[:2], [pkt, msg])
-        raws = a.wait("K", 5, n=2) or []
+        raws = a.wait("K", 10, n=2) or []
         check("AGWPE raw monitor gets both frames", [r[3][1:] for r in raws[:2]], [pkt, msg])
-        st = hub.status()
+        st = wait_for(lambda: (lambda st: st["messages"] and st)(hub.status()), 10) or hub.status()
         check("heard list has the station", [h["station"] for h in st["heard"]], ["KF7ABC-9"])
         check("message to N9ABC-7 is surfaced", [(m["to"], m["text"]) for m in st["messages"]],
               [("N9ABC-7", "hello from the trail{12")])
@@ -335,11 +430,12 @@ def scenario_receive_only_refuses_everything():
         a.wait("X")
         a.send("M", "N9ABC-10", "APRS", b">status", pid=0xF0)
         a.send("C", "N9ABC-10", "W7TST-10")
-        d = a.wait("d", 5)
+        d = a.wait("d", 10)
         check_true("AGWPE connect answered with disconnect", bool(d),
                    repr(d[0][3]) if d else "no 'd' frame")
         check_true("…saying transmit is off", bool(d) and b"transmit is off" in d[0][3])
-        time.sleep(0.5)
+        check_true("the KISS and UI frames were refused", bool(processed(hub, 2)), str(hub.counts()))
+        time.sleep(0.5)                # negative check: a window for a stray frame to show up
         check("nothing transmitted (KISS, UI, connect)", radio.transmitted(), [])
         status, body = hub.set_tx(True)
         check("page cannot switch transmit on without --tx", status, 403)
@@ -362,8 +458,9 @@ def scenario_callsign_gate_and_kiss_commands():
         k.send(bad)
         k.send(good)
         k.send(good2)
-        wait_for(lambda: len(radio.transmitted()) >= 2, 5)
-        time.sleep(0.4)
+        processed(hub, 4)              # bad, garbage, good, good2 (the KISS command is dropped earlier)
+        on_air(radio, hub)
+        time.sleep(0.4)                # negative check: a window for a stray frame to show up
         check("only the N9ABC and N0CALL frames went out",
               [r for _, r in radio.transmitted()], [good, good2])
         check("KISS parameter command never reached the radio", radio.cmds, [])
@@ -381,7 +478,8 @@ def scenario_ui_rate_limit():
         k = Kiss(hub.kiss)
         for i in range(6):
             k.send(aprs("N9ABC-7", f">beacon {i}"))
-        time.sleep(1.0)
+        check_true("all 6 frames decided on", bool(processed(hub, 6)), str(hub.counts()))
+        on_air(radio, hub)
         check("UI frames capped at 3 per minute", len(radio.transmitted()), 3)
         k.close()
     finally:
@@ -396,7 +494,8 @@ def scenario_page_kill_switch():
         check("page switches transmit off", (status, body.get("enabled")), (200, False))
         k = Kiss(hub.kiss)
         k.send(aprs("N9ABC-7", ">after kill"))
-        time.sleep(0.6)
+        check_true("the frame was refused", bool(processed(hub, 1)), str(hub.counts()))
+        time.sleep(0.3)                # negative check: a window for a stray frame to show up
         check("nothing goes out after the kill switch", radio.transmitted(), [])
         status, body = hub.set_tx(True)
         check("loopback can switch it back on (started with --tx)", (status, body.get("enabled")),
@@ -469,7 +568,8 @@ def scenario_frame_rate_cap():
         k = Kiss(hub.kiss)
         for i in range(9):
             k.send(aprs("N9ABC-7", f">burst {i}"))
-        time.sleep(1.0)
+        check_true("all 9 frames decided on", bool(processed(hub, 9)), str(hub.counts()))
+        on_air(radio, hub)
         check("overall frame cap holds at 5 per minute", len(radio.transmitted()), 5)
         k.close()
     finally:
@@ -492,8 +592,7 @@ def _connected_transfer(loss, size, name):
         check_true(f"{name}: connected", bool(c) and c[0][3].startswith(b"*** CONNECTED With "),
                    repr(c[0][3]) if c else "no 'C'")
         if not c:
-            print(hub.output()[-3000:])
-            return
+            return                     # HubProc.stop prints the hub log
         check(f"{name}: 'C' frame names the remote in From", (c[0][1], c[0][2]),
               ("W7TST-10", "N9ABC-10"))
         for i in range(0, len(payload), 200):
@@ -502,11 +601,11 @@ def _connected_transfer(loss, size, name):
         echoed = b"".join(d[3] for d in a.got("D"))
         check(f"{name}: {size} bytes echoed back intact", echoed == payload, True)
         a.send("Y", "N9ABC-10", "W7TST-10")
-        y = a.wait("Y", 5)
+        y = a.wait("Y", 10)
         check(f"{name}: outstanding frames drain to 0",
               struct.unpack("<I", y[-1][3])[0] if y else None, 0)
         a.send("d", "N9ABC-10", "W7TST-10")
-        d = a.wait("d", 20)
+        d = a.wait("d", 30)
         check_true(f"{name}: disconnect acknowledged", bool(d), repr(d[0][3]) if d else "")
         st = hub.status()
         print(f"      {name}: {time.monotonic() - t0:.1f}s, link stats gone: {st['links'] == []}, "
@@ -538,6 +637,7 @@ def scenario_connect_no_answer():
         d = a.wait("d", 30)
         check_true("no answer: AGWPE gets RETRYOUT", bool(d) and b"RETRYOUT" in d[0][3],
                    repr(d[0][3]) if d else "no 'd'")
+        on_air(radio, hub)
         sabms = [r for _, r in radio.transmitted() if Frame.decode(r).name() == "SABM"]
         check("no answer: SABM sent 1 + N2 times", len(sabms), 5)
         a.close()
@@ -554,7 +654,7 @@ def scenario_connect_busy():
         a.send("X", "N9ABC-10")
         a.wait("X")
         a.send("C", "N9ABC-10", "W7TST-10")
-        d = a.wait("d", 10)
+        d = a.wait("d", 20)
         check_true("DM: AGWPE told busy", bool(d) and b"busy" in d[0][3],
                    repr(d[0][3]) if d else "no 'd'")
         a.close()
@@ -570,10 +670,10 @@ def scenario_wrong_source_connect():
         a.send("X", "W1AW")
         a.wait("X")
         a.send("C", "W1AW", "W7TST-10")
-        d = a.wait("d", 5)
+        d = a.wait("d", 10)
         check_true("connect as someone else's call refused", bool(d) and b"not an allowed" in d[0][3],
                    repr(d[0][3]) if d else "no 'd'")
-        time.sleep(0.3)
+        time.sleep(0.3)                # negative check: a window for a stray frame to show up
         check("…and nothing transmitted", radio.transmitted(), [])
         a.close()
     finally:
@@ -589,13 +689,13 @@ def scenario_radio_drop_ends_link():
         a.send("X", "N9ABC-10")
         a.wait("X")
         a.send("C", "N9ABC-10", "W7TST-10")
-        if not check_true("radio drop: connected first", bool(a.wait("C", 10))):
+        if not check_true("radio drop: connected first", bool(a.wait("C", 20))):
             return
         radio.stop()                         # Bluetooth link gone
-        d = a.wait("d", 10)
+        d = a.wait("d", 20)
         check_true("radio drop: AGWPE client told the link ended",
                    bool(d) and b"radio" in d[0][3], repr(d[0][3]) if d else "no 'd'")
-        st = wait_for(lambda: not hub.status()["radio"]["up"] and hub.status(), 5)
+        st = wait_for(lambda: not hub.status()["radio"]["up"] and hub.status(), 10)
         check("radio drop: status shows radio not linked", bool(st) and st["radio"]["up"], False)
         a.close()
     finally:
@@ -626,7 +726,7 @@ def scenario_lend_radio():
         a.send("X", "N9ABC-10")
         a.wait("X")
         a.send("C", "N9ABC-10", "W7TST-10")
-        check_true("lend: a link is up first", bool(a.wait("C", 10)))
+        check_true("lend: a link is up first", bool(a.wait("C", 20)))
         code, body = hub.post("/api/lend", {"seconds": 30, "to": "uvpro"})
         check("lend: refused while a link is up", (code, "link" in body.get("error", "")), (409, True))
         check("lend: the link carries on", hub.status()["radio"]["up"], True)
@@ -635,10 +735,10 @@ def scenario_lend_radio():
 
         k = Kiss(hub.kiss)
         k.send(aprs("N9ABC-7", ">just sent"))
-        wait_for(lambda: radio.transmitted(), 3)
+        wait_for(lambda: radio.transmitted(), 10)
         code, body = hub.post("/api/lend", {"seconds": 30, "to": "uvpro"})
         check("lend: refused just after a transmit", (code, "moment ago" in body.get("error", "")), (409, True))
-        time.sleep(5.2)
+        time.sleep(5.2)                # the protocol minimum: no lend within 5 s of a transmit
         n_tx = len(radio.transmitted())
 
         check("lend: seconds out of range refused", hub.post("/api/lend", {"seconds": 301})[0], 400)
@@ -657,19 +757,24 @@ def scenario_lend_radio():
         check("lend: radio let go at once (answer came after)", st["radio"]["up"], False)
         check("lend: status says who has it", (st["radio"]["lent"] or {}).get("to"), "uvpro")
         check_true("lend: until about 30 s from now", 29 < st["radio"]["lent"]["until"] - t0 < 40.5)
-        time.sleep(2.5)
+        time.sleep(2.5)                # negative check: longer than the hub's 2 s reconnect wait
         check("lend: radio stays let go (no reconnect)", hub.status()["radio"]["up"], False)
 
+        mark = len(hub.output())
         k.send(aprs("N9ABC-7", ">while lent"))
         a.close()
-        a = Agw(hub.agw)            # the first one's reader timed out in the quiet above
+        a = Agw(hub.agw)            # a fresh client, as Pat would reconnect
         a.send("X", "N9ABC-10")
         a.wait("X")
         a.send("C", "N9ABC-10", "W7TST-10")
-        d = a.wait("d", 5)
+        d = a.wait("d", 10)
         check_true("lend: a connect is refused, saying why",
                    bool(d) and b"lent to uvpro" in d[0][3], repr(d[0][3]) if d else "no 'd'")
-        time.sleep(0.5)
+        # The KISS frame went on another connection: wait for the hub to have
+        # refused it before the checks that depend on it.
+        check_true("lend: the frame sent while lent is refused",
+                   bool(hub.wait_log("TX refused (the radio is lent to uvpro", mark)))
+        time.sleep(0.5)                # negative check: a window for a stray frame to show up
         check("lend: nothing reached the radio while lent", len(radio.transmitted()), n_tx)
         refused = [json.loads(l) for l in open(os.path.join(hub.tmp, "tx.jsonl"))]
         check_true("lend: the refused frame is logged as lent",
@@ -685,12 +790,12 @@ def scenario_lend_radio():
                    f"{time.monotonic() - t1:.2f}s")
         check("return: lent cleared", hub.status()["radio"]["lent"], None)
         k.send(aprs("N9ABC-7", ">after return"))
-        check_true("return: transmit works again", bool(wait_for(lambda: len(radio.transmitted()) > n_tx, 3)))
+        check_true("return: transmit works again", bool(wait_for(lambda: len(radio.transmitted()) > n_tx, 10)))
 
-        time.sleep(5.2)
+        time.sleep(5.2)                # the protocol minimum: no lend within 5 s of a transmit
         hub.post("/api/lend", {"seconds": 1, "to": "uvpro"})
         check("lend 1 s: let go", hub.status()["radio"]["up"], False)
-        up = wait_for(lambda: hub.status()["radio"]["up"], 5)
+        up = wait_for(lambda: hub.status()["radio"]["up"], 10)
         check_true("lend 1 s: taken back when it runs out (borrower gone)", bool(up))
         check("lend 1 s: lent cleared", hub.status()["radio"]["lent"], None)
         check("return when not lent: harmless", hub.post("/api/return", {})[0], 200)
@@ -850,13 +955,13 @@ def scenario_control_port():
     hub = HubProc(radio, tx=False)
     try:
         k = Kiss(hub.kiss)
-        c = socket.create_connection(("127.0.0.1", hub.ctrl), timeout=3)
-        wait_for(lambda: hub.status()["clients"]["control"], 3)
+        c = socket.create_connection(("127.0.0.1", hub.ctrl), timeout=10)
+        clients_ready(hub, kiss=1, control=1)
         check("control client listed", len(hub.status()["clients"]["control"]), 1)
         req = gaia(4, b"\x03")
         c.sendall(req)
         got = b""
-        end = time.monotonic() + 3
+        end = time.monotonic() + 10
         while len(got) < len(DEV_INFO_REPLY) and time.monotonic() < end:
             try:
                 got += c.recv(4096)
@@ -864,7 +969,7 @@ def scenario_control_port():
                 break
         check("GET_DEV_INFO reached the radio as sent", radio.control, [req])
         check("the reply (with its C0) reached the client whole", got, DEV_INFO_REPLY)
-        wait_for(lambda: len(k.frames) >= 2, 3)
+        wait_for(lambda: len(k.frames) >= 2, 10)
         check("packets around it still reach KISS clients", k.frames[:2],
               [aprs("KF7ABC-9", ">before"), aprs("KF7ABC-9", ">after")])
         check("transmit off, and nothing transmitted", radio.transmitted(), [])
@@ -875,31 +980,33 @@ def scenario_control_port():
                          ("a reply", gaia(4, b"\x00", reply=True)),
                          ("extended group", gaia(4, b"", group=10))]:
             c.sendall(f)
-        time.sleep(0.5)
-        check("refused commands never reach the radio", len(radio.control) - n, 0)
-        check("  counted", hub.status()["counts"].get("control_refused"), 5)
+        wait_for(lambda: hub.counts().get("control_refused", 0) >= 5, 10)
+        check("  counted", hub.counts().get("control_refused"), 5)
         c.sendall(gaia(22))                              # GET_VOLUME: allowed
-        wait_for(lambda: len(radio.control) > n, 3)
-        check("an allowed one still passes after", radio.control[-1], gaia(22))
+        wait_for(lambda: len(radio.control) > n, 10)
+        # After the allowed one arrived, every refused one sent before it on
+        # the same stream has been decided: none may be in between.
+        check("refused commands never reach the radio", radio.control[n:-1] if len(radio.control) > n else [], [])
+        check("an allowed one still passes after", radio.control[n:], [gaia(22)])
         c.sendall(b"junk!")
-        c.settimeout(3)
+        c.settimeout(10)
         try:
             closed = c.recv(10) == b""
         except OSError:
             closed = True
         check("junk on the control port: client dropped", closed, True)
         c.close()
-        c = socket.create_connection(("127.0.0.1", hub.ctrl), timeout=3)
-        wait_for(lambda: hub.status()["clients"]["control"], 3)
+        c = socket.create_connection(("127.0.0.1", hub.ctrl), timeout=10)
+        clients_ready(hub, control=1)
         st, _ = hub.post("/api/lend", {"seconds": 5, "to": "test"})
-        c.settimeout(3)
+        c.settimeout(10)
         try:
             closed = c.recv(10) == b""
         except OSError:
             closed = True
         check("lending the radio closes control clients", (st, closed), (200, True))
-        c = socket.create_connection(("127.0.0.1", hub.ctrl), timeout=3)
-        c.settimeout(3)
+        c = socket.create_connection(("127.0.0.1", hub.ctrl), timeout=10)
+        c.settimeout(10)
         try:
             closed = c.recv(10) == b""
         except OSError:
@@ -929,7 +1036,7 @@ def scenario_aprs_store():
             radio.inject(aprs("KF7ABC-9", ":N9ABC-7  :hello{12"))
             radio.inject(aprs("K7OWN", ";REPEATER *111111z4049.00N/10510.00Wr146.52"))
             st = wait_for(lambda: [r for r in _get(hub, "/api/aprs/stations?rev=0")["rows"]
-                                   if r["call"] == "KF7ABC-9" and r["lat"]], 5)
+                                   if r["call"] == "KF7ABC-9" and r["lat"]], 15)
             check("a heard position is in api/aprs/stations", [(r["call"], r["lat"]) for r in st or []],
                   [("KF7ABC-9", 40.816667)])
             check("api/status keeps its keys, plus aprs", keys >= {"radio", "tx", "heard", "recent", "messages",
@@ -991,7 +1098,7 @@ def scenario_aprs_loop_latency():
             check("backfill: every line", st["backfill"]["lines"], 15 * len(lines))
             for i in range(300):
                 radio.inject(aprs(f"N{i:04d}", f"!31{i % 60:02d}.00N/10510.00W>burst {i}"), lossy=False)
-            wait_for(lambda: hub.status()["aprs"]["ingested"] >= 15 * len(lines) + 300, 15)
+            wait_for(lambda: hub.status()["aprs"]["ingested"] >= 15 * len(lines) + 300, 60)
             a = hub.status()["aprs"]
             check("  the burst is stored", a["ingested"] >= 15 * len(lines) + 300, True)
             check_true("  event-loop lag p99 under 50 ms", a["loop"]["p99_ms"] < 50,
@@ -1013,14 +1120,22 @@ SCENARIOS = [scenario_cross_site_guard, scenario_on_needs_tx_at_start, scenario_
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY", "")
-    for sc in SCENARIOS:
-        if only and only not in sc.__name__:
-            continue
+    # tests/flake_hunt.sh passes ONLY="<test file names>" through to the
+    # suite: this file's own name means every scenario. (Read as a scenario
+    # filter it matched none, and the hunt counted an empty run as a pass.)
+    if os.path.splitext(os.path.basename(__file__))[0] in only.split():
+        only = ""
+    picked = [sc for sc in SCENARIOS if not only or only in sc.__name__]
+    if not picked:
+        fails += 1
+        print(f"FAIL  ONLY={only!r} matches no scenario")
+    for sc in picked:
         print(f"--- {sc.__name__}")
         try:
             sc()
         except Exception as e:     # noqa: BLE001
             fails += 1
             print(f"FAIL  {sc.__name__} raised {type(e).__name__}: {e}")
+        stop_leftovers()
     print(f"\n{'ALL PASS' if not fails else f'{fails} FAILED'}")
     sys.exit(1 if fails else 0)
