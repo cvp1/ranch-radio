@@ -405,6 +405,12 @@ class FakeCiv:
                 return self._send(OK)
             return self._send(OK)
 
+    def end_tune(self):
+        """End a tune now (for tune_s=None: the test, not a timer, decides
+        when, so a slow check can't outlast it). Returns a mark after it."""
+        self._tune_done()
+        return time.monotonic()
+
     def _tune_done(self):
         with self.lock:
             if self._state["tuner"] == 2:

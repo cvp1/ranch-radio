@@ -59,6 +59,7 @@ HOLD_SETTLE_S = 1.5          # let a front-panel change finish before undoing it
 HOLD_MAX_RESTORES = 3        # per HOLD_WINDOW_S; then stop fighting and warn
 HOLD_WINDOW_S = 30.0
 TUNE_START_GRACE_S = 5.0     # a tune we asked for must show up (tuner=2) by then
+WINLINK_LEAVE_WAIT_S = 3.0   # disarm: how long the mode restore waits for the radio to report RX
 TX_OFF_CONFIRM_S = 1.0       # "not transmitting" must hold this long to mean an unkey at the radio
 # Settings that retune or re-route the transmitter: refused while on the air.
 PENDING_FREQ_MAX_S = 30.0    # a queued change waits this long for a tune to end
@@ -558,7 +559,19 @@ class Station(TxAudio):
     async def _winlink_mode_leave(self):
         was, self._winlink_mode_was = getattr(self, "_winlink_mode_was", None), None
         ssb, self._winlink_ssb = getattr(self, "_winlink_ssb", False), False
+        # Never change the mode under a transmission. But right after our own
+        # unkey a poll reply computed before it can still say "transmitting"
+        # (~300 ms on the QMX): returning then lost the restore for good
+        # (2026-10-23). Wait for the radio to report RX; if it still says TX
+        # (keyed at the radio), say so rather than skip it silently.
+        end = time.monotonic() + WINLINK_LEAVE_WAIT_S
+        while self.radio.state.get("tx") and time.monotonic() < end:
+            await asyncio.sleep(0.1)
         if self.radio.state.get("tx"):
+            if ssb or was:
+                log.warning("winlink: radio still transmitting; mode left as the session set it")
+                self.notice("The radio is still transmitting, so it was left in the Winlink "
+                            "session's mode; set the mode back when it stops.", "warn")
             return
         if ssb:
             await self.radio.ssb_from_usb(False)
