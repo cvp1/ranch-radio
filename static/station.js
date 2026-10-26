@@ -11,7 +11,7 @@ let ws = null, wsBackoff = 500;
 function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
 
 const station = (() => {
-  let radios = [], sharedPort = 4532, packet = { present: false, configured: false };
+  let radios = [], sharedPort = 0, packet = { present: false, configured: false };
   let cfg = {}, meshOn = false, meshConnected = false, wlOn = false, wlArmed = false;
   let meshUnread = 0;
   const frames = {};              // radio id -> iframe (kept while the radio is connected)
@@ -19,7 +19,10 @@ const station = (() => {
 
   const route = () => (location.hash.replace(/^#\/?/, "") || "home");
   const present = () => radios.filter((r) => r.present);
-  const portsOf = (r) => (r.shared ? `${sharedPort} · ${r.rigctl}` : `${r.rigctl}`);
+  const portsOf = (r) => {
+    const sp = r.shared ? (sharedPort ?? 0) : 0;
+    return sp > 0 ? `${sp} · ${r.rigctl}` : `${r.rigctl}`;
+  };
 
   // ---------- navigation
 
@@ -40,11 +43,11 @@ const station = (() => {
     nav.append(tab("home", "Overview"));
     for (const r of present()) {
       nav.append(tab(r.id, r.name, { dot: "ok", sub: portsOf(r),
-        title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared ? ` (${sharedPort} is shared: the radio connected longest)` : ""}` }));
+        title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
     }
-    if (wlOn) nav.append(tab("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: "Winlink mail over HF (ARDOP), the UV-PRO (packet) or telnet" }));
+    if (wlOn) nav.append(tab("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: `Winlink mail over HF (ARDOP), ${packet.name || "Packet"} or telnet` }));
     if (meshOn) nav.append(tab("mesh", "Mesh", { dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected }));
-    if (packet.configured) nav.append(tab("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: "UV-PRO packet hub: APRS and the Winlink packet link" }));
+    if (packet.configured) nav.append(tab("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: `${packet.name || "Packet"} hub: APRS and the Winlink packet link` }));
     for (const d of addons.list()) nav.append(tab(d.name, d.label, addons.tab(d.name) || {}));
     if (modules.enabled()) nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" }));
   }
@@ -193,7 +196,7 @@ const station = (() => {
     el.innerHTML = "";
     for (const r of radios) {
       el.append(card(r.name, r.present ? "ok" : "off", r.present ? [
-        `rigctl <code>${r.rigctl}</code>${r.shared ? ` and the shared <code>${sharedPort}</code>` : ""}`,
+        `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`,
         r.winlink ? "Winlink over ARDOP" : "",
         "Open the radio →"].filter(Boolean) : ["Not connected", `rigctl <code>${r.rigctl}</code> when plugged in`],
         r.present ? `#/${r.id}` : null));
@@ -202,7 +205,8 @@ const station = (() => {
     if (meshOn) el.append(card("Mesh", meshConnected ? "ok" : "off",
       [meshConnected ? `Meshtastic node connected${meshUnread ? ` · ${meshUnread} new` : ""}` : "Node not connected", meshConnected ? "Open →" : ""].filter(Boolean),
       "#/mesh"));
-    if (packet.configured) el.append(card("Packet (UV-PRO)", packet.present ? "ok" : "off",
+    const packetTitle = packet.title || (packet.name ? `Packet (${packet.name})` : "Packet");
+    if (packet.configured) el.append(card(packetTitle, packet.present ? "ok" : "off",
       [packet.present ? "APRS and Winlink packet hub" : "Hub not running", packet.present ? "Open →" : ""].filter(Boolean),
       packet.present ? "#/packet" : null));
     for (const d of addons.list()) {
@@ -210,16 +214,20 @@ const station = (() => {
       if (c) el.append(card(d.label, c.state, c.lines, `#/${d.name}`));
     }
     const p = present();
+    const sp = sharedPort ?? 0;
     $("#st-help").innerHTML = !p.length
       ? `No HF radio is connected. Plug one in: its page and rigctl port appear here by themselves.`
-      : `Apps that don't care which radio: rigctl <code>${sharedPort}</code> (now the ${esc(p.find((r) => r.shared)?.name || "?")}). ` +
-        `An app set up for one radio: use that radio's own port, which never changes.`;
+      : (sp > 0
+          ? `Apps that don't care which radio: rigctl <code>${sp}</code> (now the ${esc(p.find((r) => r.shared)?.name || "?")}). ` +
+            `An app set up for one radio: use that radio's own port, which never changes.`
+          : `An app set up for a radio: use that radio's own port, which never changes.`);
   }
 
   function viaOptions() {
     const list = present().filter((r) => r.winlink)
       .map((r) => ({ id: r.id, name: r.name, kind: "ardop", label: `HF · ${r.name} (ARDOP)` }));
-    if (packet.present) list.push({ id: "packet", name: "UV-PRO", kind: "packet", label: "VHF · UV-PRO (packet)" });
+    const packetLabel = packet.name || "Packet";
+    if (packet.present) list.push({ id: "packet", name: packetLabel, kind: "packet", label: `VHF · ${packetLabel} (packet)` });
     list.push({ id: "telnet", name: "internet", kind: "telnet", label: "Telnet (internet, no radio)" });
     winlink.setVias(list);
   }
@@ -228,7 +236,7 @@ const station = (() => {
 
   function applyRadios(m) {
     radios = m.radios || [];
-    sharedPort = m.shared_port || sharedPort;
+    sharedPort = (m.shared_port !== undefined && m.shared_port !== null) ? m.shared_port : sharedPort;
     packet = m.packet || packet;
     dropGoneFrames();
     syncLive();

@@ -261,21 +261,25 @@ class Station:
         self.radios = [Radio(r) for r in cfg.get("radios", [])]
         self.clients = set()
         self.ardop = Ardop(self, cfg.get("winlink", {}))
-        packet = cfg.get("packet") or {}
-        self.packet_url = packet.get("url")
-        self.packet_agwpe = packet.get("agwpe")
+        self.packet_cfg = cfg.get("packet") or {}
+        self.packet_url = self.packet_cfg.get("url")
+        self.packet_agwpe = self.packet_cfg.get("agwpe")
         self.packet_up = False
         self.addons = None            # addons.Addons from the config's "addons" (UV-PRO, ...)
         self.modules = None           # ranch_radio.pageapi.ModulesService from the config's "host_file"
         self._tasks = []
         self._rigctl = None
         self._lane = None
+        self.shared_port = self.args.rigctl_port if getattr(self.args, "rigctl_port", 0) > 0 else 0
+        self.shared_port_enabled = self.shared_port > 0
 
     band_of = staticmethod(band_of)
 
     # --- radios
 
     def primary(self):
+        if not self.shared_port_enabled:
+            return None
         present = [r for r in self.radios if r.present]
         return min(present, key=lambda r: r.since) if present else None
 
@@ -323,15 +327,22 @@ class Station:
                     self.packet_up, changed = up, True
             if changed or first:
                 p = self.primary()
-                log.info("shared rigctl port %d: %s", self.args.rigctl_port, p.name if p else "no radio")
+                if self.shared_port_enabled:
+                    log.info("shared rigctl port %d: %s", self.shared_port, p.name if p else "no radio")
                 self._broadcast(json.dumps({"t": "radios", **self.radios_info()}))
             first = False
             await asyncio.sleep(PRESENCE_EVERY_S)
 
     def radios_info(self):
         p = self.primary()
-        return {"radios": [r.info(p) for r in self.radios], "shared_port": self.args.rigctl_port,
-                "packet": {"present": self.packet_up, "configured": bool(self.packet_url)}}
+        pkt = {"present": self.packet_up, "configured": bool(self.packet_url)}
+        if hasattr(self, "packet_cfg") and isinstance(self.packet_cfg, dict):
+            if self.packet_cfg.get("name"):
+                pkt["name"] = self.packet_cfg["name"]
+            if self.packet_cfg.get("title"):
+                pkt["title"] = self.packet_cfg["title"]
+        return {"radios": [r.info(p) for r in self.radios], "shared_port": self.shared_port,
+                "packet": pkt}
 
     # --- the shared rigctl port and Pat's rig lane: plain TCP relays
 
@@ -489,8 +500,15 @@ class Station:
 
     async def start(self):
         a = self.args
-        self._rigctl = await asyncio.start_server(self._rigctl_client, a.rigctl_host, a.rigctl_port)
-        log.info("shared rigctl port on %s:%d", a.rigctl_host, a.rigctl_port)
+        if self.shared_port_enabled:
+            try:
+                self._rigctl = await asyncio.start_server(self._rigctl_client, a.rigctl_host, a.rigctl_port)
+                log.info("shared rigctl port on %s:%d", a.rigctl_host, a.rigctl_port)
+            except OSError as e:
+                log.error("Failed to start shared rigctl server on %s:%d: %s", a.rigctl_host, a.rigctl_port, e)
+                raise SystemExit(f"Cannot bind to rigctl port {a.rigctl_port}. Is another process using it?") from e
+        else:
+            log.info("shared rigctl port disabled")
         wl = self.cfg.get("winlink") or {}
         if wl.get("lane_port"):
             self._lane = await asyncio.start_server(self._lane_client, "127.0.0.1", int(wl["lane_port"]))

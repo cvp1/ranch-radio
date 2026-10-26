@@ -86,7 +86,7 @@ ranch-radio drift             # installed files vs. the host file
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `mesh` | A Meshtastic node on the page: channels, DMs, nodes, map | a node over USB or Bluetooth; the `meshtastic` package |
-| `packet` | A UV-PRO as an APRS and Winlink packet TNC over Bluetooth (Linux) | BlueZ |
+| `packet` | A network KISS TNC (Direwolf) or UV-PRO over Bluetooth as an APRS and Winlink packet hub (Linux) | Network or BlueZ |
 | `uvpro` | UV-PRO control: channels, settings, beacon (Linux) | `benlink` |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
@@ -111,6 +111,30 @@ has an on/off switch on the page.
   trust, or start the server with `--token`.
 
 You are responsible for operating within your license.
+
+### Linux Sound Card Node Stability & WirePlumber
+
+On Linux, Ranch Radio pairs USB audio sound cards via PipeWire. Replugging a device
+or system reboot can cause dynamic ALSA enumeration shifts. Ranch Radio's installer
+renders WirePlumber rules (`~/.config/wireplumber/wireplumber.conf.d/51-ranch-radio-audio.conf`)
+from each radio's configured `audio_in` and `audio_out` node names, matching nodes
+and enforcing persistent node naming and session priority.
+
+Verify active sound card node names at any time with:
+```sh
+wpctl status
+# or
+pw-cli list-objects Node | grep -E 'node.name =|media.class ='
+```
+
+### Network KISS TNC & Packet Hub
+
+For packet radio (APRS & Winlink), Ranch Radio supports network KISS TNCs (such as
+Direwolf on `tcp:host:port`) as well as Bluetooth TNCs. When using a network KISS TNC:
+- Set `"tnc": "tcp:<host>:<port>"` in the host configuration's `"packet"` block.
+- Ranch Radio renders a dedicated `packet-hub.service` systemd unit, entirely decoupled
+  from Bluetooth, BlueZ, or UV-PRO dependencies.
+- The station dashboard presents the packet hub with its configured name (e.g. `Packet (Direwolf)`).
 
 ## How it fits together
 

@@ -135,7 +135,7 @@ MANIFESTS = {
         "template": {"linux": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
                                "tnc": ASK, "mycall": ASK, "tx": False}},
         "rules": {"tnc": "tnc", "mycall": "callsign"},
-        "ask": {"tnc": "the radio's KISS TNC, e.g. bt:00:11:22:33:44:55 (a UV-PRO's Bluetooth address)",
+        "ask": {"tnc": "the radio's KISS TNC, e.g. tcp:direwolf.localdomain:8001 or bt:00:11:22:33:44:55",
                 "mycall": "your callsign"},
         "needs": [{"bin": "bluetoothctl", "default": "bluetoothctl", "level": "warn",
                    "fix": "install BlueZ (needed for a Bluetooth TNC)"}],

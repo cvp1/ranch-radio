@@ -32,7 +32,7 @@ MODULES = [
     {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, DMs, nodes, map); on/off switch",
      "code": "addons/mesh.py over mesh.py, mesh_bridge.py (runs in the meshtastic venv)", "platforms": ["macos", "linux"],
      "ships": "macOS: --mesh-port on the radio's agent; Linux: the station's mesh block; the meshtastic venv via doctor --fix"},
-    {"name": "packet", "kind": "service", "title": "UV-PRO packet hub (APRS + Winlink, Bluetooth KISS)",
+    {"name": "packet", "kind": "service", "title": "Packet hub (APRS + Winlink, network TCP KISS or Bluetooth KISS)",
      "code": "tnc_hub.py, ax25.py, ax25_link.py, bt_rfcomm.py, aprs.py, aprs_store.py, static/aprs.js", "platforms": ["macos", "linux"],
      "ships": "Linux: uvpro-hub.service, rendered from the host file's packet block"},
 

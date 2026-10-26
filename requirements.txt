@@ -1,5 +1,5 @@
 # Ranch Radio's own Python packages (install.sh puts them in .venv).
 # Add-ons with their own venvs (Mesh: meshtastic; UV-PRO: benlink) are set up
 # by `ranch-radio doctor --fix` when you add them.
-aiohttp>=3.9
+aiohttp>=3.14.4
 sounddevice>=0.4; sys_platform == "darwin"
