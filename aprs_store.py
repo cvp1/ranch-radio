@@ -233,8 +233,13 @@ class Db:
         if not changes:
             return
         changes["rev"] = self.next_rev()
+        unknown = changes.keys() - set(STATION_COLS)
+        if unknown:
+            raise ValueError(f"not station columns: {sorted(unknown)}")
         cols = ", ".join(f"{k}=?" for k in changes)
-        self.db.execute(f"UPDATE stations SET {cols} WHERE call=?", (*changes.values(), s["call"]))
+        # Column names are allow-listed against STATION_COLS above; values stay bound.
+        self.db.execute(f"UPDATE stations SET {cols} WHERE call=?",  # nosec B608
+                        (*changes.values(), s["call"]))
 
     def _heard(self, call, t, port, line, used, path_s, d, count=True):
         s = self._station(call, t)
@@ -464,7 +469,8 @@ class Db:
         since = int(since or 0)
         floor = int(self.meta("tomb_floor", 0))
         full = since <= 0 or since < floor
-        rows = self.db.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE rev > ? ORDER BY rev",
+        # table and cols are only ever the module constants passed by stations()/objects().
+        rows = self.db.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE rev > ? ORDER BY rev",  # nosec B608
                                (0 if full else since,)).fetchall()
         gone = [] if full else [_load(r[0]) if kind == "object" else r[0] for r in self.db.execute(
             "SELECT key FROM tombstones WHERE kind=? AND rev > ?", (kind, since))]
