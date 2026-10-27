@@ -108,7 +108,7 @@ class HamlibRadio(Radio):
                 await self._probe()
                 self._update(connected=True)
                 await self._loop()
-            except (OSError, ConnectionError, asyncio.IncompleteReadError, asyncio.TimeoutError) as e:
+            except (TimeoutError, OSError, ConnectionError, asyncio.IncompleteReadError) as e:
                 log.warning("rigctld: %s (retrying)", e)
             self._update(connected=False)
             if self._writer:
@@ -164,7 +164,7 @@ class HamlibRadio(Radio):
             try:
                 st, _ = await self._cmd(cmd)
                 return st == 0
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return False
 
         levels = {"af": "AF", "rf": "RF", "sql": "SQL", "power": "RFPOWER"}

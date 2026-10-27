@@ -204,7 +204,7 @@ class QmxRadio(Radio):
         self._write(cmd)
         try:
             await asyncio.wait_for(self._reply.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
     async def _hello(self):
@@ -231,7 +231,7 @@ class QmxRadio(Radio):
                     self._wake.clear()
                     try:
                         await asyncio.wait_for(self._wake.wait(), wait)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                     continue
                 self._next_poll_at = time.monotonic() + POLL_INTERVAL

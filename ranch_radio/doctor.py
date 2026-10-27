@@ -142,6 +142,8 @@ def _recipe(n, host_os, ctx):
 
 
 def _need(name, n, block, host_python, path=None, host_os=None):
+    if name == "packet" and str((block or {}).get("tnc") or "").startswith("tcp:"):
+        return []
     level = WARN if n.get("level") == "warn" else MISSING
     fix = n.get("fix", "")
     if "bin" in n:

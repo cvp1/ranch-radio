@@ -42,7 +42,7 @@ a radio has.
 
 ## Install (macOS or Linux)
 
-You need Python 3.10 or newer and git. Plug the radio in first.
+You need Python 3.12 or newer and git. Plug the radio in first.
 
 ```sh
 git clone https://github.com/cvp1/ranch-radio.git ~/ranch-radio
@@ -86,7 +86,7 @@ ranch-radio drift             # installed files vs. the host file
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `mesh` | A Meshtastic node on the page: channels, DMs, nodes, map | a node over USB or Bluetooth; the `meshtastic` package |
-| `packet` | A UV-PRO as an APRS and Winlink packet TNC over Bluetooth (Linux) | BlueZ |
+| `packet` | A network KISS TNC (Direwolf) or UV-PRO over Bluetooth as an APRS and Winlink packet hub (Linux) | Network or BlueZ |
 | `uvpro` | UV-PRO control: channels, settings, beacon (Linux) | `benlink` |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
@@ -112,6 +112,72 @@ has an on/off switch on the page.
 
 You are responsible for operating within your license.
 
+### Linux Sound Card Node Stability & WirePlumber
+
+On Linux, Ranch Radio pairs USB audio sound cards via PipeWire. Replugging a device
+or system reboot can cause dynamic ALSA enumeration shifts. Ranch Radio's installer
+renders WirePlumber rules (`~/.config/wireplumber/wireplumber.conf.d/51-ranch-radio-audio.conf`)
+from each radio's configured `audio_in` and `audio_out` node names, matching nodes
+and enforcing persistent node naming and session priority.
+
+Verify active sound card node names at any time with:
+```sh
+wpctl status
+# or
+pw-cli list-objects Node | grep -E 'node.name =|media.class ='
+```
+
+### Network KISS TNC & Packet Hub
+
+For packet radio (APRS & Winlink), Ranch Radio's packet hub can use a network
+KISS TNC such as [Direwolf](https://github.com/wb2osz/direwolf) as well as a
+Bluetooth TNC. Direwolf owns the sound card and modem; the hub connects to its
+KISS-over-TCP port and adds the APRS store, the web page, transmit safety, and
+AGWPE and KISS ports for Pat and other clients. A host with no radios of its own
+can run it.
+
+**1. Direwolf.** Enable its KISS port in `direwolf.conf`:
+
+```
+MYCALL N9ABC-10
+MODEM 1200
+KISSPORT 8001
+```
+
+[`examples/direwolf/direwolf.conf`](examples/direwolf/direwolf.conf) is a complete
+example with every transmitting line (beacon, digipeater, iGate) commented out.
+
+**2. Host file.** Point the `"packet"` block at it with `tcp:<host>:<port>`:
+
+```json
+"packet": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
+           "tnc": "tcp:direwolf.local:8001", "mycall": "N9ABC",
+           "allow_calls": ["N9ABC"], "tx": false}
+```
+
+[`examples/hosts/linux-direwolf.json`](examples/hosts/linux-direwolf.json) is a
+whole host file. Then `ranch-radio install --apply` renders a dedicated
+`packet-hub.service` systemd unit, with no Bluetooth, BlueZ or UV-PRO
+dependency. The station dashboard shows the hub under its configured name (for
+example `Packet (Direwolf)`).
+
+**3. Check it.** The hub page is at `http://127.0.0.1:7310/`, and
+`curl http://127.0.0.1:7310/api/status` shows `"radio": {"up": true}` once it
+has connected. Received frames appear in the heard list and the APRS store.
+
+- **Receive-only until you say so.** `"tx": false` (or leaving it out) never
+  transmits. Set `"tx": true` to allow it. Every frame must come from one of
+  `allow_calls` (any SSID); anything else is refused and logged.
+- **No authentication.** Direwolf's KISS and AGWPE ports have none, and anyone who
+  can reach the KISS port can transmit through your radio. Firewall it to the
+  machine that runs Ranch Radio. The hub's own AGWPE and KISS ports bind to
+  `127.0.0.1` by default.
+- **Same machine?** The hub listens on `127.0.0.1:8000` (AGWPE) and `:8001` (KISS).
+  If Direwolf runs on the same machine, give Direwolf other ports (for example
+  `KISSPORT 8011`) and use that port in `"tnc"`.
+- **If Direwolf goes away,** the hub keeps running and reconnects by itself,
+  retrying after 2, 4, 8, 16, then every 30 seconds.
+
 ## How it fits together
 
 - `server.py` runs one radio: its page, audio, rigctl port and add-ons.
@@ -119,7 +185,8 @@ You are responsible for operating within your license.
 - `ranch_radio/` is the shipping layer. Each machine's radios, services and
   modules are declared in one host file, and `ranch-radio install` renders the
   launchd agents or systemd units from it. `examples/hosts/` has a Mac with
-  one radio, a two-radio Linux station and a Linux laptop.
+  one radio, a two-radio Linux station, a Linux laptop and a radio-less packet
+  hub on a Direwolf TNC.
 - `addons/` holds the switchable modules; `static/` is the page (no build step).
 
 ## Development

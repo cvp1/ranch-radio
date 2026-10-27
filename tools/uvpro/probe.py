@@ -1,4 +1,7 @@
-import socket, sys, time
+import socket
+import sys
+import time
+
 addr, ch = sys.argv[1], int(sys.argv[2])
 s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
 s.settimeout(8)
@@ -8,7 +11,7 @@ data, end = b"", time.time() + 4
 while time.time() < end:
     try:
         b = s.recv(1024)
-    except socket.timeout:
+    except TimeoutError:
         break
     if not b:
         break

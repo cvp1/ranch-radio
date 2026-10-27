@@ -22,7 +22,6 @@ _local = threading.Lock()
 def locked(host_dir):
     """host_dir: the directory holding the host file (paths.find(...).parent)."""
     path = Path(host_dir) / ".host.lock"
-    with _local:
-        with open(path, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)    # released when the file closes
-            yield
+    with _local, open(path, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)    # released when the file closes
+        yield

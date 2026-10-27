@@ -35,7 +35,7 @@ try:
     while time.time() - t0 < 15:
         try:
             buf += ardop.recv(1024)
-        except socket.timeout:
+        except TimeoutError:
             pass
         while b"\r" in buf:
             line, buf = buf.split(b"\r", 1)

@@ -71,6 +71,7 @@ TEXT = re.compile(r"[^-].*")              # free text passed as one argv element
 RULES = [
     (("host",), SLUG), (("python",), TOKEN), (("repo",), TOKEN), (("call",), CALL),
     (("radios", "*", "id"), SLUG), (("radios", "*", "rig"), SLUG), (("radios", "*", "device"), TOKEN),
+    (("radios", "*", "rigctld"), TOKEN),
     (("radios", "*", "audio_in"), TOKEN), (("radios", "*", "audio_out"), TOKEN),
     (("radios", "*", "audio_device"), TEXT),
     (("radios", "*", "codec_db"), TOKEN), (("radios", "*", "voice_codec_db"), TOKEN),
@@ -84,6 +85,7 @@ RULES = [
     (("winlink", "ardopcf", "hostcommands"), TEXT),
     (("packet", "tnc"), TOKEN), (("packet", "mycall"), CALL), (("packet", "allow_calls", "*"), CALL),
     (("packet", "url"), TOKEN), (("packet", "agwpe"), TOKEN),
+    (("packet", "name"), LABEL), (("packet", "title"), TEXT),
     (("packet", "pat_http", "pat"), TOKEN), (("packet", "pat_http", "addr"), TOKEN),
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
@@ -92,7 +94,7 @@ RULES = [
 ]
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"),
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
-         ("winlink", "ardopcf", "port")]
+         ("winlink", "ardopcf", "port"), ("station", "rigctl_port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("station", "https"), ("addons", "*", "enabled")]
 
@@ -127,6 +129,19 @@ def _strings(d, where=()):
             yield from _strings(v, where + (i,))
 
 
+def _validate_port(host, where, v, is_rigctl=False):
+    """Validate TCP port number constraints, permitting port 0 strictly for rigctl."""
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise HostError(f"{host}: {_where(where)} = {v!r}: must be an integer")
+    if is_rigctl:
+        if not (0 <= v < 65536):
+            raise HostError(f"{host}: {_where(where)} = {v!r}: must be between 0 and 65535")
+    else:
+        if not (1 <= v < 65536):
+            raise HostError(f"{host}: {_where(where)} = {v!r}: must be a valid port number (1-65535)")
+    return v
+
+
 def check_values(h):
     """Refuse any value that could break out of the line it is rendered into."""
     host = h.get("host", "?")
@@ -147,8 +162,8 @@ def check_values(h):
             raise HostError(f"{host}: add-on name {name!r} not allowed")
     for path in PORTS:
         for where, v in _at(h, path):
-            if not (isinstance(v, int) and not isinstance(v, bool) and 0 < v < 65536):
-                raise HostError(f"{host}: {_where(where)} = {v!r}: must be a port number")
+            is_rigctl = "rigctl" in path[-1] if path else False
+            _validate_port(host, where, v, is_rigctl=is_rigctl)
     for path in BOOLS:
         for where, v in _at(h, path):
             if not isinstance(v, bool):
@@ -203,9 +218,15 @@ def validate(h):
         for k in ("web", "rigctl", "lane"):
             if k in r:
                 p = r[k]
+                if k == "rigctl" and p == 0:
+                    continue
                 if p in ports:
                     raise HostError(f"{h['host']}: port {p} is both {ports[p]} and {r['id']}.{k}")
                 ports[p] = f"{r['id']}.{k}"
+    st = h.get("station") or {}
+    st_rigctl = st.get("rigctl_port")
+    if st_rigctl and st_rigctl > 0 and st_rigctl in ports:
+        raise HostError(f"{h['host']}: station.rigctl_port {st_rigctl} conflicts with {ports[st_rigctl]}")
     for r in h["radios"]:
         # A mixer's lowest step can be mute (the Digirig: -37 dB is off), and a
         # muted codec keys the radio at 0 W: refuse levels below codec_min_db.
@@ -260,7 +281,7 @@ def systemd_escape_path(p):
     for part in parts:
         s = ""
         for i, ch in enumerate(part):
-            if ch.isalnum() and ch.isascii() or ch in ":_" or (ch == "." and i > 0):
+            if (ch.isalnum() and ch.isascii()) or ch in ":_" or (ch == "." and i > 0):
                 s += ch
             else:
                 s += "\\x%02x" % ord(ch)
@@ -276,6 +297,8 @@ def server_args(h, r, pth):
     linux = h["os"] == "linux"
     if r.get("rig"):
         a += ["--rig", r["rig"]]
+    if r.get("rigctld"):
+        a += ["--rigctld", r["rigctld"]]
     a += ["--port", r["device"]]
     if r.get("audio_in") and r.get("audio_out"):
         a += ["--audio-device", f"pipewire:{r['audio_in']},{r['audio_out']}"]
@@ -294,7 +317,7 @@ def server_args(h, r, pth):
         a += ["--rigctl-host", r.get("rigctl_host", "0.0.0.0")]
     elif r.get("rigctl_host"):
         a += ["--rigctl-host", r["rigctl_host"]]
-    if r.get("rigctl"):
+    if r.get("rigctl") is not None:
         a += ["--rigctl-port", str(r["rigctl"])]
     for n in r.get("tls_names", []):
         a += ["--tls-name", n]
@@ -377,12 +400,14 @@ def _linux(h):
         if r.get("audio_in") and r.get("audio_out"):
             pre.append(("ExecStartPre", wait_audio(r)))
         argv = exec_line([py, f"{repo}/server.py"] + server_args(h, r, _unit_path))
+        unit_deps = [("Description", r.get("description", f"Ranch Radio: {r['name']}")),
+                     ("After", "network-online.target sound.target pipewire.service wireplumber.service"),
+                     ("Wants", "pipewire.service wireplumber.service"),
+                     ("BindsTo", dev), ("After", dev)]
+        if r.get("rigctl") and r["rigctl"] > 0:
+            unit_deps += [("Wants", sock), ("After", sock)]
         arts.append(Artifact(rid, f"{UNIT_DIR}/{svc}", "systemd", unit(host, [
-            ("Unit", [("Description", r.get("description", f"Ranch Radio: {r['name']}")),
-                      ("After", "network-online.target sound.target pipewire.service wireplumber.service"),
-                      ("Wants", "pipewire.service wireplumber.service"),
-                      ("BindsTo", dev), ("After", dev),
-                      ("Wants", sock), ("After", sock)]),
+            ("Unit", unit_deps),
             ("Service", pre + [("ExecStart", argv),
                                ("Restart", "on-failure"), ("RestartSec", "5"),
                                ("NotifyAccess", "main"),
@@ -390,7 +415,7 @@ def _linux(h):
                                ("RuntimeDirectory", f"{rid}-remote"), ("RuntimeDirectoryPreserve", "restart"),
                                ("TimeoutStopSec", "10")]),
             ("Install", [("WantedBy", dev)])])))
-        if r.get("rigctl"):
+        if r.get("rigctl") and r["rigctl"] > 0:
             arts.append(Artifact(rid, f"{UNIT_DIR}/{sock}", "systemd", unit(host, [
                 ("Unit", [("Description", f"rigctl port ({r['rigctl']}) for Ranch Radio ({r['name']}), "
                                           "held across server restarts"),
@@ -409,6 +434,8 @@ def _linux(h):
     argv = [py, f"{repo}/station.py", "--config", f"%h/{STATION_JSON}"]
     if st.get("https"):
         argv += ["--https", "--tls-name", "%l"]
+    if st.get("rigctl_port") is not None:
+        argv += ["--rigctl-port", str(st["rigctl_port"])]
     arts.append(Artifact("station", f"{UNIT_DIR}/station.service", "systemd", unit(host, [
         ("Unit", [("Description", "Ranch Radio station: one page (7300), the shared rigctl port (4532), "
                                   "Winlink and Mesh"),
@@ -429,22 +456,29 @@ def _linux(h):
         pos = p.get("position")
         if pos:                              # this station on the APRS map; distances from it
             argv += ["--lat", str(pos["lat"]), "--lon", str(pos["lon"])]
-        arts.append(Artifact("packet", f"{UNIT_DIR}/uvpro-hub.service", "systemd", unit(host, [
-            ("Unit", [("Description", "UV-PRO packet hub (APRS + Winlink over the radio's Bluetooth KISS TNC)"),
-                      ("After", "bluetooth.target network-online.target"), ("Wants", "bluetooth.target")]),
-            ("Service", [("ExecStart", exec_line(argv)), ("Restart", "on-failure"), ("RestartSec", "5"),
-                         ("TimeoutStopSec", "10"),
-                         # Keep the Bluetooth link to the radio across restarts and
-                         # stops: the UV-PRO refuses a new KISS link until it is
-                         # power-cycled (2026-10-19). The hub parks the socket here.
-                         ("FileDescriptorStoreMax", "1"), ("FileDescriptorStorePreserve", "yes"),
-                         ("NotifyAccess", "main")]),
+        tnc_val = p.get("tnc", "")
+        is_tcp = isinstance(tnc_val, str) and tnc_val.startswith("tcp:")
+        desc = "Packet hub (APRS + Winlink over network KISS TNC)" if is_tcp else "UV-PRO packet hub (APRS + Winlink over the radio's Bluetooth KISS TNC)"
+        after = "network-online.target" if is_tcp else "bluetooth.target network-online.target"
+        wants = "network-online.target" if is_tcp else "bluetooth.target"
+        svc = [("ExecStart", exec_line(argv)), ("Restart", "on-failure"), ("RestartSec", "5"),
+               ("TimeoutStopSec", "10")]
+        if not is_tcp:
+            # Keep the Bluetooth link to the radio across restarts and
+            # stops: the UV-PRO refuses a new KISS link until it is
+            # power-cycled (2026-10-19). The hub parks the socket here.
+            svc += [("FileDescriptorStoreMax", "1"), ("FileDescriptorStorePreserve", "yes")]
+        svc.append(("NotifyAccess", "main"))
+        unit_name = "uvpro-hub.service" if (isinstance(tnc_val, str) and tnc_val.startswith("bt:")) else "packet-hub.service"
+        arts.append(Artifact("packet", f"{UNIT_DIR}/{unit_name}", "systemd", unit(host, [
+            ("Unit", [("Description", desc), ("After", after), ("Wants", wants)]),
+            ("Service", svc),
             ("Install", [("WantedBy", "default.target")])])))
         ph = p.get("pat_http")
         if ph:
             arts.append(Artifact("packet", f"{UNIT_DIR}/pat-http.service", "systemd", unit(host, [
-                ("Unit", [("Description", f"Pat Winlink web UI (http://{ph['addr']}), via the UV-PRO packet hub"),
-                          ("After", "uvpro-hub.service"), ("Wants", "uvpro-hub.service")]),
+                ("Unit", [("Description", f"Pat Winlink web UI (http://{ph['addr']}), via the packet hub"),
+                          ("After", unit_name), ("Wants", unit_name)]),
                 ("Service", [("ExecStart", f"{_unit_path(ph['pat'])} http --addr {ph['addr']}"),
                              ("Restart", "on-failure"), ("RestartSec", "5")]),
                 ("Install", [("WantedBy", "default.target")])])))
@@ -507,7 +541,10 @@ def station_json(h):
         radios.append(e)
     d = {"name": h["host"], "radios": radios}
     if h.get("packet"):
-        d["packet"] = {k: h["packet"][k] for k in ("url", "agwpe") if k in h["packet"]}
+        d["packet"] = {k: h["packet"][k] for k in ("url", "agwpe", "name", "title") if k in h["packet"]}
+        tnc = h["packet"].get("tnc")
+        if isinstance(tnc, str) and tnc.startswith("tcp:") and "name" not in d["packet"]:
+            d["packet"]["name"] = "KISS TNC"      # not the UV-PRO, which the page assumes when unnamed
     if h.get("winlink"):
         d["winlink"] = dict(h["winlink"])
     if h.get("mesh"):

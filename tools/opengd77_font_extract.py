@@ -16,7 +16,7 @@ NAMES = ("font_6x8", "font_6x8_bold", "font_8x8", "font_8x16")
 
 
 def parse(text, name):
-    m = re.search(r"const\s+uint8_t\s+%s\[\]\s*=\s*\{(.*?)\};" % re.escape(name), text, re.S)
+    m = re.search(r"const\s+uint8_t\s+%s\[\]\s*=\s*\{(.*?)\};" % re.escape(name), text, re.DOTALL)
     if not m:
         raise SystemExit(f"{name} not found")
     body = re.sub(r"//[^\n]*", "", m.group(1))

@@ -1,4 +1,8 @@
-import asyncio, socket, sys, time
+import asyncio
+import socket
+import sys
+import time
+
 addr = sys.argv[1]
 SVC = "00001100-d102-11e1-9b23-00025b00a5a5"
 def probe(ch):
@@ -8,7 +12,7 @@ def probe(ch):
         data, end = b"", time.time() + 3
         while time.time() < end:
             try: b = s.recv(1024)
-            except socket.timeout: break
+            except TimeoutError: break
             if not b: break
             data += b
             if len(data) > 64: break

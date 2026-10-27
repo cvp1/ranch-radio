@@ -2,11 +2,11 @@
 
 import argparse
 import difflib
-import subprocess
 import json
 import os
 import shlex
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path

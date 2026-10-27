@@ -154,7 +154,7 @@ def install_vfo_guard():
 
     def on_event(self, ev):
         if isinstance(ev, ChannelChangedEvent) and ev.channel.channel_id >= len(self._state.channels):  # noqa: SLF001
-            return
+            return None
         return handle(self, ev)
     on_event._vfo_guard = True
     RadioController._on_event_message = on_event
@@ -224,7 +224,7 @@ async def raw(radio, name, body=b"", reply=True, timeout=RAW_TIMEOUT_S):
             return None
         try:
             data = await asyncio.wait_for(got, min(timeout, RAW_MAYBE_S) if reply is None else timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if reply is None:
                 return None
             raise TimeoutError(f"no answer from the radio to {name}") from None
@@ -315,7 +315,11 @@ class Bridge:
         self.lock = asyncio.Lock()
 
     def on_event(self, ev):
-        from benlink.command import (ChannelChangedEvent, SettingsChangedEvent, StatusChangedEvent)
+        from benlink.command import (
+            ChannelChangedEvent,
+            SettingsChangedEvent,
+            StatusChangedEvent,
+        )
         try:
             if isinstance(ev, ChannelChangedEvent):
                 if ev.channel.channel_id in VFO_IDS:
@@ -435,7 +439,7 @@ class Bridge:
             await self.battery()
             try:
                 await asyncio.wait_for(self.done.wait(), self.battery_every)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     async def alive_loop(self):
@@ -702,7 +706,7 @@ async def connect(address, transport):
         try:
             await asyncio.wait_for(radio.connect(), max(1.0, deadline - loop.time()))
             return radio
-        except (OSError, EOFError, asyncio.TimeoutError) as e:
+        except (TimeoutError, OSError, EOFError) as e:
             try:
                 await asyncio.wait_for(radio._conn.disconnect(), 3)   # noqa: SLF001 - a half-open link
             except Exception:   # noqa: BLE001
