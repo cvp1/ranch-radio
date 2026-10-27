@@ -1,0 +1,11 @@
+{
+  "host": "linux-direwolf",
+  "os": "linux",
+  "repo": "~/ranch-radio",
+  "python": "/usr/bin/python3",
+  "note": "Example: a packet hub on a network KISS TNC (Direwolf on another machine) with no radios attached to this host. See examples/direwolf/direwolf.conf for the Direwolf side.",
+  "radios": [],
+  "station": {"https": false},
+  "packet": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
+             "tnc": "tcp:direwolf.local:8001", "mycall": "N9ABC", "allow_calls": ["N9ABC"], "tx": false}
+}
