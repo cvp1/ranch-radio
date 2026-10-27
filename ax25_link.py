@@ -19,8 +19,20 @@ which goes through the hub's transmit gate; a refusal ends the link.
 import asyncio
 import logging
 
-from ax25 import (Address, Frame, S_REJ, S_RNR, S_RR, U_DISC, U_DM, U_FRMR, U_SABM,
-                  U_SABME, U_UA)
+from ax25 import (
+    S_REJ,
+    S_RNR,
+    S_RR,
+    U_DISC,
+    U_DM,
+    U_FRMR,
+    U_SABM,
+    U_SABME,
+    U_UA,
+    Address,
+    Frame,
+)
+
 log = logging.getLogger("ax25")
 
 DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING = "disconnected", "connecting", "connected", "disconnecting"

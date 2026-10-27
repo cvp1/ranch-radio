@@ -62,13 +62,13 @@ class TxAudio:
             # IC-7300 won't transmit outside the bands) and looked like a dead mic.
             self.notice(f"{f / 1e6:.3f} MHz is outside the amateur bands: the radio won't transmit there. "
                         "Tune into a band first.", "warn", ws)
-            return
+            return None
         if self.winlink_armed:
             # The session owns the radio between its frames too (as _hold_busy
             # says); a page key-down here went out on the session frequency at
             # the Winlink drive (review 2026-10-18, Grok).
             self.notice("A Winlink session is armed: the page's PTT waits until it ends.", "warn", ws)
-            return
+            return None
         codec, s, caps = self.codec, self.radio.state, self.radio.caps
         if not mic:
             # mac-shack, 2026-10-18: PTT with the page's mic off switched the
@@ -85,13 +85,13 @@ class TxAudio:
             # LSB-D; plain USB keyed at 0 W (linux-station, 2026-10-17).
             self.notice(f"Turn DATA on ({s.get('mode')}-D) first: in plain {s.get('mode')} audio from "
                         "this page doesn't reach the transmitter.", "warn", ws)
-            return
+            return None
         if not (voice_level or usb_src):
             return await self.key(ws, True)
         why = await self.can_key(ws)
         if why:
             self.notice(why, "warn", ws)
-            return
+            return None
         # Own PTT now (not keyed yet): can_key refuses everyone else from here.
         self.ptt_owner = ws
         self.ptt_seen = self.ptt_started = time.monotonic()
@@ -99,21 +99,21 @@ class TxAudio:
         try:
             try:
                 await asyncio.wait_for(self._voice_prepare(voice_level, usb_src), VOICE_PREP_S)
-            except (codec_level.CodecError, ValueError, asyncio.TimeoutError) as e:
+            except (TimeoutError, codec_level.CodecError, ValueError) as e:
                 why = str(e) or f"the radio did not get ready within {VOICE_PREP_S:g} s"
                 log.warning("voice: not transmitting: %s", why)
                 self.notice(f"Not transmitting: {why}.", "warn", ws)
                 if self.ptt_owner is ws:
                     self.ptt_owner = None
                 await self._voice_restore()
-                return
+                return None
         finally:
             self._voice_preparing = None
         if self.ptt_owner is not ws:
             # Unkeyed (by anyone) while preparing: nothing went on air; put back.
             log.info("voice: released while preparing; nothing keyed")
             await self._voice_restore()
-            return
+            return None
         self.ptt_seen = self.ptt_started = time.monotonic()
         self._voice_since, self.voice_bytes, self.voice_rx_bytes = time.monotonic(), 0, 0
         self._vm = {"po": [], "alc": [], "sq": 0.0, "n": 0, "peak": 0}

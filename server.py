@@ -32,12 +32,12 @@ import time
 from aiohttp import WSCloseCode, WSMsgType, web
 
 import codec_level
-import webguard
-from tx_audio import TxAudio
 import rigctl_server
 import rigs
 import station_id
+import webguard
 from audio import DEFAULT_DEVICE, AudioBridge
+from tx_audio import TxAudio
 
 HERE = pathlib.Path(__file__).resolve().parent
 log = logging.getLogger("server")

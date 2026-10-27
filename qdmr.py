@@ -54,7 +54,7 @@ class Dmrconf:
 
     def radios(self):
         rc, out = self._run(["--list-radios"], 15)
-        return [m.group(1) for m in re.finditer(r"^\s*([a-z0-9-]+)\s*\|", out, re.M) if m.group(1) != "key"]
+        return [m.group(1) for m in re.finditer(r"^\s*([a-z0-9-]+)\s*\|", out, re.MULTILINE) if m.group(1) != "key"]
 
     def writable(self):
         """None if this dmrconf can safely write an MD-UV380 on OpenGD77, else why not."""
@@ -459,7 +459,7 @@ def power_losses(layout):
 def pin_default_radio_id(text):
     """The file with every channel's radioId "!default" set to the settings'
     defaultID, so qdmr writes no DMR ID override. Returns (text, how many)."""
-    m = re.search(r"^\s+defaultID:\s*(\S+)\s*$", text, re.M)
+    m = re.search(r"^\s+defaultID:\s*(\S+)\s*$", text, re.MULTILINE)
     if not m:
         return text, 0
     rid = _scalar(m.group(1))

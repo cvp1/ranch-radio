@@ -312,8 +312,7 @@ class RigctlSession:
         if not parts:
             return "", False
         cmd, args = parts[0], parts[1:]
-        if cmd.startswith("\\"):
-            cmd = cmd[1:]
+        cmd = cmd.removeprefix("\\")
         vfo = None
         if cmd not in ("V", "set_vfo") and args and args[0] in VFO_NAMES:
             vfo, args = args[0], args[1:]

@@ -29,7 +29,7 @@ import logging
 import shlex
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
 
 import aiohttp
@@ -245,7 +245,7 @@ class PatEngine:
             await self.abort("server stopping")
             try:
                 await asyncio.wait_for(asyncio.shield(self.session), ABORT_GRACE_S)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 self.session.cancel()
         for t in self._tasks:
             t.cancel()
@@ -253,7 +253,7 @@ class PatEngine:
             self.proc.terminate()
             try:
                 await asyncio.wait_for(self.proc.wait(), 5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.proc.kill()
         if self.http:
             await self.http.close()
@@ -400,7 +400,7 @@ class PatEngine:
         old.terminate()
         try:
             await asyncio.wait_for(old.wait(), 5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("winlink: Pat did not exit within 5 s; killing it")
             old.kill()
         end = time.monotonic() + 15
@@ -432,8 +432,7 @@ class PatEngine:
                     log.warning("winlink: mailbox %s answered %s", box, r.status)
                     return None
                 return {m["MID"] for m in json.loads(await r.text()) if m.get("MID")}
-        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError,
-                TypeError, KeyError, AttributeError) as e:
+        except (TimeoutError, aiohttp.ClientError, OSError, ValueError, TypeError, KeyError, AttributeError) as e:
             log.warning("winlink: could not read mailbox %s: %s", box, e)
             return None
 
@@ -530,7 +529,7 @@ class PatEngine:
                                      params={"dirty": "true" if dirty else "false"},
                                      timeout=aiohttp.ClientTimeout(total=5)) as r:
                 await r.read()
-        except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+        except (TimeoutError, aiohttp.ClientError, OSError) as e:
             log.warning("winlink: disconnect request failed: %s", e)
 
     async def answer_prompt(self, pid, value):
@@ -600,7 +599,7 @@ class PatEngine:
                     out.add_field(k, v)
             if not form.get("date"):
                 # Pat refuses a message without a date (400).
-                out.add_field("date", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                out.add_field("date", datetime.now(UTC).isoformat(timespec="seconds"))
             return await self._pass("POST", "/api/mailbox/out", data=out)
 
         async def rmslist(request):
@@ -633,5 +632,5 @@ class PatEngine:
                 elif r.status < 400:
                     headers["Content-Type"] = "application/json"
                 return web.Response(status=r.status, body=body, headers=headers)
-        except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+        except (TimeoutError, aiohttp.ClientError, OSError) as e:
             return web.Response(status=503, text=f"Winlink engine not available: {e}")

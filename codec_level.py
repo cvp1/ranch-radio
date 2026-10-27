@@ -362,7 +362,7 @@ class CodecProfile:
 
     def _key(self, use, band):
         """The table key a step or save for this band edits."""
-        return band if band else "default"
+        return band or "default"
 
     def snapshot(self, use, band):
         """What the page shows for this use on this band."""

@@ -19,7 +19,7 @@ import struct
 import termios
 import time
 
-from radio import MODES, MODE_CODES, Radio
+from radio import MODE_CODES, MODES, Radio
 
 log = logging.getLogger("civ")
 
@@ -341,14 +341,14 @@ class CivRadio(Radio):
             # Half-duplex courtesy: wait for the radio to answer (or give up).
             try:
                 await asyncio.wait_for(self._reply.wait(), 0.08)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             if not self.state["connected"]:
                 # Radio silent (off?): poll gently instead of hammering it.
                 self._wake.clear()
                 try:
                     await asyncio.wait_for(self._wake.wait(), 0.5)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
     def _next_poll(self):

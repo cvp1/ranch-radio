@@ -41,8 +41,8 @@ import glob
 import os
 import re
 import select
-import subprocess
 import struct
+import subprocess
 import threading
 import time
 

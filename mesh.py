@@ -77,7 +77,7 @@ class MeshEngine:
             self.proc.stdin.close()   # the bridge closes the node cleanly on EOF
             try:
                 await asyncio.wait_for(self.proc.wait(), 5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.proc.kill()
 
     async def _supervise(self):

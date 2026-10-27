@@ -29,7 +29,7 @@ from . import paths, render
 # Text in a USB product name or serial number -> rig profile.
 USB_RIGS = [("IC-7300", "ic7300"), ("IC-705", "ic705"), ("IC-7610", "ic7610"), ("IC-9700", "ic9700"),
             ("IC-7100", "ic7100"), ("QMX", "qmx"), ("X6100", "x6100")]
-SERIAL_HINT = re.compile(r"usb|serial|uart|acm|cp210|ftdi|qmx|ic-", re.I)
+SERIAL_HINT = re.compile(r"usb|serial|uart|acm|cp210|ftdi|qmx|ic-", re.IGNORECASE)
 MAC_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 

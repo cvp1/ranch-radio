@@ -74,7 +74,7 @@ class Addon:
 
     def can_stop(self):
         """None, or why it can't be switched off right now (e.g. a session running)."""
-        return None
+        return
 
     def http(self, app, authorised):
         """Register its HTTP routes, once, before the server starts."""
@@ -109,7 +109,7 @@ class Addons:
                 continue
             try:
                 mod = importlib.import_module(f"addons.{name}")
-                cls = getattr(mod, "ADDON")
+                cls = mod.ADDON
                 if not (isinstance(cls, type) and issubclass(cls, Addon)):
                     raise TypeError("ADDON is not an Addon subclass")
                 rec["addon"] = cls(host, opts)

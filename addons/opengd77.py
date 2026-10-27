@@ -75,7 +75,7 @@ import opengd77_screen
 import qdmr
 import qdmr_yaml
 from addons import Addon
-from opengd77 import OpenGD77, OpenGD77Error, SCREEN_H, SCREEN_W, find_port
+from opengd77 import SCREEN_H, SCREEN_W, OpenGD77, OpenGD77Error, find_port
 
 log = logging.getLogger("opengd77")
 
@@ -687,8 +687,7 @@ class OpenGD77Addon(Addon):
         secs = self.radio.sectors()
         path = os.path.join(self.memory_dir, time.strftime("%Y-%m-%d_%H%M%S-memory.bin"))
         with open(path, "wb") as f:
-            for a in sorted(secs):
-                f.write(secs[a])
+            f.writelines(secs[a] for a in sorted(secs))
         old = sorted(n for n in os.listdir(self.memory_dir) if n.endswith("-memory.bin"))
         for n in old[:-MEMORY_BACKUPS]:
             os.remove(os.path.join(self.memory_dir, n))

@@ -52,8 +52,7 @@ def norm_call(c):
     """'n9abc-0*' -> 'N9ABC': upper case, no repeated-mark, SSID 0 dropped
     (inner third-party headers carry '-0' literally; AX.25 headers never do)."""
     c = (c or "").strip().upper().rstrip("*")
-    if c.endswith("-0"):
-        c = c[:-2]
+    c = c.removesuffix("-0")
     return c
 
 

@@ -134,7 +134,7 @@ class RemoteLane:
                                                "freq": winlink.url_freq_hz(url),
                                                "qsy": winlink.url_hz(url)}))
             await asyncio.wait_for(self._armed.wait(), ARM_WAIT_S)
-        except (asyncio.TimeoutError, aiohttp.ClientError, OSError, ValueError, RuntimeError) as e:
+        except (TimeoutError, aiohttp.ClientError, OSError, ValueError, RuntimeError) as e:
             why = self._refusal or f"the {self.radio.name}'s server did not arm ({e or 'no answer'})"
             st.notice(f"Winlink not started: {why}", "warn", ws)
             await self._close()
@@ -182,7 +182,7 @@ class RemoteLane:
                                                    "reason": reason}))
                 try:
                     await asyncio.wait_for(self._disarmed.wait(), END_WAIT_S)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     log.warning("winlink: the %s did not disarm; closing its lane", self.radio.name)
         finally:
             await self._close()            # closing the socket disarms in any case
@@ -246,7 +246,7 @@ class Ardop:
             self.proc.terminate()
             try:
                 await asyncio.wait_for(self.proc.wait(), 5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.proc.kill()
         self.proc = None
 
@@ -305,7 +305,7 @@ class Station:
             _, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), 0.5)
             w.close()
             return True
-        except (OSError, asyncio.TimeoutError):
+        except (TimeoutError, OSError):
             return False
 
     async def presence_loop(self):

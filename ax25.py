@@ -115,7 +115,7 @@ def base_call(text: str) -> str:
 
 
 class Address:
-    __slots__ = ("call", "ssid", "bit7")
+    __slots__ = ("bit7", "call", "ssid")
 
     def __init__(self, call, ssid=0, bit7=False):
         self.call, self.ssid, self.bit7 = call.upper(), ssid, bit7
@@ -161,8 +161,20 @@ class Frame:
     from the C bits (dest C=1, src C=0 means command).
     """
 
-    __slots__ = ("dest", "src", "digis", "kind", "ns", "nr", "pf", "stype", "utype",
-                 "pid", "info", "command")
+    __slots__ = (
+        "command",
+        "dest",
+        "digis",
+        "info",
+        "kind",
+        "nr",
+        "ns",
+        "pf",
+        "pid",
+        "src",
+        "stype",
+        "utype",
+    )
 
     def __init__(self, dest, src, digis=(), kind="U", ns=0, nr=0, pf=False, stype=None,
                  utype=U_UI, pid=None, info=b"", command=True):

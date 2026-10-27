@@ -117,4 +117,4 @@ def report(h, runtime, files, checks, checked_at=None, checking=False):
             "checked_at": checked_at, "checking": checking}
 
 
-__all__ = ["build", "report", "ASK"]
+__all__ = ["ASK", "build", "report"]

@@ -96,7 +96,7 @@ class Bridge:
                             if msg.type == aiohttp.WSMsgType.BINARY:
                                 self.rx_write(msg.data)
                 log.warning("server closed the audio socket")
-            except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+            except (TimeoutError, aiohttp.ClientError, OSError) as e:
                 log.warning("audio socket: %s", e)
             finally:
                 self.ws = None

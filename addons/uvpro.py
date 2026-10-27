@@ -259,7 +259,7 @@ class UvproAddon(Addon):
             self.proc.stdin.close()   # the bridge disconnects cleanly on EOF
             try:
                 await asyncio.wait_for(self.proc.wait(), 8)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.proc.kill()
 
     async def _run_bridge(self):
@@ -923,7 +923,7 @@ class UvproAddon(Addon):
         """The radio never answered: say so, rather than leave the page waiting."""
         try:
             await asyncio.wait_for(asyncio.shield(fut), WRITE_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             rec = self._writes.pop(ref, None)
             if rec and rec[3] not in (None, "quiet"):
                 self._batch_done(rec[3], rec[1], {"ok": False, "error": "no answer from the radio"})

@@ -281,7 +281,7 @@ def systemd_escape_path(p):
     for part in parts:
         s = ""
         for i, ch in enumerate(part):
-            if ch.isalnum() and ch.isascii() or ch in ":_" or (ch == "." and i > 0):
+            if (ch.isalnum() and ch.isascii()) or ch in ":_" or (ch == "." and i > 0):
                 s += ch
             else:
                 s += "\\x%02x" % ord(ch)
