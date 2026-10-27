@@ -42,7 +42,7 @@ a radio has.
 
 ## Install (macOS or Linux)
 
-You need Python 3.10 or newer and git. Plug the radio in first.
+You need Python 3.12 or newer and git. Plug the radio in first.
 
 ```sh
 git clone https://github.com/cvp1/ranch-radio.git ~/ranch-radio
