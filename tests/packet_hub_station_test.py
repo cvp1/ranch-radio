@@ -84,6 +84,16 @@ check("no primary radio when shared port is off", st.primary(), None)
 check("radios_info reports shared_port 0", info["shared_port"], 0)
 check("radios_info carries the packet hub's name", info["packet"].get("name"), "Direwolf")
 
+unnamed = copy.deepcopy(host)
+unnamed["packet"].pop("name")
+check("unnamed network TNC gets a neutral name, not UV-PRO",
+      render.station_json(unnamed)["packet"].get("name"), "KISS TNC")
+check("an explicit name wins", render.station_json(host)["packet"].get("name"), "Direwolf")
+bluetooth = copy.deepcopy(unnamed)
+bluetooth["packet"]["tnc"] = "bt:00:11:22:33:44:55"
+check("unnamed Bluetooth hub adds no name (the page defaults to UV-PRO)",
+      "name" in render.station_json(bluetooth)["packet"], False)
+
 clash = copy.deepcopy(host)
 clash["station"]["rigctl_port"] = clash["radios"][0]["web"]
 raises("station.rigctl_port may not collide with a radio's web port", lambda: validate(clash),

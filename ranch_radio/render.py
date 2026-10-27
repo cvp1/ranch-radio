@@ -542,6 +542,9 @@ def station_json(h):
     d = {"name": h["host"], "radios": radios}
     if h.get("packet"):
         d["packet"] = {k: h["packet"][k] for k in ("url", "agwpe", "name", "title") if k in h["packet"]}
+        tnc = h["packet"].get("tnc")
+        if isinstance(tnc, str) and tnc.startswith("tcp:") and "name" not in d["packet"]:
+            d["packet"]["name"] = "KISS TNC"      # not the UV-PRO, which the page assumes when unnamed
     if h.get("winlink"):
         d["winlink"] = dict(h["winlink"])
     if h.get("mesh"):

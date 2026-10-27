@@ -19,6 +19,9 @@ const station = (() => {
 
   const route = () => (location.hash.replace(/^#\/?/, "") || "home");
   const present = () => radios.filter((r) => r.present);
+  // The packet hub's name: what the host file calls it, else the UV-PRO (the
+  // only packet hub there was before network KISS TNCs).
+  const packetName = () => packet.name || "UV-PRO";
   const portsOf = (r) => {
     const sp = r.shared ? (sharedPort ?? 0) : 0;
     return sp > 0 ? `${sp} · ${r.rigctl}` : `${r.rigctl}`;
@@ -45,9 +48,9 @@ const station = (() => {
       nav.append(tab(r.id, r.name, { dot: "ok", sub: portsOf(r),
         title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
     }
-    if (wlOn) nav.append(tab("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: `Winlink mail over HF (ARDOP), ${packet.name || "Packet"} or telnet` }));
+    if (wlOn) nav.append(tab("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` }));
     if (meshOn) nav.append(tab("mesh", "Mesh", { dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected }));
-    if (packet.configured) nav.append(tab("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: `${packet.name || "Packet"} hub: APRS and the Winlink packet link` }));
+    if (packet.configured) nav.append(tab("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: `${packetName()} packet hub: APRS and the Winlink packet link` }));
     for (const d of addons.list()) nav.append(tab(d.name, d.label, addons.tab(d.name) || {}));
     if (modules.enabled()) nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" }));
   }
@@ -205,7 +208,7 @@ const station = (() => {
     if (meshOn) el.append(card("Mesh", meshConnected ? "ok" : "off",
       [meshConnected ? `Meshtastic node connected${meshUnread ? ` · ${meshUnread} new` : ""}` : "Node not connected", meshConnected ? "Open →" : ""].filter(Boolean),
       "#/mesh"));
-    const packetTitle = packet.title || (packet.name ? `Packet (${packet.name})` : "Packet");
+    const packetTitle = packet.title || `Packet (${packetName()})`;
     if (packet.configured) el.append(card(packetTitle, packet.present ? "ok" : "off",
       [packet.present ? "APRS and Winlink packet hub" : "Hub not running", packet.present ? "Open →" : ""].filter(Boolean),
       packet.present ? "#/packet" : null));
@@ -226,7 +229,7 @@ const station = (() => {
   function viaOptions() {
     const list = present().filter((r) => r.winlink)
       .map((r) => ({ id: r.id, name: r.name, kind: "ardop", label: `HF · ${r.name} (ARDOP)` }));
-    const packetLabel = packet.name || "Packet";
+    const packetLabel = packetName();
     if (packet.present) list.push({ id: "packet", name: packetLabel, kind: "packet", label: `VHF · ${packetLabel} (packet)` });
     list.push({ id: "telnet", name: "internet", kind: "telnet", label: "Telnet (internet, no radio)" });
     winlink.setVias(list);

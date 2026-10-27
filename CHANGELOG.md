@@ -29,6 +29,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 - **Python 3.12 or newer is now required** (README and installer gate). CI only
   tests 3.14, and nothing in the source needed the previously stated floor.
 - `aiohttp` must be 3.14.4 or newer.
+- **Packet hub name on the station page.** The page shows the host file's
+  `packet.name` (for example `Packet (Direwolf)`). A network TNC with no name
+  shows `KISS TNC`. A host with no name and a Bluetooth TNC keeps the `UV-PRO`
+  label it always had, so existing setups look the same.
 - `station.rigctl_port` is validated against the radios' own ports, and the
   station fails with a clear message if the shared port can't bind.
 - Safe `ruff` auto-fixes across the code (import order, `TimeoutError`,
