@@ -13,7 +13,9 @@
 # 6. `ranch-radio doctor`: anything left (root steps are printed for you)
 #
 # Safe to run again: each step skips what's already done. To update later:
-#   ranch-radio update --apply      (git pull, install, restart idle radios only)
+#   ranch-radio update --apply      (pull, packages, install, restart idle radios only;
+#                                    checks they serve, rolls back if not)
+# A daily check (ranch-radio update --scheduled) notifies when there is one.
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO="$PWD"

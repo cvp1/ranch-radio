@@ -11,11 +11,18 @@ enabled), both 2026-10-21. A radio that is transmitting or in a Winlink
 session is never restarted: it's reported, to be done later. A unit in the
 host file's manual_restart is never restarted either.
 
+A restart keeps what was stopped stopped: a Mac agent that wasn't loaded
+(switched off from the menu-bar widget) is written but not started, as
+systemd's try-restart does on Linux. Only a newly installed agent is loaded.
+
 RANCH_RADIO_LAUNCHCTL / RANCH_RADIO_SYSTEMCTL: stand-ins for tests.
+RANCH_RADIO_PROBE: a stand-in for the probe (a command given the URL; prints
+the probe's JSON line).
 """
 
 import json
 import os
+import shlex
 import subprocess
 import time
 
@@ -62,14 +69,35 @@ def _url(h, r=None):
     return f"ws://127.0.0.1:{r['web']}/ws"
 
 
+def probe(h, r=None):
+    """What a radio's server (or, r None, the Linux station) says about
+    itself: {"up", "tx", "armed", "session"}, or {"up": False, "why"}."""
+    stand_in = os.environ.get("RANCH_RADIO_PROBE")
+    argv = (shlex.split(stand_in) if stand_in else
+            [os.path.expanduser(h["python"]), "-c", IDLE_SCRIPT]) + [_url(h, r)]
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        st = json.loads(p.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return {"up": False, "why": "not answering"}
+    return st if isinstance(st, dict) else {"up": False, "why": "bad answer"}
+
+
+def servers(h):
+    """{key: (h, r)} for every server this host runs that answers a probe:
+    a Mac's radio servers, a Linux host's station and radios with a web port."""
+    if h["os"] == "macos":
+        return {r["id"]: r for r in h["radios"]}
+    out = {"station": None} if h.get("station") else {}
+    out.update({r["id"]: r for r in h["radios"] if r.get("web")})
+    return out
+
+
 def idle(h, r=None):
     """(ok, why): ok when nothing would be cut off by a restart. A server
     that doesn't answer is idle (there's nothing to interrupt)."""
-    py = os.path.expanduser(h["python"])
-    try:
-        p = subprocess.run([py, "-c", IDLE_SCRIPT, _url(h, r)], capture_output=True, text=True, timeout=20)
-        st = json.loads(p.stdout.strip().splitlines()[-1])
-    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+    st = probe(h, r)
+    if st.get("why") == "not answering":
         return True, "not answering"
     if not st.get("up"):
         return True, "not running"
@@ -150,7 +178,8 @@ def start(h, home=None):
     radio_units = [u for u in units if u.endswith(("-remote.service", "-remote.socket"))]
     if radio_units:      # WantedBy their device: a radio plugged in later gets its server
         run([sc, "--user", "enable"] + radio_units, out)
-    others = [u for u in units if u not in radio_units]
+    # The update service is a oneshot with no [Install]: its timer starts it.
+    others = [u for u in units if u not in radio_units and u != render.UPDATE_SERVICE]
     if others:
         run([sc, "--user", "enable", "--now"] + others, out)
     for r in h["radios"]:
@@ -159,10 +188,37 @@ def start(h, home=None):
     return out
 
 
-def restart(h, changed, check_idle=idle):
+def force_start(h, keys):
+    """Start (or bounce) the servers in keys (servers(h) keys), whatever state
+    they are in: after a rollback, a server that died on the bad code may be
+    failed or stopped, which a try-restart leaves alone."""
+    out = []
+    if h["os"] == "macos":
+        for r in h["radios"]:
+            if r["id"] in keys:
+                path = f"{render.AGENTS}/{r['label']}.plist"
+                _mac_down(r["label"], out)
+                _mac_up(r["label"], path, out)
+        return out
+    sc = _cmd("systemctl")
+    units = (["station.service"] if "station" in keys else []) + \
+        [f"{r['id']}-remote.service" for r in h["radios"] if r["id"] in keys]
+    if units:
+        run([sc, "--user", "reset-failed"] + units, out)
+        run([sc, "--user", "restart"] + units, out)
+    return out
+
+
+def restart(h, changed, check_idle=idle, held=None, new=(), skip=()):
     """Reload what changed. Returns (done, deferred): deferred lists what
-    wasn't restarted and why (a radio in use, a manual_restart unit)."""
+    wasn't restarted and why (a radio in use, a manual_restart unit).
+    held, a list, gets the module id of each server left alone because it
+    was in use (to restart later); new holds the paths just installed for
+    the first time; skip holds module ids not to touch (the update job,
+    when it is the one running)."""
     out, deferred = [], []
+    held = [] if held is None else held
+    changed = [a for a in changed if a.module not in skip]
     manual = h.get("manual_restart") or {}
     if h["os"] == "macos":
         labels = {}
@@ -177,20 +233,25 @@ def restart(h, changed, check_idle=idle):
                 ok, why = check_idle(h, r)
                 if not ok:
                     deferred.append(f"{label}: {why}; restart it later")
+                    held.append(r["id"])
                     continue
+            if path not in new and not _loaded(label):
+                # Stopped on purpose (the widget's Off): written, left stopped.
+                out.append((f"{label}: not running before; left stopped (it starts on the new code)", 0, ""))
+                continue
             _mac_down(label, out)
             _mac_up(label, path, out)
         return out, deferred
     sc = _cmd("systemctl")
     run([sc, "--user", "daemon-reload"], out)
-    units = {}
+    units, module = {}, {}
     for a in changed:
         if a.path.endswith("station.json"):
-            units["station.service"] = None
+            units["station.service"], module["station.service"] = None, "station"
         elif a.fmt == "systemd":
             name = a.path.rsplit("/", 1)[-1]
             unit = a.path.rsplit("/", 2)[-2][:-2] if name.endswith(".conf") else name
-            units[unit] = _radio_of(h, a)
+            units[unit], module[unit] = _radio_of(h, a), a.module
     if render.WIREPLUMBER_CONF in {a.path for a in changed}:
         deferred.append("wireplumber: restart it yourself when no radio is in use "
                         "(systemctl --user restart wireplumber); every radio's audio drops briefly")
@@ -200,9 +261,16 @@ def restart(h, changed, check_idle=idle):
             continue
         if unit.endswith(".socket"):
             continue                                    # sockets hold the port across restarts
+        if unit == render.UPDATE_SERVICE:
+            continue                                    # a oneshot: its next run reads the new file
+        if unit == render.UPDATE_TIMER:
+            run([sc, "--user", "enable", unit], out)    # a new timer starts; a changed one re-reads its time
+            run([sc, "--user", "restart", unit], out)
+            continue
         ok, why = check_idle(h, r)
         if not ok:
             deferred.append(f"{unit}: {why}; restart it later")
+            held.append(module[unit])
             continue
         run([sc, "--user", "try-restart", unit], out)
     return out, deferred

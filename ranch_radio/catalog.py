@@ -40,6 +40,10 @@ MODULES = [
      "code": "ranch_radio/render.py wireplumber_rules (and wait_audio in each radio unit)", "platforms": ["linux"],
      "ships": "Linux: a WirePlumber rule rendered from each radio's audio_in/audio_out (51-ranch-radio-audio.conf)"},
 
+    {"name": "updates", "kind": "service", "title": "Daily update check: notify, or apply with health check and rollback",
+     "code": "ranch_radio/updater.py (ranch-radio update --scheduled)", "platforms": ["macos", "linux"],
+     "ships": "on unless the host file says \"updates\": false; macOS: a launchd agent; Linux: a systemd timer, both rendered"},
+
     # --- add-ons (addons/<name>.py + static/addons/<name>.js)
     {"name": "uvpro", "kind": "addon", "title": "UV-PRO control (channels CHIRP's way, settings, beacon)",
      "code": "addons/uvpro.py, addons/uvpro_bridge.py, addons/chirp.py (benlink venv)", "platforms": ["linux"],
