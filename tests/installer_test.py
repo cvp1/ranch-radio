@@ -98,6 +98,14 @@ try:
 except render.HostError:
     check("a bad callsign is refused", "refused", "refused")
 
+# ---------------------------------------------------------------- the Python init writes, in a unit
+lv = dict(json.loads((ROOT / "examples/hosts/linux-laptop.json").read_text()), python="~/ranch-radio/.venv/bin/python")
+execs = [l.split("=", 1)[1] for a in render.artifacts(lv) if a.fmt == "systemd"
+         for l in a.content.splitlines() if l.startswith("ExecStart=")]
+check("linux: a ~ Python becomes %h in every ExecStart (systemd doesn't expand ~)",
+      (all(not e.startswith("~") for e in execs), any(e.startswith("%h/ranch-radio/.venv/bin/python") for e in execs)),
+      (True, True))
+
 # ---------------------------------------------------------------- start / restart, stand-in managers
 LOG = TMP / "calls.jsonl"
 fake = TMP / "fakectl"

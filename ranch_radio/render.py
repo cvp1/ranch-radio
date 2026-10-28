@@ -410,7 +410,8 @@ def parse_unit(text):
 
 
 def _linux(h):
-    host, py, repo = h["host"], h["python"], _unit_path(h["repo"])
+    # systemd doesn't expand ~ (init writes ~/ranch-radio/.venv/bin/python): %h it.
+    host, py, repo = h["host"], _unit_path(h["python"]), _unit_path(h["repo"])
     arts = []
     for r in h["radios"]:
         rid, dev = r["id"], systemd_escape_path(r["device"]) + ".device"
