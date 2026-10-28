@@ -73,12 +73,56 @@ Mac, `macos/install-webapp.sh` trusts it and installs the page as an app.
 
 ```sh
 ranch-radio doctor            # what this machine's modules need, and whether it has it
-ranch-radio update --apply    # git pull, install, restart what changed (never a radio in use)
+ranch-radio update --check    # is there an update? (exit 2 when there is)
+ranch-radio update            # what an update would pull and change (pulls nothing)
+ranch-radio update --apply    # pull, install, restart what changed (never a radio in use)
 ranch-radio add mesh          # switch a module on (dry run; --apply writes the host file)
 ranch-radio remove mesh       # switch it off
 ranch-radio modules           # every module and what it needs
 ranch-radio drift             # installed files vs. the host file
 ```
+
+## Updates
+
+`ranch-radio update --apply` is the one update command, and it is safe to run
+any time:
+
+- **Packages first.** It checks that the host's Python has what
+  `requirements.txt` asks for, and installs it into the checkout's `.venv`. If
+  the host runs another Python (a system one), it stops and says what to
+  install, and the code goes back where it was. Nothing restarts.
+- **Radios in use are left alone.** A radio that is transmitting or in a
+  Winlink session keeps running. It is restarted on the new code at the next
+  update, and `--check` reports it until then. A radio you switched off stays
+  off.
+- **Checked, and rolled back.** After restarting, every server that was serving
+  must serve again within a minute. If one doesn't, the code goes back to the
+  commit it came from, the old code is restarted, and the update confirms
+  those servers serve again. The same happens if the new code crashes before
+  it can check itself. That commit is not tried again until a newer one lands
+  (`--force` tries it anyway).
+- **It knows what the servers run.** If the checkout moves without an update,
+  for example by a hand `git pull`, `--check` says so. The next
+  `update --apply` restarts the servers on it, with the same checks.
+
+**The daily check.** Every host runs `ranch-radio update --scheduled` at 10:00:
+a launchd agent on macOS, a systemd timer on Linux. It shows a desktop
+notification once per new commit. To have it apply updates itself, with the
+same checks and rollback, or to change the time, add to the host file:
+
+```json
+"updates": {"apply": true, "at": "10:00"}
+```
+
+`"updates": false` turns the daily check off. An installed job then does
+nothing; to remove it, run `launchctl bootout gui/$(id -u)/org.ranch-radio.update`
+on a Mac or `systemctl --user disable --now ranch-radio-update.timer` on Linux.
+When nothing new has landed, the job leaves host-file edits for you to install
+with `update --apply`. A code update installs everything the host file
+renders. The job skips a run when no server is serving, because it would
+have nothing to check the new code against. On a Mac its log
+is `~/Library/Logs/ranch-radio-update.log`; on Linux,
+`journalctl --user -u ranch-radio-update`.
 
 ## Modules
 

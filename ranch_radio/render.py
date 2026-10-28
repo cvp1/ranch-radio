@@ -26,6 +26,13 @@ RADIO_AUDIO_PRIORITY = 100
 # A Mac has one radio server, and it runs the host's add-ons (server.py --addons).
 MAC_ADDONS = ".config/radio-remote/addons.json"
 ARDOP_STATE = "~/.local/state/radio-remote/ardop"
+# The daily update check (ranch-radio update --scheduled). On unless the host
+# file says "updates": false; it applies updates only with "apply": true.
+UPDATE_LABEL = "org.ranch-radio.update"
+UPDATE_SERVICE = "ranch-radio-update.service"
+UPDATE_TIMER = "ranch-radio-update.timer"
+UPDATE_AT = "10:00"
+UPDATE_LOG = "~/Library/Logs/ranch-radio-update.log"
 ORDERED_KEYS = re.compile(r"^(Exec|Environment)")
 
 
@@ -66,6 +73,7 @@ LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 CALL = re.compile(r"[A-Za-z0-9]{3,7}(-[0-9]{1,2})?")
 SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 TEXT = re.compile(r"[^-].*")              # free text passed as one argv element (no shell)
+CLOCK = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 
 # (path, rule): "*" is every element of a list or every value of an object.
 RULES = [
@@ -90,13 +98,14 @@ RULES = [
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
+    (("updates", "at"), CLOCK), (("updates", "label"), LABEL),
     (("addons", "*"), None),     # add-on names: checked below
 ]
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"),
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
          ("winlink", "ardopcf", "port"), ("station", "rigctl_port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
-         ("packet", "tx"), ("station", "https"), ("addons", "*", "enabled")]
+         ("packet", "tx"), ("station", "https"), ("addons", "*", "enabled"), ("updates", "apply")]
 
 
 def _at(d, path, where=()):
@@ -258,6 +267,10 @@ def validate(h):
     for u in (h.get("manual_restart") or {}):
         if not isinstance(h["manual_restart"][u], str) or not h["manual_restart"][u].strip():
             raise HostError(f"{h['host']}: manual_restart {u!r} needs the reason")
+    u = h.get("updates", True)
+    if u is not True and u is not False and not isinstance(u, dict):
+        raise HostError(f"{h['host']}: updates must be false or an object like "
+                        f"{{\"at\": \"10:00\", \"apply\": false}}")
     for name, opts in (h.get("addons") or {}).items():
         if not isinstance(opts, dict):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
@@ -290,6 +303,15 @@ def systemd_escape_path(p):
 
 
 # ---------------------------------------------------------------- server.py
+
+def updates(h):
+    """The host's update check: {"at", "apply", "label"}, or None when "updates": false."""
+    u = h.get("updates", True)
+    if u is False:
+        return None
+    u = u if isinstance(u, dict) else {}
+    return {"at": u.get("at", UPDATE_AT), "apply": bool(u.get("apply", False)), "label": u.get("label", UPDATE_LABEL)}
+
 
 def server_args(h, r, pth):
     """The server.py arguments for radio r; pth maps a ~ path for this OS."""
@@ -482,6 +504,20 @@ def _linux(h):
                 ("Service", [("ExecStart", f"{_unit_path(ph['pat'])} http --addr {ph['addr']}"),
                              ("Restart", "on-failure"), ("RestartSec", "5")]),
                 ("Install", [("WantedBy", "default.target")])])))
+
+    u = updates(h)
+    if u:
+        what = "check for updates and apply them" if u["apply"] else "check for updates and say so"
+        arts.append(Artifact("updates", f"{UNIT_DIR}/{UPDATE_SERVICE}", "systemd", unit(host, [
+            ("Unit", [("Description", f"Ranch Radio: {what} (ranch-radio update --scheduled)")]),
+            # oneshot, no [Install]: only the timer starts it. RANCH_RADIO_UPDATE_JOB:
+            # what it runs (a rollback's older code too) never restarts it.
+            ("Service", [("Type", "oneshot"), ("Environment", "RANCH_RADIO_UPDATE_JOB=1"),
+                         ("ExecStart", exec_line([py, f"{repo}/ranch-radio", "update", host, "--scheduled"]))])])))
+        arts.append(Artifact("updates", f"{UNIT_DIR}/{UPDATE_TIMER}", "systemd", unit(host, [
+            ("Unit", [("Description", f"Ranch Radio: {what}, daily at {u['at']}")]),
+            ("Timer", [("OnCalendar", f"*-*-* {u['at']}:00"), ("Persistent", "true")]),
+            ("Install", [("WantedBy", "timers.target")])])))
     return arts
 
 
@@ -594,6 +630,19 @@ def _macos(h, home):
             # The radio agent it switches: its label, from this host file.
             "ProgramArguments": [f"{app}/Contents/MacOS/{name}"] + [r["label"] for r in h["radios"][:1]],
             "RunAtLoad": True}))
+
+    u = updates(h)
+    if u:
+        hh, mm = (int(x) for x in u["at"].split(":"))
+        log = pth(UPDATE_LOG)
+        # No RunAtLoad: loading it (install, update) never starts an update.
+        arts.append(Artifact("updates", f"{AGENTS}/{u['label']}.plist", "plist", {
+            "Label": u["label"], "ProcessType": "Background",
+            "ProgramArguments": [py, f"{repo}/ranch-radio", "update", h["host"], "--scheduled"],
+            "StartCalendarInterval": {"Hour": hh, "Minute": mm},
+            "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                                     "RANCH_RADIO_UPDATE_JOB": "1"},
+            "StandardErrorPath": log, "StandardOutPath": log}))
     return arts
 
 

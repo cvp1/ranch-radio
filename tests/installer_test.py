@@ -151,6 +151,7 @@ for f in STATE_DIR.iterdir():
     f.unlink()
 os.environ["LOAD_NOOP_ONCE"] = "1"
 radio_arts = [a for a in render.artifacts(mac) if a.module == "ic7300"]
+(STATE_DIR / "org.ranch-radio.ic7300-remote").touch()          # running: a restart is for a running agent
 done, deferred = service.restart(mac, radio_arts, check_idle=lambda h, r: (True, "idle"))
 c = calls()
 check("mac restart: a load that silently does nothing is caught and retried",
@@ -162,12 +163,26 @@ del os.environ["LOAD_NOOP_ONCE"]
 os.environ["NEVER_LOAD"] = "1"
 for f in STATE_DIR.iterdir():
     f.unlink()
+(STATE_DIR / "org.ranch-radio.ic7300-remote").touch()
 done, deferred = service.restart(mac, radio_arts, check_idle=lambda h, r: (True, "idle"))
 calls()
 check("mac restart: an agent that never comes up is reported, not passed off as done",
       any("NOT RUNNING" in line and rc for line, rc, _ in done), True)
 del os.environ["NEVER_LOAD"]
 del os.environ["FAIL_BOOTSTRAP"]
+# Switched off from the widget: a restart writes it and leaves it off. A
+# newly installed agent (the update check) is loaded.
+for f in STATE_DIR.iterdir():
+    f.unlink()
+upd = [a for a in render.artifacts(mac) if a.module == "updates"]
+done, deferred = service.restart(mac, radio_arts + upd, check_idle=lambda h, r: (True, "idle"),
+                                 new={a.path for a in upd})
+c = calls()
+check("mac restart: a radio agent that was off stays off", (STATE_DIR / "org.ranch-radio.ic7300-remote").exists(), False)
+check("  and says so", any("left stopped" in line for line, rc, _ in done), True)
+check("mac restart: a newly installed update agent is loaded", (STATE_DIR / "org.ranch-radio.update").exists(), True)
+done, deferred = service.restart(mac, upd, check_idle=lambda h, r: (True, "idle"), skip={"updates"})
+check("mac restart: the update job never restarts itself", calls(), [])
 
 arts = render.artifacts(lin)
 changed = [a for a in arts if a.module in ("g90", "qmx", "station", "packet")]
@@ -178,6 +193,20 @@ check("restart: a transmitting radio is not restarted", any("g90-remote.service"
 check("  and says so", any("G90 is transmitting" in d for d in deferred), True)
 check("restart: an idle radio is", any("try-restart qmx-remote.service" in x for x in c), True)
 check("restart: manual_restart units never", any("uvpro-hub.service" in x for x in c), False)
+held = []
+service.restart(lin, changed, check_idle=lambda h, r: busy.get(r["id"] if r else "-", (True, "idle")), held=held)
+calls()
+check("restart: a busy radio is held, to restart at the next update", held, ["g90"])
+service.restart(lin, [a for a in arts if a.module == "updates"], check_idle=lambda h, r: (True, "idle"))
+c = calls()
+check("linux restart: the update timer is enabled and (re)started",
+      (any("enable ranch-radio-update.timer" in x for x in c), any("restart ranch-radio-update.timer" in x for x in c)),
+      (True, True))
+check("  its oneshot service is never started by a restart",
+      any("ranch-radio-update.service" in x and "daemon-reload" not in x for x in c), False)
+service.start(lin)
+check("linux start: the update service is not enabled (its timer starts it)",
+      any("ranch-radio-update.service" in x for x in calls()), False)
 check("  with the reason", any("uvpro-hub.service" in d and "power-cycled" in d for d in deferred), True)
 done, deferred = service.restart(mac, [a for a in render.artifacts(mac) if a.module == "ic7300"],
                                  check_idle=lambda h, r: (False, "IC-7300 is in a Winlink session"))
@@ -227,14 +256,21 @@ restarted = []
 h1 = TMP / "h1"
 hmac = render.load(ROOT / "examples/hosts/mac-shack.json")
 cli.write_installed(hmac, h1, list(render.installed_states(hmac, h1)))   # every file already current
-real_restart = service.restart
-service.restart = lambda h, changed, check_idle=None: (restarted.extend(a.path for a in changed), ([], []))[1]
+(TMP / "probe_up.py").write_text('print(\'{"up": true}\')\n')
+os.environ["RANCH_RADIO_PROBE"] = f"{sys.executable} {TMP / 'probe_up.py'}"   # never the real :7300
+os.environ["RANCH_RADIO_HEALTH_WAIT"] = "1"
+real_restart, real_hosts = service.restart, cli.HOSTS
+(TMP / "uhosts").mkdir()
+(TMP / "uhosts/mac-shack.json").write_text(json.dumps(dict(json.loads((ROOT / "examples/hosts/mac-shack.json").read_text()),
+                                                         python=sys.executable)))   # a Python that exists here
+cli.HOSTS = TMP / "uhosts"
+service.restart = lambda h, changed, check_idle=None, **kw: (restarted.extend(a.path for a in changed), ([], []))[1]
 try:
     import contextlib, io  # noqa: E401,E402
     with contextlib.redirect_stdout(io.StringIO()):
         cli.cmd_update(SimpleNamespace(host="mac-shack", no_pull=True, code_changed=True, apply=True, home=str(TMP / "h1")))
 finally:
-    service.restart = real_restart
+    service.restart, cli.HOSTS = real_restart, real_hosts
 names = {p.rsplit("/", 1)[-1] for p in restarted}
 check("update after a code change restarts the radio server", "org.ranch-radio.ic7300-remote.plist" in names, True)
 check("  but not ardopcf or the menu-bar widget (they don't run this code)",

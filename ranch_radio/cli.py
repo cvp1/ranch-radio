@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import catalog, doctor, manifest, modules, paths, render, service
+from . import catalog, doctor, manifest, modules, paths, render, service, updater
 from .render import Artifact, HostError, artifacts, load, same
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +50,8 @@ def modules_of(h):
     on = {r.get("rig") or r["id"] for r in h["radios"]}
     on |= {k for k in ("station", "winlink", "mesh", "packet") if h.get(k)}
     on |= set(h.get("addons") or {}) | set(h.get("integrations") or {})
+    if render.updates(h):
+        on.add("updates")
     return [m["name"] for m in catalog.MODULES if m["name"] in on]
 
 
@@ -369,57 +371,280 @@ def cmd_start(a):
     return 1 if bad else 0
 
 
+def _reexec(h, a, *flags, plain=False, wait=False):
+    """Run update again under the code now on disk. plain: only the flags
+    every update has ever had (a rollback may land on code older than
+    --scheduled and --from). wait: as a child, returning its exit code
+    (otherwise this process becomes it)."""
+    argv = [sys.executable, str(ROOT / "ranch-radio"), "update", h["host"], "--no-pull", *flags]
+    argv += ["--apply"] if a.apply else []
+    argv += ["--scheduled"] if a.scheduled and not plain else []
+    argv += ["--home", a.home] if a.home else []
+    sys.stdout.flush()
+    if wait:
+        fd = os.environ.get("RANCH_RADIO_UPDATE_LOCK")
+        return subprocess.run(argv, pass_fds=(int(fd),) if fd else ()).returncode
+    os.execv(sys.executable, argv)
+
+
+def _say(h, a, title, text):
+    """Print; and from the scheduled job, a desktop notification too."""
+    print(text)
+    if a.scheduled:
+        updater.notify(f"Ranch Radio ({h['host']}): {title}", text)
+
+
+def cmd_update_check(h, a, st):
+    s = updater.status(ROOT)
+    if s.error:
+        print(f"ranch-radio: {s.error}")
+        return 1
+    print(f"code: {updater.short(s.head)}, tracking {s.tracking}")
+    stale = bool(st["running"]) and st["running"] != s.head
+    if stale:
+        print(f"the servers run {updater.short(st['running'])}, not the checkout's {updater.short(s.head)} "
+              f"(pulled outside an update?)")
+    if s.behind:
+        print(f"{s.behind} new commit(s):")
+        for c in s.commits:
+            print(f"  {c}")
+        if s.upstream in st["failed"]:
+            print(f"  ({updater.short(s.upstream)} failed here: {st['failed'][s.upstream]})")
+    elif not stale:
+        print("current")
+    if s.ahead:
+        print(f"{s.ahead} local commit(s) not on {s.tracking}: update can't fast-forward")
+    if st["pending"]:
+        print(f"still on the old code (were busy at the last update): {', '.join(st['pending'])}")
+    todo = s.behind or st["pending"] or stale
+    if todo:
+        print("To update: ranch-radio update --apply")
+    return 2 if todo else 0
+
+
+def _rollback(h, a, home, before, bad, was_up, why):
+    """Put the code back on before, restart on it, and make sure every server
+    in was_up serves again (starting any the restart left down: systemd's
+    try-restart leaves a failed unit failed). Always returns 1: the update
+    didn't happen."""
+    print(f"\n{h['host']}: {why}. Rolling back to {updater.short(before)}.")
+    st = updater.load_state(home)
+    st["failed"][bad] = f"{why} ({time.strftime('%Y-%m-%d %H:%M')})"
+    updater.save_state(home, st)
+    ok, err = updater.back(ROOT, before)
+    if not ok:
+        _say(h, a, "update broke a radio",
+             f"{why}, and the rollback failed: {err}. Fix the checkout, then: ranch-radio update --apply")
+        return 1
+    a.apply = True
+    rc = _reexec(h, a, "--code-changed", plain=True, wait=True)    # the old code restarts on itself
+    down = updater.wait_serving(h, was_up)
+    if down:
+        _show_service(service.force_start(h, down))
+        down = updater.wait_serving(h, down)
+    st = updater.load_state(home)                                    # the restart above wrote it
+    st["running"] = before
+    updater.save_state(home, st)
+    tail = (f"every server that was serving is serving again" if not down else
+            f"STILL NOT SERVING: {', '.join(down)}; check the server's log")
+    _say(h, a, "update rolled back" if not down else "update rolled back; a radio is still down",
+         f"{updater.short(bad)}: {why}. Back on {updater.short(before)}; {tail}. "
+         f"{updater.short(bad)} won't be tried again until a newer commit lands"
+         + ("" if rc == 0 else f" (the rollback's restart exited {rc})") + ".")
+    return 1
+
+
+UPDATE_DEFAULTS = {"apply": False, "check": False, "force": False, "scheduled": False, "no_pull": False,
+                   "code_changed": False, "from_rev": None, "home": None, "host": None}
+
+
 def cmd_update(a):
+    for k, v in UPDATE_DEFAULTS.items():
+        if not hasattr(a, k):
+            setattr(a, k, v)
     h = load_host(a.host or this_host())
     _guard(h, a)
     home = Path(a.home or os.path.expanduser("~"))
+    st = updater.load_state(home)
+    if a.check:
+        return cmd_update_check(h, a, st)
+    # The job itself, or anything it runs (the rollback runs older code that
+    # may not know --scheduled): never restart the update job mid-run.
+    job = a.scheduled or bool(os.environ.get("RANCH_RADIO_UPDATE_JOB"))
+    if a.scheduled and not a.no_pull:
+        u = render.updates(h)
+        if u is None:
+            print('updates are off in the host file ("updates": false); nothing to do')
+            return 0
+        if updater.lock(home) is None:
+            print("another update is running; this check waits for the next day")
+            return 0
+        st = updater.load_state(home)
+        if not u["apply"]:
+            # Check only: say so once per new upstream commit.
+            s = updater.status(ROOT)
+            if s.error:
+                print(f"ranch-radio: {s.error}")
+                return 1
+            if s.behind and s.upstream != st["notified"]:
+                _say(h, a, "update available",
+                     f"{s.behind} new commit(s) ({s.commits[0] if s.commits else ''}). "
+                     f"To install: ranch-radio update --apply")
+                st["notified"] = s.upstream
+                updater.save_state(home, st)
+            elif not s.behind:
+                print(f"code: {updater.short(s.head)} (current)")
+            return 0
+        a.apply = True
+    if a.apply and updater.lock(home) is None:
+        _say(h, a, "update skipped", "ranch-radio: another update is running on this machine; try again when it's done")
+        return 1
+    st = updater.load_state(home, log=lambda *_: None)
+
     if not a.no_pull:
-        before = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-                                capture_output=True, text=True).stdout.strip()
-        r = subprocess.run(["git", "-C", str(ROOT), "pull", "--ff-only", "-q"], capture_output=True, text=True)
-        if r.returncode:
-            sys.exit(f"ranch-radio: git pull --ff-only failed: {(r.stderr or r.stdout).strip()}")
-        after = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-                               capture_output=True, text=True).stdout.strip()
-        print(f"code: {before}" + (f" -> {after}" if after != before else " (already current)"))
-        if after != before:
-            # The new code renders: run the update again under it. The running
-            # servers still hold the old code (and import parts of it lazily),
-            # so they are restarted too, idle ones only (--code-changed).
-            os.execv(sys.executable, [sys.executable, str(ROOT / "ranch-radio"), "update", h["host"], "--no-pull",
-                                      "--code-changed"]
-                     + (["--apply"] if a.apply else []) + (["--home", a.home] if a.home else []))
+        s = updater.status(ROOT)
+        if s.error:
+            _say(h, a, "update failed", f"ranch-radio: {s.error}")
+            return 1
+        if not s.behind:
+            print(f"code: {updater.short(s.head)} (current)")
+        elif s.upstream in st["failed"] and not a.force:
+            print(f"code: {updater.short(s.head)}; {s.tracking} is at {updater.short(s.upstream)}, which failed here "
+                  f"({st['failed'][s.upstream]}). Waiting for a newer commit (or: update --apply --force).")
+        elif not a.apply:
+            print(f"code: {updater.short(s.head)}; would pull {s.behind} commit(s) from {s.tracking}:")
+            for c in s.commits:
+                print(f"  {c}")
+            print("(the files below are what the current code renders; the new code may change them)")
+        else:
+            was_up = [k for k, up in updater.serving(h).items() if up]
+            if a.scheduled and not was_up:
+                # Nothing to check the new code against (just booted, or the
+                # radio is off): leave it for a run that can check it.
+                print("no server is serving, so an update couldn't be checked; leaving it for the next run")
+                return 0
+            before = s.head
+            ok, err = updater.pull(ROOT)
+            if not ok:
+                _say(h, a, "update failed", f"ranch-radio: git pull --ff-only failed: {err}. Nothing changed.")
+                return 1
+            after = updater.head(ROOT)
+            print(f"code: {updater.short(before)} -> {updater.short(after)}")
+            ok, why = updater.requirements(ROOT, h)
+            if not ok:
+                okb, errb = updater.back(ROOT, before)
+                st["failed"][after] = f"packages: {why}"
+                updater.save_state(home, st)
+                _say(h, a, "update not installed",
+                     f"{why}. " + (f"Moved the code back to {updater.short(before)}; nothing was restarted."
+                                   if okb else f"Couldn't move the code back ({errb}); nothing was restarted, "
+                                   f"but the checkout is at {updater.short(after)}."))
+                return 1
+            # The new code renders, so it installs: run the update again under
+            # it, as a child. The running servers still hold the old code (and
+            # import parts of it lazily), so they restart too, idle ones only.
+            # The new code checks itself and rolls back; if it dies before it
+            # can (an import error, a flag it doesn't know), this does.
+            rc = _reexec(h, a, "--code-changed", "--from", before, wait=True)
+            if rc == 0 or updater.head(ROOT) != after:
+                return rc
+            return _rollback(h, a, home, before, after, was_up,
+                             f"the update under {updater.short(after)} failed (exit {rc}) before it could finish")
+
     h = load_host(h["host"])
-    todo = [(art, p, s) for art, p, s in _states(h, home) if s != "same"]
+    states = list(_states(h, home))
+    todo = [(art, p, s) for art, p, s in states if s != "same"]
+    new = {art.path for art, p, s in todo if s == "missing"}
     code = a.code_changed
-    if not todo and not code:
+    head_now = updater.head(ROOT)
+    if not code and st["running"] and st["running"] != head_now:
+        # The checkout moved without an update restarting the servers (a
+        # manual pull, an older update's dry run): they run st["running"].
+        print(f"the servers run {updater.short(st['running'])}; the checkout is at {updater.short(head_now)}")
+        code = True
+        if not a.from_rev and updater.git(ROOT, "merge-base", "--is-ancestor", st["running"], "HEAD")[0] == 0:
+            a.from_rev = st["running"]
+    pending = [m for m in st["pending"] if m]
+    if a.scheduled and not code and todo:
+        # With no code change, host-file edits wait for a person. (A code
+        # update installs everything the host file renders.)
+        print(f"{len(todo)} file(s) differ from the host file; the scheduled job leaves them "
+              f"(to install: ranch-radio update --apply)")
+        todo, new = [], set()
+    if not todo and not code and not pending:
+        if not st["running"] and a.apply:
+            st["running"] = head_now
+            updater.save_state(home, st)
         print(f"{h['host']}: nothing to install; every file matches. Nothing restarted.")
         return 0
     for art, p, s in todo:
         print(f"{'write' if a.apply else 'would write'} ({s}) {p}")
     if code:
         print("the code changed: every service restarts on it (radios in use are left for later)")
+    elif pending:
+        print(f"still on the old code, to restart now if idle: {', '.join(pending)}")
     if not a.apply:
         print("\nDry run. --apply writes these and restarts what changed (idle radios only).")
         return 0
-    changed = []
+
+    if code and not a.from_rev:
+        # Pulled by an older update that neither checked packages nor said
+        # where it came from: find that (ORIG_HEAD).
+        a.from_rev = updater.before_pull(ROOT) or None
+    if code:
+        # Packages, before any server restarts onto code that can't import.
+        ok, why = updater.requirements(ROOT, h)
+        if not ok:
+            okb = False
+            if a.from_rev:
+                st["failed"][head_now] = f"packages: {why}"
+                updater.save_state(home, st)
+                okb, _ = updater.back(ROOT, a.from_rev)
+            _say(h, a, "update not installed", f"{why}. Nothing was restarted." +
+                 (f" Moved the code back to {updater.short(a.from_rev)}." if a.from_rev and okb else ""))
+            return 1
+    was_up = [k for k, up in updater.serving(h).items() if up]
+    changed, backups = [], None
     if todo:
         changed, backups = write_installed(h, home, todo)
         print(f"written; old files in {backups}")
-    if code:
+    restart_ids = ({r["id"] for r in h["radios"]} | {"station", "packet"}) if code else set(pending)
+    if restart_ids:
         # Restart what runs this repo's Python: the radio servers, the station
         # and the packet hub (manual_restart keeps it out). Not ardopcf or the
         # menu-bar widget: neither runs this code, and ardopcf may be mid-session.
-        ours = {r["id"] for r in h["radios"]} | {"station", "packet"}
         seen = {art.path for art in changed}
         changed += [art for art in render.artifacts(h, home=str(home))
-                    if art.path not in seen and art.module in ours
+                    if art.path not in seen and art.module in restart_ids
                     and (art.fmt == "plist" or art.path.endswith((".service", "station.json")))]
-    lines, deferred = service.restart(h, changed)
+    held = []
+    lines, deferred = service.restart(h, changed, held=held, new=new, skip={"updates"} if job else ())
     _show_service(lines)
     for d in deferred:
         print(f"  not restarted: {d}")
-    return 0
+    st["pending"] = sorted(set(held))
+    updater.save_state(home, st)
+
+    down = updater.wait_serving(h, [k for k in was_up if k not in held])
+    if not down:
+        st["running"] = head_now
+        updater.save_state(home, st)
+        msg = (f"updated to {updater.short(head_now)}" if code else "installed") + \
+              "; every server that was serving is serving"
+        if st["pending"]:
+            msg += f"; still on the old code (busy): {', '.join(st['pending'])}, restarted at the next update"
+        print(f"\n{h['host']}: {msg}")
+        if a.scheduled and code:
+            updater.notify(f"Ranch Radio ({h['host']}): updated", msg)
+        return 0
+
+    why = f"not serving after the update: {', '.join(down)}"
+    if a.from_rev and code:
+        return _rollback(h, a, home, a.from_rev, head_now, was_up, why)
+    _say(h, a, "a radio isn't serving",
+         f"{why}." + (f" Old files in {backups}." if backups else "") +
+         " Check the server's log; ranch-radio doctor says what's missing.")
+    return 1
 
 
 # The bar's and JTDX's view of the radios: one line per radio, in the field
@@ -488,12 +713,18 @@ def main(argv=None):
     st = sub.add_parser("start", help="enable and start everything the host file renders (after install)")
     st.add_argument("host", nargs="?")
     st.add_argument("--home", help=argparse.SUPPRESS)
-    up = sub.add_parser("update", help="git pull, then install and restart what changed (idle radios only)")
+    up = sub.add_parser("update", help="pull, install and restart what changed (idle radios only); "
+                                       "checks they serve, rolls back if not")
     up.add_argument("host", nargs="?")
-    up.add_argument("--apply", action="store_true")
+    up.add_argument("--apply", action="store_true", help="do it (without: show what would change, pull nothing)")
+    up.add_argument("--check", action="store_true", help="is there an update? (exit 2 when there is)")
+    up.add_argument("--force", action="store_true", help="try a commit that failed here before")
+    up.add_argument("--scheduled", action="store_true",
+                    help="the daily job: notify, or apply when the host file says \"updates\": {\"apply\": true}")
     up.add_argument("--no-pull", action="store_true", help="skip git pull")
     up.add_argument("--code-changed", action="store_true",
                     help="restart every service (idle ones), as after a pull that changed the code")
+    up.add_argument("--from", dest="from_rev", help=argparse.SUPPRESS)      # the commit before the pull
     up.add_argument("--home", help=argparse.SUPPRESS)
     ad = sub.add_parser("add", help="switch a module on in a host file (dry run; --apply writes)")
     ad.add_argument("module")

@@ -23,8 +23,31 @@ All notable changes to Ranch Radio are recorded here. The format follows
   `examples/hosts/linux-direwolf.json`.
 - `tests/packet_hub_station_test.py`, covering the above with the example
   host files.
+- **A daily update check** (`updates` module, on by default): a launchd agent
+  or systemd timer runs `ranch-radio update --scheduled`, which notifies once
+  per new commit, or applies it with `"updates": {"apply": true}`.
+- **`ranch-radio update --check`**: what's new upstream, and which radios still
+  run old code. Exits 2 when there is something to do.
+- **Update health check and rollback.** After an update restarts the servers,
+  each one that was serving must serve again. If one doesn't, the checkout
+  returns to the previous commit, the old code is restarted, and the failed
+  commit is skipped until a newer one lands. New code that crashes before it
+  can check itself is rolled back by the code that pulled it. State, including
+  the commit the servers were last restarted on, is kept in
+  `~/.local/state/ranch-radio/update.json`. One update runs at a time.
+- `tests/update_test.py`: the update end to end against a real git origin.
 
 ### Changed
+
+- **`ranch-radio update` without `--apply` pulls nothing.** It used to pull the
+  code under the running servers, which import parts of it lazily.
+- **`update` installs `requirements.txt`** into the checkout's `.venv`. With
+  any other Python it stops before restarting anything.
+- **Radios skipped as busy are restarted at the next update**, instead of
+  running old code until someone remembers.
+- **On a Mac, a restart leaves a stopped radio stopped.** A radio switched off
+  from the widget is no longer started by an update, which matches systemd's
+  `try-restart` on Linux.
 
 - **Python 3.12 or newer is now required** (README and installer gate). CI only
   tests 3.14, and nothing in the source needed the previously stated floor.
