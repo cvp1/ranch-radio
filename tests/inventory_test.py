@@ -53,7 +53,7 @@ check("running Mesh reads on", it["mesh"]["state"], "on")
 check("  with a switch", it["mesh"]["switch"]["on"], True)
 check("running Winlink reads on", it["winlink"]["state"], "on")
 check("a module this OS doesn't ship reads unsupported", it["uvpro"]["state"], "unsupported")
-check("the packet hub on a Mac: unsupported", it["packet"]["state"], "unsupported")
+check("the packet hub on a Mac: available (a Mac renders it since the Direwolf TNC)", it["packet"]["state"], "available")
 
 art_w = Artifact("macos-widget", "Library/LaunchAgents/w.plist", "plist", {})
 it = items(mac, ALL_ON, [(art_w, None, "same")])

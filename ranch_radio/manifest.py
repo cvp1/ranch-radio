@@ -43,7 +43,8 @@ RULES = {
     "callsign": (str, re.compile(_CALL)),
     "callsign_list": (list, re.compile(_CALL)),
     "bt_addr": (str, re.compile(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}")),
-    "tnc": (str, re.compile(r"bt:[0-9A-F]{2}(:[0-9A-F]{2}){5}|/dev/[A-Za-z0-9._-]+|tcp:[A-Za-z0-9.-]+:[0-9]{1,5}")),
+    "tnc": (str, re.compile(r"bt:[0-9A-F]{2}(:[0-9A-F]{2}){5}|/dev/[A-Za-z0-9._-]+|tcp:[A-Za-z0-9.-]+:[0-9]{1,5}"
+                            r"|direwolf")),
     "serial_or_ble": (str, re.compile(r"(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40})"
                                       r"(,(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40})){0,3}")),
     "audio_name": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")),
@@ -127,18 +128,21 @@ MANIFESTS = {
         ],
     },
     "packet": {
-        "label": "Packet hub (UV-PRO: APRS, Winlink)",
+        "label": "Packet hub (APRS, Winlink: UV-PRO, network TNC, or Direwolf on a USB cable)",
         "family": "files",
         "block": ("packet",),
-        "os": ["linux"],                       # only Linux renders the hub's unit
+        "os": ["linux", "macos"],
         # Transmit stays off until the operator turns it on (--set tx=true).
-        "template": {"linux": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
-                               "tnc": ASK, "mycall": ASK, "tx": False}},
+        "template": {os_name: {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
+                               "tnc": ASK, "mycall": ASK, "tx": False} for os_name in ("linux", "macos")},
         "rules": {"tnc": "tnc", "mycall": "callsign"},
-        "ask": {"tnc": "the radio's KISS TNC, e.g. tcp:direwolf.localdomain:8001 or bt:00:11:22:33:44:55",
+        "ask": {"tnc": "the radio's KISS TNC, e.g. tcp:direwolf.localdomain:8001, bt:00:11:22:33:44:55, "
+                       "or direwolf (with a packet.direwolf block: a radio on a USB sound card cable)",
                 "mycall": "your callsign"},
-        "needs": [{"bin": "bluetoothctl", "default": "bluetoothctl", "level": "warn",
-                   "fix": "install BlueZ (needed for a Bluetooth TNC)"}],
+        "needs": [{"bin": "bluetoothctl", "default": "bluetoothctl", "level": "warn", "tnc": "bt:",
+                   "fix": "install BlueZ (needed for a Bluetooth TNC)"},
+                  {"bin": "direwolf", "key": "direwolf", "default": "direwolf", "tnc": "direwolf",
+                   "fix": "install Direwolf (brew install direwolf, or your package manager)"}],
     },
     "uvpro": {
         "label": "UV-PRO control",

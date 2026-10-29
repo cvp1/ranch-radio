@@ -33,6 +33,11 @@ UPDATE_SERVICE = "ranch-radio-update.service"
 UPDATE_TIMER = "ranch-radio-update.timer"
 UPDATE_AT = "10:00"
 UPDATE_LOG = "~/Library/Logs/ranch-radio-update.log"
+# The packet hub, and Direwolf when it is the hub's modem ("tnc": "direwolf").
+PACKET_LABEL = "org.ranch-radio.packet-hub"
+DIREWOLF_LABEL = "org.ranch-radio.direwolf"
+DIREWOLF_SERVICE = "direwolf.service"
+DIREWOLF_PTY = "/tmp/kisstnc"            # Direwolf -p makes this link to its KISS pseudo-terminal
 ORDERED_KEYS = re.compile(r"^(Exec|Environment)")
 
 
@@ -74,6 +79,8 @@ CALL = re.compile(r"[A-Za-z0-9]{3,7}(-[0-9]{1,2})?")
 SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 TEXT = re.compile(r"[^-].*")              # free text passed as one argv element (no shell)
 CLOCK = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
+USB_ID = re.compile(r"[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}")
+PTT_MODE = re.compile(r"off|serial")
 
 # (path, rule): "*" is every element of a list or every value of an object.
 RULES = [
@@ -95,6 +102,12 @@ RULES = [
     (("packet", "url"), TOKEN), (("packet", "agwpe"), TOKEN),
     (("packet", "name"), LABEL), (("packet", "title"), TEXT),
     (("packet", "pat_http", "pat"), TOKEN), (("packet", "pat_http", "addr"), TOKEN),
+    (("packet", "label"), LABEL),
+    (("packet", "direwolf", "usb"), USB_ID), (("packet", "direwolf", "audio"), TEXT),
+    (("packet", "direwolf", "ptt"), PTT_MODE), (("packet", "direwolf", "bin"), TOKEN),
+    (("packet", "direwolf", "label"), LABEL),
+    (("packet", "direwolf", "igate", "login"), CALL), (("packet", "direwolf", "igate", "passcode"), TOKEN),
+    (("packet", "direwolf", "igate", "server"), TOKEN),
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
@@ -267,6 +280,18 @@ def validate(h):
     for u in (h.get("manual_restart") or {}):
         if not isinstance(h["manual_restart"][u], str) or not h["manual_restart"][u].strip():
             raise HostError(f"{h['host']}: manual_restart {u!r} needs the reason")
+    pk = h.get("packet") or {}
+    if pk.get("tnc") == "direwolf":
+        dw = pk.get("direwolf")
+        if not isinstance(dw, dict) or not dw.get("usb") or not dw.get("audio"):
+            raise HostError(f"{h['host']}: packet.tnc \"direwolf\" needs a packet.direwolf block with "
+                            f"\"usb\" (the cable's VID:PID) and \"audio\" (its sound card)")
+        ig = dw.get("igate")
+        if ig is not None and (not isinstance(ig, dict) or not ig.get("login") or not ig.get("passcode")):
+            raise HostError(f"{h['host']}: packet.direwolf.igate needs \"login\" (callsign-SSID) and "
+                            f"\"passcode\" (a file holding the APRS-IS passcode)")
+    elif pk.get("direwolf"):
+        raise HostError(f"{h['host']}: packet.direwolf is set but packet.tnc isn't \"direwolf\"")
     u = h.get("updates", True)
     if u is not True and u is not False and not isinstance(u, dict):
         raise HostError(f"{h['host']}: updates must be false or an object like "
@@ -311,6 +336,39 @@ def updates(h):
         return None
     u = u if isinstance(u, dict) else {}
     return {"at": u.get("at", UPDATE_AT), "apply": bool(u.get("apply", False)), "label": u.get("label", UPDATE_LABEL)}
+
+
+def hub_argv(h, py, repo):
+    """The packet hub's command line (tnc_hub.py), either OS."""
+    p = h["packet"]
+    tnc = DIREWOLF_PTY if p["tnc"] == "direwolf" else p["tnc"]
+    argv = [py, f"{repo}/tnc_hub.py", "--tnc", tnc, "--mycall", p["mycall"]]
+    if p.get("allow_calls"):
+        argv += ["--allow-calls", ",".join(p["allow_calls"])]
+    if p.get("tx"):
+        argv += ["--tx"]                 # transmit allowed (off unless the host file says so)
+    pos = p.get("position")
+    if pos:                              # this station on the APRS map; distances from it
+        argv += ["--lat", str(pos["lat"]), "--lon", str(pos["lon"])]
+    if p["tnc"] == "direwolf":
+        argv += ["--control-port", "0"]  # the radio-control channel is the UV-PRO's alone
+    return argv
+
+
+def direwolf_argv(h, py, repo, pth):
+    """direwolf_tnc.py's command line: Direwolf as the hub's modem."""
+    p = h["packet"]
+    d = p["direwolf"]
+    argv = [py, f"{repo}/direwolf_tnc.py", "--usb", d["usb"], "--audio", d["audio"],
+            "--mycall", p["mycall"], "--ptt", d.get("ptt", "off")]
+    if d.get("bin"):
+        argv += ["--direwolf", pth(d["bin"])]
+    ig = d.get("igate")
+    if ig:
+        argv += ["--igate-login", ig["login"], "--igate-passcode-file", pth(ig["passcode"])]
+        if ig.get("server"):
+            argv += ["--igate-server", ig["server"]]
+    return argv
 
 
 def server_args(h, r, pth):
@@ -471,19 +529,23 @@ def _linux(h):
 
     p = h.get("packet")
     if p and p.get("tnc"):
-        argv = [py, f"{repo}/tnc_hub.py", "--tnc", p["tnc"], "--mycall", p["mycall"]]
-        if p.get("allow_calls"):
-            argv += ["--allow-calls", ",".join(p["allow_calls"])]
-        if p.get("tx"):
-            argv += ["--tx"]                 # transmit allowed (off unless the host file says so)
-        pos = p.get("position")
-        if pos:                              # this station on the APRS map; distances from it
-            argv += ["--lat", str(pos["lat"]), "--lon", str(pos["lon"])]
+        argv = hub_argv(h, py, repo)
         tnc_val = p.get("tnc", "")
-        is_tcp = isinstance(tnc_val, str) and tnc_val.startswith("tcp:")
-        desc = "Packet hub (APRS + Winlink over network KISS TNC)" if is_tcp else "UV-PRO packet hub (APRS + Winlink over the radio's Bluetooth KISS TNC)"
-        after = "network-online.target" if is_tcp else "bluetooth.target network-online.target"
-        wants = "network-online.target" if is_tcp else "bluetooth.target"
+        is_dw = tnc_val == "direwolf"
+        is_tcp = is_dw or (isinstance(tnc_val, str) and tnc_val.startswith("tcp:"))
+        desc = ("Packet hub (APRS + Winlink, Direwolf on a USB sound card cable)" if is_dw else
+                "Packet hub (APRS + Winlink over network KISS TNC)" if is_tcp else
+                "UV-PRO packet hub (APRS + Winlink over the radio's Bluetooth KISS TNC)")
+        after = (DIREWOLF_SERVICE if is_dw else "network-online.target") if is_tcp \
+            else "bluetooth.target network-online.target"
+        wants = (DIREWOLF_SERVICE if is_dw else "network-online.target") if is_tcp else "bluetooth.target"
+        if is_dw:
+            arts.append(Artifact("packet", f"{UNIT_DIR}/{DIREWOLF_SERVICE}", "systemd", unit(host, [
+                ("Unit", [("Description", "Direwolf: the packet hub's modem on the USB sound card cable "
+                                          "(no network ports; waits for the cable)")]),
+                ("Service", [("ExecStart", exec_line(direwolf_argv(h, py, repo, _unit_path))),
+                             ("Restart", "always"), ("RestartSec", "10"), ("TimeoutStopSec", "15")]),
+                ("Install", [("WantedBy", "default.target")])])))
         svc = [("ExecStart", exec_line(argv)), ("Restart", "on-failure"), ("RestartSec", "5"),
                ("TimeoutStopSec", "10")]
         if not is_tcp:
@@ -580,7 +642,7 @@ def station_json(h):
     if h.get("packet"):
         d["packet"] = {k: h["packet"][k] for k in ("url", "agwpe", "name", "title") if k in h["packet"]}
         tnc = h["packet"].get("tnc")
-        if isinstance(tnc, str) and tnc.startswith("tcp:") and "name" not in d["packet"]:
+        if isinstance(tnc, str) and (tnc.startswith("tcp:") or tnc == "direwolf") and "name" not in d["packet"]:
             d["packet"]["name"] = "KISS TNC"      # not the UV-PRO, which the page assumes when unnamed
     if h.get("winlink"):
         d["winlink"] = dict(h["winlink"])
@@ -631,6 +693,24 @@ def _macos(h, home):
             # The radio agent it switches: its label, from this host file.
             "ProgramArguments": [f"{app}/Contents/MacOS/{name}"] + [r["label"] for r in h["radios"][:1]],
             "RunAtLoad": True}))
+
+    p = h.get("packet")
+    if p and p.get("tnc"):
+        env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+        hub_log = pth("~/Library/Logs/ranch-radio-packet-hub.log")
+        arts.append(Artifact("packet", f"{AGENTS}/{p.get('label', PACKET_LABEL)}.plist", "plist", {
+            "Label": p.get("label", PACKET_LABEL), "KeepAlive": True, "RunAtLoad": True,
+            "ProcessType": "Interactive", "ProgramArguments": hub_argv(h, py, repo),
+            "WorkingDirectory": repo, "EnvironmentVariables": env, "ThrottleInterval": 10,
+            "StandardOutPath": hub_log, "StandardErrorPath": hub_log}))
+        if p["tnc"] == "direwolf":
+            d = p["direwolf"]
+            dw_log = pth("~/Library/Logs/ranch-radio-direwolf.log")
+            arts.append(Artifact("packet", f"{AGENTS}/{d.get('label', DIREWOLF_LABEL)}.plist", "plist", {
+                "Label": d.get("label", DIREWOLF_LABEL), "KeepAlive": True, "RunAtLoad": True,
+                "ProcessType": "Interactive", "ProgramArguments": direwolf_argv(h, py, repo, pth),
+                "WorkingDirectory": repo, "EnvironmentVariables": env, "ThrottleInterval": 10,
+                "StandardOutPath": dw_log, "StandardErrorPath": dw_log}))
 
     u = updates(h)
     if u:

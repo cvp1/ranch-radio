@@ -1,0 +1,13 @@
+{
+  "host": "mac-aioc",
+  "os": "macos",
+  "repo": "~/ranch-radio",
+  "python": "~/ranch-radio/.venv/bin/python",
+  "note": "Example: a Mac with a VHF radio on an AIOC cable: Direwolf as the packet hub's modem, receive only, with a receive-only iGate. No HF radio on this host.",
+  "radios": [],
+  "packet": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
+             "tnc": "direwolf", "mycall": "N9ABC", "allow_calls": ["N9ABC"], "tx": false,
+             "name": "Direwolf", "title": "Packet (AIOC)",
+             "direwolf": {"usb": "1209:7388", "audio": "AIOC Audio", "ptt": "off",
+                          "igate": {"login": "N9ABC-10", "passcode": "~/.config/ranch-radio/aprs-is-passcode"}}}
+}

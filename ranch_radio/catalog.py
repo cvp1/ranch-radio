@@ -32,9 +32,12 @@ MODULES = [
     {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, DMs, nodes, map); on/off switch",
      "code": "addons/mesh.py over mesh.py, mesh_bridge.py (runs in the meshtastic venv)", "platforms": ["macos", "linux"],
      "ships": "macOS: --mesh-port on the radio's agent; Linux: the station's mesh block; the meshtastic venv via doctor --fix"},
-    {"name": "packet", "kind": "service", "title": "Packet hub (APRS + Winlink, network TCP KISS or Bluetooth KISS)",
-     "code": "tnc_hub.py, ax25.py, ax25_link.py, bt_rfcomm.py, aprs.py, aprs_store.py, static/aprs.js", "platforms": ["macos", "linux"],
-     "ships": "Linux: uvpro-hub.service, rendered from the host file's packet block"},
+    {"name": "packet", "kind": "service", "title": "Packet hub (APRS + Winlink: Bluetooth KISS, network KISS, "
+                                                   "or Direwolf on a USB sound card cable, with an optional iGate)",
+     "code": "tnc_hub.py, ax25.py, ax25_link.py, bt_rfcomm.py, aprs.py, aprs_store.py, static/aprs.js; "
+             "direwolf_tnc.py runs Direwolf", "platforms": ["macos", "linux"],
+     "ships": "rendered from the host file's packet block: Linux uvpro-hub.service or packet-hub.service "
+              "(+ direwolf.service); macOS launchd agents for the hub (+ Direwolf)"},
 
     {"name": "audio", "kind": "service", "title": "Radio sound cards: pinned PipeWire names, never the desktop default",
      "code": "ranch_radio/render.py wireplumber_rules (and wait_audio in each radio unit)", "platforms": ["linux"],
