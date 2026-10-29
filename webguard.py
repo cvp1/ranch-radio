@@ -17,6 +17,7 @@ Two checks:
     server: scheme and authority (review 2026-10-19, Codex).
 """
 import ipaddress
+import re
 import socket
 from urllib.parse import urlsplit
 
@@ -99,3 +100,35 @@ def cross_site_guard(allow_hosts=(), log=None):
 def allowed_names(args):
     """--allow-host names plus the TLS names (not the %l placeholder)."""
     return [*getattr(args, "allow_host", []), *[n for n in getattr(args, "tls_name", []) if n != "%l"]]
+
+
+# ---------------------------------------------------------------- proxying a local backend
+# Shared by the station (its radios' pages, the packet hub) and the packet
+# add-on on a radio's page.
+
+HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
+       "trailers", "transfer-encoding", "upgrade", "host", "content-length"}
+
+PLAIN_PATH = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=:@/-]*")
+
+
+def canonical_tail(request):
+    """The proxied path as the backend will receive it, or None if it isn't a
+    plain path. aiohttp keeps `x/../api/lend` in the route's tail while the
+    outgoing URL normalises it to `api/lend`, so a check on the tail could be
+    walked around (review 2026-10-19, Codex; reproduced on linux-station). Refuse
+    dot segments (also %2e-encoded, decoded by then), backslashes, a leftover
+    percent sign (double encoding) and empty segments other than a trailing one."""
+    tail = request.match_info["tail"]
+    # The tail is already percent-decoded: a decoded "?", "#" or control
+    # character would change what the outgoing URL means (review 2026-10-19,
+    # Codex: /packet/api/lend%3fx reached lend). Only plain path characters.
+    if not PLAIN_PATH.fullmatch(tail):
+        return None
+    parts = tail.split("/")
+    for i, seg in enumerate(parts):
+        if seg in (".", "..") or (seg == "" and i != len(parts) - 1):
+            return None
+    return tail
+
+

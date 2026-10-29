@@ -44,6 +44,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
   says `"ptt": "serial"`.
 - **A receive-only iGate** (`packet.direwolf.igate`) sends received packets
   to APRS-IS and never transmits from it. The passcode is read from a file.
+- **A Packet tab on a Mac's radio page** (`addons/packet.py`). A Mac has no
+  station page, so its radio server shows the hub through the same
+  path-checked proxy the station uses (now shared in `webguard.py`). It is on
+  whenever the host file has a packet block and a radio.
+- **The hub page's heading** comes from the host file's `packet.title`
+  (`tnc_hub.py --title`) instead of always "UV-PRO Packet".
 - **The packet hub renders on macOS** as a launchd agent, alongside Direwolf.
   `examples/hosts/mac-aioc.json` and `tests/direwolf_tnc_test.py`.
 

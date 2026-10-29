@@ -759,6 +759,7 @@ class Hub:
                    "allow_calls": sorted(self.gate.allow),
                    "max_per_min": self.gate.max_per_min, "ui_per_min": self.gate.ui_per_min},
             "mycall": self.args.mycall,
+            "title": getattr(self.args, "title", "UV-PRO Packet"),
             "counts": dict(self.counts),
             "clients": {"agw": [c.describe() for c in self.agw_clients],
                         "kiss": [c.name for c in self.kiss_clients],
@@ -1301,6 +1302,7 @@ def parse_args(argv=None):
                    help="radio KISS port: bt:<address>[:<channel>] (Bluetooth via IOBluetooth, "
                         "macOS), a serial device, or tcp:host:port (default %(default)s)")
     p.add_argument("--mycall", required=True, help="your callsign, e.g. N9ABC")
+    p.add_argument("--title", default="UV-PRO Packet", help="the page's heading (the host file's packet title)")
     p.add_argument("--allow-calls", type=lambda s: [c.strip().upper() for c in s.split(",") if c.strip()],
                    help="base callsigns allowed as a transmit source (default: --mycall's)")
     p.add_argument("--tx", action="store_true", help="allow transmitting (default: receive only)")

@@ -338,6 +338,18 @@ def updates(h):
     return {"at": u.get("at", UPDATE_AT), "apply": bool(u.get("apply", False)), "label": u.get("label", UPDATE_LABEL)}
 
 
+def mac_addons(h):
+    """The add-ons a Mac's radio server runs: the host file's, plus the Packet
+    tab when the host runs a packet hub (a Mac has no station page to show
+    it). A host file that lists "packet" itself keeps its own entry."""
+    out = dict(h.get("addons") or {})
+    p = h.get("packet")
+    if p and p.get("tnc") and h["radios"] and "packet" not in out:
+        out["packet"] = {"enabled": True, "url": p.get("url", "http://127.0.0.1:7310"),
+                         **{k: p[k] for k in ("name", "title") if k in p}}
+    return out
+
+
 def hub_argv(h, py, repo):
     """The packet hub's command line (tnc_hub.py), either OS."""
     p = h["packet"]
@@ -352,6 +364,8 @@ def hub_argv(h, py, repo):
         argv += ["--lat", str(pos["lat"]), "--lon", str(pos["lon"])]
     if p["tnc"] == "direwolf":
         argv += ["--control-port", "0"]  # the radio-control channel is the UV-PRO's alone
+    if p.get("title"):
+        argv += ["--title", p["title"]]  # the hub page's heading (else "UV-PRO Packet")
     return argv
 
 
@@ -428,7 +442,7 @@ def server_args(h, r, pth):
         for k in m.get("keys", []):
             ch, _, f = k.partition("=")
             a += ["--mesh-key", f"{ch}={pth(f)}"]
-    if h.get("addons") and not linux:           # on Linux the station runs them
+    if mac_addons(h) and not linux:             # on Linux the station runs them
         a += ["--addons", pth("~/" + MAC_ADDONS)]
     if not linux:                               # the Modules tab (on Linux: the station's)
         a += ["--host-file", h["host"]]
@@ -670,8 +684,9 @@ def _macos(h, home):
             d["EnvironmentVariables"] = {"PATH": r["path"]}
         arts.append(Artifact(r["id"], f"{AGENTS}/{r['label']}.plist", "plist", d))
 
-    if h.get("addons"):
-        arts.append(Artifact(",".join(h["addons"]), MAC_ADDONS, "json", h["addons"]))
+    adds = mac_addons(h)
+    if adds:
+        arts.append(Artifact(",".join(adds), MAC_ADDONS, "json", adds))
 
     w = h.get("winlink") or {}
     a = w.get("ardopcf")
