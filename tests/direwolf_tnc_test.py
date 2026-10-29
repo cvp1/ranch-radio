@@ -89,6 +89,10 @@ check("refused: a direwolf block on another TNC", refused(lambda h: h["packet"].
 check("refused: an iGate with no passcode file", refused(lambda h: h["packet"]["direwolf"]["igate"].pop("passcode")), True)
 check("refused: a malformed USB ID", refused(lambda h: h["packet"]["direwolf"].update(usb="AIOC")), True)
 check("refused: PTT other than off or serial", refused(lambda h: h["packet"]["direwolf"].update(ptt="vox")), True)
+check("refused: a txdelay that isn't 10-2000 ms", refused(lambda h: h["packet"]["direwolf"].update(txdelay=5000)), True)
+td = json.loads(json.dumps(mac)); td["packet"]["direwolf"]["txdelay"] = 600
+targs = next(a for a in render.artifacts(td, home="/H") if a.path.endswith("org.ranch-radio.direwolf.plist")).content["ProgramArguments"]
+check("txdelay reaches Direwolf's launcher", targs[targs.index("--txdelay") + 1] if "--txdelay" in targs else None, "600")
 
 names = {c.what.split(":")[0].split(" ")[0] for c in doctor.static(mac) + [
     c for n in [m for m in doctor.MANIFESTS["packet"]["needs"]]
@@ -146,10 +150,11 @@ check("  the passcode never reaches the log", "12345" in out, False)
 for f in (started, TMP / "stopped", TMP / "conf-seen.txt"):
     f.unlink(missing_ok=True)
 dev.write_text("/dev/ttyACM0\n")
-p = launch("--ptt", "serial")
+p = launch("--ptt", "serial", "--txdelay", "600")
 until(started.exists)
 conf = (TMP / "conf-seen.txt").read_text() if (TMP / "conf-seen.txt").exists() else ""
 check("PTT serial: keys on the cable's port, DTR on and RTS off", "PTT /dev/ttyACM0 DTR -RTS" in conf, True)
+check("  --txdelay 600 ms is TXDELAY 60 (Direwolf counts 10 ms)", "TXDELAY 60" in conf.splitlines(), True)
 check("  no iGate unless asked", "IGLOGIN" in conf, False)
 p.send_signal(signal.SIGTERM)
 check("SIGTERM stops Direwolf too", until(lambda: (TMP / "stopped").exists()), True)

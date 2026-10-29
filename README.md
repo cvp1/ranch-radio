@@ -248,6 +248,9 @@ packet hub, on macOS or Linux:
 - **Transmit needs both switches.** `"ptt": "serial"` lets Direwolf key the
   radio through the cable's serial port: DTR on, RTS off, which is the AIOC's
   default. `"tx": true` lets the hub send. Both are off by default.
+- **`txdelay`** (ms) is how long Direwolf keys the radio before the data. The
+  default is 300. A radio that's slow to start transmitting needs more: a
+  BTECH UV-50X2 on an AIOC needed 600 before a digipeater would decode it.
 - **iGate, receive only:** add
   `"igate": {"login": "N9ABC-10", "passcode": "~/.config/ranch-radio/aprs-is-passcode"}`
   to the `direwolf` block, and put your APRS-IS passcode in that file.

@@ -55,6 +55,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Direwolf's key-up delay is a host-file setting** (`packet.direwolf.txdelay`, ms).
+  At Direwolf's 300 ms default, a BTECH UV-50X2 keyed too late for its
+  packets to decode. At 600 ms HELIO repeated them.
+
 - **Linux units with a `~` Python path** (what `ranch-radio init` writes)
   start. systemd doesn't expand `~`, so every rendered unit was refused. The
   path now renders as `%h`.

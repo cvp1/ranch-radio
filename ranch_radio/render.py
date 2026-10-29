@@ -286,6 +286,9 @@ def validate(h):
         if not isinstance(dw, dict) or not dw.get("usb") or not dw.get("audio"):
             raise HostError(f"{h['host']}: packet.tnc \"direwolf\" needs a packet.direwolf block with "
                             f"\"usb\" (the cable's VID:PID) and \"audio\" (its sound card)")
+        td = dw.get("txdelay")
+        if td is not None and (not isinstance(td, int) or isinstance(td, bool) or not 10 <= td <= 2000):
+            raise HostError(f"{h['host']}: packet.direwolf.txdelay = {td!r}: milliseconds, 10 to 2000")
         ig = dw.get("igate")
         if ig is not None and (not isinstance(ig, dict) or not ig.get("login") or not ig.get("passcode")):
             raise HostError(f"{h['host']}: packet.direwolf.igate needs \"login\" (callsign-SSID) and "
@@ -377,6 +380,8 @@ def direwolf_argv(h, py, repo, pth):
             "--mycall", p["mycall"], "--ptt", d.get("ptt", "off")]
     if d.get("bin"):
         argv += ["--direwolf", pth(d["bin"])]
+    if d.get("txdelay"):
+        argv += ["--txdelay", str(d["txdelay"])]
     ig = d.get("igate")
     if ig:
         argv += ["--igate-login", ig["login"], "--igate-passcode-file", pth(ig["passcode"])]
