@@ -98,6 +98,14 @@ try:
 except render.HostError:
     check("a bad callsign is refused", "refused", "refused")
 
+# ---------------------------------------------------------------- the Python init writes, in a unit
+lv = dict(json.loads((ROOT / "examples/hosts/linux-laptop.json").read_text()), python="~/ranch-radio/.venv/bin/python")
+execs = [l.split("=", 1)[1] for a in render.artifacts(lv) if a.fmt == "systemd"
+         for l in a.content.splitlines() if l.startswith("ExecStart=")]
+check("linux: a ~ Python becomes %h in every ExecStart (systemd doesn't expand ~)",
+      (all(not e.startswith("~") for e in execs), any(e.startswith("%h/ranch-radio/.venv/bin/python") for e in execs)),
+      (True, True))
+
 # ---------------------------------------------------------------- start / restart, stand-in managers
 LOG = TMP / "calls.jsonl"
 fake = TMP / "fakectl"
@@ -181,6 +189,8 @@ c = calls()
 check("mac restart: a radio agent that was off stays off", (STATE_DIR / "org.ranch-radio.ic7300-remote").exists(), False)
 check("  and says so", any("left stopped" in line for line, rc, _ in done), True)
 check("mac restart: a newly installed update agent is loaded", (STATE_DIR / "org.ranch-radio.update").exists(), True)
+check("  with no failed bootout first (it was never loaded)",
+      any("bootout" in line and "org.ranch-radio.update" in line for line, rc, _ in done), False)
 done, deferred = service.restart(mac, upd, check_idle=lambda h, r: (True, "idle"), skip={"updates"})
 check("mac restart: the update job never restarts itself", calls(), [])
 

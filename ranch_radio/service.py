@@ -239,7 +239,8 @@ def restart(h, changed, check_idle=idle, held=None, new=(), skip=()):
                 # Stopped on purpose (the widget's Off): written, left stopped.
                 out.append((f"{label}: not running before; left stopped (it starts on the new code)", 0, ""))
                 continue
-            _mac_down(label, out)
+            if _loaded(label):                          # a new agent has nothing to boot out
+                _mac_down(label, out)
             _mac_up(label, path, out)
         return out, deferred
     sc = _cmd("systemctl")

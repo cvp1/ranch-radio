@@ -222,6 +222,44 @@ has connected. Received frames appear in the heard list and the APRS store.
 - **If Direwolf goes away,** the hub keeps running and reconnects by itself,
   retrying after 2, 4, 8, 16, then every 30 seconds.
 
+### Direwolf on a USB sound card cable (AIOC), and an iGate
+
+A VHF/UHF radio with no built-in TNC can do packet through a sound card
+cable, such as an [AIOC](https://github.com/skuep/AIOC), a Digirig, or a CM108
+dongle, with Direwolf as the modem. Ranch Radio runs both Direwolf and the
+packet hub, on macOS or Linux:
+
+```json
+"packet": {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000",
+           "tnc": "direwolf", "mycall": "N9ABC", "allow_calls": ["N9ABC"], "tx": false,
+           "direwolf": {"usb": "1209:7388", "audio": "AIOC Audio", "ptt": "off"}}
+```
+
+- **`usb`** is the cable's USB ID, VID:PID; an AIOC is `1209:7388`.
+  Direwolf waits until the cable is plugged in. If the cable drops off USB,
+  Direwolf restarts and waits for it again, because it can't recover a sound
+  card that went away.
+- **`audio`** is the cable's sound card as Direwolf names it. An AIOC is
+  `AIOC Audio` on a Mac. Direwolf's log lists every name it sees.
+- **Direwolf has no network ports.** The hub talks to it through a
+  pseudo-terminal (`/tmp/kisstnc`). Direwolf's KISS and AGWPE ports would
+  listen on every interface with no authentication, which would let anyone
+  transmit past the hub's transmit gate.
+- **Transmit needs both switches.** `"ptt": "serial"` lets Direwolf key the
+  radio through the cable's serial port: DTR on, RTS off, which is the AIOC's
+  default. `"tx": true` lets the hub send. Both are off by default.
+- **iGate, receive only:** add
+  `"igate": {"login": "N9ABC-10", "passcode": "~/.config/ranch-radio/aprs-is-passcode"}`
+  to the `direwolf` block, and put your APRS-IS passcode in that file.
+  Received packets go to APRS-IS. Nothing from APRS-IS is ever sent on the
+  air.
+- **On a Mac, allow the microphone.** macOS asks whether the service may use
+  the microphone the first time Direwolf opens the cable's sound card. Answer
+  Allow, or Direwolf hears silence.
+
+[`examples/hosts/mac-aioc.json`](examples/hosts/mac-aioc.json) is a whole
+host file. `ranch-radio doctor` checks that Direwolf is installed.
+
 ## How it fits together
 
 - `server.py` runs one radio: its page, audio, rigctl port and add-ons.

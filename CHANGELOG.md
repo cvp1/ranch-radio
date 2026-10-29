@@ -36,6 +36,24 @@ All notable changes to Ranch Radio are recorded here. The format follows
   the commit the servers were last restarted on, is kept in
   `~/.local/state/ranch-radio/update.json`. One update runs at a time.
 - `tests/update_test.py`: the update end to end against a real git origin.
+- **Direwolf as the packet hub's modem** (`"packet": {"tnc": "direwolf"}`), on
+  macOS and Linux, for a radio on a USB sound card cable such as an AIOC.
+  `direwolf_tnc.py` waits for the cable by USB ID and runs Direwolf with no
+  network ports, talking to the hub over a pseudo-terminal. It restarts
+  Direwolf when the cable drops off USB. PTT stays off unless the host file
+  says `"ptt": "serial"`.
+- **A receive-only iGate** (`packet.direwolf.igate`) sends received packets
+  to APRS-IS and never transmits from it. The passcode is read from a file.
+- **The packet hub renders on macOS** as a launchd agent, alongside Direwolf.
+  `examples/hosts/mac-aioc.json` and `tests/direwolf_tnc_test.py`.
+
+### Fixed
+
+- **Linux units with a `~` Python path** (what `ranch-radio init` writes)
+  start. systemd doesn't expand `~`, so every rendered unit was refused. The
+  path now renders as `%h`.
+- **Installing a new Mac agent** no longer prints a failed `launchctl bootout`
+  first.
 
 ### Changed
 
