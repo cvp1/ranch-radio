@@ -80,7 +80,7 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
 </head>
 <body>
 <header>
-  <h1>UV-PRO Packet</h1>
+  <h1 id="hubtitle">UV-PRO Packet</h1>
   <span class="pill" id="radio"><i></i><span>radio …</span></span>
   <span class="pill" id="tx"><i></i><span>transmit …</span></span>
   <button id="txbtn" hidden></button>
@@ -141,6 +141,7 @@ async function refresh() {
   try { s = await (await fetch("api/status")).json(); }
   catch (e) { pill($("radio"), "bad", "hub not answering"); return; }
   const r = s.radio;
+  if (s.title && $("hubtitle").textContent !== s.title) { $("hubtitle").textContent = s.title; document.title = s.title; }
   if (r.lent) pill($("radio"), "warn", `radio lent to ${r.lent.to} · back by ${new Date(r.lent.until * 1000).toLocaleTimeString()}`);
   else pill($("radio"), r.up ? "ok" : "bad",
        r.up ? `radio linked · last packet ${ago(r.last_rx)}` : `radio not linked${r.error ? " · " + r.error : ""}`);
