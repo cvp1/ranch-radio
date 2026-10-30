@@ -96,7 +96,11 @@ ranch-radio update --apply --drop-rigctl   # restart a radio JTDX/WSJT-X is conn
 ranch-radio add mesh          # switch a module on (dry run; --apply writes the host file)
 ranch-radio remove mesh       # switch it off
 ranch-radio modules           # every module and what it needs
-ranch-radio drift             # installed files vs. the host file
+ranch-radio where             # the host file this machine uses
+ranch-radio install           # what the host file would install (--apply writes it)
+ranch-radio start             # enable and start everything installed
+ranch-radio drift             # installed files vs. the host file (--diff for details)
+ranch-radio radios            # this station's radios, one line each
 ```
 
 ## Updates
@@ -151,12 +155,17 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `mesh` | A Meshtastic node on the page: channels, DMs, nodes, map | a node over USB or Bluetooth; the `meshtastic` package |
-| `packet` | A network KISS TNC (Direwolf) or UV-PRO over Bluetooth as an APRS and Winlink packet hub (Linux) | Network or BlueZ |
+| `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO over Bluetooth (Linux); optional receive-only iGate | Direwolf, a network TNC, or BlueZ |
 | `uvpro` | UV-PRO control: channels, settings, beacon (Linux) | `benlink` |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard and who heard you, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
+| `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
+
+Three more modules are services a host gets from its host file rather than
+switches: `station` (every radio on one page, Linux), `audio` (pinned
+PipeWire sound card names, Linux) and `updates` (the daily check, below).
 
 Add one with `ranch-radio add <module>` or from the page's **Modules** tab;
 either shows the change to the host file first. Then run
@@ -308,8 +317,9 @@ host file. `ranch-radio doctor` checks that Direwolf is installed.
 - `ranch_radio/` is the shipping layer. Each machine's radios, services and
   modules are declared in one host file, and `ranch-radio install` renders the
   launchd agents or systemd units from it. `examples/hosts/` has a Mac with
-  one radio, a two-radio Linux station, a Linux laptop and a radio-less packet
-  hub on a Direwolf TNC.
+  one radio, a Mac running Direwolf on an AIOC cable, a two-radio Linux
+  station, a Linux laptop and a radio-less packet hub on a network Direwolf
+  TNC.
 - `addons/` holds the switchable modules; `static/` is the page (no build step).
 
 ## Development
