@@ -790,6 +790,7 @@ class Station(TxAudio):
         self.clients.add(ws)
         await ws.send_str(json.dumps({"t": "hello", "state": self.radio.state,
                                       "config": self.config(),
+                                      "rigctl_clients": self.rigctl_clients,
                                       "winlink": (self.addons.own_snapshot("winlink")
                                                   if self.addons and self.addons.get("winlink")
                                                   else {"armed": self.winlink_armed,

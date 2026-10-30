@@ -7,6 +7,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Updates leave a radio alone while JTDX or WSJT-X is connected.** A
+  connected rigctl client now counts as busy, like transmitting or a Winlink
+  session: a restart dropped its rig control, and JTDX waits on an error
+  dialog instead of reconnecting. The update names the reason and holds the
+  restart for the next update. `update --apply --drop-rigctl` restarts anyway
+  (never while transmitting or in a Winlink session). The radio server's
+  hello message reports `rigctl_clients`.
 - **Propagation add-on** (`propagation`). Under the radio page's band buttons:
   the K index, GOES X-ray flare class and 10.7 cm solar flux from NOAA's Space
   Weather Prediction Center, and a heat badge on each band heard in the last

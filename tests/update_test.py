@@ -12,7 +12,8 @@ old code until restarted), and is "transmitting" while BUSY exists.
   - a commit that leaves a server down is rolled back (exit 1), remembered,
     and not tried again until a newer commit lands
   - requirements the host's Python lacks: the pull is undone, nothing restarts
-  - a busy radio is left on the old code and restarted at the next update
+  - a busy radio is left on the old code and restarted at the next update;
+    so is one with JTDX connected over rigctl, unless --drop-rigctl
   - --scheduled: notifies once per new commit; with "apply": true, updates
 
     python3 tests/update_test.py
@@ -116,7 +117,8 @@ probe = TMP / "probe.py"
 probe.write_text(f"""import json, os
 mark = open({str(TMP / 'RUNNING')!r}).read().strip()
 busy = os.path.exists({str(TMP / 'BUSY')!r})
-print(json.dumps({{"up": mark == "good", "tx": busy}}))
+rigctl = 1 if os.path.exists({str(TMP / 'RIGCTL')!r}) else 0
+print(json.dumps({{"up": mark == "good", "tx": busy, "rigctl": rigctl}}))
 """)
 notify = TMP / "notify.sh"
 notify.write_text(f'#!/bin/sh\necho "$1 | $2" >> {NOTES}\n')
@@ -222,6 +224,21 @@ check("  --check reports it (exit 2)", (rc, "still on the old code" in out), (2,
 (TMP / "BUSY").unlink()
 rc, out = rr("update", host, "--apply")
 check("  the next update restarts it", (rc, restarted(), state().get("pending")), (0, True, []))
+
+# ---------------------------------------------------------------- JTDX connected over rigctl
+# A restart drops a rigctl client's rig control (JTDX then waits on an error
+# dialog), so a connected client defers the restart like transmitting does,
+# unless the operator says --drop-rigctl.
+(TMP / "RIGCTL").touch()
+jtdx_rev = push("while JTDX is connected")
+rc, out = rr("update", host, "--apply")
+check("rigctl client: the code updates", (rc, head()), (0, jtdx_rev))
+check("  the radio is left alone", restarted(), False)
+check("  and says why", "rigctl client connected" in out and "--drop-rigctl" in out, True)
+check("  held for later", bool(state().get("pending")), True)
+rc, out = rr("update", host, "--apply", "--drop-rigctl")
+check("  --drop-rigctl restarts it anyway", (rc, restarted(), state().get("pending")), (0, True, []))
+(TMP / "RIGCTL").unlink()
 
 # ---------------------------------------------------------------- the first update, pulled by an older one
 # The deployed update pulls, then runs `update HOST --no-pull --code-changed
