@@ -56,6 +56,11 @@ MODULES = [
      "code": "addons/opengd77.py over opengd77.py (allowlisted link), opengd77_mem.py, qdmr.py (dmrconf) and qdmr_yaml.py; "
              "linux/udev/99-opengd77.rules", "platforms": ["macos", "linux"],
      "ships": "the host file's addons block (macOS: addons.json + --addons on the radio's agent); dmrconf from qdmr"},
+    {"name": "propagation", "kind": "addon", "title": "Space weather (NOAA K index, X-ray, solar flux) and what the station "
+                                                     "heard per band, as badges on the band buttons and a Propagation tab",
+     "code": "addons/propagation.py, static/addons/propagation.js (NOAA SWPC JSON; optional skywatch InfluxDB)",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's addons block; add \"skywatch\": {\"url\", \"db\"} for per-band decodes"},
 
     # --- desktop integrations
     {"name": "macos-widget", "kind": "integration", "title": "Menu bar on/off for the radio agent",

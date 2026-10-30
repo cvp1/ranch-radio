@@ -7,6 +7,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Propagation add-on** (`propagation`). Under the radio page's band buttons:
+  the K index, GOES X-ray flare class and 10.7 cm solar flux from NOAA's Space
+  Weather Prediction Center, and a heat badge on each band heard in the last
+  hour. A Propagation tab shows the same per band: decodes, best SNR, farthest,
+  regions and which receivers heard it (from a skywatch InfluxDB, optional),
+  and who heard your callsign (PSKReporter, optional, every 10 minutes). No
+  decodes reads "no data", never closed. `tests/propagation_addon_test.py`.
 - **Network KISS TNC packet hub.** `"packet": {"tnc": "tcp:host:port"}` in a
   host file renders a `packet-hub.service` that talks to a KISS-over-TCP TNC
   such as Direwolf, with no Bluetooth, BlueZ or UV-PRO dependency. The hub's

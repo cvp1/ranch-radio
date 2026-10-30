@@ -1,0 +1,49 @@
+/* Propagation add-on: band-button badges, the space weather strip, the tab. */
+
+#bands .chip { position: relative; }
+.prop-badge {
+  position: absolute; top: -7px; right: -6px; min-width: 16px; height: 15px; padding: 0 4px;
+  border-radius: 8px; font: 700 9.5px/15px var(--mono); font-style: normal; text-align: center;
+  color: #07090d; background: rgba(var(--accent-rgb), .35); pointer-events: none;
+}
+.prop-badge.l2 { background: rgba(var(--accent-rgb), .55); }
+.prop-badge.l3 { background: rgba(var(--accent-rgb), .8); }
+.prop-badge.l4 { background: var(--accent); box-shadow: 0 0 10px -2px rgba(var(--accent-rgb), .8); }
+
+.prop-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: -8px 0 14px; }
+.prop-sw { font: 600 11.5px var(--mono); color: var(--text); text-decoration: none; }
+.prop-sw small { color: var(--muted); font-weight: 500; }
+.prop-sw.ok::before, .prop-sw.warn::before, .prop-sw.bad::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px;
+}
+.prop-sw.ok::before { background: #39e1c6; }
+.prop-sw.warn::before { background: #f5b942; }
+.prop-sw.bad::before { background: #ff4d5e; }
+.prop-sw.dim { color: var(--muted); font-weight: 500; }
+a.prop-sw.dim:hover { color: var(--text); }
+
+.prop-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 6px 0 16px; }
+.prop-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); }
+.prop-tile b { font: 700 26px var(--mono); color: var(--text); }
+.prop-tile small { color: var(--muted); font: 500 11px var(--mono); }
+.prop-tile.ok { border-color: rgba(57,225,198,.35); }
+.prop-tile.warn { border-color: rgba(245,185,66,.55); }
+.prop-tile.bad { border-color: rgba(255,77,94,.6); }
+
+.prop-table { width: 100%; border-collapse: collapse; font: 500 12px var(--mono); }
+.prop-table th, .prop-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+.prop-table thead th { color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+.prop-table tbody th { color: var(--text); width: 52px; }
+.prop-table .prop-none td, .prop-table .prop-none th { color: var(--muted); opacity: .7; }
+.prop-bar { position: relative; min-width: 120px; }
+.prop-bar i { display: block; height: 14px; border-radius: 4px; background: rgba(var(--accent-rgb), .35); }
+.prop-bar i.l2 { background: rgba(var(--accent-rgb), .55); }
+.prop-bar i.l3 { background: rgba(var(--accent-rgb), .8); }
+.prop-bar i.l4 { background: var(--accent); }
+.prop-bar span { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text); font-weight: 700; text-shadow: 0 0 4px #000; }
+.prop-src { color: var(--muted); }
+.prop-note { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+.prop-you b { color: var(--text); }
+.prop-you div { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.prop-you.dim { color: var(--muted); }
+.prop-table .prop-you-only th, .prop-table .prop-you-only td.prop-you { opacity: 1; color: var(--text); }

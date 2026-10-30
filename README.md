@@ -133,6 +133,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `packet` | A network KISS TNC (Direwolf) or UV-PRO over Bluetooth as an APRS and Winlink packet hub (Linux) | Network or BlueZ |
 | `uvpro` | UV-PRO control: channels, settings, beacon (Linux) | `benlink` |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
+| `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard and who heard you, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 
@@ -140,6 +141,19 @@ Add one with `ranch-radio add <module>` or from the page's **Modules** tab;
 either shows the change to the host file first. Then run
 `ranch-radio doctor --fix` and `ranch-radio update --apply`. Each add-on also
 has an on/off switch on the page.
+
+The `propagation` add-on reads NOAA's public space weather feeds with no
+setup. Two optional sources fill in the bands:
+
+```json
+"addons": {"propagation": {"enabled": true,
+                           "skywatch": {"url": "http://192.168.1.20:8086", "db": "skywatch"},
+                           "pskreporter": {"call": "N0CALL"},
+                           "window_min": 60}}
+```
+
+A band with no decodes reads "no data", never closed: a receiver hears only
+the band it's tuned to. PSKReporter is asked at most every 10 minutes.
 
 ## Safety
 
