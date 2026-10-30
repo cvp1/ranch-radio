@@ -5,6 +5,17 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Next openings on the Propagation tab.** From a skywatch InfluxDB that has
+  its propagation forecast (`skywatch_forecast_window`): each band and region
+  forecast open in the next hours (`"forecast_h"`, default 12), soonest first,
+  the one open now marked, with its best chance and the forecast's age. Only
+  cells the newest forecast wrote count, so a withdrawn opening never shows.
+  No forecast measurement, no section; unreachable reads unknown. The
+  Overview card names the next opening. `tests/propagation_page_test.py`
+  checks the tab in a browser.
+
 ## [0.1.0] - 2026-10-30
 
 The first release. Updates still follow `main`; this tag marks a state the

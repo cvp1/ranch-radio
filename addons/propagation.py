@@ -9,6 +9,11 @@ Two sources, each optional:
   skimmer and WSJT-X/JTDX write): per band over the last hour, how many FT8 /
   WSPR decodes, the best SNR, the farthest one and the regions heard. Off
   unless the host file names the database.
+- **Next openings** from the same InfluxDB, when it has skywatch's
+  forecast (measurement skywatch_forecast_window): the band and region
+  windows forecast open in the next hours. Only cells the newest forecast
+  issue wrote count, so an opening a later forecast withdrew never shows.
+  No forecast measurement: no section, not "no openings".
 - **Who hears you** from PSKReporter (public, no key): per band over the last
   hour, how many stations reported your callsign, the best SNR, the farthest
   and their countries. Off unless the host file gives "pskreporter": {"call"}.
@@ -19,7 +24,8 @@ Options (the host file's addons block):
     "propagation": {"enabled": true,
                     "skywatch": {"url": "http://192.168.1.20:8086", "db": "skywatch"},
                     "pskreporter": {"call": "N0CALL"},
-                    "window_min": 60}
+                    "window_min": 60,
+                    "forecast_h": 12}
 
 A band with no decodes is shown as "no data", never as closed: a receiver
 only hears the band it is tuned to, so silence usually means nobody listened.
@@ -50,6 +56,10 @@ SWPC_EVERY_S = 300          # NOAA every 5 minutes (its K index updates each min
 KP_STALE_S = 30 * 60        # older than this, the K index is shown as stale
 WINDOW_MIN = (5, 360)       # the "heard" window's allowed range, minutes
 MEASUREMENT = "skywatch_decode"
+FORECAST = "skywatch_forecast_window"
+FORECAST_EVERY_S = 600      # skywatch issues one forecast a day; 10 minutes is plenty
+FORECAST_H = (1, 27)        # the "next openings" horizon's allowed range, hours
+FORECAST_MAX = 16           # windows sent to the page
 URL_PSK = "https://retrieve.pskreporter.info/query"
 PSK_EVERY_S = 600
 CALL = re.compile(r"^[A-Z0-9/]{3,15}$")
@@ -167,6 +177,44 @@ def parse_heard(by_source, by_region):
     return bands
 
 
+def _series_all(res):
+    """(tags, columns, values) for every series of every statement."""
+    for st in (res or {}).get("results") or []:
+        for se in st.get("series") or []:
+            yield se.get("tags") or {}, se.get("columns") or [], se.get("values") or []
+
+
+def parse_forecast(res, issued):
+    """Open forecast cells (InfluxQL, epoch seconds, GROUP BY band, region)
+    -> windows [{band, region, start, end, peak}], soonest first.
+
+    Only cells the newest issue wrote count (issued_ts == issued): Influx
+    keeps a cell an older issue wrote until a newer one overwrites it, and a
+    cell that dropped out of the trust gate is never overwritten. Consecutive
+    hours of one band and region are one window; end is exclusive."""
+    out = []
+    for tags, cols, vals in _series_all(res):
+        band, region = tags.get("band"), tags.get("region")
+        if not band or not region:
+            continue
+        hours = []
+        for v in vals:
+            row = dict(zip(cols, v))
+            t, p, iss = row.get("time"), row.get("prob"), row.get("issued_ts")
+            if t is None or p is None or iss is None or abs(float(iss) - float(issued)) > 0.5:
+                continue
+            hours.append((int(t), float(p)))
+        hours.sort()
+        for t, p in hours:
+            if out and out[-1]["band"] == band and out[-1]["region"] == region and out[-1]["end"] == t:
+                out[-1]["end"] = t + 3600
+                out[-1]["peak"] = max(out[-1]["peak"], round(p, 2))
+            else:
+                out.append({"band": band, "region": region, "start": t, "end": t + 3600, "peak": round(p, 2)})
+    out.sort(key=lambda w: (w["start"], -w["peak"]))
+    return out[:FORECAST_MAX]
+
+
 def band_of(hz):
     for name, lo, hi in BAND_EDGES:
         if lo <= hz <= hi:
@@ -257,6 +305,12 @@ class Propagation(Addon):
         except (TypeError, ValueError):
             w = 60
         self.window_min = max(WINDOW_MIN[0], min(WINDOW_MIN[1], w))
+        try:
+            h = int(opts.get("forecast_h", 12))
+        except (TypeError, ValueError):
+            h = 12
+        self.forecast_h = max(FORECAST_H[0], min(FORECAST_H[1], h))
+        self._last_forecast = 0.0
         call = str((opts.get("pskreporter") or {}).get("call") or "").strip().upper()
         self.psk_call = call if CALL.match(call) else ""
         self._last_psk = 0.0
@@ -269,12 +323,14 @@ class Propagation(Addon):
         self.space = {"kp": None, "xray": None, "f107": None, "error": None, "checked": None}
         self.heard = {"bands": {}, "error": None, "checked": None}
         self.psk = {"bands": {}, "error": None, "checked": None}
+        self.forecast = {"windows": [], "issued": None, "error": None, "checked": None}
 
     async def start(self):
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15, sock_connect=5),
                                               headers={"User-Agent": "ranch-radio propagation add-on"})
         self._last_swpc = 0.0
         self._last_psk = 0.0
+        self._last_forecast = 0.0
         self._task = asyncio.create_task(self._run(), name="propagation-poll")
 
     async def stop(self):
@@ -328,6 +384,28 @@ class Propagation(Addon):
             # Unknown is not zero: drop the counts rather than show stale ones as current.
             return {"bands": {}, "error": "skywatch not reachable", "checked": int(time.time())}
 
+    async def _poll_forecast(self):
+        # The current hour too: its cell started up to 59 minutes ago.
+        w = f"time >= now() - 1h AND time < now() + {self.forecast_h}h"
+        q_new = f'SELECT max(issued_ts) FROM "{FORECAST}" WHERE {w}'
+        q_open = f'SELECT prob, clim_level, issued_ts FROM "{FORECAST}" WHERE open = 1 AND {w} GROUP BY band, region'
+        url = f"{self.sw_url}/query"
+        try:
+            new, opened = await asyncio.gather(
+                self._get_json(url, {"db": self.sw_db, "q": q_new, "epoch": "s"}),
+                self._get_json(url, {"db": self.sw_db, "q": q_open, "epoch": "s"}))
+            for res in (new, opened):
+                err = next((x.get("error") for x in res.get("results") or [] if x.get("error")), None)
+                if err:
+                    raise ValueError(err)
+            issued = next((v[0][1] for _, c, v in _series_all(new) if v and v[0][1] is not None), None)
+            windows = parse_forecast(opened, issued) if issued else []
+            return {"windows": windows, "issued": int(issued) if issued else None, "error": None,
+                    "checked": int(time.time())}
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, TypeError, AttributeError) as e:
+            log.info("skywatch forecast %s: %s", self.sw_url, e)
+            return {"windows": [], "issued": None, "error": "skywatch not reachable", "checked": int(time.time())}
+
     async def _poll_psk(self):
         params = {"senderCallsign": self.psk_call, "flowStartSeconds": -60 * self.window_min,
                   "rronly": 1, "noactive": 1}
@@ -350,6 +428,9 @@ class Propagation(Addon):
                 self._last_swpc = now
             if self.sw_url:
                 self.heard = await self._poll_skywatch()
+            if self.sw_url and now - self._last_forecast >= FORECAST_EVERY_S:
+                self.forecast = await self._poll_forecast()
+                self._last_forecast = now
             if self.psk_call and now - self._last_psk >= PSK_EVERY_S:
                 self.psk = await self._poll_psk()
                 self._last_psk = now
@@ -377,12 +458,17 @@ class Propagation(Addon):
             "psk": self.psk.get("bands") or {},
             "psk_error": self.psk.get("error"),
             "psk_checked": self.psk.get("checked"),
+            "forecast_h": self.forecast_h,
+            "forecast": self.forecast.get("windows") or [],
+            "forecast_issued": self.forecast.get("issued"),
+            "forecast_error": self.forecast.get("error"),
         }
 
 
 def _changed(a, b):
     """Edge-triggered: say it again only when something a page shows changed."""
-    keys = ("kp", "kp_stale", "xray", "f107", "space_error", "bands", "heard_error", "psk", "psk_error")
+    keys = ("kp", "kp_stale", "xray", "f107", "space_error", "bands", "heard_error", "psk", "psk_error",
+            "forecast", "forecast_issued", "forecast_error")
     return any(a.get(k) != b.get(k) for k in keys)
 
 

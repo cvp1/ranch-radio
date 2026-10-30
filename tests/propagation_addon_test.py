@@ -10,6 +10,10 @@
   - PSKReporter: reception reports to per-band receivers (unique), best SNR,
     farthest (from the two locators) and countries; polled only with a
     callsign set, and an unreachable PSKReporter says so instead of "none"
+  - next openings (skywatch_forecast_window): only cells the newest issue
+    wrote, consecutive hours merged into one window, soonest first; no
+    forecast measurement is no section (not "no openings"); unreachable is
+    an error, not empty
   - it's in the module catalog and manifest
 
     python3 tests/propagation_addon_test.py
@@ -102,6 +106,36 @@ check("locator centre: FN31 (lat, lon)", tuple(round(v, 2) for v in P.grid_latlo
 check("a bad locator is None", (P.grid_latlon(""), P.grid_latlon("ZZ99")), (None, None))
 check("band names from Hz", (P.band_of(7_074_000), P.band_of(50_313_000), P.band_of(9_999)), ("40m", "6m", None))
 
+# ---------------------------------------------------------------- next openings
+ISSUED = 1793380063
+H0 = 1793383200                      # an hour boundary
+
+
+def fc_open(rows):
+    """InfluxQL (epoch s) for open cells: rows of (band, region, [(t, prob, issued)])."""
+    return {"results": [{"statement_id": 0, "series": [
+        {"name": "skywatch_forecast_window", "tags": {"band": b, "region": r},
+         "columns": ["time", "prob", "clim_level", "issued_ts"],
+         "values": [[t, p, 1.0, i] for t, p, i in cells]} for b, r, cells in rows]}]}
+
+
+OPEN = fc_open([
+    ("17m", "NA_EAST", [(H0, 0.66, ISSUED), (H0 + 3600, 0.71, ISSUED), (H0 + 7200, 0.55, ISSUED)]),
+    ("30m", "NA_EAST", [(H0 + 7200, 0.91, ISSUED)]),
+    ("40m", "EU", [(H0 + 3600, 0.8, ISSUED - 86400)]),          # yesterday's issue: withdrawn
+    ("20m", "JA", [(H0 + 3600, 0.6, ISSUED), (H0 + 3 * 3600, 0.62, ISSUED)]),   # a gap: two windows
+])
+fw = P.parse_forecast(OPEN, ISSUED)
+check("forecast: consecutive hours are one window, peak kept",
+      fw[0], {"band": "17m", "region": "NA_EAST", "start": H0, "end": H0 + 3 * 3600, "peak": 0.71})
+check("  a cell an older issue wrote is dropped", any(w["band"] == "40m" for w in fw), False)
+check("  a gap makes two windows", [(w["start"], w["end"]) for w in fw if w["band"] == "20m"],
+      [(H0 + 3600, H0 + 7200), (H0 + 3 * 3600, H0 + 4 * 3600)])
+check("  soonest first", [w["start"] for w in fw], sorted(w["start"] for w in fw))
+check("  capped", len(P.parse_forecast(fc_open([(f"{i}m", "EU", [(H0, 0.6, ISSUED)]) for i in range(40)]), ISSUED)),
+      P.FORECAST_MAX)
+check("  nothing open is no windows", P.parse_forecast({"results": [{"statement_id": 0}]}, ISSUED), [])
+
 # ---------------------------------------------------------------- catalog
 check("in the module catalog as an add-on", catalog.by_name().get("propagation", {}).get("kind"), "addon")
 check("its manifest block is addons/propagation", manifest.MANIFESTS["propagation"]["block"], ("addons", "propagation"))
@@ -154,9 +188,19 @@ async def pskr(request):
     return web.Response(text=PSK_XML, content_type="text/xml")
 
 
+forecast = {"on": True}
+
+
 async def influx(request):
     q = request.query.get("q", "")
     queries.append((request.query.get("db"), q))
+    if "skywatch_forecast_window" in q:
+        if not forecast["on"]:                       # no such measurement: empty results
+            return web.json_response({"results": [{"statement_id": 0}]})
+        if "max(issued_ts)" in q:
+            return web.json_response({"results": [{"statement_id": 0, "series": [
+                {"name": "skywatch_forecast_window", "columns": ["time", "max"], "values": [[0, ISSUED]]}]}]})
+        return web.json_response(OPEN)
     return web.json_response(BY_REGION if "GROUP BY band, region" in q else BY_SOURCE)
 
 
@@ -187,7 +231,11 @@ async def main():
     check("  asked for the callsign over the window",
           (psk_seen[0].get("senderCallsign"), psk_seen[0].get("flowStartSeconds")), ("N0CALL", "-2700"))
     check("InfluxDB asked for the skywatch db over the window",
-          all(db == "skywatch" and "now() - 45m" in q for db, q in queries), True)
+          all(db == "skywatch" and ("now() - 45m" in q or "skywatch_forecast_window" in q) for db, q in queries), True)
+    check("next openings: from the newest issue", (s["forecast_issued"], [w["band"] for w in s["forecast"]]),
+          (ISSUED, ["17m", "20m", "30m", "20m"]))
+    check("  over the host file's horizon, asked in epoch seconds",
+          any("skywatch_forecast_window" in q and "now() + 12h" in q for _, q in queries), True)
     check("the page was told (one state message)", [m.get("addon") for m in host.sent if "state" in m][:1], ["propagation"])
 
     # InfluxDB goes away: unknown, not zero.
@@ -204,6 +252,8 @@ async def main():
     check("  and says why", s["heard_error"], "skywatch not reachable")
     check("NOAA down: says so", s["space_error"], "NOAA not reachable")
     check("PSKReporter down: unknown, not none", (s["psk"], s["psk_error"]), ({}, "PSKReporter not reachable"))
+    check("InfluxDB down: the forecast is unknown, not empty", (s["forecast"], s["forecast_error"]),
+          ([], "skywatch not reachable"))
     await a.stop()
 
     # NOAA failing after a good read keeps the last values.
@@ -222,6 +272,18 @@ async def main():
     check("no callsign: PSKReporter never asked", (s["pskreporter"], len(psk_seen)), ("", 2))
     check("a callsign that isn't one is ignored", P.Propagation(Host(), {"pskreporter": {"call": "x; rm"}}).psk_call, "")
     await b.stop()
+
+    # A skywatch with no forecast measurement: no openings section at all.
+    forecast["on"] = False
+    noaa_up["on"] = True
+    d = P.Propagation(Host(), {"swpc": False, "skywatch": {"url": base, "db": "skywatch"}})
+    await d.start()
+    await asyncio.sleep(1.0)
+    s = d.snapshot()
+    check("no forecast measurement: no issue, no windows, no error",
+          (s["forecast_issued"], s["forecast"], s["forecast_error"]), (None, [], None))
+    await d.stop()
+    check("the horizon is clamped", P.Propagation(Host(), {"forecast_h": 999}).forecast_h, 27)
 
     c = P.Propagation(Host(), {"swpc": False, "window_min": 99999})
     check('"swpc": false turns NOAA off', c.snapshot()["swpc"], False)

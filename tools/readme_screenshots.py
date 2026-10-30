@@ -69,6 +69,27 @@ HEARD = {
 }
 
 
+# Next openings: (band, region, first hour from now, hours, chance). Hour 0 is now.
+OPENINGS = [("17m", "NA_EAST", 0, 2, 0.71), ("15m", "SA", 1, 3, 0.64), ("20m", "JA", 3, 2, 0.58),
+            ("10m", "SA", 4, 1, 0.52), ("40m", "EU", 7, 3, 0.83)]
+HOUR = int(NOW.timestamp()) // 3600 * 3600
+ISSUED = HOUR - 2 * 3600
+FORECAST = {"on": True}       # off: a skywatch with no forecast measurement
+
+
+def forecast_json(q):
+    if not FORECAST["on"]:
+        return {"results": [{"statement_id": 0}]}
+    if "max(issued_ts)" in q:
+        return {"results": [{"statement_id": 0, "series": [
+            {"name": "skywatch_forecast_window", "columns": ["time", "max"], "values": [[0, ISSUED]]}]}]}
+    return {"results": [{"statement_id": 0, "series": [
+        {"name": "skywatch_forecast_window", "tags": {"band": b, "region": r},
+         "columns": ["time", "prob", "clim_level", "issued_ts"],
+         "values": [[HOUR + 3600 * (h0 + i), p, 1.0, ISSUED] for i in range(n)]}
+        for b, r, h0, n, p in OPENINGS]}]}
+
+
 def influx_json(by_region):
     series = []
     for band, (src, regions) in HEARD.items():
@@ -105,7 +126,10 @@ def stand_ins(port):
         return web.json_response({"kp": KP, "xray": XRAY, "f107": F107}[r.match_info["name"]])
 
     async def influx(r):
-        return web.json_response(influx_json("GROUP BY band, region" in r.query.get("q", "")))
+        q = r.query.get("q", "")
+        if "skywatch_forecast_window" in q:
+            return web.json_response(forecast_json(q))
+        return web.json_response(influx_json("GROUP BY band, region" in q))
 
     async def pskr(r):
         return web.Response(text=psk_xml(), content_type="text/xml")
