@@ -17,6 +17,11 @@
 
 const addons = (() => {
   const desc = {}, impl = {}, snaps = {}, panels = {}, loaded = {};
+  // Messages for an add-on whose script hasn't registered yet: they are
+  // newer than its hello snapshot, so register() replays them after it.
+  // Dropping them left a panel on the snapshot (UV-PRO connected while its
+  // script loaded: no battery, no channels until a reload; 2026-10-30).
+  const early = {}, EARLY_MAX = 500;
   let host = { place: () => {}, changed: () => {} };
 
   const api = (name) => ({
@@ -80,6 +85,7 @@ const addons = (() => {
     for (const d of list || []) {
       desc[d.name] = { ...d };
       snaps[d.name] = (snapshots || {})[d.name] || null;
+      delete early[d.name];            // a fresh snapshot supersedes them
       panel(d);
       renderHead(d.name);
       load(d);
@@ -94,11 +100,15 @@ const addons = (() => {
     if ("on" in m) {
       d.on = !!m.on;
       d.error = m.error || null;
-      if (d.on && m.snapshot) { snaps[name] = m.snapshot; impl[name]?.hello?.(m.snapshot); }
+      if (d.on && m.snapshot) { snaps[name] = m.snapshot; delete early[name]; impl[name]?.hello?.(m.snapshot); }
       if (!d.on) impl[name]?.off?.();
       renderHead(name);
     } else if (impl[name]) {
       impl[name].event?.(m);
+    } else {
+      const q = (early[name] ||= []);
+      q.push(m);
+      if (q.length > EARLY_MAX) q.shift();
     }
     host.changed();
   }
@@ -108,6 +118,9 @@ const addons = (() => {
     const p = panels[name];
     if (p) i.mount?.(p.querySelector(".addon-body"), api(name));
     if (desc[name]?.on && snaps[name]) i.hello?.(snaps[name]);
+    const q = early[name] || [];
+    delete early[name];
+    if (desc[name]?.on) for (const m of q) i.event?.(m);
     renderHead(name);
     host.changed();
   }

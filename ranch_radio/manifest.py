@@ -79,6 +79,10 @@ def normalize(rule, value):
 
 PAT_FIX = "install Pat (https://getpat.io) and set its path with --set pat=PATH"
 ARDOP_FIX = "build it from this repo: ardop/build.sh (see ardop/README.md)"
+# The benlink the UV-PRO bridge is tested against (CI and tests/ci/Dockerfile
+# pin the same commit; tests/modules_test.py checks they agree). A newer
+# benlink requires settings fields the bridge doesn't send.
+BENLINK_PIP = "'benlink @ git+https://github.com/khusmann/benlink@c4b9d22112402ea193d376f412bc028d1778fdb4'"
 
 MANIFESTS = {
     "winlink": {
@@ -157,10 +161,9 @@ MANIFESTS = {
         # fighting it for the one Bluetooth link.
         "with": {"packet": {"hub": "http://127.0.0.1:7310", "control": "tcp:127.0.0.1:8002"}},
         "needs": [{"pymod": "benlink", "key": "python", "default": "~/.local/share/venvs/benlink/bin/python",
-                   "auto": "{host_python} -m venv {venv} && {venv}/bin/pip install -q "
-                           "git+https://github.com/khusmann/benlink@c4b9d22112402ea193d376f412bc028d1778fdb4",
+                   "auto": "{host_python} -m venv {venv} && {venv}/bin/pip install -q " + BENLINK_PIP,
                    "fix": "python3 -m venv ~/.local/share/venvs/benlink && "
-                          "~/.local/share/venvs/benlink/bin/pip install benlink"}],
+                          "~/.local/share/venvs/benlink/bin/pip install " + BENLINK_PIP}],
     },
     "opengd77": {
         "label": "MD-UV390 (OpenGD77)",

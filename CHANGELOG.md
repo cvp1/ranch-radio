@@ -5,6 +5,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-30
+
+The first release. Updates still follow `main`; this tag marks a state the
+full test suite passed on, to point people at and to come back to.
+
 ### Added
 
 - **README screenshots**: the radio page, the Propagation tab, a phone and a
@@ -73,6 +78,24 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **An add-on panel could stay out of date until a reload.** Messages for
+  an add-on that arrived before its page script loaded were dropped, so the
+  panel showed only the first snapshot: a UV-PRO that connected while the
+  page opened showed no battery and no channels. They are now kept (up to
+  500) and replayed after the snapshot; a fresh snapshot supersedes them.
+  `tests/addons_page_test.py`.
+- **A refused Winlink arm is logged** (`winlink: arm refused: <why>`), not
+  only shown on the page that asked.
+- **Flaky test: arming Winlink right after an app unkeys.**
+  `civ_safety_test` armed as soon as the server first said "not
+  transmitting", and a poll reply from before the unkey could land after it
+  (about 1 run in 15 on one CPU). It now waits for a reply from after the
+  unkey and fails loudly if there isn't one.
+- **`ranch-radio doctor` printed an unpinned benlink fix.** Its install
+  pinned the benlink commit the UV-PRO bridge is tested against, but the fix
+  it printed for doing it by hand ran plain `pip install benlink`, which pulls
+  a release the bridge can't parse. Both use the pin now, and
+  `tests/modules_test.py` checks that CI and the flake-hunt image agree.
 - **Direwolf's key-up delay is a host-file setting** (`packet.direwolf.txdelay`, ms).
   At Direwolf's 300 ms default, a BTECH UV-50X2 keyed too late for its
   packets to decode. At 600 ms HELIO repeated them.
