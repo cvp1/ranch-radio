@@ -158,7 +158,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO over Bluetooth (Linux); optional receive-only iGate | Direwolf, a network TNC, or BlueZ |
 | `uvpro` | UV-PRO control: channels, settings, beacon (Linux) | `benlink` |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
-| `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard and who heard you, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
+| `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
@@ -179,8 +179,14 @@ setup. Two optional sources fill in the bands:
 "addons": {"propagation": {"enabled": true,
                            "skywatch": {"url": "http://192.168.1.20:8086", "db": "skywatch"},
                            "pskreporter": {"call": "N0CALL"},
-                           "window_min": 60}}
+                           "window_min": 60, "forecast_h": 12}}
 ```
+
+When the skywatch database also has its propagation forecast
+(`skywatch_forecast_window`), the tab lists the next openings: each band and
+region forecast open in the next `forecast_h` hours, soonest first, with its
+best chance. Only the newest forecast counts, so an opening a later forecast
+withdrew never shows. Without that measurement the section doesn't appear.
 
 A band with no decodes reads "no data", never closed: a receiver hears only
 the band it's tuned to. A source that can't be reached reads "unknown", never

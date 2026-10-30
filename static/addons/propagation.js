@@ -135,6 +135,39 @@
       <small class="c">${cs}</small></div>`;
   }
 
+  // ------------------------------------------------ next openings (skywatch's forecast)
+  const hhmm = (ts) => new Date(ts * 1000).toISOString().slice(11, 16) + "Z";
+  const FORECAST_STALE_S = 36 * 3600;     // skywatch issues one a day
+
+  function openingsSection() {
+    // No forecast measurement at all: no section (that is "not set up", not
+    // "no openings"). Unreachable: unknown, said so.
+    if (!snap.skywatch || (!snap.forecast_issued && !snap.forecast_error)) return "";
+    const h = snap.forecast_h || 12;
+    const head = `<h3 class="pg-h">Next openings <small>forecast, next ${h} hours</small></h3>`;
+    if (snap.forecast_error) {
+      return `<section class="pg-section">${head}<p class="pg-lede dim">${esc(snap.forecast_error)}: the forecast is unknown.</p></section>`;
+    }
+    const now = Date.now() / 1000;
+    const ws = snap.forecast || [];
+    const rows = ws.map((w) => {
+      const live = w.start <= now;
+      const when = live ? `now to ${hhmm(w.end)}` : `${hhmm(w.start)} to ${hhmm(w.end)}`;
+      return `<li class="pg-open${live ? " live" : ""}">
+        <b class="pg-open-band">${esc(w.band)}</b>
+        <span class="pg-open-region"><i class="sw rs-${regionSlot(w.region)}"></i>${esc(regionName(w.region))}</span>
+        <span class="pg-open-when">${esc(when)}</span>
+        <span class="pg-open-p" data-tip="Forecast chance the path is open at its best hour">${Math.round(w.peak * 100)}%</span>
+      </li>`;
+    }).join("");
+    const age = now - snap.forecast_issued;
+    const note = `<p class="pg-note">Forecast ${age > FORECAST_STALE_S ? "<b>out of date</b>, " : ""}issued ${esc(ago(snap.forecast_issued))}
+      by skywatch. A path's chance of being open, from its history; a forecast, not a promise.</p>`;
+    return `<section class="pg-section">${head}
+      ${rows ? `<ul class="pg-opens">${rows}</ul>` : `<p class="pg-lede dim">No band is forecast open in the next ${h} hours.</p>`}
+      ${note}</section>`;
+  }
+
   function bandsSection() {
     const heardOK = snap.skywatch && !snap.heard_error;
     const bands = heardOK ? snap.bands || {} : {};
@@ -344,7 +377,7 @@
   let lastHtml = "";
   function render() {
     if (!body) return;
-    const html = conditions() + bandsSection();
+    const html = conditions() + openingsSection() + bandsSection();
     if (html === lastHtml) return;          // the tuned-band observer fires often
     lastHtml = html;
     body.innerHTML = `<div class="pg">${html}</div>`;
@@ -369,6 +402,8 @@
       if (snap.kp) lines.push(`Kp ${snap.kp.kp} ${esc(k.word.toLowerCase())}${snap.xray ? ` · X-ray ${esc(snap.xray.class)}` : ""}`);
       const top = Object.entries(snap.bands || {}).sort((a, b) => b[1].n - a[1].n).slice(0, 3);
       if (top.length) lines.push(`busiest: ${top.map(([b, d]) => `${esc(b)} ${fmtN(d.n)}`).join(", ")}`);
+      const next = (snap.forecast || [])[0];
+      if (next) lines.push(`next opening: ${esc(next.band)} ${esc(regionName(next.region))} ${next.start <= Date.now() / 1000 ? "now" : esc(hhmm(next.start))}`);
       return { state: snap.heard_error || (k ? k.word.toLowerCase() : "loading"), lines };
     },
   });
