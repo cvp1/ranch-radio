@@ -41,7 +41,7 @@ async def main(url):
         print(json.dumps({"up": False, "why": type(e).__name__})); return
     st, wl = h.get("state") or {}, h.get("winlink") or {}
     print(json.dumps({"up": True, "tx": bool(st.get("tx")), "armed": bool(wl.get("armed")),
-                      "session": bool(wl.get("session"))}))
+                      "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0)}))
 asyncio.run(main(sys.argv[1]))
 """
 
@@ -93,9 +93,14 @@ def servers(h):
     return out
 
 
-def idle(h, r=None):
+def idle(h, r=None, drop_rigctl=False):
     """(ok, why): ok when nothing would be cut off by a restart. A server
-    that doesn't answer is idle (there's nothing to interrupt)."""
+    that doesn't answer is idle (there's nothing to interrupt).
+
+    A connected rigctl client (JTDX, WSJT-X) counts too: a restart drops
+    its rig control, and JTDX waits on an error dialog instead of
+    reconnecting. drop_rigctl (update --drop-rigctl)
+    restarts anyway; transmitting and Winlink are never overridden."""
     st = probe(h, r)
     if st.get("why") == "not answering":
         return True, "not answering"
@@ -106,6 +111,10 @@ def idle(h, r=None):
         return False, f"{name} is transmitting"
     if st.get("armed") or st.get("session"):
         return False, f"{name} is in a Winlink session"
+    n = int(st.get("rigctl") or 0)
+    if n and not drop_rigctl:
+        return False, (f"{name} has {n} rigctl client{'s' if n != 1 else ''} connected (JTDX, WSJT-X...): "
+                       "a restart drops its rig control (update --apply --drop-rigctl to restart anyway)")
     return True, "idle"
 
 

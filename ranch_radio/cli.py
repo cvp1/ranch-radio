@@ -2,6 +2,7 @@
 
 import argparse
 import difflib
+import functools
 import json
 import os
 import shlex
@@ -380,6 +381,7 @@ def _reexec(h, a, *flags, plain=False, wait=False):
     argv += ["--apply"] if a.apply else []
     argv += ["--scheduled"] if a.scheduled and not plain else []
     argv += ["--home", a.home] if a.home else []
+    argv += ["--drop-rigctl"] if getattr(a, "drop_rigctl", False) else []
     sys.stdout.flush()
     if wait:
         fd = os.environ.get("RANCH_RADIO_UPDATE_LOCK")
@@ -455,6 +457,7 @@ def _rollback(h, a, home, before, bad, was_up, why):
 
 
 UPDATE_DEFAULTS = {"apply": False, "check": False, "force": False, "scheduled": False, "no_pull": False,
+                   "drop_rigctl": False,
                    "code_changed": False, "from_rev": None, "home": None, "host": None}
 
 
@@ -618,7 +621,9 @@ def cmd_update(a):
                     if art.path not in seen and art.module in restart_ids
                     and (art.fmt == "plist" or art.path.endswith((".service", "station.json")))]
     held = []
-    lines, deferred = service.restart(h, changed, held=held, new=new, skip={"updates"} if job else ())
+    check = functools.partial(service.idle, drop_rigctl=bool(getattr(a, "drop_rigctl", False)))
+    lines, deferred = service.restart(h, changed, check_idle=check, held=held, new=new,
+                                      skip={"updates"} if job else ())
     _show_service(lines)
     for d in deferred:
         print(f"  not restarted: {d}")
@@ -722,6 +727,8 @@ def main(argv=None):
     up.add_argument("--scheduled", action="store_true",
                     help="the daily job: notify, or apply when the host file says \"updates\": {\"apply\": true}")
     up.add_argument("--no-pull", action="store_true", help="skip git pull")
+    up.add_argument("--drop-rigctl", action="store_true",
+                    help="restart a radio even with JTDX/WSJT-X connected over rigctl (they lose rig control)")
     up.add_argument("--code-changed", action="store_true",
                     help="restart every service (idle ones), as after a pull that changed the code")
     up.add_argument("--from", dest="from_rev", help=argparse.SUPPRESS)      # the commit before the pull
