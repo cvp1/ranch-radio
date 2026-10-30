@@ -6,6 +6,8 @@ the LAN can tune it, see its spectrum, hear it and talk through it. A Linux
 machine with several radios puts them all on one station page. Add-on modules
 bring in Winlink, Meshtastic, APRS packet and handheld-radio control.
 
+![The radio page: frequency, S-meter, band buttons with the decodes heard on each, space weather under them](docs/images/radio-page.png)
+
 ```
 radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
        CAT serial + USB audio
@@ -20,8 +22,22 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
   device's microphone, with a per-band transmit level.
 - **Apps keep working.** Each radio answers Hamlib's rigctl protocol on its
   own port, so WSJT-X, JTDX and other apps share the radio with the page.
+- **Propagation at a glance.** Under the band buttons: the K index, X-ray
+  flare class and solar flux, and a badge on each band with the decodes heard
+  in the last hour. A Propagation tab explains them (below).
+- **Packet.** APRS and Winlink packet through Direwolf, a network KISS TNC or
+  a UV-PRO over Bluetooth, with transmit off until you allow it.
+- **Several radios, one page.** On Linux, a station page puts every radio,
+  Winlink, Mesh and the packet hub behind one address, with a shared rigctl
+  port as well as each radio's own.
+- **Updates that don't interrupt you.** A radio that is transmitting, in a
+  Winlink session or driven by JTDX or WSJT-X is left alone until it's free.
 - **Modules** you switch on per machine, from a **Modules** tab on the page or
   the command line (below).
+
+<p align="center"><img src="docs/images/phone.png" width="300" alt="The radio page on a phone"></p>
+
+![A station page with two radios, Winlink, Mesh and a packet hub](docs/images/station.png)
 
 ## Supported radios
 
@@ -76,10 +92,15 @@ ranch-radio doctor            # what this machine's modules need, and whether it
 ranch-radio update --check    # is there an update? (exit 2 when there is)
 ranch-radio update            # what an update would pull and change (pulls nothing)
 ranch-radio update --apply    # pull, install, restart what changed (never a radio in use)
+ranch-radio update --apply --drop-rigctl   # restart a radio JTDX/WSJT-X is connected to anyway
 ranch-radio add mesh          # switch a module on (dry run; --apply writes the host file)
 ranch-radio remove mesh       # switch it off
 ranch-radio modules           # every module and what it needs
-ranch-radio drift             # installed files vs. the host file
+ranch-radio where             # the host file this machine uses
+ranch-radio install           # what the host file would install (--apply writes it)
+ranch-radio start             # enable and start everything installed
+ranch-radio drift             # installed files vs. the host file (--diff for details)
+ranch-radio radios            # this station's radios, one line each
 ```
 
 ## Updates
@@ -91,10 +112,14 @@ any time:
   `requirements.txt` asks for, and installs it into the checkout's `.venv`. If
   the host runs another Python (a system one), it stops and says what to
   install, and the code goes back where it was. Nothing restarts.
-- **Radios in use are left alone.** A radio that is transmitting or in a
-  Winlink session keeps running. It is restarted on the new code at the next
-  update, and `--check` reports it until then. A radio you switched off stays
-  off.
+- **Radios in use are left alone.** A radio that is transmitting, in a
+  Winlink session, or has an app such as JTDX or WSJT-X connected to its
+  rigctl port keeps running, and the update says which and why. A restart
+  would drop the app's rig control, and JTDX then waits on an error dialog
+  instead of reconnecting. The radio is restarted on the new code at the next
+  update, and `--check` reports it until then. `--drop-rigctl` restarts a
+  radio that only has a rigctl client, never one that is transmitting or in a
+  Winlink session. A radio you switched off stays off.
 - **Checked, and rolled back.** After restarting, every server that was serving
   must serve again within a minute. If one doesn't, the code goes back to the
   commit it came from, the old code is restarted, and the update confirms
@@ -130,12 +155,17 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `mesh` | A Meshtastic node on the page: channels, DMs, nodes, map | a node over USB or Bluetooth; the `meshtastic` package |
-| `packet` | A network KISS TNC (Direwolf) or UV-PRO over Bluetooth as an APRS and Winlink packet hub (Linux) | Network or BlueZ |
+| `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO over Bluetooth (Linux); optional receive-only iGate | Direwolf, a network TNC, or BlueZ |
 | `uvpro` | UV-PRO control: channels, settings, beacon (Linux) | `benlink` |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard and who heard you, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
+| `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
+
+Three more modules are services a host gets from its host file rather than
+switches: `station` (every radio on one page, Linux), `audio` (pinned
+PipeWire sound card names, Linux) and `updates` (the daily check, below).
 
 Add one with `ranch-radio add <module>` or from the page's **Modules** tab;
 either shows the change to the host file first. Then run
@@ -153,7 +183,10 @@ setup. Two optional sources fill in the bands:
 ```
 
 A band with no decodes reads "no data", never closed: a receiver hears only
-the band it's tuned to. PSKReporter is asked at most every 10 minutes.
+the band it's tuned to. A source that can't be reached reads "unknown", never
+zero. PSKReporter is asked at most every 10 minutes.
+
+![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
 
 ## Safety
 
@@ -284,8 +317,9 @@ host file. `ranch-radio doctor` checks that Direwolf is installed.
 - `ranch_radio/` is the shipping layer. Each machine's radios, services and
   modules are declared in one host file, and `ranch-radio install` renders the
   launchd agents or systemd units from it. `examples/hosts/` has a Mac with
-  one radio, a two-radio Linux station, a Linux laptop and a radio-less packet
-  hub on a Direwolf TNC.
+  one radio, a Mac running Direwolf on an AIOC cable, a two-radio Linux
+  station, a Linux laptop and a radio-less packet hub on a network Direwolf
+  TNC.
 - `addons/` holds the switchable modules; `static/` is the page (no build step).
 
 ## Development
@@ -297,6 +331,9 @@ bash tests/run_all.sh                      # everything (page tests need Chrome 
 
 Tests use simulated radios and stand-in service managers; none touches a real
 radio.
+
+The screenshots in this README come from a simulated radio with made-up data.
+`python3 tools/readme_screenshots.py` takes them again into `docs/images/`.
 
 ## License
 

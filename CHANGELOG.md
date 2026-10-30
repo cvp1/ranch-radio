@@ -7,6 +7,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **README screenshots**: the radio page, the Propagation tab, a phone and a
+  station page, in `docs/images/`, retaken by `tools/readme_screenshots.py`
+  from a simulated radio with made-up data. The README now covers updates
+  holding off while JTDX or WSJT-X is connected (`--drop-rigctl`).
 - **Updates leave a radio alone while JTDX or WSJT-X is connected.** A
   connected rigctl client now counts as busy, like transmitting or a Winlink
   session: a restart dropped its rig control, and JTDX waits on an error
