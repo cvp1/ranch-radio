@@ -14,6 +14,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -201,6 +202,17 @@ check("doctor exits 1 when something is missing", (rc, "missing" in out.splitlin
 cli.this_host = real_host
 rc, out = run(["doctor", "doctest"])
 check("doctor for another host checks the host file only", "host file only" in out, True)
+
+# One benlink: the doctor's install, its printed fix, CI and the flake-hunt
+# image all pin the commit the UV-PRO bridge is tested against (a printed fix
+# of plain "pip install benlink" pulled a release the bridge can't parse).
+pin = re.search(r"@([0-9a-f]{40})", manifest.BENLINK_PIP).group(1)
+need = manifest.MANIFESTS["uvpro"]["needs"][0]
+check("benlink: doctor's install and its printed fix use the pin",
+      (manifest.BENLINK_PIP in need["auto"], manifest.BENLINK_PIP in need["fix"]), (True, True))
+for f in (".github/workflows/ci.yml", "tests/ci/Dockerfile"):
+    check(f"benlink: {f} pins the same commit",
+          re.findall(r"benlink @ git\+https://github.com/khusmann/benlink@([0-9a-f]{40})", (ROOT / f).read_text()), [pin])
 
 shutil.rmtree(tmp)
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")

@@ -1043,9 +1043,15 @@ def test_winlink_arm_refused_while_another_transmits():
         check("not armed: the lane can't key", Client(lane).cmd("T 1"), ["RPRT -11"])
         check("app unkeys", app.cmd("T 0"), ["RPRT 0"])
         app.close()
-        wait_for(lambda: not server_state(r.web).get("tx"))   # the server has polled the unkey
-        browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until=lambda: r.fake.state["data"] == 1)
-        check("released: arming works", browser.held, True)
+        # The server has the unkey from a reply computed after it: a poll
+        # reply from before the unkey can land after the first "not
+        # transmitting" and refuse the arm as "keyed at the radio" (1 in ~15
+        # on one CPU, 2026-10-30). Wait past it, and fail loudly if not.
+        check("the radio is unkeyed", wait_for(lambda: r.fake.state["tx"] == 0, 5), True)
+        check("the server has a reply from after the unkey", r.told(r.fake.mark()), True)
+        check("  and says not transmitting", server_state(r.web).get("tx"), False)
+        notes = browser(r.web, [{"t": "winlink_arm", "v": True}], wait=10, until=lambda: r.fake.state["data"] == 1)
+        check("released: arming works", (browser.held, notes if not browser.held else None), (True, None))
         browser(r.web, [{"t": "winlink_arm", "v": False}], wait=1.5)
     finally:
         r.close()

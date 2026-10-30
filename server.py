@@ -471,6 +471,7 @@ class Station(TxAudio):
             # refuses new keys until arming is done.
             why = self._winlink_arm_blocked()
             if why:
+                log.warning("winlink: arm refused: %s", why)
                 self.notice(f"Winlink not armed: {why}", "warn", ws)
                 return
             self._winlink_arming = ws
