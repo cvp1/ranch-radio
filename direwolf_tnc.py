@@ -97,6 +97,7 @@ def config(a, port, passcode=None):
         "CHANNEL 0",
         f"MYCALL {a.mycall}",
         "MODEM 1200",
+        f"TXDELAY {max(1, round(a.txdelay / 10))}" if a.txdelay else "# TXDELAY: Direwolf's default (300 ms)",
         f"PTT {port} DTR -RTS" if a.ptt == "serial" else "# PTT off: receive only",
         "AGWPORT 0",
         "KISSPORT 0",
@@ -173,6 +174,10 @@ def parse_args(argv=None):
     p.add_argument("--audio", required=True, help="the cable's sound card, as Direwolf names it (ADEVICE)")
     p.add_argument("--mycall", required=True)
     p.add_argument("--ptt", choices=["off", "serial"], default="off")
+    p.add_argument("--txdelay", type=int, metavar="MS",
+                   help="key-up delay before the data, ms (default Direwolf's 300). A radio that is slow "
+                        "to start transmitting needs more: a BTECH UV-50X2 sent nothing a digipeater "
+                        "could decode at 300 ms and was repeated at 600 (2026-10-29)")
     p.add_argument("--igate-login", help="APRS-IS login (callsign-SSID); turns the receive-only iGate on")
     p.add_argument("--igate-passcode-file", help="a file holding the APRS-IS passcode")
     p.add_argument("--igate-server", default="noam.aprs2.net")
@@ -181,6 +186,8 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     if a.igate_login and not a.igate_passcode_file:
         p.error("--igate-login needs --igate-passcode-file")
+    if a.txdelay is not None and not 10 <= a.txdelay <= 2000:
+        p.error("--txdelay is in milliseconds, 10 to 2000")
     if any(c in a.audio for c in '"\n\r'):
         p.error("--audio can't hold quotes or line breaks")
     return a
