@@ -178,6 +178,15 @@ MANIFESTS = {
              "fix": "sudo cp linux/udev/99-opengd77.rules /etc/udev/rules.d/ && sudo udevadm control --reload"},
         ],
     },
+    "propagation": {
+        "label": "Propagation (space weather, bands heard)",
+        "family": "addon",
+        "block": ("addons", "propagation"),
+        "os": ["macos", "linux"],
+        # NOAA needs nothing; a skywatch InfluxDB is optional ("skywatch": {"url", "db"}).
+        "template": {"macos": {"enabled": True}, "linux": {"enabled": True}},
+        "needs": [],
+    },
     "macos-widget": {
         "label": "Menu bar widget",
         "family": "files",
