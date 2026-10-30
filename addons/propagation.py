@@ -163,7 +163,7 @@ def parse_heard(by_source, by_region):
             regions.setdefault(band, []).append((region, n))
     for band, rs in regions.items():
         if band in bands:
-            bands[band]["regions"] = [[r, n] for r, n in sorted(rs, key=lambda x: -x[1])[:4]]
+            bands[band]["regions"] = [[r, n] for r, n in sorted(rs, key=lambda x: -x[1])[:8]]
     return bands
 
 
