@@ -6,6 +6,8 @@ the LAN can tune it, see its spectrum, hear it and talk through it. A Linux
 machine with several radios puts them all on one station page. Add-on modules
 bring in Winlink, Meshtastic, APRS packet and handheld-radio control.
 
+![The radio page: frequency, S-meter, band buttons with the decodes heard on each, space weather under them](docs/images/radio-page.png)
+
 ```
 radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
        CAT serial + USB audio
@@ -20,8 +22,22 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
   device's microphone, with a per-band transmit level.
 - **Apps keep working.** Each radio answers Hamlib's rigctl protocol on its
   own port, so WSJT-X, JTDX and other apps share the radio with the page.
+- **Propagation at a glance.** Under the band buttons: the K index, X-ray
+  flare class and solar flux, and a badge on each band with the decodes heard
+  in the last hour. A Propagation tab explains them (below).
+- **Packet.** APRS and Winlink packet through Direwolf, a network KISS TNC or
+  a UV-PRO over Bluetooth, with transmit off until you allow it.
+- **Several radios, one page.** On Linux, a station page puts every radio,
+  Winlink, Mesh and the packet hub behind one address, with a shared rigctl
+  port as well as each radio's own.
+- **Updates that don't interrupt you.** A radio that is transmitting, in a
+  Winlink session or driven by JTDX or WSJT-X is left alone until it's free.
 - **Modules** you switch on per machine, from a **Modules** tab on the page or
   the command line (below).
+
+<p align="center"><img src="docs/images/phone.png" width="300" alt="The radio page on a phone"></p>
+
+![A station page with two radios, Winlink, Mesh and a packet hub](docs/images/station.png)
 
 ## Supported radios
 
@@ -76,6 +92,7 @@ ranch-radio doctor            # what this machine's modules need, and whether it
 ranch-radio update --check    # is there an update? (exit 2 when there is)
 ranch-radio update            # what an update would pull and change (pulls nothing)
 ranch-radio update --apply    # pull, install, restart what changed (never a radio in use)
+ranch-radio update --apply --drop-rigctl   # restart a radio JTDX/WSJT-X is connected to anyway
 ranch-radio add mesh          # switch a module on (dry run; --apply writes the host file)
 ranch-radio remove mesh       # switch it off
 ranch-radio modules           # every module and what it needs
@@ -91,10 +108,14 @@ any time:
   `requirements.txt` asks for, and installs it into the checkout's `.venv`. If
   the host runs another Python (a system one), it stops and says what to
   install, and the code goes back where it was. Nothing restarts.
-- **Radios in use are left alone.** A radio that is transmitting or in a
-  Winlink session keeps running. It is restarted on the new code at the next
-  update, and `--check` reports it until then. A radio you switched off stays
-  off.
+- **Radios in use are left alone.** A radio that is transmitting, in a
+  Winlink session, or has an app such as JTDX or WSJT-X connected to its
+  rigctl port keeps running, and the update says which and why. A restart
+  would drop the app's rig control, and JTDX then waits on an error dialog
+  instead of reconnecting. The radio is restarted on the new code at the next
+  update, and `--check` reports it until then. `--drop-rigctl` restarts a
+  radio that only has a rigctl client, never one that is transmitting or in a
+  Winlink session. A radio you switched off stays off.
 - **Checked, and rolled back.** After restarting, every server that was serving
   must serve again within a minute. If one doesn't, the code goes back to the
   commit it came from, the old code is restarted, and the update confirms
@@ -153,7 +174,10 @@ setup. Two optional sources fill in the bands:
 ```
 
 A band with no decodes reads "no data", never closed: a receiver hears only
-the band it's tuned to. PSKReporter is asked at most every 10 minutes.
+the band it's tuned to. A source that can't be reached reads "unknown", never
+zero. PSKReporter is asked at most every 10 minutes.
+
+![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
 
 ## Safety
 
@@ -297,6 +321,9 @@ bash tests/run_all.sh                      # everything (page tests need Chrome 
 
 Tests use simulated radios and stand-in service managers; none touches a real
 radio.
+
+The screenshots in this README come from a simulated radio with made-up data.
+`python3 tools/readme_screenshots.py` takes them again into `docs/images/`.
 
 ## License
 
