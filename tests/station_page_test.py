@@ -5,7 +5,7 @@ Pat and mesh bridge, and a packet hub that is configured but not running.
 Checks:
   - the navigation: Overview, one tab per connected radio with its rigctl
     ports (the shared one on the radio connected first), Winlink, Mesh, and
-    Packet dimmed while the hub is down
+    Packet off the tab bar while the hub is down (its Overview card stays)
   - the overview has a card per radio and service and names the shared port
   - a radio's tab shows that radio's own page in a frame, connected, without
     its own brand (the tab names it); the other radio's frame stays hidden
@@ -127,12 +127,12 @@ try:
     b.wait(f"({TEXT})('#conn b') === 'Connected'")
     b.wait(f"{TABS}.length >= 5")
     t = tabs()
-    check("nav: Overview, both radios, Winlink, Mesh, Packet",
-          [x.split()[0] for x in t], ["Overview", "G90", "QMX", "Winlink", "Mesh", "Packet"])
+    check("nav: Overview, both radios, Winlink, Mesh (Packet's hub is down: no tab)",
+          [x.split()[0] for x in t], ["Overview", "G90", "QMX", "Winlink", "Mesh"])
     check("  one radio carries the shared port", sum(" · " in x for x in t), 1)
     own = {x.split()[0]: x.split()[-1] for x in t if x.split()[0] in ("G90", "QMX")}
     check("  each radio's own port", own, {"G90": str(G90["rigctl"]), "QMX": str(QMX["rigctl"])})
-    check("  Packet dimmed (hub down)", b.js(f"{TABS}.find((t) => t.textContent.startsWith('Packet')).classList.contains('off')"), True)
+    check("  the Overview tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
     check("overview: a card per radio and service",
           b.js("[...document.querySelectorAll('.st-card b')].map((e) => e.textContent)"),
           ["G90", "QMX", "Winlink", "Mesh", "Packet (UV-PRO)"])

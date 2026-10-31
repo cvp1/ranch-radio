@@ -5,6 +5,10 @@
 // Winlink, has a Meshtastic node (winlink.js / mesh.js un-hide their panels) or
 // lists add-ons (addons.js), and never inside the station page's frame
 // (station.js has its own tabs there).
+// A module that is switched off, broken or not connected leaves the bar (the
+// bar got crowded): the Modules tab lists it and switches it back on. Its tab
+// stays while it is the open view, so it never vanishes from under you, and
+// stays dimmed when there is no Modules tab to reach it from.
 // Hiding a panel is only layout: transmit safety stays on the server.
 
 (() => {
@@ -48,18 +52,26 @@
     for (const p of document.querySelectorAll(".panel.addon")) p.classList.toggle("addon-current", p.dataset.addon === view);
     if (!any) return;
     nav.innerHTML = "";
-    nav.append(tab("radio", $(".brand-name").textContent || "Radio"));
+    const tucked = [];
+    const add = (id, label, opts = {}) => {
+      if (opts.off && on("modules") && id !== view) tucked.push(label);
+      else nav.append(tab(id, label, opts));
+    };
+    add("radio", $(".brand-name").textContent || "Radio");
     if (on("winlink")) {
-      nav.append(tab("winlink", "Winlink", { dot: wl.classList.contains("wl-armed") ? "tx" : "",
-        title: "Winlink mail over HF (ARDOP)" }));
+      add("winlink", "Winlink", { dot: wl.classList.contains("wl-armed") ? "tx" : "",
+        title: "Winlink mail over HF (ARDOP)" });
     }
     if (on("mesh")) {
       const connected = !mesh.classList.contains("mesh-off");
-      nav.append(tab("mesh", "Mesh", { dot: connected ? "ok" : "off", off: !connected,
-        badge: view === "mesh" ? "" : meshUnread() || "" }));
+      add("mesh", "Mesh", { dot: connected ? "ok" : "off", off: !connected,
+        badge: view === "mesh" ? "" : meshUnread() || "" });
     }
-    for (const d of addons.list()) nav.append(tab(d.name, d.label, addons.tab(d.name) || {}));
-    if (on("modules")) nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" }));
+    for (const d of addons.list()) add(d.name, d.label, addons.tab(d.name) || {});
+    if (on("modules")) {
+      nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" +
+        (tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : "") }));
+    }
   }
 
   // Re-render when a panel appears, Winlink arms, the node connects or a
