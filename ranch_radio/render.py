@@ -108,6 +108,8 @@ RULES = [
     (("packet", "direwolf", "label"), LABEL),
     (("packet", "direwolf", "igate", "login"), CALL), (("packet", "direwolf", "igate", "passcode"), TOKEN),
     (("packet", "direwolf", "igate", "server"), TOKEN),
+    (("packet", "igate", "login"), CALL), (("packet", "igate", "passcode"), TOKEN),
+    (("packet", "igate", "server"), TOKEN),
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
@@ -295,6 +297,14 @@ def validate(h):
                             f"\"passcode\" (a file holding the APRS-IS passcode)")
     elif pk.get("direwolf"):
         raise HostError(f"{h['host']}: packet.direwolf is set but packet.tnc isn't \"direwolf\"")
+    ig = pk.get("igate")
+    if ig is not None:
+        if not isinstance(ig, dict) or not ig.get("login") or not ig.get("passcode"):
+            raise HostError(f"{h['host']}: packet.igate needs \"login\" (callsign-SSID) and "
+                            f"\"passcode\" (a file holding the APRS-IS passcode)")
+        if (pk.get("direwolf") or {}).get("igate"):
+            raise HostError(f"{h['host']}: packet.igate and packet.direwolf.igate are both set: "
+                            f"keep one, or every packet goes to APRS-IS twice")
     u = h.get("updates", True)
     if u is not True and u is not False and not isinstance(u, dict):
         raise HostError(f"{h['host']}: updates must be false or an object like "
@@ -353,7 +363,7 @@ def mac_addons(h):
     return out
 
 
-def hub_argv(h, py, repo):
+def hub_argv(h, py, repo, pth):
     """The packet hub's command line (tnc_hub.py), either OS."""
     p = h["packet"]
     tnc = DIREWOLF_PTY if p["tnc"] == "direwolf" else p["tnc"]
@@ -369,6 +379,11 @@ def hub_argv(h, py, repo):
         argv += ["--control-port", "0"]  # the radio-control channel is the UV-PRO's alone
     if p.get("title"):
         argv += ["--title", p["title"]]  # the hub page's heading (else "UV-PRO Packet")
+    ig = p.get("igate")
+    if ig:                               # receive-only iGate in the hub, for any modem
+        argv += ["--igate-login", ig["login"], "--igate-passcode-file", pth(ig["passcode"])]
+        if ig.get("server"):
+            argv += ["--igate-server", ig["server"]]
     return argv
 
 
@@ -548,7 +563,7 @@ def _linux(h):
 
     p = h.get("packet")
     if p and p.get("tnc"):
-        argv = hub_argv(h, py, repo)
+        argv = hub_argv(h, py, repo, _unit_path)
         tnc_val = p.get("tnc", "")
         is_dw = tnc_val == "direwolf"
         is_tcp = is_dw or (isinstance(tnc_val, str) and tnc_val.startswith("tcp:"))
@@ -720,7 +735,7 @@ def _macos(h, home):
         hub_log = pth("~/Library/Logs/ranch-radio-packet-hub.log")
         arts.append(Artifact("packet", f"{AGENTS}/{p.get('label', PACKET_LABEL)}.plist", "plist", {
             "Label": p.get("label", PACKET_LABEL), "KeepAlive": True, "RunAtLoad": True,
-            "ProcessType": "Interactive", "ProgramArguments": hub_argv(h, py, repo),
+            "ProcessType": "Interactive", "ProgramArguments": hub_argv(h, py, repo, pth),
             "WorkingDirectory": repo, "EnvironmentVariables": env, "ThrottleInterval": 10,
             "StandardOutPath": hub_log, "StandardErrorPath": hub_log}))
         if p["tnc"] == "direwolf":
