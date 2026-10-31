@@ -274,6 +274,15 @@ has connected. Received frames appear in the heard list and the APRS store.
   `KISSPORT 8011`) and use that port in `"tnc"`.
 - **If Direwolf goes away,** the hub keeps running and reconnects by itself,
   retrying after 2, 4, 8, 16, then every 30 seconds.
+- **iGate, receive only, for any TNC:** add
+  `"igate": {"login": "N9ABC-10", "passcode": "~/.config/ranch-radio/aprs-is-passcode"}`
+  to the `"packet"` block (`"server"` is optional, default `noam.aprs2.net`).
+  The hub itself sends what it hears to APRS-IS, so this works with a UV-PRO
+  over Bluetooth or a serial or network TNC, not only with Direwolf. It skips
+  packets with TCPIP, TCPXX, NOGATE or RFONLY in the path and queries, sends
+  each packet once however many digipeaters repeat it, and never sends
+  anything from APRS-IS on the air. `api/status` shows it under `"igate"`. A
+  host runs one iGate: the hub's, or Direwolf's (below), not both.
 
 ### Direwolf on a USB sound card cable (AIOC), and an iGate
 

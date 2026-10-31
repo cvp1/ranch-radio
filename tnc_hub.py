@@ -30,6 +30,9 @@ Transmit safety (every frame, from every client, goes through one gate):
   above what 1200 baud can carry), --max-ui-per-min for UI/APRS (default 6).
 - Every transmitted and refused frame is logged (packet-logs/tx.jsonl).
 
+iGate (optional, --igate-login): heard packets go to APRS-IS (igate.py).
+Receive only: nothing from APRS-IS reaches the transmit gate or the radio.
+
 Radio control: the UV-PRO's KISS channel (RFCOMM 1) also carries its command
 protocol, Gaia frames (FF 01 ...), next to the KISS frames (linux-station,
 2026-10-16: a GET_DEV_INFO there was answered while packets flowed). The hub
@@ -65,6 +68,7 @@ from aiohttp import web
 
 import aprs_store
 import ax25
+import igate
 import webguard
 from ax25 import U_SABM, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
 from ax25_link import CONNECTED, CONNECTING, DISCONNECTED, Link, TxRefused
@@ -563,6 +567,7 @@ class Hub:
         self.my_bases = {c.upper() for c in allow}
         self.aprs = None                # AprsStore (APRS plan M2), None with --no-aprs
         self.aprs_summary = {}          # refreshed from the store every few seconds
+        self.igate = None               # igate.IGate with --igate-login: heard packets to APRS-IS
         self.loop_lag = collections.deque(maxlen=3000)   # event-loop lag samples, ms
 
     # -- radio side --
@@ -607,6 +612,8 @@ class Hub:
         if self.aprs:
             self.aprs.ingest(rec["t"], "rf", text)
         self._note_heard(f, text)
+        if self.igate:
+            self.igate.offer(f)
         log.info("RX %s", text)
         for c in list(self.kiss_clients):
             c.send_frame(raw)
@@ -774,6 +781,7 @@ class Hub:
             "ports": {"agw": self.args.agw_port, "kiss": self.args.kiss_port,
                       "control": self.args.control_port, "bind": self.args.bind},
             "aprs": self.aprs_status(),
+            "igate": self.igate.status() if self.igate else {"enabled": False},
         }
 
     def aprs_status(self):
@@ -1266,6 +1274,8 @@ async def amain(args):
     if not args.no_aprs:
         await hub.open_aprs()
         tasks.append(asyncio.create_task(hub.aprs_refresh()))
+    if args.igate_login:
+        hub.igate = igate.IGate(args.igate_login, args.igate_passcode, args.igate_server).start()
     hub.radio.start()
     servers = []
     if args.agw_port:
@@ -1289,6 +1299,8 @@ async def amain(args):
         if runner:
             await runner.cleanup()
         await hub.radio.stop()
+        if hub.igate:
+            await hub.igate.stop()
         for t in tasks:
             t.cancel()
         if hub.aprs:
@@ -1332,6 +1344,9 @@ def parse_args(argv=None):
     p.add_argument("--no-aprs", action="store_true", help="no APRS store, API or backfill")
     p.add_argument("--lat", type=float, help="this station's latitude, for the map and distances")
     p.add_argument("--lon", type=float, help="this station's longitude")
+    p.add_argument("--igate-login", help="APRS-IS login (callsign-SSID); turns the receive-only iGate on")
+    p.add_argument("--igate-passcode-file", help="a file holding the APRS-IS passcode")
+    p.add_argument("--igate-server", default=igate.DEFAULT_SERVER, help="host or host:port (default %(default)s)")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     ax25.parse_call(a.mycall)
@@ -1339,6 +1354,15 @@ def parse_args(argv=None):
         p.error("--maxframe must be 1-7")
     if not 16 <= a.paclen <= 256:
         p.error("--paclen must be 16-256")
+    a.igate_passcode = None
+    if a.igate_login:
+        ax25.parse_call(a.igate_login)
+        if not a.igate_passcode_file:
+            p.error("--igate-login needs --igate-passcode-file")
+        try:
+            a.igate_passcode = igate.read_passcode(a.igate_passcode_file)
+        except ValueError as e:
+            p.error(str(e))
     return a
 
 

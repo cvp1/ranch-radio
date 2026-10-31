@@ -1074,6 +1074,119 @@ def scenario_aprs_store():
         shutil.rmtree(logdir, ignore_errors=True)
 
 
+class FakeAprsIs:
+    """An APRS-IS server on loopback: records every line a client sends,
+    answers the login (verified unless verified=False), then sends a packet
+    line, as a full feed would, to show the hub never puts it on the air."""
+
+    def __init__(self, verified=True):
+        self.verified = verified
+        self.lines = []
+        self.logins = 0
+        self.srv = socket.create_server(("127.0.0.1", 0))
+        self.port = self.srv.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._client, args=(c,), daemon=True).start()
+
+    def _client(self, c):
+        c.sendall(b"# aprsc 2.1.19 fake\r\n")
+        f = c.makefile("rb")
+        try:
+            for raw in f:
+                text = raw.decode("latin-1").rstrip("\r\n")
+                self.lines.append(text)
+                if text.startswith("user "):
+                    self.logins += 1
+                    login = text.split()[1]
+                    c.sendall(f"# logresp {login} {'verified' if self.verified else 'unverified'}, server FAKE\r\n"
+                              .encode())
+                    c.sendall(b"W1AW>APRS,TCPIP*,qAC,T2FAKE:>from APRS-IS, never for the air\r\n")
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def packets(self):
+        return [ln for ln in self.lines if not ln.startswith("user ")]
+
+    def stop(self):
+        self.srv.close()
+
+
+def repeated(src, info, digis, used=1):
+    """An APRS frame the first `used` digipeaters have already repeated."""
+    f = Frame.ui(src, "APRS", info.encode(), digis=digis)
+    for d in f.digis[:used]:
+        d.bit7 = True
+    return f.encode()
+
+
+def scenario_igate():
+    """The receive-only iGate at the wire: it logs in, gates what the radio
+    hears (once per packet, not per digipeater copy), skips what mustn't go
+    to APRS-IS, shows it on api/status, and nothing from APRS-IS reaches the
+    radio, even with transmit on."""
+    srv = FakeAprsIs()
+    pdir = tempfile.mkdtemp(prefix="tnchub-ig-")
+    pfile = os.path.join(pdir, "passcode")
+    with open(pfile, "w") as f:
+        f.write("12345\n")
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True, extra=("--igate-login", "N9ABC-10", "--igate-passcode-file", pfile,
+                                         "--igate-server", f"127.0.0.1:{srv.port}"))
+    try:
+        st = wait_for(lambda: hub.status()["igate"].get("verified") and hub.status()["igate"], 15)
+        check("logs in with the login and passcode, no filter", srv.lines[:1],
+              ["user N9ABC-10 pass 12345 vers RanchRadio 0.1"])
+        check_true("api/status: connected and verified", bool(st and st["connected"]), str(st))
+        radio.inject(repeated("KF7ABC-9", "!4049.00N/10510.00W>trail", ["K7RDG-1", "WIDE2-1"]))
+        radio.inject(repeated("KF7ABC-9", "!4049.00N/10510.00W>trail", ["HELIO", "WIDE2-1"]))
+        radio.inject(repeated("K7OWN", ">from the internet", ["TCPIP"]))
+        radio.inject(aprs("K7OWN", "?APRS?"))
+        radio.inject(aprs("KD7XYZ", ">last one"))
+        got = wait_for(lambda: len(srv.packets()) >= 2 and srv.packets(), 15) or srv.packets()
+        check("gated: the first copy and the last packet, with qAR", got,
+              ["KF7ABC-9>APRS,K7RDG-1*,WIDE2-1,qAR,N9ABC-10:!4049.00N/10510.00W>trail",
+               "KD7XYZ>APRS,qAR,N9ABC-10:>last one"])
+        ig = wait_for(lambda: (lambda i: i["gated"] + i["skipped"] + i["dupes"] >= 5 and i)(hub.status()["igate"]), 10)
+        check("api/status counts", ig and (ig["gated"], ig["dupes"], ig["skipped"]), (2, 1, 2))
+        time.sleep(0.5)    # a quiet window: the server's packet line must not come out of the radio
+        check("nothing from APRS-IS transmitted", radio.transmitted(), [])
+        check("the hub's own counters: no frame sent", hub.counts().get("tx_frames", 0), 0)
+    finally:
+        hub.stop(); radio.stop(); srv.stop()
+
+    srv = FakeAprsIs(verified=False)
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=False, extra=("--igate-login", "N9ABC-10", "--igate-passcode-file", pfile,
+                                          "--igate-server", f"127.0.0.1:{srv.port}"))
+    try:
+        ig = wait_for(lambda: (lambda i: i.get("error") and i)(hub.status()["igate"]), 15) or hub.status()["igate"]
+        check_true("an unverified login is shown as the error", "not verified" in (ig.get("error") or ""), str(ig))
+        radio.inject(aprs("KD7XYZ", ">heard while unverified"))
+        wait_for(lambda: hub.status()["igate"]["dropped"] >= 1, 10)
+        check("  and nothing is gated", srv.packets(), [])
+    finally:
+        hub.stop(); radio.stop(); srv.stop()
+
+    bad = os.path.join(pdir, "bad")
+    with open(bad, "w") as f:
+        f.write("letmein\n")
+    p = subprocess.run([sys.executable, os.path.join(ROOT, "tnc_hub.py"), "--tnc", "/nonexistent", "--mycall",
+                        "N9ABC", "--igate-login", "N9ABC-10", "--igate-passcode-file", bad],
+                       capture_output=True, text=True, timeout=30)
+    check_true("a passcode file without a passcode stops the hub at start",
+               p.returncode != 0 and "passcode" in p.stderr, p.stderr.strip()[-200:])
+    shutil.rmtree(pdir, ignore_errors=True)
+
+
 def scenario_aprs_loop_latency():
     """APRS plan M2: the event loop stays responsive (p99 lag < 50 ms, from
     the hub's own ticker) through a backfill of the heard sample and a burst."""
@@ -1116,7 +1229,8 @@ SCENARIOS = [scenario_cross_site_guard, scenario_on_needs_tx_at_start, scenario_
              scenario_page_kill_switch, scenario_frame_rate_cap, scenario_connected_clean, scenario_connected_lossy,
              scenario_connect_no_answer, scenario_connect_busy, scenario_wrong_source_connect,
              scenario_radio_drop_ends_link, scenario_lend_radio, scenario_real_pat,
-             scenario_real_pat_sends_message, scenario_aprs_store, scenario_aprs_loop_latency]
+             scenario_real_pat_sends_message, scenario_aprs_store, scenario_aprs_loop_latency,
+             scenario_igate]
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY", "")

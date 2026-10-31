@@ -7,6 +7,17 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **A receive-only iGate in the packet hub** (`packet.igate`, `igate.py`),
+  for any TNC: the UV-PRO over Bluetooth, a serial or network KISS TNC, or
+  Direwolf. Heard packets go to APRS-IS with `qAR` and the iGate's login,
+  once per packet (not per digipeater copy); TCPIP, TCPXX, NOGATE and
+  RFONLY paths and queries are skipped, and third-party packets are
+  unwrapped. Nothing from APRS-IS reaches the radio. The passcode is read
+  from a file. The renderer refuses a host file with both this and
+  `packet.direwolf.igate`. `api/status` gains `"igate"`.
+  `tests/igate_test.py` and `tests/tnc_hub_test.py` (scenario_igate,
+  against a fake APRS-IS server).
+
 - **Next openings on the Propagation tab.** From a skywatch InfluxDB that has
   its propagation forecast (`skywatch_forecast_window`): each band and region
   forecast open in the next hours (`"forecast_h"`, default 12), soonest first,
