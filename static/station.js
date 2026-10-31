@@ -43,15 +43,24 @@ const station = (() => {
   function renderNav() {
     const nav = $("#st-nav");
     nav.innerHTML = "";
+    // A service or add-on that is off or not connected leaves the bar (it got
+    // crowded): its Overview card stays, and opening it from there works. Its
+    // tab stays while it is the open view, so it never vanishes from under you.
+    const view = route(), tucked = [];
+    const add = (id, label, opts = {}) => {
+      if (opts.off && id !== view) tucked.push(label);
+      else nav.append(tab(id, label, opts));
+    };
     nav.append(tab("home", "Overview"));
     for (const r of present()) {
       nav.append(tab(r.id, r.name, { dot: "ok", sub: portsOf(r),
         title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
     }
-    if (wlOn) nav.append(tab("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` }));
-    if (meshOn) nav.append(tab("mesh", "Mesh", { dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected }));
-    if (packet.configured) nav.append(tab("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: `${packetName()} packet hub: APRS and the Winlink packet link` }));
-    for (const d of addons.list()) nav.append(tab(d.name, d.label, addons.tab(d.name) || {}));
+    if (wlOn) add("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` });
+    if (meshOn) add("mesh", "Mesh", { dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected });
+    if (packet.configured) add("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: `${packetName()} packet hub: APRS and the Winlink packet link` });
+    for (const d of addons.list()) add(d.name, d.label, addons.tab(d.name) || {});
+    if (tucked.length) nav.firstChild.title = `Off or not connected: ${tucked.join(", ")} (their cards are here)`;
     if (modules.enabled()) nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" }));
   }
 

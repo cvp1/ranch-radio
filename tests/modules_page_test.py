@@ -136,8 +136,15 @@ try:
           b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'Off'", 10), True)
     check("  and Mesh's own switch flipped too (one switch path)",
           b.wait("document.querySelector('#mesh-power').textContent.includes('Switch on')", 5), True)
+    NAV = "[...document.querySelectorAll('#rr-nav .st-tab')].map(a => a.textContent)"
+    check("  Mesh leaves the tab bar while it is off",
+          b.wait(f"!{NAV}.some(t => t.startsWith('Mesh')) && 'gone'", 5), "gone")
+    check("  the Modules tab names it",
+          b.js("[...document.querySelectorAll('#rr-nav a')].find(a => a.textContent === 'Modules').title.includes('Mesh')"), True)
     click(f"{row('mesh')}.querySelector('.mod-power')")
     check("  and on again", b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'On'", 10), True)
+    check("  Mesh is back in the tab bar",
+          b.wait(f"{NAV}.some(t => t.startsWith('Mesh')) && 'back'", 10), "back")
 
     # Add Winlink: a bad sound card name first
     click(f"{row('winlink')}.querySelector('.mod-add')")
