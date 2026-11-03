@@ -78,7 +78,8 @@ WRITE_TIMEOUT_S = 15.0
 LEND_S = 60                   # each lend; the hub takes the radio back by itself after it
 LEND_RENEW_S = 20             # asked again this often while the bridge runs
 IDLE_S = 20                   # the radio goes back this long after the last read or write
-READ_TIMEOUT_S = 60.0         # lend + connect + read everything
+READ_TIMEOUT_S = 270.0        # lend + connect + read everything (the bridge's CONNECT_TIMEOUT_S
+                              # covers a 180-channel UV-50PRO; the lend is renewed meanwhile)
 
 CALL = re.compile(r"^[A-Z0-9]{3,6}$")
 

@@ -48,9 +48,10 @@ MODULES = [
      "ships": "on unless the host file says \"updates\": false; macOS: a launchd agent; Linux: a systemd timer, both rendered"},
 
     # --- add-ons (addons/<name>.py + static/addons/<name>.js)
-    {"name": "uvpro", "kind": "addon", "title": "UV-PRO control (channels CHIRP's way, settings, beacon)",
-     "code": "addons/uvpro.py, addons/uvpro_bridge.py, addons/chirp.py (benlink venv)", "platforms": ["linux"],
-     "ships": "Linux: the station's addons block; borrows the radio from the packet hub when there is one"},
+    {"name": "uvpro", "kind": "addon", "title": "UV-PRO / UV-50PRO control (channels CHIRP's way, settings, beacon)",
+     "code": "addons/uvpro.py, addons/uvpro_bridge.py, addons/chirp.py (benlink venv)", "platforms": ["macos", "linux"],
+     "ships": "Linux: the station's addons block; macOS: addons.json on the radio's agent; "
+              "through the packet hub's control port when there is one, else borrows the radio from it"},
     {"name": "opengd77", "kind": "addon", "title": "TYT MD-UV390 on OpenGD77: front panel, channels, VFOs and Options menus "
                                                   "(written to its memory and restarted on, no CAT exists); CPS-style codeplug editor via qdmr",
      "code": "addons/opengd77.py over opengd77.py (allowlisted link), opengd77_mem.py, qdmr.py (dmrconf) and qdmr_yaml.py; "
