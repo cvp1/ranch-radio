@@ -5,6 +5,19 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The `uvpro` add-on and a Bluetooth packet hub run on macOS too.** The
+  add-on reaches the radio through the packet hub's control port, which the
+  hub carries over IOBluetooth on a Mac (as it has since 2026-10-14) and BlueZ
+  on Linux, so `ranch-radio add uvpro` now offers itself on both. `doctor`
+  checks for BlueZ only on Linux and for `IOBluetooth` (pyobjc) only on a Mac
+  with a `bt:` TNC. The add-on is for the whole Benshi family: the BTECH
+  UV-50PRO mobile is the UV-PRO's counterpart on the same protocol
+  (HTCommander lists both), so the bridge's connect budget now allows for its
+  180 channels (a UV-PRO has 32): `CONNECT_TIMEOUT_S` 40 → 240 s, the
+  add-on's `READ_TIMEOUT_S` 60 → 270 s. Untested against a UV-50PRO yet.
+
 ### Added
 
 - **A receive-only iGate in the packet hub** (`packet.igate`, `igate.py`),

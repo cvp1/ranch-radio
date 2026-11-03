@@ -127,8 +127,9 @@ try:
     check("the other panels are hidden on this view", b.js("getComputedStyle(document.querySelector('.panel.vfo')).display"), "none")
     check("Mesh reads On", b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'On'"), True)
     check("radios and core come first: core row present", b.js(f"{row('core')} !== null"), True)
-    check("uvpro is folded under 'Not for this OS'",
-          b.js(f"{row('uvpro')}.closest('details') !== null"), True)
+    check("omarchy-bar is folded under 'Not for this OS'",
+          b.js(f"{row('omarchy-bar')}.closest('details') !== null"), True)
+    check("uvpro is not: it runs on a Mac", b.js(f"{row('uvpro')}.closest('details') === null"), True)
 
     b.js("window.confirm = () => true")
     click(f"{row('mesh')}.querySelector('.mod-power')")

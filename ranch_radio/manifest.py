@@ -143,19 +143,26 @@ MANIFESTS = {
         "ask": {"tnc": "the radio's KISS TNC, e.g. tcp:direwolf.localdomain:8001, bt:00:11:22:33:44:55, "
                        "or direwolf (with a packet.direwolf block: a radio on a USB sound card cable)",
                 "mycall": "your callsign"},
-        "needs": [{"bin": "bluetoothctl", "default": "bluetoothctl", "level": "warn", "tnc": "bt:",
+        "needs": [{"bin": "bluetoothctl", "default": "bluetoothctl", "level": "warn", "tnc": "bt:", "os": "linux",
                    "fix": "install BlueZ (needed for a Bluetooth TNC)"},
+                  # macOS reaches the radio's RFCOMM channel through IOBluetooth (bt_rfcomm.py).
+                  {"pymod": "IOBluetooth", "tnc": "bt:", "os": "macos",
+                   "auto": "{host_python} -m pip install -q pyobjc-framework-IOBluetooth",
+                   "fix": "~/ranch-radio/.venv/bin/pip install pyobjc-framework-IOBluetooth (a Bluetooth TNC on a Mac)"},
                   {"bin": "direwolf", "key": "direwolf", "default": "direwolf", "tnc": "direwolf",
                    "fix": "install Direwolf (brew install direwolf, or your package manager)"}],
     },
     "uvpro": {
-        "label": "UV-PRO control",
+        "label": "UV-PRO / UV-50PRO control",
         "family": "addon",
         "block": ("addons", "uvpro"),
-        "os": ["linux"],
-        "template": {"linux": {"enabled": True, "address": ASK, "calls": ASK}},
+        # Both OSes: the bridge reaches the radio through the packet hub's control
+        # port (tcp:), which the hub carries over BlueZ on Linux and IOBluetooth
+        # on macOS. Without a hub, Linux has rfcomm:4 and macOS has ble.
+        "os": ["linux", "macos"],
+        "template": {os_name: {"enabled": True, "address": ASK, "calls": ASK} for os_name in ("linux", "macos")},
         "rules": {"address": "bt_addr", "calls": "callsign_list"},
-        "ask": {"address": "the UV-PRO's Bluetooth address",
+        "ask": {"address": "the radio's Bluetooth address (UV-PRO or UV-50PRO)",
                 "calls": "the calls its APRS beacon may use, as JSON: '[\"N0CALL\"]'"},
         # With the packet hub on the host, borrow the radio from it instead of
         # fighting it for the one Bluetooth link.

@@ -76,7 +76,8 @@ import sys
 
 log = logging.getLogger("uvpro_bridge")
 
-CONNECT_TIMEOUT_S = 40.0      # hydrating reads every channel; 32 channels over BLE take a while
+CONNECT_TIMEOUT_S = 240.0     # connect() hydrates: it reads every channel. 32 (UV-PRO) over BLE
+                              # fit in 40 s; a UV-50PRO has 180, so about a second each plus margin.
 CONNECT_RETRY_S = 1.0         # the radio can take a moment to free its control channel after the hub lets go
 ALIVE_EVERY_S = 2.0
 RAW_TIMEOUT_S = 3.0

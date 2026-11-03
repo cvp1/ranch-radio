@@ -108,7 +108,7 @@ check("strings holding braces don't confuse the editor",
 rc, out = run(["add", "packet", "--host", "linux-laptop"])
 check("add asks for what only the operator knows (exit 2)", rc, 2)
 check("  and names the fields", "--set tnc=" in out and "--set mycall=" in out, True)
-rc, out = run(["add", "uvpro", "--host", "mac-shack"])
+rc, out = run(["add", "omarchy-bar", "--host", "mac-shack"])
 check("add refuses a module the OS doesn't ship", (rc, "not on mac-shack" in out), (1, True))
 rc, out = run(["add", "g90", "--host", "linux-laptop"])
 check("add refuses a radio, and says why", (rc, "Radios are not added this way" in out), (1, True))
