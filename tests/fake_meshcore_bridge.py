@@ -41,12 +41,12 @@ SECTIONS = [
         {"name": "ssid", "label": "Network", "type": "str", "max_bytes": 32},
         {"name": "password", "label": "Password", "type": "str", "max_bytes": 63, "write_only": True}]},
     {"name": "bluetooth", "label": "Bluetooth", "fields": [
-        {"name": "pin", "label": "PIN", "type": "int", "min": 0, "max": 999999}]},
+        {"name": "pin", "label": "PIN", "type": "int", "min": 0, "max": 999999, "write_only": True}]},
 ]
 VALUES = {"node": {"name": "TestNode", "lat": 40.0, "lon": -105.0, "share_location": True},
           "radio": {"freq": 910.525, "bw": 62.5, "sf": 7, "cr": 5, "tx_power": 22},
           "wifi": {"enabled": False, "ssid": "", "password": ""},
-          "bluetooth": {"pin": 0}}
+          "bluetooth": {"pin": ""}}
 
 
 def config():
@@ -101,7 +101,7 @@ def main():
             if vals.get("name") == "refuse":
                 emit(ev="done", ref=m["ref"], ok=False, error="RuntimeError: the node refused the name")
                 continue
-            vals.pop("password", None)
+            vals.pop("password", None); vals.pop("pin", None)   # write-only, as on the real node
             VALUES[m["section"]].update(vals)
             emit(ev="done", ref=m["ref"], ok=True, error=None, reboot=m["section"] in ("wifi", "bluetooth"))
             config()

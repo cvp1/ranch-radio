@@ -302,7 +302,9 @@ try:
             ("a short Wi-Fi password is refused", "wifi", {"password": "short"}, "at least 8"),
             ("an unknown setting is refused", "radio", {"bogus": 1}, "has no setting"),
             ("an unknown section is refused", "lora", {"sf": 9}, "no settings section"),
-            ("only an empty password: nothing to save", "wifi", {"password": ""}, "Nothing to save")]:
+            ("only an empty password: nothing to save", "wifi", {"password": ""}, "Nothing to save"),
+            ("a 5-digit Bluetooth PIN is refused", "bluetooth", {"pin": 12345}, "6 digits"),
+            ("a 7-digit Bluetooth PIN is refused", "bluetooth", {"pin": 1234567}, "outside")]:
         m = len(page.events)
         page.do("set", section=sec, values=vals)
         check(label, page.wait(warned(words), since=m, timeout=3) is not None, True)
@@ -320,6 +322,11 @@ try:
           (cfg_event(lambda c: c["values"]["wifi"]["ssid"] == "RanchNet", m) or {}).get("config", {})
           .get("values", {}).get("wifi", {}).get("password"), "")
     check("  the password is in no page message", any(PWD in json.dumps(e) for e in page.events), False)
+
+    m = len(page.events)
+    page.do("set", section="bluetooth", values={"pin": 482913})
+    check("a 6-digit PIN is written", saved("Bluetooth settings saved", m) is not None, True)
+    check("  and is in no page message", any("482913" in json.dumps(e) for e in page.events), False)
 
     m = len(page.events)
     page.do("reboot")

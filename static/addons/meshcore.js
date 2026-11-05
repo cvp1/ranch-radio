@@ -68,7 +68,9 @@
       input = `<select id="${id}" data-f="${f.name}">${f.options.map((o) =>
         `<option value="${esc(String(o))}" ${String(o) === String(v) ? "selected" : ""}>${esc(String(o))}</option>`).join("")}</select>`;
     } else if (f.write_only) {
-      input = `<input type="password" id="${id}" data-f="${f.name}" autocomplete="new-password" value="${esc(v || "")}">`;
+      const ph = sec === "bluetooth" ? (snap.config?.pin_fixed ? "fixed PIN set" : "random PIN") : "unchanged";
+      input = `<input type="password" id="${id}" data-f="${f.name}" autocomplete="new-password"
+        ${f.type === "int" ? 'inputmode="numeric"' : ""} placeholder="${ph}" value="${esc(v == null ? "" : String(v))}">`;
     } else {
       const num = f.type === "int" || f.type === "float";
       input = `<input ${num ? `type="number" step="${f.type === "int" ? 1 : "any"}"` : `type="text"`} id="${id}"
@@ -113,7 +115,7 @@
     const f = sections().find((x) => x.name === cfgSec)?.fields.find((x) => x.name === name);
     if (!f) return;
     const v = readField(f, el), d = (draft[cfgSec] ||= {});
-    if (f.write_only ? v === "" : v === current(cfgSec)[name]) delete d[name]; else d[name] = v;
+    if (f.write_only ? (v === "" || v === null) : v === current(cfgSec)[name]) delete d[name]; else d[name] = v;
     if (!Object.keys(d).length) delete draft[cfgSec];
     const dirty = !!draft[cfgSec];
     body.querySelector("[data-save]").disabled = !dirty;

@@ -99,7 +99,9 @@ SETTINGS = (
                                          "hint": "Not shown or read back; leave empty to keep it"}),
     )),
     ("bluetooth", "Bluetooth", (
-        ("pin", "PIN", "int", {"min": 0, "max": 999999, "hint": "0 = a new random PIN on the screen at each boot",
+        ("pin", "PIN", "int", {"min": 0, "max": 999999, "write_only": True,
+                               "hint": "6 digits (100000-999999), or 0 for a random PIN on the screen at each boot. "
+                                       "Not shown or read back; leave empty to keep it",
                                "risky": "A paired phone or host must pair again with the new PIN."}),
     )),
 )
@@ -240,7 +242,7 @@ class Bridge:
         }
         if wifi is not None:
             values["wifi"] = {"enabled": wifi["enabled"], "ssid": wifi["ssid"], "password": ""}
-            values["bluetooth"] = {"pin": self.device.get("ble_pin") or 0}
+            values["bluetooth"] = {"pin": ""}       # write-only: the pairing PIN never leaves the node
         sections = []
         for name, label, fields in SETTINGS:
             if name not in values:
@@ -253,7 +255,7 @@ class Bridge:
                 out.append(f)
             sections.append({"name": name, "label": label, "fields": out})
         emit(ev="config", link=link_name(self.link), sections=sections, values=values, wifi=wifi and
-             {k: wifi[k] for k in ("status", "ip")})
+             {k: wifi[k] for k in ("status", "ip")}, pin_fixed=bool(self.device.get("ble_pin")))
 
     async def set_config(self, m):
         """Write one section's fields (the server has checked them against

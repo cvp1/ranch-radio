@@ -195,7 +195,7 @@ class MeshCoreAddon(Addon):
             if rec is not None:
                 self._settle(rec, "delivered")
         elif ev == "config":
-            self.config = {k: m.get(k) for k in ("link", "sections", "values", "wifi")}
+            self.config = {k: m.get(k) for k in ("link", "sections", "values", "wifi", "pin_fixed")}
             self.emit({"config": self.config, "presets": self.presets})
         elif ev == "done":
             if m.get("ref") in self._writes:
@@ -314,6 +314,10 @@ class MeshCoreAddon(Addon):
         if not isinstance(values, dict) or not values:
             return "Nothing to save."
         fields = {f["name"]: f for f in spec["fields"]}
+        values = {k: v for k, v in values.items()            # an empty write-only field: keep the old value
+                  if not (fields.get(k, {}).get("write_only") and v in ("", None))}
+        if not values:
+            return "Nothing to save."
         for name, v in values.items():
             f = fields.get(name)
             if f is None:
@@ -339,6 +343,8 @@ class MeshCoreAddon(Addon):
                     return f"{label}: longer than {f['max_bytes']} bytes."
         if section == "wifi" and values.get("password") and len(values["password"].encode()) < 8:
             return "Password: a Wi-Fi password has at least 8 characters."
+        if section == "bluetooth" and 0 < values.get("pin", 0) < 100000:
+            return "PIN: 6 digits (100000-999999), or 0 for a random one."
         return None
 
     async def set_config(self, ws, section, values):
@@ -351,8 +357,9 @@ class MeshCoreAddon(Addon):
             return
         spec = next(s for s in self.config["sections"] if s["name"] == section)
         types = {f["name"]: f["type"] for f in spec["fields"]}
+        wo = {f["name"] for f in spec["fields"] if f.get("write_only")}
         values = {k: int(v) if types[k] == "int" else v for k, v in values.items()
-                  if not (k == "password" and not v)}        # an empty password field: keep the old one
+                  if not (k in wo and v in ("", None))}      # an empty write-only field: keep the old value
         if not values:
             self.notice("Nothing to save.", "warn", ws)
             return
