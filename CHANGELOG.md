@@ -5,6 +5,20 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS: a Bluetooth packet hub opens the radio from a child process's
+  main thread.** On macOS 27 `openRFCOMMChannelSync` succeeds only on a
+  process's main thread; from the hub's link thread it failed with
+  kIOReturnError on every dial (a Mac mini on macOS 27 and a UV-50PRO, 2026-11-04). Each
+  `RfcommLink` now runs `bt_rfcomm.py --child`: the child owns the channel
+  and the run loop, bytes cross its stdin/stdout, and it exits when the link
+  ends. The hub's own interface is unchanged. The Serial Port channel is
+  looked up by SDP at every dial, because the UV-50PRO moves it (1 after one
+  power-cycle, 4 after another). Known radio behaviour, not fixed here: the
+  KISS service refuses every open after a dropped link until the radio is
+  power-cycled (seen on the Linux station too, 2026-11-04).
+
 ### Changed
 
 - **The `uvpro` add-on and a Bluetooth packet hub run on macOS too.** The
