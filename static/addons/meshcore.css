@@ -18,3 +18,13 @@
 .addon-meshcore .mc-form .mc-text { flex: 1; min-width: 0; }
 .addon-meshcore .mc-over { color: var(--warn, #d96); }
 .addon-meshcore .mc-empty { padding: .6rem 0; }
+.addon-meshcore .mc-cfg { margin: .4rem 0 .8rem; padding: .6rem; border: 1px solid rgba(255,255,255,.08); border-radius: .6rem; }
+.addon-meshcore .mc-cfg-tabs { flex-wrap: wrap; margin-bottom: .5rem; }
+.addon-meshcore .mc-presets { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-bottom: .5rem; }
+.addon-meshcore .mc-cfg-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: .5rem .9rem; }
+.addon-meshcore .mc-field { display: grid; grid-template-columns: 1fr auto; gap: .15rem .4rem; align-items: center; }
+.addon-meshcore .mc-field > span:first-child { grid-column: 1 / -1; font-size: .85rem; opacity: .85; }
+.addon-meshcore .mc-field input[type=text], .addon-meshcore .mc-field input[type=number],
+.addon-meshcore .mc-field input[type=password], .addon-meshcore .mc-field select { min-width: 0; width: 100%; }
+.addon-meshcore .mc-field small { grid-column: 1 / -1; }
+.addon-meshcore .mc-cfg-actions { margin-top: .6rem; display: flex; gap: .5rem; align-items: center; }
