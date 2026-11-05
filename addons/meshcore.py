@@ -14,6 +14,22 @@ Python that has the `meshcore` package, starts it again when it exits
     power, and on a build with Wi-Fi, Wi-Fi and the Bluetooth PIN), checked
     here against that schema before the bridge writes them, and a reboot.
     The Wi-Fi password is write-only: never in a snapshot, a log or a notice.
+  - a map of the nodes that share a location, the route to a node drawn on it
+  - per node: favourite, path discovery, trace (each hop's SNR), forget the
+    route, remove; and for a repeater or room server: log in, status (its
+    battery, noise floor, airtime, packet counts), telemetry, neighbours
+    (drawn on the map), owner info, set its clock, and a remote command line
+    for an admin login. Each of these goes on the air, so one at a time per
+    node and one every REQUEST_GAP_S.
+  - the node's own radio counters and the packets it hears on the air
+  - joining a #hashtag channel (its key is the name's hash) and leaving one
+  - adding a heard node by hand when "Add contacts by hand" is on
+
+Passwords for repeaters can be kept in files, read when used and never sent
+to a page, logged or kept in memory after the login:
+    {"meshcore": {..., "logins": {"a1b2c3d4e5f6": "~/secrets/repeater_admin_password"}}}
+A password typed on the page goes to the node the same way and is not kept.
+Remote commands and their replies are shown, never written to the log.
 
 Config (the host's add-ons file):
     {"meshcore": {"port": "/dev/ttyUSB0",
@@ -50,6 +66,16 @@ RESTART_S = (5.0, 15.0, 60.0)  # wait before restarting the bridge, growing whil
 ADVERT_GAP_S = 30.0            # one advert per this long from the page: each one goes on the air
 PRESETS = [{"label": "USA/Canada (recommended)", "freq": 910.525, "bw": 62.5, "sf": 7, "cr": 5}]
 KEY_PREFIX = re.compile(r"^[0-9a-f]{12,64}$")
+REQUEST_GAP_S = 2.0            # requests to other nodes: at most one per this long
+REQUEST_KINDS = ("status", "telemetry", "neighbours", "owner", "path", "trace", "reset_path", "remove",
+                 "fav", "add", "clock", "login", "cli")
+LOCAL_KINDS = ("reset_path", "remove", "fav", "add")   # change this node only: nothing on the air
+SERVER_KINDS = ("status", "telemetry", "neighbours", "owner", "clock", "login", "cli")  # repeaters, rooms
+PASSWORD_MAX = 15              # MeshCore keeps 15 characters of a password
+CLI_MAX = 160
+CLI_KEEP = 40                  # remote command lines shown per node
+CHANNEL_NAME = re.compile(r"^#[a-z0-9][a-z0-9_-]{0,29}$")
+AIR_WINDOW_S = 600.0
 
 
 class MeshCoreAddon(Addon):
@@ -67,6 +93,12 @@ class MeshCoreAddon(Addon):
         self.presets = [p for p in (opts.get("presets") or []) if isinstance(p, dict)] + PRESETS
         log_path = opts.get("log", "~/.local/state/radio-remote/meshcore.jsonl")
         self.log_path = os.path.expanduser(log_path) if log_path else None
+        self.logins = {}
+        for prefix, path in (opts.get("logins") or {}).items():
+            prefix = str(prefix).lower()
+            if not KEY_PREFIX.match(prefix):
+                raise ValueError(f"meshcore logins: not a node key prefix: {prefix!r}")
+            self.logins[prefix] = os.path.expanduser(str(path))
         self.messages = deque(maxlen=MESSAGES_KEEP)
         self._loaded = False
         self._reset()
@@ -86,6 +118,16 @@ class MeshCoreAddon(Addon):
         self._by_ack = {}             # expected ack code -> our message record
         self._adverts = {}            # advert ref -> page
         self._advert_t = 0.0
+        self.pending = []             # heard, not added (manual add mode)
+        self.stats = None             # the node's own radio counters
+        self.results = {}             # key -> {kind: the last answer}
+        self.cli = {}                 # key -> deque of {"t", "out"|"in"} lines
+        self.logged_in = {}           # key -> {"admin": bool}
+        self.rx = deque(maxlen=5000)  # when packets were heard
+        self.rx_last = None
+        self._requests = {}           # ref -> (page, kind, key)
+        self._busy = set()            # keys with a request in flight
+        self._request_t = 0.0
         self._closing = False
         self._task = None
 
@@ -142,6 +184,12 @@ class MeshCoreAddon(Addon):
                 if what != "reboot":
                     self.notice(f"MeshCore: the node went away; {what} may not be saved.", "warn", ws)
             self._writes.clear()
+            for ref, (ws, kind, key) in list(self._requests.items()):
+                if key is not None:
+                    self.emit({"result": {"kind": kind, "key": key, "t": time.time(), "ok": False, "data": None,
+                                          "error": "the node went away before the answer"}})
+            self._requests.clear()
+            self._busy.clear()
             if self.connected:
                 self._status(False, self.error or "MeshCore bridge stopped")
             fails = 0 if reached else fails + 1
@@ -181,11 +229,36 @@ class MeshCoreAddon(Addon):
                        "ch": m.get("ch"), "dm": bool(m.get("dm")), "text": m.get("text", ""),
                        "snr": m.get("snr"), "hops": m.get("hops"), "sent_t": m.get("sent_t")})
         elif ev == "sent":
-            rec = self._by_ref.pop(m["ref"], None)
+            rec = self._by_ref.get(m["ref"])
             if rec is not None:
                 if rec["dm"] and m.get("ack"):
                     self._by_ack[m["ack"]] = rec
-                self._settle(rec, "sent")
+                if not (rec["dm"] and m.get("ack") is None):   # a retried DM: wait for "delivered"
+                    self._by_ref.pop(m["ref"], None)
+                self._settle(rec, "sent", flood=m.get("flood"))
+        elif ev == "delivered":
+            rec = self._by_ref.pop(m.get("ref"), None)
+            if rec is not None:
+                self._settle(rec, "delivered", tries=m.get("attempts"), flood=m.get("flood"),
+                             trip_ms=m.get("trip_ms"))
+        elif ev == "stats":
+            self.stats = {k: v for k, v in m.items() if k != "ev"}
+            self.emit({"stats": self.stats})
+        elif ev == "rx":
+            now = time.time()
+            self.rx.append(now)
+            self.rx_last = {k: m.get(k) for k in ("snr", "rssi", "type", "route", "hops", "last")}
+            self.rx_last["t"] = now
+            self.emit({"rx": {**self.rx_last, "n": self._air()}})
+        elif ev == "pending":
+            self.pending = m.get("contacts") or []
+            self.emit({"pending": self.pending})
+        elif ev == "result":
+            self._result(m)
+        elif ev == "cli_reply":
+            self._cli_line(m.get("key"), "in", m.get("text") or "")
+        elif ev == "notice":
+            self.notice(f"MeshCore: {m.get('text')}", m.get("level") or "info")
         elif ev == "send_failed":
             rec = self._by_ref.pop(m["ref"], None)
             if rec is not None:
@@ -198,6 +271,11 @@ class MeshCoreAddon(Addon):
             self.config = {k: m.get(k) for k in ("link", "sections", "values", "wifi", "pin_fixed")}
             self.emit({"config": self.config, "presets": self.presets})
         elif ev == "done":
+            if m.get("ref") in self._requests:     # a channel join or leave
+                ws, what, _ = self._requests.pop(m["ref"])
+                self.notice(f"MeshCore: {what}." if m["ok"] else f"MeshCore: {what} failed: {m.get('error')}",
+                            "info" if m["ok"] else "warn", ws)
+                return
             if m.get("ref") in self._writes:
                 ws, what = self._writes.pop(m["ref"])
                 if what == "reboot":
@@ -219,11 +297,13 @@ class MeshCoreAddon(Addon):
         log.info("MeshCore: %s%s", "connected" if connected else "disconnected", f" ({error})" if error else "")
         self.emit({"status": {"connected": self.connected, "error": error}})
 
-    def _settle(self, rec, state, why=None):
+    def _settle(self, rec, state, why=None, **extra):
         rec["ack"] = state
         if why:
             rec["why"] = why
-        self._write({"k": "ack", "ref_t": rec["t"], "ack": state, "why": why})
+        rec.update({k: v for k, v in extra.items() if v is not None})
+        self._write({"k": "ack", "ref_t": rec["t"], "ack": state, "why": why,
+                     **{k: v for k, v in extra.items() if v is not None}})
         self.emit({"update": rec})
 
     def _add(self, rec):
@@ -236,7 +316,46 @@ class MeshCoreAddon(Addon):
                 "info": self.info, "channels": self.channels, "contacts": self.contacts,
                 "battery_mv": self.battery_mv, "heard": self.heard,
                 "config": self.config, "presets": self.presets,
-                "messages": list(self.messages), "text_max": TEXT_MAX_BYTES}
+                "messages": list(self.messages), "text_max": TEXT_MAX_BYTES,
+                "pending": self.pending, "stats": self.stats, "results": self.results,
+                "cli": {k: list(v) for k, v in self.cli.items()}, "logged_in": self.logged_in,
+                "logins": sorted(self.logins), "air": {"n": self._air(), "last": self.rx_last,
+                                                       "window_s": AIR_WINDOW_S}}
+
+    def _air(self):
+        cut = time.time() - AIR_WINDOW_S
+        while self.rx and self.rx[0] < cut:
+            self.rx.popleft()
+        return len(self.rx)
+
+    def _result(self, m):
+        ws, kind, key = self._requests.pop(m.get("ref"), (None, m.get("kind"), m.get("key")))
+        self._busy.discard(key)
+        full = m.get("key") or key
+        rec = {"kind": kind, "key": full, "t": time.time(), "ok": bool(m.get("ok")),
+               "data": m.get("data") if m.get("ok") else None, "error": None if m.get("ok") else m.get("error")}
+        if kind == "login" and rec["ok"]:
+            self.logged_in[full] = {"admin": bool((rec["data"] or {}).get("admin"))}
+            self.emit({"logged_in": self.logged_in})
+        if kind in ("cli", "clock"):
+            if not rec["ok"]:
+                self._cli_line(full, "err", rec["error"])
+            return
+        if kind not in ("reset_path", "remove", "fav", "add"):
+            self.results.setdefault(full, {})[kind] = rec
+            while len(self.results) > 200:
+                self.results.pop(next(iter(self.results)))
+        self.emit({"result": rec})
+        if not rec["ok"]:
+            self.notice(f"MeshCore: {kind.replace('_', ' ')} failed: {rec['error']}", "warn", ws)
+
+    def _cli_line(self, key, way, text):
+        key = str(key or "")
+        full = next((c["key"] for c in self.contacts if (c.get("key") or "").startswith(key)), key) if key else key
+        q = self.cli.setdefault(full, deque(maxlen=CLI_KEEP))
+        line = {"t": time.time(), "way": way, "text": str(text)[:2000]}
+        q.append(line)
+        self.emit({"cli": {"key": full, **line}})
 
     # --- pages -> node
 
@@ -259,8 +378,121 @@ class MeshCoreAddon(Addon):
             await self.set_config(ws, m.get("section"), m.get("values"))
         elif verb == "reboot":
             await self.reboot(ws)
+        elif verb in REQUEST_KINDS:
+            await self.request(ws, verb, m)
+        elif verb in ("channel_join", "channel_leave"):
+            await self.channel(ws, verb, m)
         else:
             await super().command(ws, verb, m)
+
+    def _contact(self, key, pending=False):
+        key = str(key or "").lower()
+        if not KEY_PREFIX.match(key):
+            return None
+        pool = self.pending if pending else self.contacts
+        return next((c for c in pool if (c.get("key") or "").startswith(key)), None)
+
+    def _password(self, key, typed):
+        """The password for KEY: typed on the page, else its file. Never logged."""
+        if typed not in (None, ""):
+            return str(typed), None
+        path = next((p for pre, p in self.logins.items() if key.startswith(pre)), None)
+        if path is None:
+            return None, "Type the node's password (none is saved for it)."
+        try:
+            with open(path) as f:
+                pwd = f.read().strip()
+        except OSError as e:
+            return None, f"The saved password can't be read ({type(e).__name__})."
+        return pwd, None
+
+    async def request(self, ws, kind, m):
+        """A request to another node (or a change to one of this node's contacts)."""
+        if not self._usable(ws):
+            return
+        c = self._contact(m.get("key"), pending=kind == "add")
+        if c is None:
+            self.notice("That node is not one of this node's contacts.", "warn", ws)
+            return
+        key = c["key"]
+        if kind in SERVER_KINDS and c.get("type") not in ("repeater", "room"):
+            self.notice(f"Only a repeater or room server answers {kind}.", "warn", ws)
+            return
+        if kind == "trace" and c.get("hops") is None:
+            self.notice("No route to that node is known yet: find the path first.", "warn", ws)
+            return
+        cmd = {"cmd": kind, "key": key}
+        if kind == "fav":
+            cmd["fav"] = bool(m.get("fav"))
+        if kind == "cli":
+            text = str(m.get("text") or "").strip()
+            if not text or "\n" in text or "\r" in text or len(text.encode()) > CLI_MAX:
+                self.notice(f"A remote command is one line of at most {CLI_MAX} bytes.", "warn", ws)
+                return
+            if not (self.logged_in.get(key) or {}).get("admin"):
+                self.notice("Log in as admin first: a repeater only takes commands from its admin.", "warn", ws)
+                return
+            cmd["text"] = text
+        if kind == "clock" and not (self.logged_in.get(key) or {}).get("admin"):
+            self.notice("Log in as admin first: only the admin can set a repeater's clock.", "warn", ws)
+            return
+        if kind == "login":
+            typed = m.get("password")
+            if typed not in (None, "") and (not isinstance(typed, str) or len(typed) > PASSWORD_MAX
+                                            or "\n" in typed or "\r" in typed):
+                self.notice(f"A MeshCore password is one line of at most {PASSWORD_MAX} characters.", "warn", ws)
+                return
+            pwd, why = self._password(key, typed)
+            if why:
+                self.notice(why, "warn", ws)
+                return
+            cmd["password"] = pwd
+        on_air = kind not in LOCAL_KINDS
+        if on_air:
+            if key in self._busy:
+                self.notice("A request to that node is already waiting for its answer.", "warn", ws)
+                return
+            wait = REQUEST_GAP_S - (time.time() - self._request_t)
+            if wait > 0:
+                self.notice(f"One request every {REQUEST_GAP_S:g} s (each goes on the air); try again.", "warn", ws)
+                return
+            self._request_t = time.time()
+            self._busy.add(key)
+        self._ref += 1
+        cmd["ref"] = self._ref
+        self._requests[self._ref] = (ws, kind, key)
+        if kind in ("cli", "clock"):
+            self._cli_line(key, "out", cmd.get("text") or "time (set to this host's clock)")
+        await self._cmd(cmd)
+        cmd.pop("password", None)
+        log.info("MeshCore: %s for %s", kind, key[:12])        # never a password or a command's text
+        if not on_air:
+            return
+        self.emit({"request": {"kind": kind, "key": key, "t": time.time()}})
+
+    async def channel(self, ws, verb, m):
+        if not self._usable(ws):
+            return
+        if verb == "channel_join":
+            name = str(m.get("name") or "").strip().lower()
+            if not name.startswith("#"):
+                name = "#" + name
+            if not CHANNEL_NAME.match(name):
+                self.notice("A hashtag channel is # and up to 30 letters, digits, - or _.", "warn", ws)
+                return
+            cmd, what = {"cmd": verb, "name": name}, f"joined {name}"
+        else:
+            i = m.get("index")
+            ch = next((c for c in self.channels if c["index"] == i and not isinstance(i, bool)), None)
+            if ch is None:
+                self.notice(f"The node has no channel {i!r}.", "warn", ws)
+                return
+            cmd, what = {"cmd": verb, "index": i}, f"left {ch['name']}"
+        self._ref += 1
+        cmd["ref"] = self._ref
+        self._requests[self._ref] = (ws, what, None)
+        await self._cmd(cmd)
+        log.info("MeshCore: %s", what)
 
     async def send_text(self, ws, text, ch, to=None):
         text = str(text or "").strip()

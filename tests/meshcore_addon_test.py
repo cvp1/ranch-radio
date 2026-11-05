@@ -18,6 +18,19 @@
     write says why; a Wi-Fi write says to reboot; the Wi-Fi password reaches
     the node and nowhere else (no snapshot, page message, log or notice)
   - reboot: the page is told, and the bridge comes back
+  - other nodes: the snapshot has the radio stats, what was heard on the
+    air and the node not yet added; status, telemetry, neighbours, path and
+    trace answers reach the page and the snapshot; a server-only request to
+    a companion, a second request inside the gap, one to a node already
+    waiting and a trace with no route are refused before the node sees
+    them; a node that doesn't answer says so
+  - login: a wrong typed password fails, the saved one logs in as admin;
+    neither password is in a page message, a snapshot, the message log or
+    the server's log; remote commands are refused until an admin login, then
+    each command and its reply reach the page (and not the message log)
+  - favourite, add a pending node, forget a route, remove: the contacts
+    follow; a direct message reports its tries and round trip
+  - channels: a #hashtag is joined, a bad name refused, a channel left
 
     python3 tests/meshcore_addon_test.py
 """
@@ -47,13 +60,20 @@ STARTS = os.path.join(TMP, "starts")
 MSG_LOG = os.path.join(TMP, "meshcore.jsonl")
 MARK = os.path.join(TMP, "port-marker")
 ALPHA = "a1" * 32
+BETA = "b2" * 32
+GAMMA = "d4" * 32
+DELTA = "e5" * 32
 PWD = "ranch-pa55-Wd!"
+SAVED_PW, TYPED_PW = "Sav3d-Pw", "Typ3d-Wr0ng"
+SAVED_FILE = os.path.join(TMP, "gamma_admin_password")
+with open(SAVED_FILE, "w") as f:
+    f.write(SAVED_PW + "\n")
 fails = 0
 
 with open(CFG, "w") as f:
     json.dump({"meshcore": {"port": MARK, "python": sys.executable,
                             "bridge": os.path.join(ROOT, "tests", "fake_meshcore_bridge.py"),
-                            "log": MSG_LOG,
+                            "log": MSG_LOG, "logins": {GAMMA[:12]: SAVED_FILE},
                             "presets": [{"label": "Local", "freq": 908.205, "bw": 62.5, "sf": 9, "cr": 8}]}}, f)
 
 
@@ -199,7 +219,7 @@ try:
     check("snapshot: the node's name", ((s.get("info") or {}).get("me") or {}).get("name"), "TestNode")
     check("snapshot: radio frequency", ((s.get("info") or {}).get("radio") or {}).get("freq"), 910.525)
     check("snapshot: channels", [c["name"] for c in s.get("channels") or []], ["Public"])
-    check("snapshot: contacts, newest first", [c["name"] for c in s.get("contacts") or []], ["Alpha", "Beta Rpt"])
+    check("snapshot: contacts, newest first", [c["name"] for c in s.get("contacts") or []], ["Alpha", "Beta Rpt", "Gamma Rpt"])
     check("snapshot: battery", s.get("battery_mv"), 4100)
     check("snapshot: the message it heard", [(m["name"], m["text"]) for m in s.get("messages") or []],
           [("Alpha", "hello mesh")])
@@ -328,6 +348,151 @@ try:
     check("a 6-digit PIN is written", saved("Bluetooth settings saved", m) is not None, True)
     check("  and is in no page message", any("482913" in json.dumps(e) for e in page.events), False)
 
+    # --- other nodes
+    page.close()
+    page = Page()
+    s = snapshot(page)
+    check("snapshot: the node's radio stats", (s.get("stats") or {}).get("noise_floor"), -118)
+    check("  a packet heard on the air, via Gamma", ((s.get("air") or {}).get("last") or {}).get("last"), "d4")
+    check("  the node heard but not added", [c["name"] for c in s.get("pending") or []], ["Delta"])
+    check("  which repeaters have a saved login (prefixes only)", s.get("logins"), [GAMMA[:12]])
+    check("  and not the saved password", SAVED_PW in json.dumps(page.hello), False)
+    gap = lambda: time.sleep(2.1)        # one request on the air every 2 s
+
+    def result_of(kind, key, since):
+        return page.wait(lambda e: mc(e) and (e.get("result") or {}).get("kind") == kind
+                         and (e["result"].get("key") or "").startswith(key[:12]), since=since)
+
+    for kind, probe in [("status", lambda d: d["noise_floor"]), ("telemetry", lambda d: d["lpp"][0]["type"]),
+                        ("neighbours", lambda d: d["neighbours"][0]["snr"]), ("path", lambda d: d["out"]),
+                        ("trace", lambda d: d["hops"][0]["snr"]), ("owner", lambda d: d["owner"])]:
+        m = len(page.events)
+        page.do(kind, key=GAMMA[:12])
+        r = (result_of(kind, GAMMA, m) or {}).get("result") or {}
+        want = {"status": -117, "telemetry": "voltage", "neighbours": 6.25, "path": ["d4"], "trace": 8.0,
+                "owner": "N0CALL"}[kind]
+        check(f"{kind}: the answer reaches the page", r.get("ok") and probe(r.get("data") or {}), want)
+        gap()
+    m = len(page.events)
+    page.do("status", key=BETA[:12])
+    r = (result_of("status", BETA, m) or {}).get("result") or {}
+    check("a node that doesn't answer says so", (r.get("ok"), "no answer" in (r.get("error") or "")), (False, True))
+    check("  with a notice", page.wait(warned("status failed: no answer"), since=m) is not None, True)
+    page.close()
+    page = Page()
+    check("answers are in a later page's snapshot",
+          ((snapshot(page).get("results") or {}).get(GAMMA) or {}).get("status", {}).get("ok"), True)
+    gap()
+    before = len(commands_cmd("status"))
+    for label, verb, extra, words in [
+            ("status from a companion is refused", "status", {"key": ALPHA[:12]}, "Only a repeater"),
+            ("a key that isn't a contact is refused", "status", {"key": "ff" * 6}, "not one of"),
+            ("a remote command before an admin login is refused", "cli", {"key": GAMMA[:12], "text": "ver"},
+             "Log in as admin first"),
+            ("setting the clock before an admin login is refused", "clock", {"key": GAMMA[:12]},
+             "Log in as admin first"),
+            ("a 16-character password is refused", "login", {"key": BETA[:12], "password": "x" * 16},
+             "at most 15"),
+            ("a login with no password and none saved is refused", "login", {"key": BETA[:12]},
+             "none is saved")]:
+        m = len(page.events)
+        page.do(verb, **extra)
+        check(label, page.wait(warned(words), since=m, timeout=3) is not None, True)
+    check("  and none of them reached the node", len(commands_cmd("status")) + len(commands_cmd("cli"))
+          + len(commands_cmd("clock")), before)
+    m = len(page.events)
+    page.do("status", key=GAMMA[:12])
+    result_of("status", GAMMA, m)
+    page.do("telemetry", key=GAMMA[:12])
+    check("a second request inside the gap is refused", page.wait(warned("One request every"), since=m, timeout=3)
+          is not None, True)
+    gap()
+    m = len(page.events)
+    page.do("reset_path", key=GAMMA[:12])          # nothing on the air: no gap
+    page.wait(lambda e: mc(e) and e.get("contacts") and next(c for c in e["contacts"] if c["key"] == GAMMA)["hops"]
+              is None, since=m)
+    m = len(page.events)
+    page.do("trace", key=GAMMA[:12])
+    check("a trace with no route known is refused", page.wait(warned("find the path first"), since=m, timeout=3)
+          is not None, True)
+
+    m = len(page.events)
+    page.do("login", key=GAMMA[:12], password=TYPED_PW)
+    r = (result_of("login", GAMMA, m) or {}).get("result") or {}
+    check("login: a wrong password fails", (r.get("ok"), r.get("error")), (False, "wrong password"))
+    check("  the typed password reached the node", any(c.get("password") == TYPED_PW for c in commands_cmd("login")),
+          True)
+    gap()
+    m = len(page.events)
+    page.do("login", key=GAMMA[:12])
+    r = (result_of("login", GAMMA, m) or {}).get("result") or {}
+    check("  the saved password logs in as admin", (r.get("ok"), (r.get("data") or {}).get("admin")), (True, True))
+    check("  (it was read from its file)", any(c.get("password") == SAVED_PW for c in commands_cmd("login")), True)
+    check("  the page is told it is logged in",
+          page.wait(lambda e: mc(e) and ((e.get("logged_in") or {}).get(GAMMA) or {}).get("admin"), since=m)
+          is not None, True)
+    check("  no password is in a page message",
+          any(SAVED_PW in json.dumps(e) or TYPED_PW in json.dumps(e) for e in page.events), False)
+    gap()
+    m = len(page.events)
+    page.do("cli", key=GAMMA[:12], text="get radio")
+    check("a remote command: shown as sent",
+          page.wait(lambda e: mc(e) and (e.get("cli") or {}).get("way") == "out"
+                    and e["cli"]["text"] == "get radio", since=m) is not None, True)
+    check("  and the repeater's reply reaches the page",
+          page.wait(lambda e: mc(e) and (e.get("cli") or {}).get("way") == "in"
+                    and e["cli"]["text"] == "echo: get radio" and e["cli"]["key"] == GAMMA, since=m) is not None, True)
+    gap()
+    m = len(page.events)
+    page.do("clock", key=GAMMA[:12])
+    check("set clock: the repeater confirms", page.wait(lambda e: mc(e) and (e.get("cli") or {}).get("text")
+                                                        == "OK - clock set", since=m) is not None, True)
+    m = len(page.events)
+    page.do("cli", key=GAMMA[:12], text="a\nb")
+    check("a two-line remote command is refused", page.wait(warned("one line"), since=m, timeout=3) is not None, True)
+
+    m = len(page.events)
+    page.do("fav", key=ALPHA[:12], fav=True)
+    check("favourite: the contact list follows",
+          page.wait(lambda e: mc(e) and e.get("contacts") and next(c for c in e["contacts"] if c["key"] == ALPHA)["fav"],
+                    since=m) is not None, True)
+    m = len(page.events)
+    page.do("add", key=DELTA[:12])
+    check("a pending node is added",
+          page.wait(lambda e: mc(e) and e.get("contacts") and any(c["key"] == DELTA for c in e["contacts"]), since=m)
+          is not None, True)
+    check("  and leaves the pending list", page.wait(lambda e: mc(e) and e.get("pending") == [], since=m) is not None,
+          True)
+    m = len(page.events)
+    page.do("remove", key=DELTA[:12])
+    check("remove: the contact goes",
+          page.wait(lambda e: mc(e) and e.get("contacts") is not None and not any(c["key"] == DELTA for c in e["contacts"]),
+                    since=m) is not None, True)
+    m = len(page.events)
+    page.do("send", text="tries", to=ALPHA[:12])
+    e = page.wait(settled("tries", "delivered"), since=m) or {}
+    check("a delivered message has its tries and round trip",
+          ((e.get("update") or {}).get("tries"), (e.get("update") or {}).get("trip_ms")), (1, 1800))
+
+    m = len(page.events)
+    page.do("channel_join", name="#Ranch-Net")
+    check("channels: a #hashtag is joined (lower case)",
+          page.wait(lambda e: mc(e) and any(c["name"] == "#ranch-net" for c in e.get("channels") or []), since=m)
+          is not None, True)
+    for bad in ("#", "#two words", "#" + "x" * 31):
+        m = len(page.events)
+        page.do("channel_join", name=bad)
+        check(f"  a bad name is refused: {bad[:12]!r}", page.wait(warned("hashtag channel is"), since=m, timeout=3)
+              is not None, True)
+    m = len(page.events)
+    page.do("channel_leave", index=1)
+    check("  and left", page.wait(lambda e: mc(e) and e.get("channels") == [{"index": 0, "name": "Public"}], since=m)
+          is not None, True)
+    m = len(page.events)
+    page.do("channel_leave", index=7)
+    check("  leaving a channel the node lacks is refused", page.wait(warned("no channel"), since=m, timeout=3)
+          is not None, True)
+
     m = len(page.events)
     page.do("reboot")
     check("reboot: the page is told", saved("rebooting", m) is not None, True)
@@ -345,11 +510,16 @@ try:
                                          None), "delivered")
     check("the log is private (mode 600)", stat.S_IMODE(os.stat(MSG_LOG).st_mode), 0o600)
     with open(MSG_LOG) as f:
-        check("the password is not in the message log", PWD in f.read(), False)
+        log_text = f.read()
+    check("the password is not in the message log", PWD in log_text, False)
+    check("no repeater password is in the message log", SAVED_PW in log_text or TYPED_PW in log_text, False)
+    check("remote commands are not in the message log", "get radio" in log_text, False)
     page.close()
 finally:
     stop(server)
 check("the password is not in the server's log", any(PWD in o for o in SERVER_OUT), False)
+check("no repeater password is in the server's log", any(SAVED_PW in o or TYPED_PW in o for o in SERVER_OUT), False)
+check("  (its requests were logged, by name)", any(f"MeshCore: login for {GAMMA[:12]}" in o for o in SERVER_OUT), True)
 check("  (the server's log was captured)", any("MeshCore: writing Wi-Fi settings" in o for o in SERVER_OUT), True)
 
 print("PASS" if not fails else f"{fails} FAILED")

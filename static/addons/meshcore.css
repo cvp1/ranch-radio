@@ -1,23 +1,29 @@
-/* MeshCore add-on (static/addons/meshcore.js) */
+/* MeshCore add-on (static/addons/meshcore.js). The layout, node list, card,
+   messages and map use the Mesh tab's classes (app.css: .mesh-*, .mm-*);
+   this file has only what MeshCore adds. */
+.addon-meshcore .addon-body { display: flex; flex-direction: column; gap: 8px; }
 .addon-meshcore .mc-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .addon-meshcore .mc-name { font-weight: 700; font-size: 1.1rem; }
 .addon-meshcore .mc-ok { color: var(--ok, #6c6); }
 .addon-meshcore .mc-off { color: var(--warn, #d96); }
-.addon-meshcore .mc-sub { margin: .25rem 0 .6rem; }
-.addon-meshcore .mc-cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: .8rem; }
-@media (max-width: 760px) { .addon-meshcore .mc-cols { grid-template-columns: 1fr; } }
-.addon-meshcore .mc-tabs { flex-wrap: wrap; margin-bottom: .4rem; }
-.addon-meshcore .mc-unread { background: var(--accent, #48f); color: #fff; border-radius: .6rem; padding: 0 .35rem; font-size: .75rem; }
-.addon-meshcore .mc-list, .addon-meshcore .mc-nodes { max-height: 26rem; overflow-y: auto; }
-.addon-meshcore .mc-msg { padding: .3rem 0; border-bottom: 1px solid rgba(255,255,255,.06); display: grid; gap: .1rem; }
-.addon-meshcore .mc-msg.mine b { color: var(--accent, #48f); }
-.addon-meshcore .mc-msg small, .addon-meshcore .mc-node small { opacity: .65; }
-.addon-meshcore .mc-node { padding: .35rem 0; border-bottom: 1px solid rgba(255,255,255,.06); display: grid; gap: .1rem; }
-.addon-meshcore .mc-node .stat { font-size: .8rem; }
-.addon-meshcore .mc-form { margin-top: .5rem; display: flex; gap: .5rem; align-items: center; }
+.addon-meshcore .mc-sub, .addon-meshcore .mc-stats { margin: 0; }
+.addon-meshcore .mc-stats { opacity: .8; }
+.addon-meshcore .mesh-off .mesh-list, .addon-meshcore .mesh-off .mesh-nodes { opacity: .55; }
 .addon-meshcore .mc-form .mc-text { flex: 1; min-width: 0; }
-.addon-meshcore .mc-over { color: var(--warn, #d96); }
-.addon-meshcore .mc-empty { padding: .6rem 0; }
+.addon-meshcore .mc-find { flex: 1; min-width: 0; padding: 4px 8px; }
+.addon-meshcore .mc-over { color: #ff8a8a; }
+.addon-meshcore .mesh-cols .wl-session .mesh-nodes { max-height: none; flex: 1 1 0; min-height: 260px; }
+.addon-meshcore .mc-admin .mc-pwd { width: 9em; flex: none; padding: 2px 6px; height: 24px; }
+.addon-meshcore .mc-res { display: flex; flex-direction: column; gap: 2px; }
+.addon-meshcore .mc-console { display: flex; flex-direction: column; gap: 4px; }
+.addon-meshcore .mc-console-out { max-height: 180px; overflow-y: auto; font: 11.5px var(--mono); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; background: rgba(0,0,0,.3); white-space: pre-wrap; }
+.addon-meshcore .mc-cli-out { color: var(--accent); }
+.addon-meshcore .mc-cli-err { color: #ff8a8a; }
+.addon-meshcore .mc-cli-form .mc-cli { flex: 1; min-width: 0; font-family: var(--mono); }
+.addon-meshcore .mm-link { stroke: rgba(var(--warm-rgb), .7); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.addon-meshcore .mm-link-label { font: 600 10px var(--mono); fill: var(--warm); paint-order: stroke; stroke: rgba(0,0,0,.85); stroke-width: 3px; }
+/* settings */
 .addon-meshcore .mc-cfg { margin: .4rem 0 .8rem; padding: .6rem; border: 1px solid rgba(255,255,255,.08); border-radius: .6rem; }
 .addon-meshcore .mc-cfg-tabs { flex-wrap: wrap; margin-bottom: .5rem; }
 .addon-meshcore .mc-presets { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-bottom: .5rem; }
@@ -28,3 +34,5 @@
 .addon-meshcore .mc-field input[type=password], .addon-meshcore .mc-field select { min-width: 0; width: 100%; }
 .addon-meshcore .mc-field small { grid-column: 1 / -1; }
 .addon-meshcore .mc-cfg-actions { margin-top: .6rem; display: flex; gap: .5rem; align-items: center; }
+@media (max-width: 760px) { .addon-meshcore .wl-cols { grid-template-columns: 1fr; } }
+.addon-meshcore .mc-warn, .addon-meshcore .mc-warn b { color: #ffe2b0; }
