@@ -238,13 +238,22 @@
         <div class="wl-list" id="wl-list"></div>
         <div class="wl-read" id="wl-read" hidden>
           <div class="wl-read-head" id="wl-read-head"></div>
+          <div class="wl-row wl-actions" id="wl-actions">
+            <button class="chip chip-mini" id="wl-reply">Reply</button>
+            <button class="chip chip-mini" id="wl-reply-all">Reply all</button>
+            <button class="chip chip-mini" id="wl-forward">Forward</button>
+            <button class="chip chip-mini" id="wl-archive">Archive</button>
+            <button class="chip chip-mini" id="wl-delete">Delete</button>
+          </div>
           <pre class="wl-body" id="wl-body"></pre>
         </div>
         <form class="wl-compose" id="wl-compose" hidden>
           <input id="wl-to" placeholder="To (callsigns or email, space separated)" autocomplete="off" spellcheck="false" required>
+          <input id="wl-cc" placeholder="Cc (optional)" autocomplete="off" spellcheck="false">
           <input id="wl-subject" placeholder="Subject" autocomplete="off" required>
           <textarea id="wl-text" rows="7" placeholder="Message"></textarea>
           <input type="file" id="wl-files" multiple>
+          <div class="wl-note" id="wl-compose-note" hidden></div>
           <div class="wl-row">
             <button type="submit" class="chip on">Queue in outbox</button>
             <button type="button" class="chip" id="wl-compose-cancel">Cancel</button>

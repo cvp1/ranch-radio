@@ -2,7 +2,14 @@
 
 Checks:
   - mailbox/read/compose/gateway routes reach Pat; anything off the list is 404
-  - compose without a date gets one added (Pat answers 400 without it)
+  - compose without a date gets one added (Pat answers 400 without it); Cc
+    passes through; compose with an X-Pat-SourcePath header is refused
+  - mark read: {"read": true} marks it read, a bare `true` is Pat's 400
+  - archive (move) and delete reach Pat; a bad source path, a dotfile MID or
+    an encoded traversal in the source path never reach Pat
+  - the outbox can't be changed while a session runs (409), other boxes can;
+    in process, the guard covers the admit window and connect() waits for a
+    mailbox change already under way
   - Pat's own port is 127.0.0.1 only
   - winlink_connect arms the lane, Pat keys through it, the page sees the log,
     the session end, the received count; afterwards the lane is disarmed
@@ -26,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 import aiohttp
 
@@ -158,14 +166,32 @@ def fake_log(path):
         return []
 
 
+def recs(path, route, **match):
+    """The fake's log lines for one route, matching every key=value given."""
+    return [r for r in fake_log(path) if r.get("route") == route
+            and all(r.get(k) == v for k, v in match.items())]
+
+
+def reached(path, needle):
+    """Requests that reached the fake whose path or source header contains needle."""
+    return [r for r in recs(path, "req")
+            if needle in r.get("path", "") or needle in (r.get("headers") or {}).get("X-Pat-SourcePath", "")]
+
+
+def mids(page, box):
+    st, body = page.http("GET", f"/winlink/api/mailbox/{box}")
+    return sorted(m["MID"] for m in json.loads(body)) if st == 200 else f"HTTP {st}"
+
+
 def start(env_extra=None, *extra):
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
     env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, **(env_extra or {}))
+    state = os.path.join(tempfile.mkdtemp(prefix="wltest-"), "addons.json")   # never the user's own
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
          "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
          "--winlink-pat", f"{sys.executable} tests/fake_pat.py", "--winlink-pat-port", str(PATP),
-         *extra],
+         "--addons-state", state, *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
         try:
@@ -218,7 +244,59 @@ try:
     check("compose -> 201", st, 201)
     comp = [r for r in fake_log(flog) if r["route"] == "compose"]
     check("compose: date added for Pat", bool(comp and comp[-1]["fields"].get("date")), True)
-    check("compose: attachment passed", comp and comp[-1]["files"], ["a.txt"])
+    check("compose: attachment passed", comp and [(f["name"], f["size"]) for f in comp[-1]["files"]],
+          [("a.txt", 8)])
+
+    # A2 (before A1, so its "no read line" is clean): a bare `true` is Pat's 400
+    st, body = page.http("POST", "/winlink/api/mailbox/in/ABC123/read", data="true",
+                         headers={"Content-Type": "application/json"})
+    check("A2 mark read with body `true` -> 400 through the proxy", st, 400)
+    check("A2   the request reached the fake", len(reached(flog, "/api/mailbox/in/ABC123/read")) >= 1, True)
+    check("A2   and earned no read record", recs(flog, "read"), [])
+    # A1: {"read": true} marks it read
+    st, body = page.http("POST", "/winlink/api/mailbox/in/ABC123/read", data='{"read": true}',
+                         headers={"Content-Type": "application/json"})
+    check("A1 mark read {\"read\": true} -> 200", st, 200)
+    check("A1   fake recorded read: true", [r["read"] for r in recs(flog, "read", mid="ABC123")], [True])
+    st, body = page.http("GET", "/winlink/api/mailbox/in")
+    check("A1   inbox shows ABC123 read", [m["Unread"] for m in json.loads(body) if m["MID"] == "ABC123"], [False])
+
+    # A3: archive = move with X-Pat-SourcePath
+    st, _ = page.http("POST", "/winlink/api/mailbox/archive",
+                      headers={"X-Pat-SourcePath": "/api/mailbox/in/DEF456"})
+    check("A3 archive DEF456 from in -> 200", st, 200)
+    check("A3   gone from in", "DEF456" in mids(page, "in"), False)
+    check("A3   listed in archive", mids(page, "archive"), ["DEF456"])
+    check("A3   fake recorded the move", [(r["src"], r["mid"], r["dest"]) for r in recs(flog, "move")],
+          [("in", "DEF456", "archive")])
+
+    # A4: bad source paths; compose with the header; dest in from archive
+    st, _ = page.http("POST", "/winlink/api/mailbox/archive", headers={"X-Pat-SourcePath": "/api/mailbox/bogus/X"})
+    check("A4 move from an unknown box -> 400", st, 400)
+    st, _ = page.http("POST", "/winlink/api/mailbox/archive")
+    check("A4 move without X-Pat-SourcePath -> 400", st, 400)
+    n_comp = len(recs(flog, "compose"))
+    form = aiohttp.FormData()
+    for k, v in (("to", "N0DAJ"), ("subject", "not a move"), ("body", "b")):
+        form.add_field(k, v)
+    st, body = page.http("POST", "/winlink/api/mailbox/out", data=form,
+                         headers={"X-Pat-SourcePath": "/api/mailbox/in/ABC123"})
+    check("A4 POST to out with X-Pat-SourcePath -> 400 use the move route",
+          (st, body.strip(), len(recs(flog, "compose")) - n_comp), (400, "use the move route", 0))
+    st, _ = page.http("POST", "/winlink/api/mailbox/in", headers={"X-Pat-SourcePath": "/api/mailbox/archive/DEF456"})
+    check("A4 move DEF456 archive -> in -> 200 (allowed)", (st, "DEF456" in mids(page, "in")), (200, True))
+
+    # A6: a dotfile MID never reaches Pat (yarl normalises . and .. segments
+    # before they get to {mid}, so those would prove nothing)
+    st_d, _ = page.http("DELETE", "/winlink/api/mailbox/in/.hidden")
+    st_g, _ = page.http("GET", "/winlink/api/mailbox/in/.hidden")
+    check("A6 DELETE and GET in/.hidden -> 404", (st_d, st_g), (404, 404))
+    check("A6   no request for .hidden reached the fake", reached(flog, ".hidden"), [])
+    # A6b: an encoded traversal in the move source (in/X/../../out/OUT0 to Pat)
+    st, _ = page.http("POST", "/winlink/api/mailbox/archive",
+                      headers={"X-Pat-SourcePath": "/api/mailbox/in/X%2F..%2F..%2Fout%2FOUT0"})
+    check("A6b move source in/X%2F..%2F..%2Fout%2FOUT0 -> 400", st, 400)
+    check("A6b   no request for it reached the fake", reached(flog, "X%2F"), [])
 
     lan_ip = lan_address()
     check("a LAN address that reaches a 0.0.0.0 listener (control)", lan_ip is not None, True)
@@ -257,6 +335,20 @@ try:
     check("Pat got the URL", [r["url"] for r in fake_log(flog) if r["route"] == "connect"][-1:], [URL])
     n = page.wait(lambda e: e.get("t") == "winlink" and "notify" in e, 2)
     check("new-message notification relayed", n is not None, True)
+
+    # A5: delete a message in sent/ (the one the session just sent)
+    sent_mid = (mids(page, "sent") or ["?"])[0]
+    st, _ = page.http("DELETE", f"/winlink/api/mailbox/sent/{sent_mid}")
+    check("A5 DELETE sent/<mid> -> 200", st, 200)
+    check("A5   gone from sent", mids(page, "sent"), [])
+    check("A5   fake recorded the delete", [(r["box"], r["mid"]) for r in recs(flog, "delete")], [("sent", sent_mid)])
+    # A8: Cc passes through compose
+    form = aiohttp.FormData()
+    for k, v in (("to", "N0DAJ"), ("cc", "K7ABC N0XYZ"), ("subject", "cc"), ("body", "b")):
+        form.add_field(k, v)
+    st, _ = page.http("POST", "/winlink/api/mailbox/out", data=form)
+    check("A8 compose with cc -> 201, fake got cc",
+          (st, (recs(flog, "compose") or [{}])[-1].get("fields", {}).get("cc")), (201, "K7ABC N0XYZ"))
 
     # Stop aborts
     page.events.clear()
@@ -422,6 +514,119 @@ try:
     page.close()
 finally:
     stop(server)
+
+# --- A7: the outbox is Pat's while a session runs ---
+server, flog = start({"FAKE_PAT_TX_S": "30"})
+try:
+    page = Page()
+    check("A7 one message queued", compose(page, "queued"), 201)
+    page.send({"t": "winlink_connect", "url": URL})
+    e = page.wait(lambda e: e.get("t") == "winlink" and e.get("session") == "started", 10)
+    check("A7 session started", e is not None, True)
+    st, body = page.http("DELETE", "/winlink/api/mailbox/out/OUT0")
+    check("A7 during the session: DELETE out/OUT0 -> 409", st, 409)
+    check("A7   still listed in out", mids(page, "out"), ["OUT0"])
+    st, _ = page.http("POST", "/winlink/api/mailbox/archive", headers={"X-Pat-SourcePath": "/api/mailbox/out/OUT0"})
+    check("A7   move from out -> 409", st, 409)
+    check("A7   neither reached the fake", reached(flog, "OUT0"), [])
+    st, _ = page.http("DELETE", "/winlink/api/mailbox/in/ABC123")
+    check("A7   DELETE in/ABC123 (another box) -> 200", st, 200)
+    page.send({"t": "winlink_stop"})
+    e = page.wait(ended, 20)
+    check("A7 session ended", e is not None, True)
+    st, _ = page.http("DELETE", "/winlink/api/mailbox/out/OUT0")
+    check("A7 after the session: DELETE out/OUT0 -> 200", (st, mids(page, "out")), (200, []))
+    page.close()
+finally:
+    show(stop(server))
+
+
+# --- A7b: in process, the guard covers the admit window, under a lock ---
+def a7b():
+    sys.path.insert(0, ROOT)
+    import winlink as W
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    class Station:
+        def notice(self, *a, **k):
+            pass
+
+        def _send(self, *a):
+            pass
+
+        def _broadcast(self, *a):
+            pass
+
+        def band_of(self, hz):
+            return "80m"
+
+    async def go():
+        res = {}
+        args = types.SimpleNamespace(winlink_pat_port=1, winlink_pat="pat", winlink_session_max=60)
+        eng = W.PatEngine(Station(), args)
+        eng.running = True
+        calls = []
+
+        async def fake_pass(method, path, json_out=False, **kw):
+            calls.append(method)
+            return web.Response(text='"OK"')
+
+        eng._pass = fake_pass
+        app = web.Application()
+        eng.routes(app, lambda r: True)
+        src = {"X-Pat-SourcePath": "/api/mailbox/out/OUT0"}
+        async def probe(req):                     # (status, how many times Pat was called)
+            n = len(calls)
+            return (await req).status, len(calls) - n
+
+        async with TestClient(TestServer(app)) as c:
+            eng._admitting = True
+            res["admitting: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
+            res["admitting: move from out"] = await probe(c.post("/winlink/api/mailbox/archive", headers=src))
+            eng._admitting = False
+            res["idle: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
+            res["idle: move from out"] = await probe(c.post("/winlink/api/mailbox/archive", headers=src))
+        try:
+            got = asyncio.Event()
+
+            async def fake_admit(ws, url, via):
+                got.set()
+
+            eng._admit = fake_admit
+            await eng._outbox_lock.acquire()      # a mailbox change past its check, mid-call
+            t = asyncio.create_task(eng.connect(None, "telnet://N9ABC:CMSTelnet@cms.winlink.org:8772/wl2k"))
+            try:
+                await asyncio.wait_for(got.wait(), 0.3)   # quiet window: it must NOT get there
+                early = True
+            except TimeoutError:
+                early = False
+            admitting = eng._admitting
+            eng._outbox_lock.release()
+            try:
+                await asyncio.wait_for(got.wait(), 3)
+                late = True
+            except TimeoutError:
+                late = False
+            await asyncio.wait_for(t, 3)
+            res["connect waits for the lock"] = (early, admitting, late)
+        except Exception as e:                    # noqa: BLE001 - a failed check, not an abort
+            res["connect waits for the lock"] = f"error: {type(e).__name__}: {e}"
+        return res
+
+    try:
+        return asyncio.run(go())
+    except Exception as e:                        # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+r = a7b()
+check("A7b _admitting: delete out -> 409, Pat not called", r.get("admitting: delete out"), (409, 0))
+check("A7b _admitting: move from out -> 409, Pat not called", r.get("admitting: move from out"), (409, 0))
+check("A7b idle: delete out passes through", r.get("idle: delete out"), (200, 1))
+check("A7b idle: move from out passes through", r.get("idle: move from out"), (200, 1))
+check("A7b connect() waits for a held outbox lock (early, admitting, after)",
+      r.get("connect waits for the lock"), (False, True, True))
 
 server, flog = start({}, "--no-tx")
 try:

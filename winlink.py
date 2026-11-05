@@ -30,7 +30,7 @@ import shlex
 import time
 from collections import deque
 from datetime import UTC, datetime
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit
 
 import aiohttp
 from aiohttp import web
@@ -60,6 +60,18 @@ ID_START_S = 8.0             # tracked: no ID started by then -> none is coming
 ID_GRACE_S = 25.0            # never armed longer than this after Pat returns
 TAIL_QUIET_S = 3.0           # not tracked: armed until the lane is this quiet
 BOX_READ_S = 3.0             # reading a mailbox listing for the session's sent count
+OUTBOX_BUSY = "A Winlink session is running; the outbox can't be changed until it ends."
+
+
+def mid_ok(mid, bad=web.HTTPNotFound):
+    """The canonical (percent-decoded) MID, or raise bad: empty, a path
+    separator, or a leading dot. Pat unescapes and cleans a path itself, so an
+    encoded in/X%2F..%2F..%2Fout%2FOUT0 would reach out/OUT0 past every check
+    on the box; forward quote(mid, safe="") of what this returns."""
+    mid = unquote(mid or "")
+    if not mid or "/" in mid or "\\" in mid or mid.startswith("."):
+        raise bad()
+    return mid
 
 
 def url_hz(url):
@@ -282,6 +294,10 @@ class PatEngine:
         self._restarting = False
         self._admitting = False          # a connect is arming its lane (no session task yet)
         self._admit_stop = False         # Stop pressed meanwhile: don't start it
+        # The outbox is Pat's from admission (its outbox snapshot) to the
+        # session's end: a delete or move out of it holds this lock across its
+        # check and its call to Pat, and connect() takes it once before _admit.
+        self._outbox_lock = asyncio.Lock()
         self._tasks = []
         self.running = False         # between start() and stop(): the Winlink add-on's switch
 
@@ -421,6 +437,10 @@ class PatEngine:
         # second connect must not slip in meanwhile.
         self._admitting, self._admit_stop = True, False
         try:
+            # A mailbox change already past its check finishes before the
+            # outbox snapshot; any later one sees _admitting and gets a 409.
+            async with self._outbox_lock:
+                pass
             await self._admit(ws, url, via)
         finally:
             self._admitting = False
@@ -633,6 +653,16 @@ class PatEngine:
 
     # --- HTTP: the allow-list of Pat's API ---
 
+    def outbox_busy(self):
+        """A session owns the outbox: arming (admission) or running."""
+        return self._admitting or bool(self.session and not self.session.done())
+
+    async def _outbox_change(self, call):
+        async with self._outbox_lock:
+            if self.outbox_busy():
+                return web.Response(status=409, text=OUTBOX_BUSY)
+            return await call()
+
     def routes(self, app, authorised):
         def guard(handler):
             async def h(request):
@@ -651,26 +681,29 @@ class PatEngine:
             box_ok(request)
             return await self._pass("GET", f"/api/mailbox/{request.match_info['box']}", json_out=True)
 
-        async def message(request):
+        def msg_path(request):
+            """/api/mailbox/<box>/<mid> for Pat, the MID canonical and re-encoded."""
             box_ok(request)
             mi = request.match_info
-            return await self._pass("GET", f"/api/mailbox/{mi['box']}/{mi['mid']}", json_out=True)
+            return mi["box"], f"/api/mailbox/{mi['box']}/{quote(mid_ok(mi['mid']), safe='')}"
+
+        async def message(request):
+            _, path = msg_path(request)
+            return await self._pass("GET", path, json_out=True)
 
         async def attachment(request):
-            box_ok(request)
-            mi = request.match_info
-            return await self._pass("GET", f"/api/mailbox/{mi['box']}/{mi['mid']}/{mi['file']}")
+            _, path = msg_path(request)
+            return await self._pass("GET", f"{path}/{quote(request.match_info['file'], safe='')}")
 
         async def delete(request):
-            box_ok(request)
-            mi = request.match_info
-            return await self._pass("DELETE", f"/api/mailbox/{mi['box']}/{mi['mid']}")
+            box, path = msg_path(request)
+            if box == "out":
+                return await self._outbox_change(lambda: self._pass("DELETE", path))
+            return await self._pass("DELETE", path)
 
         async def mark_read(request):
-            box_ok(request)
-            mi = request.match_info
-            return await self._pass("POST", f"/api/mailbox/{mi['box']}/{mi['mid']}/read",
-                                    data=await request.read(),
+            _, path = msg_path(request)
+            return await self._pass("POST", f"{path}/read", data=await request.read(),
                                     headers={"Content-Type": "application/json"})
 
         async def move(request):
@@ -679,10 +712,22 @@ class PatEngine:
             parts = src.strip("/").split("/")
             if len(parts) != 4 or parts[:2] != ["api", "mailbox"] or parts[2] not in BOXES:
                 raise web.HTTPBadRequest(text="bad X-Pat-SourcePath")
-            return await self._pass("POST", f"/api/mailbox/{request.match_info['box']}",
-                                    headers={"X-Pat-SourcePath": "/" + "/".join(parts)})
+            src_box = parts[2]
+            mid = mid_ok(parts[3], lambda: web.HTTPBadRequest(text="bad X-Pat-SourcePath"))
+            source = f"/api/mailbox/{src_box}/{quote(mid, safe='')}"
+
+            def call():
+                return self._pass("POST", f"/api/mailbox/{request.match_info['box']}",
+                                  headers={"X-Pat-SourcePath": source})
+            if src_box == "out":
+                return await self._outbox_change(call)
+            return await call()
 
         async def compose(request):
+            # POST to out is always compose (registered before the move route):
+            # a move aimed at it must not turn silently into a new message.
+            if "X-Pat-SourcePath" in request.headers:
+                return web.Response(status=400, text="use the move route")
             form = await request.post()
             out = aiohttp.FormData()
             for k, v in form.items():

@@ -197,6 +197,12 @@ if CHROME:
         b.goto(f"http://127.0.0.1:{L.WEB}/")
         b.wait("document.querySelector('#conn b')?.textContent === 'Connected'")
         check("page: the Winlink switch reads 'Switch off'", b.wait(f"({TEXT})('#wl-power') === 'Switch off' && 1"), 1)
+        ACTIONS = "[...document.querySelectorAll('#wl-actions button')].map((e) => e.disabled)"
+        b.wait("!!document.querySelector('#wl-list .wl-msg[data-mid=\"ABC123\"]')")
+        b.js("document.querySelector('#wl-list .wl-msg[data-mid=\"ABC123\"]').click()")
+        check("  a message open: its five actions enabled (control)",
+              b.wait(f"document.querySelector('#wl-read-head b')?.textContent === 'Test message' && {ACTIONS}"),
+              [False] * 5)
         b.js("window.confirm = (q) => { window.asked = q; return true; }")
         b.js("document.querySelector('#wl-power').click()")
         check("  off: the state says so",
@@ -205,6 +211,7 @@ if CHROME:
         check("  Connect and Compose are disabled",
               b.js("[document.querySelector('#wl-connect').disabled, document.querySelector('#wl-compose-btn').disabled]"),
               [True, True])
+        check("  every mailbox action is disabled (P11)", b.js(ACTIONS), [True] * 5)
         b.js("window.asked = null")
         b.js("document.querySelector('#wl-power').click()")
         check("  on again: Idle", b.wait(f"({TEXT})('#wl-state') === 'Idle' && 'on'"), "on")

@@ -5,6 +5,13 @@ Chromium (DevTools protocol, no extra packages) and checks:
   - the panel shows only on a server with Winlink
   - the inbox lists Pat's message; clicking it shows the body
   - compose posts to Pat (and the outbox then lists it)
+  - mailbox actions (own servers, rows picked by MID): opening an unread
+    message marks it read at Pat (the bold goes only after Pat's 200; a
+    failure keeps it and says so); Reply / Reply all / Forward fill the form
+    Pat's way (quote, Re:/Fw:, Cc, the attachment re-attached, a note when
+    it can't be read); Archive moves it; Delete needs a second click bound
+    to the same message, and the ask expires; a stale open is dropped; while
+    a session runs the outbox can't be changed (page and server)
   - Via lists this radio (ARDOP) and telnet; telnet fills the URL
   - the gateway list fills from Pat and picking a gateway fills the URL
   - Connect needs a second click to confirm; then the session log runs,
@@ -24,6 +31,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import hashlib
 import time
 import urllib.request
 
@@ -54,15 +62,42 @@ def fake_log(path):
         return []
 
 
+def recs(path, route, **match):
+    return [r for r in fake_log(path) if r.get("route") == route
+            and all(r.get(k) == v for k, v in match.items())]
+
+
+def wait_for(pred, timeout=10):
+    """Poll pred until it holds (a ceiling, not a guess); its last value."""
+    end = time.time() + timeout
+    while time.time() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.1)
+    return pred()
+
+
+def api_get(path):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{WEB}{path}", timeout=5) as r:
+            return json.load(r)
+    except (OSError, ValueError) as e:
+        return f"error: {e}"
+
+
 def start(env_extra=None, *extra, winlink=True):
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
     env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, FAKE_PAT_TX_S="2")
     env.update(env_extra or {})
     wl = ["--winlink-rigctl-port", str(LANE), "--winlink-pat", f"{sys.executable} tests/fake_pat.py",
           "--winlink-pat-port", str(PATP)] if winlink else []
+    # Its own add-on state: P13 switches Winlink off, which must never land in
+    # (or depend on) the user's ~/.local/state one.
+    state = os.path.join(tempfile.mkdtemp(prefix="wlpage-"), "addons.json")
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-         "--rigctl-port", str(APPS), *wl, *extra],
+         "--rigctl-port", str(APPS), "--addons-state", state, *wl, *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     ports = (WEB, LANE, PATP) if winlink else (WEB,)
     for _ in range(100):
@@ -203,7 +238,7 @@ try:
         # mailbox
         got = b.wait(f"({TEXT})('#wl-list').includes('Test message')")
         check("inbox lists Pat's message", bool(got), True)
-        b.js("document.querySelector('#wl-list .wl-msg').click()")
+        b.js("document.querySelector('#wl-list .wl-msg[data-mid=\"ABC123\"]').click()")
         got = b.wait(f"({TEXT})('#wl-body').includes('Hello from the test.')")
         check("clicking it shows the body", bool(got), True)
 
@@ -276,6 +311,215 @@ try:
         check("Stop ends the session", bool(got), True)
         check("Stop told Pat to disconnect",
               len([r for r in fake_log(flog) if r["route"] == "disconnect"]) > before, True)
+    finally:
+        stop(server)
+
+    # --- mailbox actions ---
+    SUBJ = {"ABC123": "Test message", "DEF456": "Re: Already a reply", "GHI789": "RE: Upper case"}
+
+    def row(mid):
+        return f"document.querySelector('#wl-list .wl-msg[data-mid=\"{mid}\"]')"
+
+    def open_panel(tag):
+        b.goto(f"http://127.0.0.1:{WEB}/?v={tag}#/winlink")
+        b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
+        b.js("window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(e.message))")
+        b.wait(f"({TEXT})('#wl-list').includes('Test message')")
+
+    def show_box(v):
+        b.js(f"document.querySelector('#wl-boxes [data-v=\"{v}\"]').click()")
+
+    def open_msg(mid, subject=None, box="in"):
+        """Click the row for mid (in that box) and wait for its read pane."""
+        if b.js("document.querySelector('#wl-boxes .chip.on')?.dataset.v") != box:
+            show_box(box)
+        b.wait(f"!!{row(mid)} && document.querySelector('#wl-boxes .chip.on')?.dataset.v === '{box}'")
+        b.js(f"{row(mid)}.click()")
+        subject = subject or SUBJ[mid]
+        return bool(b.wait(f"({VISIBLE})('#wl-read') && "
+                           f"document.querySelector('#wl-read-head b')?.textContent === {json.dumps(subject)}"))
+
+    def click(sel):
+        b.js(f"document.querySelector('{sel}').click()")
+
+    def val(sel):
+        return b.js(f"document.querySelector('{sel}')?.value")
+
+    def submit_and_wait(flog):
+        n = len(recs(flog, "compose"))
+        b.js("document.querySelector('#wl-compose').requestSubmit()")
+        got = wait_for(lambda: len(recs(flog, "compose")) > n)
+        return recs(flog, "compose")[-1] if got else None
+
+    server, flog = start()
+    try:
+        open_panel("mail")
+        # P1: opening an unread message marks it read at Pat
+        check("P1 open ABC123", open_msg("ABC123"), True)
+        got = wait_for(lambda: recs(flog, "read", mid="ABC123"), 5)
+        check("P1   Pat got {read: true} for ABC123", [r["read"] for r in got or []], [True])
+        check("P1   then the row is no longer bold", bool(b.wait(f"!{row('ABC123')}.classList.contains('unread')")), True)
+        inbox = api_get("/winlink/api/mailbox/in")
+        check("P1   Pat's inbox says ABC123 is read",
+              [m["Unread"] for m in inbox if m["MID"] == "ABC123"] if isinstance(inbox, list) else inbox, [False])
+        # P2: the action bar
+        check("P2 the five action chips are shown",
+              [b.js(f"({VISIBLE})('#{i}')") for i in ("wl-reply", "wl-reply-all", "wl-forward", "wl-archive", "wl-delete")],
+              [True] * 5)
+        check("P2   and enabled", b.js("[...document.querySelectorAll('#wl-actions button')].map((e) => e.disabled)"),
+              [False] * 5)
+        # P3: Reply
+        click("#wl-reply")
+        check("P3 Reply opens the form", bool(b.wait(f"({VISIBLE})('#wl-compose')")), True)
+        check("P3   To = the sender, Re: subject", (val("#wl-to"), val("#wl-subject")), ("N0DAJ", "Re: Test message"))
+        text = val("#wl-text") or ""
+        check("P3   body: two blank lines, then the quote",
+              (text.startswith("\n\n--- "), ">Hello from the test." in text, "\r" in text), (True, True, False))
+        comp = submit_and_wait(flog)
+        body = (comp or {}).get("fields", {}).get("body", "")
+        check("P3   posted body carries the quote in CRLF, never \\r\\r",
+              (">Hello from the test.\r\n" in body, "\r\r" in body), (True, False))
+        # P4: Reply all, Cc null and Cc set
+        check("P4 open ABC123 again", open_msg("ABC123"), True)
+        click("#wl-reply-all")
+        b.wait(f"({VISIBLE})('#wl-compose')")
+        check("P4   Reply all on Cc: null -> Cc empty, no JS error", (val("#wl-cc"), b.js("window.__errs")), ("", []))
+        check("P4 open DEF456", open_msg("DEF456"), True)
+        click("#wl-reply-all")
+        b.wait(f"({VISIBLE})('#wl-compose')")
+        check("P4   Reply all: Cc without my call or the sender, subject kept",
+              (val("#wl-cc"), val("#wl-to"), val("#wl-subject")), ("K7ABC", "N0DAJ", "Re: Already a reply"))
+        comp = submit_and_wait(flog)
+        check("P4   Pat got cc=K7ABC", (comp or {}).get("fields", {}).get("cc"), "K7ABC")
+        # P4b: RE: in upper case is a reply already
+        check("P4b open GHI789", open_msg("GHI789"), True)
+        click("#wl-reply")
+        b.wait(f"({VISIBLE})('#wl-compose')")
+        check("P4b   Reply keeps 'RE: Upper case'", val("#wl-subject"), "RE: Upper case")
+        # P5: Forward re-attaches the file
+        check("P5 open DEF456", open_msg("DEF456"), True)
+        click("#wl-forward")
+        got = b.wait(f"({VISIBLE})('#wl-compose') && document.querySelector('#wl-files').files.length === 1 && "
+                     "document.querySelector('#wl-files').files[0].name")
+        check("P5   the attachment re-attached", got, "note.txt")
+        check("P5   To empty, Fw: subject", (val("#wl-to"), val("#wl-subject")), ("", "Fw: Re: Already a reply"))
+        b.js("document.querySelector('#wl-to').value = 'N0DAJ'")
+        comp = submit_and_wait(flog) or {}
+        check("P5   Pat got the file (name, size, type, sha256) and To",
+              (comp.get("files"), comp.get("fields", {}).get("to")),
+              ([{"name": "note.txt", "size": 5, "type": "text/plain", "sha256": hashlib.sha256(b"hello").hexdigest()}],
+               "N0DAJ"))
+        # P9: the Delete ask expires
+        check("P9 open GHI789", open_msg("GHI789"), True)
+        click("#wl-delete")
+        check("P9   first click asks", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
+        check("P9   the ask expires", bool(b.wait(f"({TEXT})('#wl-delete') === 'Delete'", 10)), True)
+        check("P9   nothing deleted", recs(flog, "delete"), [])
+        # P9b: the ask is bound to the message
+        click("#wl-delete")
+        check("P9b first click on GHI789 asks", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
+        check("P9b open DEF456", open_msg("DEF456"), True)
+        click("#wl-delete")
+        check("P9b   a click on DEF456 asks again", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
+        time.sleep(0.5)                                   # quiet window: nothing may happen
+        check("P9b   nothing deleted", recs(flog, "delete"), [])
+        click("#wl-reply")                                # any other action resets the ask
+        check("P9b   another action resets it", b.js(f"({TEXT})('#wl-delete')"), "Delete")
+        # P7: Archive (destructive from here on)
+        check("P7 open DEF456", open_msg("DEF456"), True)
+        click("#wl-archive")
+        got = wait_for(lambda: recs(flog, "move"))
+        check("P7   Pat moved it in -> archive", [(r["src"], r["mid"], r["dest"]) for r in got or []],
+              [("in", "DEF456", "archive")])
+        check("P7   pane hidden, row gone",
+              bool(b.wait(f"!({VISIBLE})('#wl-read') && !{row('DEF456')} && ({TEXT})('#wl-list').includes('Test message')")), True)
+        check("P7   listed in the Archive box", open_msg("DEF456", box="archive"), True)
+        check("P7   no Archive chip in the Archive box", b.js(f"({VISIBLE})('#wl-archive')"), False)
+        # P8: Delete, two clicks
+        check("P8 open ABC123", open_msg("ABC123"), True)
+        click("#wl-delete")
+        check("P8   first click asks", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
+        time.sleep(0.5)                                   # quiet window: nothing may happen
+        check("P8   nothing deleted yet", recs(flog, "delete"), [])
+        click("#wl-delete")
+        got = wait_for(lambda: recs(flog, "delete"))
+        check("P8   second click deletes it at Pat", [(r["box"], r["mid"]) for r in got or []], [("in", "ABC123")])
+        check("P8   the row is gone", bool(b.wait(f"!{row('ABC123')} && ({TEXT})('#wl-list').includes('Upper case')")), True)
+        check("no JS errors in the mailbox cases", b.js("window.__errs"), [])
+    finally:
+        stop(server)
+
+    # P6: an attachment that can't be read
+    server, flog = start({"FAKE_PAT_BROKEN_ATTACH": "1"})
+    try:
+        open_panel("p6")
+        check("P6 open DEF456", open_msg("DEF456"), True)
+        click("#wl-forward")
+        check("P6   a toast says it could not be read",
+              bool(b.wait("document.querySelector('#toasts').textContent.includes('could not be read')")), True)
+        check("P6   and the form keeps the note",
+              (b.js(f"({VISIBLE})('#wl-compose-note')"), "note.txt could not be read" in (b.js(f"({TEXT})('#wl-compose-note')") or "")),
+              (True, True))
+        check("P6   the form is open, no files", (b.js(f"({VISIBLE})('#wl-compose')"),
+                                                  b.js("document.querySelector('#wl-files').files.length")), (True, 0))
+    finally:
+        stop(server)
+
+    # P12: Pat refuses the mark-read
+    server, flog = start({"FAKE_PAT_BROKEN_READ": "1"})
+    try:
+        open_panel("p12")
+        check("P12 open ABC123", open_msg("ABC123"), True)
+        check("P12   a toast says it could not be marked read",
+              bool(b.wait("document.querySelector('#toasts').textContent.includes('Could not mark it read')")), True)
+        check("P12   the row stays bold", b.js(f"{row('ABC123')}.classList.contains('unread')"), True)
+    finally:
+        stop(server)
+
+    # P14: a slow open answered after the operator moved on is dropped
+    server, flog = start({"FAKE_PAT_SLOW_MID": "ABC123"})
+    try:
+        open_panel("p14")
+        b.js(f"{row('ABC123')}.click()")
+        show_box("sent")
+        time.sleep(3)                                     # past the 2 s answer: nothing may happen
+        check("P14 the late answer is dropped (pane hidden, nothing open)",
+              (b.js(f"({VISIBLE})('#wl-read')"), b.js("winlink._current()")), (False, None))
+        check("P14   no Delete armed", b.js(f"({TEXT})('#wl-delete')"), "Delete")
+        check("P14   opening it again works", open_msg("ABC123"), True)
+    finally:
+        stop(server)
+
+    # P10, P13: the outbox during a session
+    server, flog = start({"FAKE_PAT_TX_S": "30"})
+    try:
+        open_panel("p10")
+        click("#wl-compose-btn")
+        b.js("""(() => { document.querySelector('#wl-to').value = 'N0DAJ';
+                 document.querySelector('#wl-subject').value = 'Queued';
+                 document.querySelector('#wl-compose').requestSubmit(); })()""")
+        check("P10 one message in the outbox", bool(b.wait(f"!!{row('OUT0')}")), True)
+        b.js("document.querySelector('#wl-url').value = 'ardop:///N0DAJ?bw=2000MAX&freq=3588.5'")
+        click("#wl-connect")
+        click("#wl-connect")
+        check("P10 session armed", bool(b.wait(f"({TEXT})('#wl-state').toLowerCase().includes('armed')")), True)
+        check("P10 open the outbox message", open_msg("OUT0", "Queued", box="out"), True)
+        check("P10   Delete disabled, Archive hidden",
+              (b.js("document.querySelector('#wl-delete').disabled"), b.js(f"({VISIBLE})('#wl-archive')")), (True, False))
+        check("P10   the title says why", "session" in (b.js("document.querySelector('#wl-delete').title") or ""), True)
+        check("P10   Reply still enabled", b.js("document.querySelector('#wl-reply').disabled"), False)
+        got = b.js("winlink._api(BASE + 'winlink/api/mailbox/out/OUT0', { method: 'DELETE' })")
+        check("P13 the server's 409 sentence is what the page shows", got,
+              "A Winlink session is running; the outbox can't be changed until it ends.")
+        click("#wl-stop")
+        check("P10 the session ends", bool(b.wait(f"({TEXT})('#wl-state').includes('ended')", 20)), True)
+        check("P10   open it again", open_msg("OUT0", "Queued", box="out"), True)
+        check("P10   Delete enabled after the session", b.js("document.querySelector('#wl-delete').disabled"), False)
+        b.js("window.confirm = () => true")
+        click("#wl-power")
+        check("P13 switched off", bool(b.wait(f"({TEXT})('#wl-state').startsWith('Switched off')")), True)
+        check("P13   the page shows the 503's error text",
+              b.js("winlink._api(BASE + 'winlink/api/mailbox/in')"), "Winlink is switched off")
     finally:
         stop(server)
 
