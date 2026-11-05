@@ -90,6 +90,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **The UV-PRO add-on reconnects within seconds after an update, not four
+  minutes.** When the packet hub restarts with it, the hub closes its control
+  port until its own link to the radio is up; the bridge then waited out its
+  240 s connect deadline for a reply that never came. A `tcp:` control connect
+  now fails as soon as the hub closes the port (logged as `control port closed
+  by the hub`) and tries again a second later.
 - **Opening a Winlink message never marked it read.** The page posted the
   body `true`; Pat expects `{"read": true}` and answered 400, which the page
   swallowed, so every inbox message stayed bold. It now posts the object when

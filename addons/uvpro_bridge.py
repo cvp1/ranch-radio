@@ -635,6 +635,8 @@ class TcpCommandLink:
         self.host, self.port = host, int(port)
         self._w = None
         self._task = None
+        self.closed = asyncio.Event()   # set when the read loop ends: the hub closed the port, or we did
+        self._leaving = False
 
     def is_connected(self):
         return self._w is not None and not self._w.is_closing()
@@ -661,6 +663,8 @@ class TcpCommandLink:
                 while True:
                     data = await reader.read(4096)
                     if not data:
+                        if not self._leaving:
+                            log.info("control port closed by the hub")
                         break
                     buf = buf.extend_bytes(data)
                     frames, buf = p.GaiaFrame.from_bitstream_batch(buf)
@@ -672,12 +676,14 @@ class TcpCommandLink:
                             continue
                         callback(m)
             except (OSError, asyncio.IncompleteReadError) as e:
-                log.info("control port: %s", e)
+                log.info("control port closed by the hub (%s)" if not self._leaving else "control port: %s", e)
             finally:
                 self._w.close()
+                self.closed.set()
         self._task = asyncio.create_task(read())
 
     async def disconnect(self):
+        self._leaving = True
         if self._w is not None:
             self._w.close()
         if self._task:
@@ -689,12 +695,36 @@ def controller(address, transport):
     from benlink.controller import RadioController
     if transport.startswith("tcp:"):
         host, _, port = transport[4:].rpartition(":")
-        return RadioController(CommandConnection(TcpCommandLink(host or "127.0.0.1", port)))
+        link = TcpCommandLink(host or "127.0.0.1", port)
+        radio = RadioController(CommandConnection(link))
+        radio._control_link = link   # noqa: SLF001 - handshake() watches it close
+        return radio
     if transport == "ble":
         return RadioController.new_ble(address)
     if transport.startswith("rfcomm:"):
         return RadioController.new_rfcomm(address, int(transport.split(":", 1)[1]))
     raise ValueError(f"unknown transport {transport!r} (rfcomm:N or ble)")
+
+
+async def handshake(radio):
+    """radio.connect(), failed at once (ConnectionError) if the packet hub closes
+    its control port before it is done: the hub does that while its own link to
+    the radio is still coming up, and benlink would wait for its reply forever."""
+    link = getattr(radio, "_control_link", None)
+    if link is None:                     # BLE / RFCOMM: as before
+        return await radio.connect()
+    hs = asyncio.ensure_future(radio.connect())
+    closed = asyncio.ensure_future(link.closed.wait())
+    try:
+        done, _ = await asyncio.wait({hs, closed}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        closed.cancel()
+        hs.cancel()                      # a no-op once it's done
+    if closed in done:
+        if hs.done() and not hs.cancelled():
+            hs.exception()               # retrieved: the closed port is the reason
+        raise ConnectionError("the packet hub closed the control port")
+    return hs.result()
 
 
 async def connect(address, transport):
@@ -705,7 +735,7 @@ async def connect(address, transport):
     while True:
         radio = controller(address, transport)
         try:
-            await asyncio.wait_for(radio.connect(), max(1.0, deadline - loop.time()))
+            await asyncio.wait_for(handshake(radio), max(1.0, deadline - loop.time()))
             return radio
         except (TimeoutError, OSError, EOFError) as e:
             try:

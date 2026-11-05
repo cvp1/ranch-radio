@@ -24,6 +24,8 @@ bridge as it runs on the radio, minus the Bluetooth socket, and checks:
     doesn't round-trip is refused
   - fields outside the bridge's lists are refused before anything is sent
   - connect tries again while the radio still refuses (the hub just let go)
+  - over the hub's control port, connect tries again at once when the hub
+    closes it mid-handshake (its own radio link still coming up)
   - no request the bridge sends is TNC data (HT_SEND_DATA), a programmable
     function (DO_PROG_FUNC) or FREQ_MODE_SET_PAR
 
@@ -31,6 +33,7 @@ bridge as it runs on the radio, minus the Bluetooth socket, and checks:
 """
 import asyncio
 import json
+import logging
 import os
 import sys
 
@@ -527,6 +530,45 @@ async def main():
     check("control port: a write goes through", (d["ok"], radio2.volume), (True, 9))
     await r2.disconnect()
     srv.close()
+
+    # --- the hub closes the control port while its own link to the radio comes up
+    # (accepts, then closes: unread, a reset; after a read, a clean EOF): connect
+    # tries again at once, not after CONNECT_TIMEOUT_S (240 s), and connects when
+    # the hub serves
+    dials = []
+
+    async def on_hub(reader, writer):
+        dials.append(1)
+        if len(dials) <= 2:
+            if len(dials) == 2:
+                await reader.read(4096)
+            writer.close()
+            return
+        await on_client(reader, writer)
+    srv = await asyncio.start_server(on_hub, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    seen = []
+    catch = logging.Handler()
+    catch.emit = lambda rec: seen.append(rec.getMessage())
+    ub.log.addHandler(catch)
+    level = ub.log.level
+    ub.log.setLevel(logging.INFO)
+    ub.controller, ub.CONNECT_RETRY_S = REAL_CONTROLLER, 1.0       # the real retry pace
+    t0 = asyncio.get_running_loop().time()
+    try:
+        r3 = await asyncio.wait_for(ub.connect("00:11:22:33:44:55", f"tcp:127.0.0.1:{port}"), 5)
+        got = (r3.is_connected(), len(dials))
+        await r3.disconnect()
+    except TimeoutError:
+        got = "TimeoutError"
+    took = asyncio.get_running_loop().time() - t0
+    ub.log.removeHandler(catch)
+    ub.log.setLevel(level)
+    ub.CONNECT_RETRY_S = 0.05
+    srv.close()
+    check(f"hub closes the control port twice: connected on dial 3 ({took:.1f} s)", got, (True, 3))
+    check("hub closes the control port: said, and tried again",
+          (sum("control port closed by the hub" in m for m in seen), sum("trying again" in m for m in seen)), (2, 2))
 
     # --- a radio that never stops refusing: connect gives up with the reason
     ub.CONNECT_TIMEOUT_S = 0.5
