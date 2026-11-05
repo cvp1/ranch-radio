@@ -7,6 +7,14 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **MeshCore over Wi-Fi.** The `meshcore` add-on's `"port"` takes
+  `tcp:HOST:PORT` for a companion with Wi-Fi on (port 5000), as well as a
+  serial device. A link that goes quiet is noticed within about two minutes
+  (the battery read failing twice) and the bridge reconnects.
+  `tools/meshcore_wifi.py PORT` puts a companion on Wi-Fi from its USB port
+  through the firmware's rescue CLI (hold the button at boot), asking for the
+  password with no echo, then finds the node on the LAN. The companion's TCP
+  port has no login: keep it on a network you trust.
 - **MeshCore tab (`meshcore` add-on).** A MeshCore companion node on USB
   (`companion_radio_usb` firmware) gets its own tab: the node's name, model,
   firmware, radio settings, battery and location; the nodes it has heard

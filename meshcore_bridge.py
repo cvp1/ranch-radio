@@ -6,10 +6,15 @@ the `meshcore` package (its own venv; the server's Python doesn't need it).
 A stuck or crashing serial link never takes the radio server with it: this
 process exits and the add-on starts it again.
 
-    meshcore_bridge.py /dev/cu.usbserial-0001
+    meshcore_bridge.py /dev/ttyUSB0            (USB: companion_radio_usb firmware)
+    meshcore_bridge.py tcp:192.168.1.50:5000   (Wi-Fi: a companion with Wi-Fi on, port 5000)
 
-The node must run MeshCore's *USB companion* firmware (companion_radio_usb):
-a repeater or room server answers a different protocol on its serial port.
+The node must run MeshCore's companion firmware: a repeater or room server
+answers a different protocol. Over Wi-Fi the companion port has no login,
+so anything on the LAN can drive the node; keep it on a network you trust.
+A link that stops answering (Wi-Fi dropped, node rebooted) is noticed by
+the battery read every BATTERY_EVERY_S failing LINK_FAILS times running:
+the bridge exits and the add-on starts it again.
 
 Out (stdout, one JSON object per line):
     {"ev": "status", "connected": bool, "error": str|None}
@@ -46,6 +51,7 @@ CONTACTS_EVERY_S = 5.0        # re-read the contact list at most this often afte
 BATTERY_EVERY_S = 60.0
 CHANNELS_MAX = 8              # channels read from the node (it has up to 40; apps show the first few)
 CONNECT_TIMEOUT_S = 15.0
+LINK_FAILS = 2                # battery reads failing in a row before the link counts as lost
 TYPES = {1: "chat", 2: "repeater", 3: "room", 4: "sensor"}
 
 # The library logs to stdout in places: the protocol gets its own copy of
@@ -57,6 +63,18 @@ sys.stdout = sys.stderr
 
 def emit(**d):
     _out.write(json.dumps(d) + "\n")
+
+
+def parse_port(spec):
+    """'/dev/ttyUSB0' -> ("serial", "/dev/ttyUSB0"); 'tcp:HOST:PORT' -> ("tcp", HOST, PORT)."""
+    if spec.startswith("tcp:"):
+        host, sep, port = spec[4:].rpartition(":")
+        if not sep or not host or not port.isdigit() or not 0 < int(port) < 65536:
+            raise ValueError(f"not tcp:HOST:PORT: {spec!r}")
+        return ("tcp", host.strip("[]"), int(port))
+    if not spec:
+        raise ValueError("no port")
+    return ("serial", spec)
 
 
 def hops(path_len):
@@ -115,9 +133,12 @@ class Bridge:
                                             key=lambda c: -(c["last_advert"] or 0)))
 
     async def battery(self):
+        """Read the battery; False when the node didn't answer."""
         r = await self.mc.commands.get_bat()
         if r.type == self.E.BATTERY:
             emit(ev="battery", mv=(r.payload or {}).get("level"))
+            return True
+        return False
 
     def name_for(self, prefix):
         for k, c in self.contacts.items():
@@ -152,7 +173,7 @@ class Bridge:
             self.closing = True
 
     async def loops(self):
-        last_bat = time.time()
+        last_bat, fails = time.time(), 0
         while not self.closing:
             await asyncio.sleep(CONTACTS_EVERY_S)
             try:
@@ -161,9 +182,14 @@ class Bridge:
                     await self.read_contacts()
                 if time.time() - last_bat >= BATTERY_EVERY_S:
                     last_bat = time.time()
-                    await self.battery()
+                    ok = await self.battery()
+                    fails = 0 if ok else fails + 1
             except Exception as e:
+                fails += 1
                 log.warning("periodic read: %s: %s", type(e).__name__, e)
+            if fails >= LINK_FAILS:
+                emit(ev="status", connected=False, error="the node stopped answering")
+                self.closing = True
 
     # --- server -> node
 
@@ -218,15 +244,23 @@ class Bridge:
 
 
 async def run(port):
+    try:
+        link = parse_port(port)
+    except ValueError as e:
+        emit(ev="status", connected=False, error=str(e))
+        return 2
     from meshcore import EventType, MeshCore
     try:
-        mc = await asyncio.wait_for(MeshCore.create_serial(port, 115200), CONNECT_TIMEOUT_S)
+        if link[0] == "tcp":
+            mc = await asyncio.wait_for(MeshCore.create_tcp(link[1], link[2]), CONNECT_TIMEOUT_S)
+        else:
+            mc = await asyncio.wait_for(MeshCore.create_serial(link[1], 115200), CONNECT_TIMEOUT_S)
     except Exception as e:
         emit(ev="status", connected=False, error=f"{port}: {type(e).__name__}: {e}")
         return 2
     if mc is None or not mc.self_info:
-        emit(ev="status", connected=False,
-             error=f"{port}: no answer from a MeshCore companion (USB companion firmware?)")
+        why = "Wi-Fi on, and port 5000 reachable?" if link[0] == "tcp" else "USB companion firmware?"
+        emit(ev="status", connected=False, error=f"{port}: no answer from a MeshCore companion ({why})")
         return 2
     b = Bridge(mc, EventType)
     mc.subscribe(EventType.CONTACT_MSG_RECV, b.on_msg)
@@ -253,7 +287,8 @@ async def run(port):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("port", help="serial device of the node, e.g. /dev/ttyUSB0")
+    p.add_argument("port", help="serial device of the node, e.g. /dev/ttyUSB0, "
+                                "or tcp:HOST:PORT for a companion on Wi-Fi, e.g. tcp:192.168.1.50:5000")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, stream=sys.stderr,

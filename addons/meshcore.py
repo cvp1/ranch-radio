@@ -16,8 +16,12 @@ Config (the host's add-ons file):
                   "python": "~/.local/share/venvs/meshcore/bin/python",
                   "log": "~/.local/state/radio-remote/meshcore.jsonl"}}
 
+A node on Wi-Fi (the companion firmware with Wi-Fi on, TCP port 5000):
+    {"meshcore": {"port": "tcp:192.168.1.50:5000"}}
+Its port has no login: anything on the LAN can drive the node.
+
 Off frees the node's serial port for other apps (the MeshCore web or phone
-app over USB, meshcore-cli, a firmware flash).
+app over USB, meshcore-cli, a firmware flash), or its one TCP connection.
 """
 
 import asyncio
