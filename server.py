@@ -455,6 +455,38 @@ class Station(TxAudio):
                     "; an ID is owed for the last session" if owed
                     else "" if owed is False else " (ID not tracked: no --winlink-ardop-log)")
 
+    # --- Winlink session routing (what station.Station.lane_for does for a station)
+
+    def winlink_lane_for(self, url, via):
+        """Which lane a Winlink session keys on this host: this radio for
+        ARDOP (the lane, codec and station ID above), the packet hub's radio
+        for packet (ax25*: through the Packet add-on, the hub's own transmit
+        gate applies, this radio stays idle), none for telnet. `via` is the
+        page's choice; the URL's transport decides, as on the station page.
+        Returns (lane, None) or (None, why)."""
+        import winlink
+        from urllib.parse import urlsplit
+        scheme = urlsplit(url).scheme
+        if scheme == "telnet":
+            return winlink.NoLane("telnet", self.notice), None
+        if scheme.startswith("ax25"):
+            packet = self.addons.get("packet") if self.addons else None
+            if packet is None:
+                return None, "No packet radio is set up on this station."
+            if not self.addons.is_on("packet"):
+                return None, "The Packet add-on is switched off."
+            if not packet.state.get("up"):
+                return None, f"The {packet.hub_name} packet hub is not running."
+            # The UV-PRO add-on, on, tunes the hub's radio to the gateway's
+            # frequency and back (addons/uvpro.py qsy/restore); without it the
+            # operator tunes the radio and the page says so.
+            uv = self.addons.get("uvpro") if self.addons.is_on("uvpro") else None
+            name = packet.hub_name
+            return (winlink.TunedLane(name, uv, self.notice) if uv else winlink.NoLane(name, self.notice)), None
+        if scheme != "ardop":
+            return None, f"{scheme} is not set up on this station."
+        return winlink.LocalLane(self), None
+
     async def winlink_arm(self, ws, on, freq_hz=None):
         """freq_hz: the session's target frequency (connect URL), which sets
         the codec's band; without one, the radio's current frequency."""
@@ -1333,7 +1365,7 @@ def main():
         with open(os.path.expanduser(args.addons)) as f:
             addon_cfg = json.load(f)
     if args.winlink_pat:          # Winlink (Pat) is an add-on (addons/winlink.py); the lane is not
-        addon_cfg.setdefault("winlink", {"engine_args": args})
+        addon_cfg.setdefault("winlink", {"engine_args": args, "lane_for": station.winlink_lane_for})
     if args.mesh_port:            # Mesh is an add-on (addons/mesh.py); --mesh-* configure it
         addon_cfg.setdefault("mesh", {"port": args.mesh_port, "python": args.mesh_python,
                                       "bridge": args.mesh_bridge, "keys": list(args.mesh_key),

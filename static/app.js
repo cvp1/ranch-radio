@@ -106,12 +106,13 @@ function connect() {
       Object.assign(S, m.state);
       applyConfig(m.config);
       wlArmed = !!(m.winlink && m.winlink.armed);
-      if (typeof winlink !== "undefined") winlink.hello(m.winlink, m.config);
+      if (typeof winlink !== "undefined") { winlink.ownRadio(m.config.name); winlink.hello(m.winlink, m.config); }
       if (typeof mesh !== "undefined") mesh.hello(m.mesh, m.config);
       if (typeof addons !== "undefined") addons.hello(m.config.addons, m.addons);
       if (typeof modules !== "undefined") modules.hello(m.config);
     } else if (m.t === "config") {
       applyConfig(m.config);
+      if (typeof winlink !== "undefined") winlink.ownRadio(m.config.name);
     } else if (m.t === "state") {
       let structural = false;
       const now = performance.now();

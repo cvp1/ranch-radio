@@ -194,6 +194,27 @@ zero. PSKReporter is asked at most every 10 minutes.
 
 ![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
 
+**Winlink packet through a UV-PRO.** With the `uvpro` add-on on and reaching
+the radio through the packet hub's control port (`"control"`), a packet
+gateway picked in the Winlink panel is tuned for you: after you confirm
+Connect, the add-on selects a channel already on the gateway's frequency (FM
+simplex) and turns dual watch off, and after the session it puts the radio
+back on the channel it was on, so APRS and the iGate carry on. A radio with a
+VFO uses VFO A when no channel has the frequency. A UV-50PRO has no VFO over
+Bluetooth, so for other gateways name a spare channel the add-on may write
+(its old contents go back afterwards):
+
+```json
+"addons": {"uvpro": {"enabled": true, "address": "00:11:22:33:44:55", "calls": ["N9ABC"],
+                     "hub": "http://127.0.0.1:7310", "control": "tcp:127.0.0.1:8002",
+                     "qsy_channel": 30}}
+```
+
+Without a channel to use, the connect is refused, saying why, rather than
+dialing on whatever channel the radio is on. With the add-on off, or
+borrowing the radio instead of using `"control"`, nothing is tuned: the
+panel tells you which frequency the radio must already be on.
+
 ## Safety
 
 - **Receive-only until you give a callsign** (`init --call`).
@@ -201,7 +222,9 @@ zero. PSKReporter is asked at most every 10 minutes.
   file `init` writes), and the radio unkeys if the operator's browser goes
   quiet.
 - **Winlink.** The modem's rigctl lane keys only during an armed session, and
-  sessions end with a station ID.
+  sessions end with a station ID. A packet session through a UV-PRO is tuned
+  only after you confirm Connect, never while a packet link is up, and is
+  refused rather than sent out on the wrong channel.
 - **LAN only.** The servers refuse requests from web pages on other sites
   (Host and Origin checks), so a page from the internet, open in a browser on
   your LAN, can't reach the radio. There is no login: run it on a network you

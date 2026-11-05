@@ -62,7 +62,7 @@ class Page:
         async for msg in self.ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 m = json.loads(msg.data)
-                if m.get("t") in ("winlink", "notice"):
+                if m.get("t") in ("winlink", "notice", "addon"):
                     self.events.append(m)
 
     def send(self, m):

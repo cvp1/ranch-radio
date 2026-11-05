@@ -19,6 +19,12 @@ that exists, the state then says the radio is transmitting.
 Each start appends a line to $FAKE_UVPRO_STARTS and every command received
 goes to $FAKE_UVPRO_LOG. Channels whose ids $FAKE_UVPRO_INEXACT lists (comma
 separated) are reported as not read back byte for byte ("exact").
+FAKE_UVPRO_NO_VFO=1 is a radio like the UV-50PRO: supports_vfo false and
+both VFO records reading 0.000000 MHz. FAKE_UVPRO_FAIL_NEXT=<cmd> ("settings"
+or "channel") answers the next command of that kind done ok:false; a channel
+write is applied (and sent back) first, as the real bridge's write-then-read-
+back may leave the radio changed when it reports a failure. FAKE_UVPRO_SETTINGS
+(JSON) is merged into the settings the radio starts with.
 """
 import json
 import os
@@ -60,6 +66,10 @@ DEVICE = {"vendor_id": 1, "product_id": 2, "hardware_version": 1, "firmware_vers
           "supports_dmr": False, "supports_vfo": True, "supports_radio": True, "region_count": 3,
           "supports_software_power_control": True}
 VFOS = [ch(251, "", 146.52, 146.52), ch(252, "", 446.0, 446.0)]
+if os.environ.get("FAKE_UVPRO_NO_VFO") == "1":      # the UV-50PRO: no VFO over the protocol
+    DEVICE["supports_vfo"] = False
+    VFOS = [ch(251, "", 0.0, 0.0), ch(252, "", 0.0, 0.0)]
+FAIL_NEXT = {os.environ.get("FAKE_UVPRO_FAIL_NEXT") or None} - {None}
 REGIONS = ["HOME", "TRAVEL", "AIR"]
 EXTRAS = {"volume": 8, "regions": REGIONS, "region": 0, "fm": {"on": False, "seeking": False, "freq": 91.5},
           "aprs_path": "WIDE1-1,WIDE2-1", "power_control": True}
@@ -113,6 +123,14 @@ for line in sys.stdin:
         vfo = m["id"] in (251, 252)
         c = next(x for x in (VFOS if vfo else CHANNELS) if x["id"] == m["id"])
         c.update(values)
+        if "channel" in FAIL_NEXT:
+            FAIL_NEXT.discard("channel")
+            if vfo:
+                emit(ev="vfo", channels=VFOS)
+            else:
+                emit(ev="channel", channel=c)
+            emit(ev="done", ref=ref, ok=False, error="MessageReplyError: FAILURE (FAKE_UVPRO_FAIL_NEXT)")
+            continue
         rewritten = abs(c["tx_freq"] - 99.999) < 1e-6
         if rewritten:
             c["tx_freq"] = 0.0
@@ -123,6 +141,10 @@ for line in sys.stdin:
         emit(ev="done", ref=ref, ok=not rewritten,
              error="read back, channel does not hold the new tx_freq (the radio rewrote it)" if rewritten else None)
     elif cmd == "settings":
+        if "settings" in FAIL_NEXT:
+            FAIL_NEXT.discard("settings")
+            emit(ev="done", ref=ref, ok=False, error="MessageReplyError: FAILURE (FAKE_UVPRO_FAIL_NEXT)")
+            continue
         SETTINGS.update(values)
         emit(ev="settings", values=SETTINGS)
         emit(ev="state", status=state())

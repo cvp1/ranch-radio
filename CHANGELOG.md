@@ -17,6 +17,60 @@ All notable changes to Ranch Radio are recorded here. The format follows
 - **The hub's iGate beacons its own position to APRS-IS** (`"igate":
   {"beacon_min": 30}`), never RF, with the receive-only iGate symbol `R&`; at
   login and every `beacon_min` after, a reconnect not resetting the interval.
+- **MeshCore tab (`meshcore` add-on).** A MeshCore companion node on USB
+  (`companion_radio_usb` firmware) gets its own tab: the node's name, model,
+  firmware, radio settings, battery and location; the nodes it has heard
+  advertise, newest first, with hops and distance; channel and direct
+  messages, with sending (140 bytes) and delivery ACKs for direct ones; and
+  Advert / Flood advert buttons (one per 30 s). `meshcore_bridge.py` runs
+  under its own venv with the `meshcore` package
+  (`python3 -m venv ~/.local/share/venvs/meshcore && ~/.local/share/venvs/meshcore/bin/pip install meshcore`),
+  sets the node's clock on connect and changes no radio settings. MeshCore
+  and Meshtastic are separate meshes, so a host can run this next to the
+  Mesh tab. Config: `"meshcore": {"port": "/dev/ttyUSB0"}` in the host's
+  add-ons; off frees the port for the MeshCore apps or a flash.
+- **Winlink packet sessions tune the UV-PRO for you, and put it back.** When
+  a packet gateway is picked in the Winlink panel and Connect is confirmed,
+  the `uvpro` add-on (control-port mode, `"control"`) puts the hub's radio on
+  the gateway's frequency before Pat dials: a channel already on it (FM
+  simplex, TX on; the one selected now first), else VFO A on a radio that has
+  one, else the spare channel named by the new `"qsy_channel"` option,
+  written for the session and written back after. Dual watch and scan go off
+  for the session. Afterwards the radio goes back to the channel it was on,
+  once no packet link is up on it (`"restore_wait_s"`, 30 s; 5 s while the
+  server stops); a restore that fails is retried for 10 minutes and done
+  first on the next connect. With nothing to tune with, or the add-on
+  borrowing the radio (no `"control"`), the connect is refused, saying why,
+  instead of dialing on the old channel. While the radio is tuned, page edits
+  that would move it are refused and the add-on can't be switched off. With
+  the add-on off nothing changes: the panel says which frequency the radio
+  must be on, as before. Add-ons now stop in reverse order, so Winlink ends
+  its session (and the radio is put back) before the UV-PRO add-on stops.
+
+### Fixed
+
+- **Winlink on a Mac's radio page reaches the packet hub.** The station page
+  has always offered a packet session through the hub's radio; a Mac has no
+  station page, and its radio server's Winlink panel knew only its own radio
+  (ARDOP), so the UV-50PRO never appeared there and a packet URL would have
+  armed the HF radio. The radio server now routes a session by its URL's
+  transport as the station does: `ardop` arms this radio, `ax25*` goes
+  through the Packet add-on while it reports the hub up (the hub's own
+  transmit gate applies; refused, saying why, when the hub is down, the add-on
+  is off or there is none), `telnet` keys nothing. The panel gets the
+  station's Via selector: this radio, the hub's radio while it is up, telnet.
+
+- **macOS: a Bluetooth packet hub opens the radio from a child process's
+  main thread.** On macOS 27 `openRFCOMMChannelSync` succeeds only on a
+  process's main thread; from the hub's link thread it failed with
+  kIOReturnError on every dial (a Mac mini on macOS 27 and a UV-50PRO, 2026-11-04). Each
+  `RfcommLink` now runs `bt_rfcomm.py --child`: the child owns the channel
+  and the run loop, bytes cross its stdin/stdout, and it exits when the link
+  ends. The hub's own interface is unchanged. The Serial Port channel is
+  looked up by SDP at every dial, because the UV-50PRO moves it (1 after one
+  power-cycle, 4 after another). Known radio behaviour, not fixed here: the
+  KISS service refuses every open after a dropped link until the radio is
+  power-cycled (seen on the Linux station too, 2026-11-04).
 
 ### Changed
 

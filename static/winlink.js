@@ -92,12 +92,38 @@ const winlink = (() => {
 
   // ---------- gateways
 
-  // Via (station page only): which radio a session goes out on. Its kind
-  // picks the gateway list: ARDOP on an HF radio, packet on the UV-PRO, or
-  // none for telnet. On a radio's own page there is no #wl-via: ARDOP.
+  // Via: which radio a session goes out on. Its kind picks the gateway list:
+  // ARDOP on an HF radio, packet on the packet hub's radio, or none for
+  // telnet. The station page builds the list (station.js: every HF radio, its
+  // packet hub, telnet). A radio's own page builds it here: that radio for
+  // ARDOP, the packet hub while the Packet add-on reports it up (packet.js
+  // calls setPacket), and telnet. The server routes by the URL's transport
+  // either way; the list is what the page offers.
   let vias = [];
+  let own = null, packet = null;   // this page's radio name; the Packet add-on's snapshot while up
   const viaSel = () => $("#wl-via");
   const viaKind = () => (vias.find((v) => v.id === viaSel()?.value) || { kind: "ardop" }).kind;
+
+  function ownVias() {
+    if (own == null) return;         // the station page keeps its own list
+    const list = [{ id: "radio", name: own, kind: "ardop", label: `HF · ${own} (ARDOP)` }];
+    const hub = packet?.hub_name || "UV-PRO";
+    if (packet) list.push({ id: "packet", name: hub, kind: "packet", label: `VHF · ${hub} (packet)` });
+    list.push({ id: "telnet", name: "internet", kind: "telnet", label: "Telnet (internet, no radio)" });
+    setVias(list);
+  }
+
+  function ownRadio(name) {          // app.js, on hello and config: this is a radio's own page
+    const was = own;
+    own = name || "this radio";
+    if (own !== was) ownVias();
+  }
+
+  function setPacket(snap) {         // addons/packet.js: the hub's state, null when down or off
+    const was = packet;
+    packet = snap || null;
+    if (!!was !== !!packet || (packet && was?.hub_name !== packet.hub_name)) ownVias();
+  }
 
   function setVias(list) {
     const sel = viaSel();
@@ -343,5 +369,5 @@ const winlink = (() => {
   if (viaSel()) viaSel().onchange = () => viaChanged();
   fillBands();
 
-  return { hello, event, power, setVias };
+  return { hello, event, power, setVias, ownRadio, setPacket };
 })();
