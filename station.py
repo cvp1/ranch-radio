@@ -393,13 +393,17 @@ class Station:
     def lane_for(self, url, via):
         scheme = urlsplit(url).scheme
         if scheme == "telnet":
-            return winlink.NoLane("telnet"), None
+            return winlink.NoLane("telnet", self.notice), None
         if scheme.startswith("ax25"):
+            name = self.packet_cfg.get("name") or "UV-PRO"
             if not self.packet_agwpe:
                 return None, "No packet radio is set up on this station."
             if not self.packet_up:
-                return None, "The UV-PRO packet hub is not running."
-            return winlink.NoLane("UV-PRO"), None
+                return None, f"The {name} packet hub is not running."
+            # As server.Station.winlink_lane_for: the UV-PRO add-on, on, tunes
+            # the hub's radio (control-port mode; borrow mode refuses, saying why).
+            uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
+            return (winlink.TunedLane(name, uv, self.notice) if uv else winlink.NoLane(name, self.notice)), None
         if scheme != "ardop":
             return None, f"{scheme} is not set up on this station."
         able = [r for r in self.radios if r.present and r.info(None)["winlink"]]

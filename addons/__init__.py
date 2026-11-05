@@ -186,7 +186,10 @@ class Addons:
                 await self._start(name, rec)
 
     async def stop(self):
-        for name, rec in self.items.items():
+        # Last started, first stopped: the hosts add Winlink after the file's
+        # add-ons, so a session ends (and the UV-PRO puts the radio back on its
+        # channel, through its still-running bridge) before the UV-PRO stops.
+        for name, rec in reversed(list(self.items.items())):
             if rec["running"]:
                 await self._stop(name, rec)
 

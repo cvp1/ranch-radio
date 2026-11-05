@@ -468,7 +468,7 @@ class Station(TxAudio):
         from urllib.parse import urlsplit
         scheme = urlsplit(url).scheme
         if scheme == "telnet":
-            return winlink.NoLane("telnet"), None
+            return winlink.NoLane("telnet", self.notice), None
         if scheme.startswith("ax25"):
             packet = self.addons.get("packet") if self.addons else None
             if packet is None:
@@ -477,7 +477,12 @@ class Station(TxAudio):
                 return None, "The Packet add-on is switched off."
             if not packet.state.get("up"):
                 return None, f"The {packet.hub_name} packet hub is not running."
-            return winlink.NoLane(packet.hub_name), None
+            # The UV-PRO add-on, on, tunes the hub's radio to the gateway's
+            # frequency and back (addons/uvpro.py qsy/restore); without it the
+            # operator tunes the radio and the page says so.
+            uv = self.addons.get("uvpro") if self.addons.is_on("uvpro") else None
+            name = packet.hub_name
+            return (winlink.TunedLane(name, uv, self.notice) if uv else winlink.NoLane(name, self.notice)), None
         if scheme != "ardop":
             return None, f"{scheme} is not set up on this station."
         return winlink.LocalLane(self), None

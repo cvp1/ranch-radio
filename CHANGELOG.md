@@ -5,6 +5,26 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Winlink packet sessions tune the UV-PRO for you, and put it back.** When
+  a packet gateway is picked in the Winlink panel and Connect is confirmed,
+  the `uvpro` add-on (control-port mode, `"control"`) puts the hub's radio on
+  the gateway's frequency before Pat dials: a channel already on it (FM
+  simplex, TX on; the one selected now first), else VFO A on a radio that has
+  one, else the spare channel named by the new `"qsy_channel"` option,
+  written for the session and written back after. Dual watch and scan go off
+  for the session. Afterwards the radio goes back to the channel it was on,
+  once no packet link is up on it (`"restore_wait_s"`, 30 s; 5 s while the
+  server stops); a restore that fails is retried for 10 minutes and done
+  first on the next connect. With nothing to tune with, or the add-on
+  borrowing the radio (no `"control"`), the connect is refused, saying why,
+  instead of dialing on the old channel. While the radio is tuned, page edits
+  that would move it are refused and the add-on can't be switched off. With
+  the add-on off nothing changes: the panel says which frequency the radio
+  must be on, as before. Add-ons now stop in reverse order, so Winlink ends
+  its session (and the radio is put back) before the UV-PRO add-on stops.
+
 ### Fixed
 
 - **Winlink on a Mac's radio page reaches the packet hub.** The station page
