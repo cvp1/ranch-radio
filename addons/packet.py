@@ -44,6 +44,9 @@ class Packet(Addon):
     def __init__(self, host, opts):
         super().__init__(host, opts)
         self.url = str(opts.get("url") or "http://127.0.0.1:7310").rstrip("/")
+        # What the host file calls the hub's radio, else the UV-PRO (the only
+        # packet hub there was before network KISS TNCs), as the station page says.
+        self.hub_name = str(opts.get("name") or "UV-PRO")
         self.state = {"up": False, "last_rx": None, "tx": False}
         self._session = None
         self._task = None
@@ -84,7 +87,7 @@ class Packet(Addon):
     def snapshot(self):
         age = round(time.time() - self.state["last_rx"]) if self.state.get("last_rx") else None
         return {"up": self.state["up"], "tx": self.state["tx"], "last_rx_age": age,
-                "hub_name": self.opts.get("name") or "", "hub_title": self.opts.get("title") or ""}
+                "hub_name": self.hub_name, "hub_title": self.opts.get("title") or ""}
 
     def http(self, app, authorised):
         async def slash(request):

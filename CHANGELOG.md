@@ -7,6 +7,17 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Winlink on a Mac's radio page reaches the packet hub.** The station page
+  has always offered a packet session through the hub's radio; a Mac has no
+  station page, and its radio server's Winlink panel knew only its own radio
+  (ARDOP), so the UV-50PRO never appeared there and a packet URL would have
+  armed the HF radio. The radio server now routes a session by its URL's
+  transport as the station does: `ardop` arms this radio, `ax25*` goes
+  through the Packet add-on while it reports the hub up (the hub's own
+  transmit gate applies; refused, saying why, when the hub is down, the add-on
+  is off or there is none), `telnet` keys nothing. The panel gets the
+  station's Via selector: this radio, the hub's radio while it is up, telnet.
+
 - **macOS: a Bluetooth packet hub opens the radio from a child process's
   main thread.** On macOS 27 `openRFCOMMChannelSync` succeeds only on a
   process's main thread; from the hub's link thread it failed with

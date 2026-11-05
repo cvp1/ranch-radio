@@ -425,13 +425,14 @@ body.tx .tx-meters { opacity: 1; }
 .wl-log { margin: 0; height: 180px; overflow-y: auto; padding: 8px 10px; border-radius: 10px;
   border: 1px solid var(--line); background: rgba(0,0,0,.3); color: var(--muted); }
 .wl-compose { display: flex; flex-direction: column; gap: 6px; }
-.wl-compose input, .wl-compose textarea, .wl-url, #wl-band {
+.wl-compose input, .wl-compose textarea, .wl-url, #wl-band, #wl-via {
   font: 13px var(--mono); color: var(--text); background: rgba(0,0,0,.3);
   border: 1px solid var(--line-hi); border-radius: 8px; padding: 7px 9px; user-select: text;
 }
 .wl-compose textarea { resize: vertical; font-family: var(--mono); }
 .wl-compose input[type=file] { padding: 4px; color: var(--muted); }
-#wl-band { padding: 4px 8px; height: 30px; }
+#wl-band, #wl-via { padding: 4px 8px; height: 30px; }
+#wl-via { flex: 1; min-width: 0; }
 .wl-connect { color: var(--text); border-color: var(--line-hi); }
 .wl-connect.wl-confirm { color: var(--warm); border-color: rgba(var(--warm-rgb), .6); background: rgba(var(--warm-rgb), .12); }
 .wl-prompt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: 10px;

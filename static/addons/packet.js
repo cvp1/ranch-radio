@@ -7,7 +7,11 @@
 (() => {
   let snap = {}, body = null;
 
+  // The Winlink panel lists the hub as a Via while it is up (winlink.js).
+  const tellWinlink = () => { if (typeof winlink !== "undefined") winlink.setPacket(snap.up ? snap : null); };
+
   function render() {
+    tellWinlink();
     if (!body) return;
     if (!snap.up) {
       body.innerHTML = `<div class="st-empty">The packet hub isn't connected to its radio${snap.hub_name ? ` (${esc(snap.hub_name)})` : ""}.
@@ -29,7 +33,7 @@
     mount(b) { body = b; render(); },
     hello(s) { snap = s || {}; render(); },
     event(m) { if (m.state) { snap = m.state; render(); } },
-    off() { snap = {}; if (body) body.innerHTML = ""; },
+    off() { snap = {}; tellWinlink(); if (body) body.innerHTML = ""; },
     tab() {
       const title = `${snap.hub_title || "Packet"}: APRS and the Winlink packet link`;
       if (!snap.up) return { dot: "off", off: true, title };
