@@ -1,0 +1,20 @@
+/* MeshCore add-on (static/addons/meshcore.js) */
+.addon-meshcore .mc-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.addon-meshcore .mc-name { font-weight: 700; font-size: 1.1rem; }
+.addon-meshcore .mc-ok { color: var(--ok, #6c6); }
+.addon-meshcore .mc-off { color: var(--warn, #d96); }
+.addon-meshcore .mc-sub { margin: .25rem 0 .6rem; }
+.addon-meshcore .mc-cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: .8rem; }
+@media (max-width: 760px) { .addon-meshcore .mc-cols { grid-template-columns: 1fr; } }
+.addon-meshcore .mc-tabs { flex-wrap: wrap; margin-bottom: .4rem; }
+.addon-meshcore .mc-unread { background: var(--accent, #48f); color: #fff; border-radius: .6rem; padding: 0 .35rem; font-size: .75rem; }
+.addon-meshcore .mc-list, .addon-meshcore .mc-nodes { max-height: 26rem; overflow-y: auto; }
+.addon-meshcore .mc-msg { padding: .3rem 0; border-bottom: 1px solid rgba(255,255,255,.06); display: grid; gap: .1rem; }
+.addon-meshcore .mc-msg.mine b { color: var(--accent, #48f); }
+.addon-meshcore .mc-msg small, .addon-meshcore .mc-node small { opacity: .65; }
+.addon-meshcore .mc-node { padding: .35rem 0; border-bottom: 1px solid rgba(255,255,255,.06); display: grid; gap: .1rem; }
+.addon-meshcore .mc-node .stat { font-size: .8rem; }
+.addon-meshcore .mc-form { margin-top: .5rem; display: flex; gap: .5rem; align-items: center; }
+.addon-meshcore .mc-form .mc-text { flex: 1; min-width: 0; }
+.addon-meshcore .mc-over { color: var(--warn, #d96); }
+.addon-meshcore .mc-empty { padding: .6rem 0; }

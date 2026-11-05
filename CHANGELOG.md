@@ -7,6 +7,18 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **MeshCore tab (`meshcore` add-on).** A MeshCore companion node on USB
+  (`companion_radio_usb` firmware) gets its own tab: the node's name, model,
+  firmware, radio settings, battery and location; the nodes it has heard
+  advertise, newest first, with hops and distance; channel and direct
+  messages, with sending (140 bytes) and delivery ACKs for direct ones; and
+  Advert / Flood advert buttons (one per 30 s). `meshcore_bridge.py` runs
+  under its own venv with the `meshcore` package
+  (`python3 -m venv ~/.local/share/venvs/meshcore && ~/.local/share/venvs/meshcore/bin/pip install meshcore`),
+  sets the node's clock on connect and changes no radio settings. MeshCore
+  and Meshtastic are separate meshes, so a host can run this next to the
+  Mesh tab. Config: `"meshcore": {"port": "/dev/ttyUSB0"}` in the host's
+  add-ons; off frees the port for the MeshCore apps or a flash.
 - **Winlink packet sessions tune the UV-PRO for you, and put it back.** When
   a packet gateway is picked in the Winlink panel and Connect is confirmed,
   the `uvpro` add-on (control-port mode, `"control"`) puts the hub's radio on
