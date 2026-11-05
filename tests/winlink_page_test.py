@@ -5,6 +5,7 @@ Chromium (DevTools protocol, no extra packages) and checks:
   - the panel shows only on a server with Winlink
   - the inbox lists Pat's message; clicking it shows the body
   - compose posts to Pat (and the outbox then lists it)
+  - Via lists this radio (ARDOP) and telnet; telnet fills the URL
   - the gateway list fills from Pat and picking a gateway fills the URL
   - Connect needs a second click to confirm; then the session log runs,
     the panel shows the session armed, and it ends with "sent 1, received 1"
@@ -221,6 +222,19 @@ try:
         check("compose form closes", b.js(f"({VISIBLE})('#wl-compose')"), False)
         got = b.wait(f"({TEXT})('#wl-list').includes('From the page')")
         check("outbox shows the new message", bool(got), True)
+
+        # via: this radio for ARDOP and telnet (no Packet add-on on this server)
+        vias = b.wait("[...document.querySelectorAll('#wl-via option')].map((o) => o.textContent).length === 2 && "
+                      "[...document.querySelectorAll('#wl-via option')].map((o) => o.textContent)")
+        check("Via lists this radio (ARDOP) and telnet",
+              isinstance(vias, list) and [v.startswith("HF · ") and v.endswith(" (ARDOP)") for v in vias[:1]] + vias[1:],
+              [True, "Telnet (internet, no radio)"])
+        b.js("(() => { const s = document.querySelector('#wl-via'); s.value = 'telnet'; s.dispatchEvent(new Event('change')); })()")
+        check("  telnet fills the URL and hides the gateways",
+              (b.js("document.querySelector('#wl-url').value.startsWith('telnet://')"), b.js("document.querySelector('#wl-gateways').hidden")),
+              (True, True))
+        b.js("(() => { const s = document.querySelector('#wl-via'); s.value = 'radio'; s.dispatchEvent(new Event('change')); })()")
+        check("  back to the radio: gateways shown", b.js("document.querySelector('#wl-gateways').hidden"), False)
 
         # gateways
         b.js("document.querySelector('#wl-gw-refresh').click()")
