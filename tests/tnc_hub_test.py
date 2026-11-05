@@ -1187,6 +1187,63 @@ def scenario_igate():
     shutil.rmtree(pdir, ignore_errors=True)
 
 
+def scenario_digi():
+    """The fill-in digipeater at the wire: a WIDE1-1 packet nothing else
+    repeats goes out after the viscous hold, with our call substituted; one a
+    wide digi repeats inside the hold doesn't; a request by name goes at once;
+    WIDE2-1 alone is left alone; with transmit off nothing goes."""
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True, extra=("--digi", "N9ABC-1", "--digi-viscous", "1"))
+    try:
+        radio.inject(aprs("KF7XYZ-9", ">lonely", digis=["WIDE1-1", "WIDE2-1"]))
+        radio.inject(aprs("KF7XYZ-9", ">covered", digis=["WIDE1-1", "WIDE2-1"]))
+        radio.inject(repeated("KF7XYZ-9", ">covered", ["AA7JB", "WIDE2-1"]))
+        radio.inject(aprs("KF7XYZ-9", ">by name", digis=["N9ABC-1", "WIDE2-1"]))
+        radio.inject(aprs("KF7XYZ-9", ">wide only", digis=["WIDE2-1"]))
+        st = wait_for(lambda: (lambda d: d["queued"] >= 2 and d)(hub.status()["digi"]), 15) or hub.status()["digi"]
+        on_air(radio, hub)
+        sent = [Frame.decode(raw).tnc2() for _, raw in radio.transmitted()]
+        check("sent: by name at once, then the lonely WIDE1-1 after its hold", sent,
+              ["KF7XYZ-9>APRS,N9ABC-1*,WIDE2-1:>by name", "KF7XYZ-9>APRS,N9ABC-1*,WIDE2-1:>lonely"])
+        check("api/status: one held packet covered by a wide digi", st.get("covered"), 1)
+        time.sleep(1.5)     # a quiet window: nothing more may go out
+        check("nothing else transmitted", len(radio.transmitted()), 2)
+    finally:
+        hub.stop(); radio.stop()
+
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=False, extra=("--digi", "N9ABC-1", "--digi-viscous", "0"))
+    try:
+        radio.inject(aprs("KF7XYZ-9", ">tx off", digis=["WIDE1-1", "WIDE2-1"]))
+        wait_for(lambda: hub.counts().get("digi_refused", 0) >= 1, 10)
+        check("transmit off: refused at the gate, nothing on air",
+              (hub.counts().get("digi_refused", 0), radio.transmitted()), (1, []))
+    finally:
+        hub.stop(); radio.stop()
+
+
+def scenario_igate_beacon():
+    """The iGate beacons its position to APRS-IS on login (R&, TCPIP*), never RF."""
+    srv = FakeAprsIs()
+    pdir = tempfile.mkdtemp(prefix="tnchub-igb-")
+    pfile = os.path.join(pdir, "passcode")
+    with open(pfile, "w") as f:
+        f.write("12345\n")
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True, extra=("--igate-login", "N9ABC-10", "--igate-passcode-file", pfile,
+                                         "--igate-server", f"127.0.0.1:{srv.port}", "--lat", "40.8166",
+                                         "--lon", "-105.1833", "--igate-beacon-min", "30"))
+    try:
+        got = wait_for(lambda: srv.packets() or None, 15) or []
+        check("one beacon on login", got,
+              ["N9ABC-10>APZRR0,TCPIP*:!4049.00NR10511.00W&Ranch Radio RX-only iGate"])
+        check("api/status counts it", hub.status()["igate"].get("beacons"), 1)
+        check("nothing on RF", radio.transmitted(), [])
+    finally:
+        hub.stop(); radio.stop(); srv.stop()
+        shutil.rmtree(pdir, ignore_errors=True)
+
+
 def scenario_aprs_loop_latency():
     """APRS plan M2: the event loop stays responsive (p99 lag < 50 ms, from
     the hub's own ticker) through a backfill of the heard sample and a burst."""
@@ -1230,7 +1287,7 @@ SCENARIOS = [scenario_cross_site_guard, scenario_on_needs_tx_at_start, scenario_
              scenario_connect_no_answer, scenario_connect_busy, scenario_wrong_source_connect,
              scenario_radio_drop_ends_link, scenario_lend_radio, scenario_real_pat,
              scenario_real_pat_sends_message, scenario_aprs_store, scenario_aprs_loop_latency,
-             scenario_igate]
+             scenario_igate, scenario_digi, scenario_igate_beacon]
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY", "")

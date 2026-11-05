@@ -32,6 +32,13 @@ Transmit safety (every frame, from every client, goes through one gate):
 
 iGate (optional, --igate-login): heard packets go to APRS-IS (igate.py).
 Receive only: nothing from APRS-IS reaches the transmit gate or the radio.
+With --igate-beacon-min and --lat/--lon it beacons its own position to
+APRS-IS (never RF) as a receive-only iGate.
+
+Fill-in digipeater (optional, --digi CALL): WIDE1-1 requests that no wide
+digipeater repeats within --digi-viscous seconds, and requests to CALL by
+name (digi.py). Through the transmit gate like everything else, with its own
+--max-digi-per-min.
 
 Radio control: the UV-PRO's KISS channel (RFCOMM 1) also carries its command
 protocol, Gaia frames (FF 01 ...), next to the KISS frames (linux-station,
@@ -68,6 +75,7 @@ from aiohttp import web
 
 import aprs_store
 import ax25
+import digi
 import igate
 import webguard
 from ax25 import U_SABM, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
@@ -176,17 +184,19 @@ def now():
 # ------------------------------------------------------------------ gate
 
 class TxGate:
-    def __init__(self, enabled, allow_calls, max_per_min, ui_per_min):
+    def __init__(self, enabled, allow_calls, max_per_min, ui_per_min, digi_per_min=6):
         self.enabled = enabled
         self.allowed_by_start = enabled
         self.allow = {c.upper() for c in allow_calls}
-        self.max_per_min, self.ui_per_min = max_per_min, ui_per_min
-        self.sent = collections.deque()      # (t, is_ui)
+        self.max_per_min, self.ui_per_min, self.digi_per_min = max_per_min, ui_per_min, digi_per_min
+        self.sent = collections.deque()      # (t, kind): "ui", "digi" or "other"
 
-    def check(self, f: Frame, raw: bytes):
+    def check(self, f: Frame, raw: bytes, digi=False):
+        """Why this frame may not go, or None. digi: another station's frame
+        the fill-in digipeater repeats (its source isn't ours; its own limit)."""
         if not self.enabled:
             return "transmit is off"
-        if f.src.call not in self.allow:
+        if not digi and f.src.call not in self.allow:
             return f"source {f.src} is not an allowed callsign ({', '.join(sorted(self.allow))})"
         if len(raw) > ax25.MAX_FRAME_BYTES:
             return "frame too long"
@@ -195,13 +205,17 @@ class TxGate:
             self.sent.popleft()
         if len(self.sent) >= self.max_per_min:
             return f"rate limit ({self.max_per_min} frames/min)"
+        if digi:
+            if sum(1 for _, k in self.sent if k == "digi") >= self.digi_per_min:
+                return f"digipeater rate limit ({self.digi_per_min}/min)"
+            return None
         is_ui = f.kind == "U" and f.utype == U_UI
-        if is_ui and sum(1 for _, u in self.sent if u) >= self.ui_per_min:
+        if is_ui and sum(1 for _, k in self.sent if k == "ui") >= self.ui_per_min:
             return f"UI rate limit ({self.ui_per_min}/min)"
         return None
 
-    def record(self, f: Frame):
-        self.sent.append((now(), f.kind == "U" and f.utype == U_UI))
+    def record(self, f: Frame, digi=False):
+        self.sent.append((now(), "digi" if digi else "ui" if f.kind == "U" and f.utype == U_UI else "other"))
 
 
 # ------------------------------------------------------------- jsonl log
@@ -547,7 +561,8 @@ class Hub:
     def __init__(self, args):
         self.args = args
         allow = args.allow_calls or [ax25.base_call(args.mycall)]
-        self.gate = TxGate(args.tx, allow, args.max_frames_per_min, args.max_ui_per_min)
+        self.gate = TxGate(args.tx, allow, args.max_frames_per_min, args.max_ui_per_min,
+                           args.max_digi_per_min)
         self.radio = RadioPort(args.tnc, self.on_radio_frame, self.on_radio_state, self.on_radio_control)
         self.control_clients = set()
         self.links = {}                 # (local, remote) -> (Link, AgwClient)
@@ -568,6 +583,8 @@ class Hub:
         self.aprs = None                # AprsStore (APRS plan M2), None with --no-aprs
         self.aprs_summary = {}          # refreshed from the store every few seconds
         self.igate = None               # igate.IGate with --igate-login: heard packets to APRS-IS
+        self.digi = digi.Digi(args.digi, args.digi_viscous) if args.digi else None
+        self._digi_timer = None
         self.loop_lag = collections.deque(maxlen=3000)   # event-loop lag samples, ms
 
     # -- radio side --
@@ -615,6 +632,9 @@ class Hub:
         if self.igate:
             self.igate.offer(f)
         log.info("RX %s", text)
+        if self.digi:
+            self.digi.heard(f, now())
+            self._digi_flush()
         for c in list(self.kiss_clients):
             c.send_frame(raw)
         for c in list(self.agw_clients):
@@ -660,15 +680,32 @@ class Hub:
                     link.accept(f)
                     return
 
+    # -- fill-in digipeater (digi.py) --
+
+    def _digi_flush(self):
+        """Send what the digipeater's holds released; wake again for the next."""
+        if self._digi_timer:
+            self._digi_timer.cancel()
+            self._digi_timer = None
+        for f in self.digi.due(now()):
+            try:
+                self.transmit(f, "digi", digi=True)
+            except TxRefused:
+                self.counts["digi_refused"] += 1
+        nxt = self.digi.next_due()
+        if nxt is not None:
+            loop = asyncio.get_running_loop()
+            self._digi_timer = loop.call_later(max(0.0, nxt - now()) + 0.01, self._digi_flush)
+
     # -- transmit --
 
-    def transmit(self, f: Frame, origin: str):
+    def transmit(self, f: Frame, origin: str, digi=False):
         """Every frame leaves through here. Raises TxRefused."""
         try:
             raw = f.encode()
         except FrameError as e:
             raise TxRefused(str(e)) from e
-        why = self.lent_why() or self.gate.check(f, raw)
+        why = self.lent_why() or self.gate.check(f, raw, digi=digi)
         text = f.tnc2()
         if why:
             self.counts["tx_refused"] += 1
@@ -678,7 +715,7 @@ class Hub:
             raise TxRefused(why)
         self.radio.write(raw)
         self.last_tx = now()
-        self.gate.record(f)
+        self.gate.record(f, digi=digi)
         self.counts["tx_frames"] += 1
         rec = {"t": now(), "dir": "tx", "origin": origin, "text": text}
         self.recent.append(rec)
@@ -782,6 +819,7 @@ class Hub:
                       "control": self.args.control_port, "bind": self.args.bind},
             "aprs": self.aprs_status(),
             "igate": self.igate.status() if self.igate else {"enabled": False},
+            "digi": self.digi.status() if self.digi else {"enabled": False},
         }
 
     def aprs_status(self):
@@ -1275,7 +1313,10 @@ async def amain(args):
         await hub.open_aprs()
         tasks.append(asyncio.create_task(hub.aprs_refresh()))
     if args.igate_login:
-        hub.igate = igate.IGate(args.igate_login, args.igate_passcode, args.igate_server).start()
+        beacon = (igate.beacon_info(args.lat, args.lon, args.igate_comment)
+                  if args.igate_beacon_min else None)
+        hub.igate = igate.IGate(args.igate_login, args.igate_passcode, args.igate_server,
+                                beacon=beacon, beacon_s=args.igate_beacon_min * 60).start()
     hub.radio.start()
     servers = []
     if args.agw_port:
@@ -1347,6 +1388,13 @@ def parse_args(argv=None):
     p.add_argument("--igate-login", help="APRS-IS login (callsign-SSID); turns the receive-only iGate on")
     p.add_argument("--igate-passcode-file", help="a file holding the APRS-IS passcode")
     p.add_argument("--igate-server", default=igate.DEFAULT_SERVER, help="host or host:port (default %(default)s)")
+    p.add_argument("--igate-beacon-min", type=int, default=0,
+                   help="minutes between the iGate's position beacons to APRS-IS (needs --lat/--lon; 0: none)")
+    p.add_argument("--igate-comment", default=igate.BEACON_COMMENT, help="the iGate beacon's comment")
+    p.add_argument("--digi", metavar="CALL", help="be a fill-in digipeater as CALL (callsign-SSID)")
+    p.add_argument("--digi-viscous", type=float, default=5.0,
+                   help="seconds a WIDE1-1 request waits for a wide digipeater to repeat it first")
+    p.add_argument("--max-digi-per-min", type=int, default=6, help="frames the digipeater may send a minute")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     ax25.parse_call(a.mycall)
@@ -1363,6 +1411,19 @@ def parse_args(argv=None):
             a.igate_passcode = igate.read_passcode(a.igate_passcode_file)
         except ValueError as e:
             p.error(str(e))
+    if a.igate_beacon_min:
+        if not a.igate_login:
+            p.error("--igate-beacon-min needs --igate-login")
+        if a.lat is None or a.lon is None:
+            p.error("--igate-beacon-min needs --lat and --lon (the position it beacons)")
+        if not 10 <= a.igate_beacon_min <= 120:
+            p.error("--igate-beacon-min must be 10-120 (APRS-IS etiquette: no more often than every 10 min)")
+    if a.digi:
+        ax25.parse_call(a.digi)
+        if not 0 <= a.digi_viscous <= 30:
+            p.error("--digi-viscous must be 0-30 seconds")
+        if not 1 <= a.max_digi_per_min <= 30:
+            p.error("--max-digi-per-min must be 1-30")
     return a
 
 
