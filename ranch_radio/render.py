@@ -109,7 +109,8 @@ RULES = [
     (("packet", "direwolf", "igate", "login"), CALL), (("packet", "direwolf", "igate", "passcode"), TOKEN),
     (("packet", "direwolf", "igate", "server"), TOKEN),
     (("packet", "igate", "login"), CALL), (("packet", "igate", "passcode"), TOKEN),
-    (("packet", "igate", "server"), TOKEN),
+    (("packet", "igate", "server"), TOKEN), (("packet", "igate", "comment"), TEXT),
+    (("packet", "digi", "call"), CALL),
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
@@ -305,6 +306,24 @@ def validate(h):
         if (pk.get("direwolf") or {}).get("igate"):
             raise HostError(f"{h['host']}: packet.igate and packet.direwolf.igate are both set: "
                             f"keep one, or every packet goes to APRS-IS twice")
+        bm = ig.get("beacon_min")
+        if bm is not None:
+            if not isinstance(bm, int) or isinstance(bm, bool) or not (bm == 0 or 10 <= bm <= 120):
+                raise HostError(f"{h['host']}: packet.igate.beacon_min = {bm!r}: minutes, 10 to 120 (0: none)")
+            if bm and not pk.get("position"):
+                raise HostError(f"{h['host']}: packet.igate.beacon_min needs packet.position (what it beacons)")
+    dg = pk.get("digi")
+    if dg is not None:
+        if not isinstance(dg, dict) or not dg.get("call"):
+            raise HostError(f"{h['host']}: packet.digi needs \"call\" (the digipeater's callsign-SSID)")
+        if pk.get("tnc") == "direwolf":
+            raise HostError(f"{h['host']}: packet.digi is the hub's; with Direwolf as the modem, use Direwolf's DIGIPEAT")
+        v = dg.get("viscous_s", 5)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= 30:
+            raise HostError(f"{h['host']}: packet.digi.viscous_s = {v!r}: seconds, 0 to 30")
+        m = dg.get("max_per_min", 6)
+        if not isinstance(m, int) or isinstance(m, bool) or not 1 <= m <= 30:
+            raise HostError(f"{h['host']}: packet.digi.max_per_min = {m!r}: 1 to 30")
     u = h.get("updates", True)
     if u is not True and u is not False and not isinstance(u, dict):
         raise HostError(f"{h['host']}: updates must be false or an object like "
@@ -384,6 +403,17 @@ def hub_argv(h, py, repo, pth):
         argv += ["--igate-login", ig["login"], "--igate-passcode-file", pth(ig["passcode"])]
         if ig.get("server"):
             argv += ["--igate-server", ig["server"]]
+        if ig.get("beacon_min"):         # its position to APRS-IS only, as an RX-only iGate
+            argv += ["--igate-beacon-min", str(ig["beacon_min"])]
+            if ig.get("comment"):
+                argv += ["--igate-comment", ig["comment"]]
+    dg = p.get("digi")
+    if dg:                               # fill-in digipeater (digi.py); transmits only with "tx"
+        argv += ["--digi", dg["call"]]
+        if "viscous_s" in dg:
+            argv += ["--digi-viscous", str(dg["viscous_s"])]
+        if "max_per_min" in dg:
+            argv += ["--max-digi-per-min", str(dg["max_per_min"])]
     return argv
 
 

@@ -26,6 +26,11 @@ What is gated (the APRS-IS iGate rules, as Direwolf applies them):
 
 While the server is unreachable, heard packets are dropped, not queued: an
 old position resent minutes later would be wrong on every map.
+
+Beacon (optional, beacon=): the iGate's own position, to APRS-IS only, never
+RF: on login and every beacon_s after (30 min is the usual; 10 the floor).
+Symbol R& (an "R" overlay on the gateway symbol: a receive-only iGate), so
+maps show what the station is and the coverage tools can count it.
 """
 
 import asyncio
@@ -98,8 +103,31 @@ def gate_line(f, login):
     return line, (key_src.upper(), key_dest.upper(), info)
 
 
+BEACON_TOCALL = "APZRR0"            # APZ: experimental software, as aprs.py's examples
+BEACON_COMMENT = "Ranch Radio RX-only iGate"
+
+
+def _dm(deg, width, pos, neg):
+    hemi = pos if deg >= 0 else neg
+    deg = abs(deg)
+    d = int(deg)
+    m = round((deg - d) * 60, 2)
+    if m >= 60:
+        d, m = d + 1, 0.0
+    return f"{d:0{width}d}{m:05.2f}{hemi}"
+
+
+def beacon_info(lat, lon, comment=BEACON_COMMENT):
+    """The beacon's APRS info: an uncompressed position, no timestamp, no
+    messaging ("!"), symbol R&."""
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError(f"position {lat}, {lon} is not on Earth")
+    comment = re.sub(r"[\r\n|~]", " ", comment)[:43]
+    return f"!{_dm(lat, 2, 'N', 'S')}R{_dm(lon, 3, 'E', 'W')}&{comment}".encode("latin-1")
+
+
 class IGate:
-    def __init__(self, login, passcode, server=DEFAULT_SERVER):
+    def __init__(self, login, passcode, server=DEFAULT_SERVER, beacon=None, beacon_s=1800):
         self.login = login.upper()
         self.passcode = passcode
         self.server = server
@@ -108,7 +136,10 @@ class IGate:
         self.verified = False
         self.since = None
         self.error = None
-        self.counts = {"gated": 0, "skipped": 0, "dupes": 0, "dropped": 0, "connects": 0}
+        self.counts = {"gated": 0, "skipped": 0, "dupes": 0, "dropped": 0, "connects": 0, "beacons": 0}
+        self.beacon, self.beacon_s = beacon, beacon_s
+        self.last_beacon = None
+        self._beacon_task = None
         self._writer = None
         self._seen = {}                      # dup key -> time sent
         self._task = None
@@ -129,7 +160,22 @@ class IGate:
     def status(self):
         return {"enabled": True, "login": self.login, "server": self.server,
                 "connected": self.connected, "verified": self.verified,
-                "since": self.since, "error": self.error, **self.counts}
+                "since": self.since, "error": self.error,
+                "beacon_min": self.beacon_s // 60 if self.beacon else 0,
+                "last_beacon": self.last_beacon, **self.counts}
+
+    def beacon_line(self):
+        return f"{self.login}>{BEACON_TOCALL},TCPIP*:".encode("latin-1") + self.beacon
+
+    async def _beacon_loop(self):
+        if self.last_beacon is not None:      # a reconnect doesn't reset the interval
+            await asyncio.sleep(max(0.0, self.last_beacon + self.beacon_s - time.time()))
+        while self.connected and self.verified and self._writer:
+            self._writer.write(self.beacon_line() + b"\r\n")
+            self.counts["beacons"] += 1
+            self.last_beacon = time.time()
+            log.info("iGate: beacon %s", self.beacon_line().decode("latin-1"))
+            await asyncio.sleep(self.beacon_s)
 
     def offer(self, f):
         """A frame the radio heard. Never raises: the hub's receive path
@@ -191,9 +237,14 @@ class IGate:
                     raise PermissionError(f"login not verified ({text[2:]}): check the passcode")
                 self.verified, self.error = True, None
                 log.info("iGate: logged in to %s as %s", self.server, self.login)
+                if self.beacon and not self._beacon_task:
+                    self._beacon_task = asyncio.create_task(self._beacon_loop())
             # Anything else (keepalives, and packets if a server sends any) is ignored.
 
     def _close(self):
+        if self._beacon_task:
+            self._beacon_task.cancel()
+            self._beacon_task = None
         w, self._writer = self._writer, None
         self.connected = self.verified = False
         if w:

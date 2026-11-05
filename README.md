@@ -283,6 +283,19 @@ has connected. Received frames appear in the heard list and the APRS store.
   each packet once however many digipeaters repeat it, and never sends
   anything from APRS-IS on the air. `api/status` shows it under `"igate"`. A
   host runs one iGate: the hub's, or Direwolf's (below), not both.
+  `"beacon_min": 30` (10 to 120) adds the iGate's own position beacon, to
+  APRS-IS only, never RF, with the receive-only iGate symbol `R&`; it needs
+  `"position"` in the `"packet"` block. `"comment"` sets its text.
+- **Fill-in digipeater, for any TNC but Direwolf:** add
+  `"digi": {"call": "N9ABC-1"}` to the `"packet"` block (with `"tx": true`).
+  It repeats only WIDE1-1 as the first hop (`WIDE1-1,WIDE2-1` becomes
+  `N9ABC-1*,WIDE2-1`) and packets addressed to its call; never WIDE2-n or the
+  old RELAY/WIDE/TRACE. It is *viscous*: a WIDE1-1 packet waits
+  `"viscous_s"` (default 5) seconds, and if a wide digipeater repeats it in
+  that time, it isn't sent, so a site inside wide coverage only fills the
+  gaps. Each packet goes at most once per 30 s, through the transmit gate with
+  its own `"max_per_min"` (default 6). `api/status` shows it under `"digi"`.
+  With Direwolf as the modem, use Direwolf's own `DIGIPEAT` instead.
 
 ### Direwolf on a USB sound card cable (AIOC), and an iGate
 

@@ -127,5 +127,24 @@ check("refused: the hub's iGate and Direwolf's at once",
       refused(mac, lambda h: h["packet"]["direwolf"].update(igate=dict(h["packet"]["igate"]))), True)
 check("accepted: the hub's iGate on its own", refused(station, lambda h: None), False)
 
+# ---------------------------------------------------------------- the beacon
+check("beacon: uncompressed position, R& (RX-only iGate), no timestamp",
+      igate.beacon_info(40.8166, -105.1833), b"!4049.00NR10511.00W&Ranch Radio RX-only iGate")
+check("beacon: south and east", igate.beacon_info(-33.8688, 151.2093, "x"), b"!3352.13SR15112.56E&x")
+check("beacon: minutes that round to 60 carry into the degree", igate.beacon_info(10.99999, -0.5, "x"),
+      b"!1100.00NR00030.00W&x")
+check("beacon: the comment loses CR/LF and stops at 43", igate.beacon_info(0, 0, "a\r\nb" + "c" * 60)[-43:],
+      ("a  b" + "c" * 60).encode()[:43])
+g = igate.IGate("N9ABC-10", "1", beacon=igate.beacon_info(40.8166, -105.1833))
+check("beacon line: to APRS-IS as TCPIP*, never a path RF would use", g.beacon_line(),
+      b"N9ABC-10>APZRR0,TCPIP*:!4049.00NR10511.00W&Ranch Radio RX-only iGate")
+station["packet"]["igate"]["beacon_min"] = 30
+station["packet"]["position"] = {"lat": 40.8166, "lon": -105.1833}
+argv = render.hub_argv(station, "/usr/bin/python3", "/r", lambda p: p)
+check("rendered: --igate-beacon-min", argv[argv.index("--igate-beacon-min") + 1], "30")
+check("refused: a beacon every 5 min", refused(station, lambda h: h["packet"]["igate"].update(beacon_min=5)), True)
+check("refused: a beacon with no position", refused(station, lambda h: h["packet"].pop("position")), True)
+check("accepted: beacon_min 30 with a position", refused(station, lambda h: None), False)
+
 print(f"\n{'ALL PASS' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

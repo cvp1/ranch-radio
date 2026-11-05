@@ -5,6 +5,19 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A viscous fill-in digipeater in the packet hub** (`digi.py`, host file
+  `"packet": {"digi": {"call": ...}}`). WIDE1-1 first hops and packets to its
+  own call only, callsign substitution, a 30 s duplicate window, its own rate
+  limit at the transmit gate. A WIDE1-1 packet waits `viscous_s` (5 s) and is
+  dropped if a wide digipeater repeats it first: measured over three weeks of
+  one station's log, 84% of local WIDE1-1 packets were already repeated by a
+  wide digi, so a plain fill-in there would mostly add duplicates.
+- **The hub's iGate beacons its own position to APRS-IS** (`"igate":
+  {"beacon_min": 30}`), never RF, with the receive-only iGate symbol `R&`; at
+  login and every `beacon_min` after, a reconnect not resetting the interval.
+
 ### Changed
 
 - **The `uvpro` add-on and a Bluetooth packet hub run on macOS too.** The
