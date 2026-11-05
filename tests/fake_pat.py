@@ -29,18 +29,45 @@ Environment:
                     nothing through the lane, as Pat's AX.25 over the hub's
                     AGWPE doesn't; it "succeeds" after FAKE_PAT_TX_S. ARDOP
                     keys through the lane as before
+  FAKE_PAT_BROKEN_ATTACH  "1": every attachment GET answers 500
+  FAKE_PAT_BROKEN_READ    "1": the mark-read route answers 500
+  FAKE_PAT_SLOW_MID  a MID whose message GET answers only after 2 s (a stale
+                    read the page must drop)
+  (All read once at start: a test that needs one starts its own server.)
 
 Routes (shapes as in Pat v1.0.0 api/api.go, api/mailbox.go):
   GET  /api/status, /api/mailbox/{box}, /api/mailbox/{box}/{mid}, /api/rmslist
   POST /api/mailbox/out (multipart; 400 without date)
+  POST /api/mailbox/{box}  move: X-Pat-SourcePath names the message, unescaped
+                    and cleaned like Pat does (501 without it, 400 when the
+                    source message is absent)
+  DELETE /api/mailbox/{box}/{mid}  (404 when absent)
+  POST /api/mailbox/{box}/{mid}/read  {"read": bool}; 400 for anything that is
+                    not an object with a boolean read/Read (stricter than Pat,
+                    which takes {} as false, so a bare `true` never earns a
+                    "read" record); 500 when the message is absent
+  GET  /api/mailbox/{box}/{mid}/{file}  an attachment, text/plain (404 when absent)
   GET  /api/connect?url=  blocks until the session ends; {"NumReceived": n}
   GET|POST /api/disconnect?dirty=
   GET  /ws  MyCall, Status, LogLine, Prompt; reads prompt_response / Pong
+
+FAKE_PAT_LOG gets a {"route": "req", "method", "path", "headers"} line for
+every request at entry, before any validation, so a test can prove that no
+request reached Pat; the per-route lines ("compose", "move", "delete",
+"read", ...) are the evidence that Pat accepted one.
+
+Mailbox: in/ holds ABC123 (N0DAJ, unread, Cc null, no files), DEF456 (N0DAJ,
+read, Cc K7ABC, subject "Re: Already a reply", note.txt attached) and GHI789
+(W1XYZ, unread, subject "RE: Upper case"). MyCall is N9ABC.
 """
 import asyncio
+import hashlib
+import itertools
 import json
 import os
+import posixpath
 import sys
+from urllib.parse import unquote
 
 from aiohttp import web
 
@@ -57,13 +84,33 @@ LATE_ID_S = float(os.environ.get("FAKE_PAT_LATE_ID_S", "0"))
 SEND_N = os.environ.get("FAKE_PAT_SEND_N")
 BROKEN_BOX = os.environ.get("FAKE_PAT_BROKEN_BOX")
 NO_PTT = os.environ.get("FAKE_PAT_NO_PTT") == "1"
+BROKEN_ATTACH = os.environ.get("FAKE_PAT_BROKEN_ATTACH") == "1"
+BROKEN_READ = os.environ.get("FAKE_PAT_BROKEN_READ") == "1"
+SLOW_MID = os.environ.get("FAKE_PAT_SLOW_MID")
+MYCALL = "N9ABC"
+
+
+def _addr(a):
+    return {"Proto": "", "Addr": a}
+
 
 BOXES = {"in": [{"MID": "ABC123", "Date": "2026-10-14T20:50:00Z",
-                 "From": {"Proto": "", "Addr": "N0DAJ"}, "To": [{"Proto": "", "Addr": "N9ABC"}],
+                 "From": _addr("N0DAJ"), "To": [_addr(MYCALL)],
                  "Cc": None, "Subject": "Test message", "Body": "", "BodyHTML": "",
+                 "Files": [], "P2POnly": False, "Unread": True},
+                {"MID": "DEF456", "Date": "2026-10-13T18:00:00Z",
+                 "From": _addr("N0DAJ"), "To": [_addr(MYCALL)], "Cc": [_addr("K7ABC")],
+                 "Subject": "Re: Already a reply", "Body": "", "BodyHTML": "",
+                 "Files": [{"Name": "note.txt", "Size": 5}], "P2POnly": False, "Unread": False},
+                {"MID": "GHI789", "Date": "2026-10-12T15:30:00Z",
+                 "From": _addr("W1XYZ"), "To": [_addr(MYCALL)], "Cc": None,
+                 "Subject": "RE: Upper case", "Body": "", "BodyHTML": "",
                  "Files": [], "P2POnly": False, "Unread": True}],
          "out": [], "sent": [], "archive": []}
-BODIES = {"ABC123": "Hello from the test.\r\n"}
+BODIES = {"ABC123": "Hello from the test.\r\n", "DEF456": "Attached.\r\n",
+          "GHI789": "Shouting, politely.\r\n"}
+ATTACH = {("DEF456", "note.txt"): b"hello"}
+_out_ids = itertools.count()
 
 clients = set()
 status = {"active_listeners": [], "connected": False, "dialing": False, "remote_addr": "",
@@ -99,25 +146,113 @@ async def mailbox(request):
     return web.Response(text=json.dumps(BOXES[box]), content_type="text/plain")
 
 
-async def message(request):
-    box, mid = request.match_info["box"], request.match_info["mid"]
+def find(box, mid):
     for m in BOXES.get(box, []):
         if m["MID"] == mid:
-            return web.Response(text=json.dumps(dict(m, Body=BODIES.get(mid, ""))),
-                                content_type="text/plain")
+            return m
+    return None
+
+
+@web.middleware
+async def log_requests(request, handler):
+    # Before any validation: "no request reached Pat" is then provable.
+    record(route="req", method=request.method, path=request.raw_path,
+           headers={k: request.headers[k] for k in ("X-Pat-SourcePath",) if k in request.headers})
+    return await handler(request)
+
+
+async def message(request):
+    box, mid = request.match_info["box"], request.match_info["mid"]
+    if mid == SLOW_MID:
+        await asyncio.sleep(2.0)
+    m = find(box, mid)
+    if m is not None:
+        return web.Response(text=json.dumps(dict(m, Body=m.get("Body") or BODIES.get(mid, ""))),
+                            content_type="text/plain")
     return web.Response(status=500, text="no such message")
 
 
 async def compose(request):
     form = await request.post()
     fields = {k: (v if isinstance(v, str) else f"<file {v.filename}>") for k, v in form.items()}
-    files = [v.filename for k, v in form.items() if k == "files" and not isinstance(v, str)]
+    uploads = [v for k, v in form.items() if k == "files" and not isinstance(v, str)]
+    blobs = [(v, v.file.read()) for v in uploads]
+    files = [{"name": v.filename, "size": len(data), "type": v.content_type,
+              "sha256": hashlib.sha256(data).hexdigest()} for v, data in blobs]
     record(route="compose", fields=fields, files=files)
     if not form.get("date"):
         return web.Response(status=400, text="Missing date")
-    BOXES["out"].append({"MID": f"OUT{len(BOXES['out'])}", "Subject": form.get("subject", ""),
-                         "To": [{"Addr": a} for a in form.get("to", "").split()], "Files": files})
+    mid = f"OUT{next(_out_ids)}"
+    split = lambda s: [a for a in s.replace(",", " ").replace(";", " ").split() if a]  # noqa: E731
+    BOXES["out"].append({"MID": mid, "Date": form.get("date"), "From": _addr(MYCALL),
+                         "Subject": form.get("subject", ""),
+                         "To": [_addr(a) for a in split(form.get("to", ""))],
+                         "Cc": [_addr(a) for a in split(form.get("cc", ""))] or None,
+                         "Body": form.get("body", ""), "Unread": False,
+                         "Files": [{"Name": v.filename, "Size": len(data)} for v, data in blobs]})
+    for v, data in blobs:
+        ATTACH[(mid, v.filename)] = data
     return web.Response(status=201, text="Message posted (1 kB)")
+
+
+async def delete(request):
+    box, mid = request.match_info["box"], request.match_info["mid"]
+    m = find(box, mid)
+    if m is None:
+        return web.Response(status=404, text="404 page not found")
+    BOXES[box].remove(m)
+    record(route="delete", box=box, mid=mid)
+    return web.Response(text=json.dumps("OK"), content_type="application/json")
+
+
+async def move(request):
+    """Pat's postMessageHandler for a box other than out: rename the file
+    X-Pat-SourcePath names (PathUnescape, then Clean) into this box."""
+    dest = request.match_info["box"]
+    if dest not in BOXES:
+        return web.Response(status=404, text="404 page not found")
+    src = request.headers.get("X-Pat-SourcePath")
+    if not src:
+        return web.Response(status=501, text="Not implemented")
+    parts = posixpath.normpath(unquote(src)).strip("/").split("/")
+    if len(parts) != 4 or parts[:2] != ["api", "mailbox"] or find(parts[2], parts[3]) is None:
+        return web.Response(status=400, text="rename: no such file or directory")
+    box, mid = parts[2], parts[3]
+    m = find(box, mid)
+    BOXES[box].remove(m)
+    BOXES[dest].append(m)
+    record(route="move", src=box, mid=mid, dest=dest)
+    return web.Response(text=json.dumps("OK"), content_type="application/json")
+
+
+async def mark_read(request):
+    box, mid = request.match_info["box"], request.match_info["mid"]
+    try:
+        body = json.loads(await request.read())
+    except ValueError:
+        body = None
+    val = body.get("read", body.get("Read")) if isinstance(body, dict) else None
+    if not isinstance(val, bool):
+        return web.Response(status=400, text="json: cannot unmarshal bool into Go value of type struct { Read bool }"
+                            if body is True or body is False else "json: bad request")
+    if BROKEN_READ:
+        return web.Response(status=500, text="mark read failed")
+    m = find(box, mid)
+    if m is None:
+        return web.Response(status=500, text="open: no such file or directory")
+    m["Unread"] = not val
+    record(route="read", box=box, mid=mid, read=val)
+    return web.Response(text=json.dumps("OK"), content_type="application/json")
+
+
+async def attachment(request):
+    mi = request.match_info
+    if BROKEN_ATTACH:
+        return web.Response(status=500, text="attachment unreadable")
+    data = ATTACH.get((mi["mid"], mi["file"])) if find(mi["box"], mi["mid"]) else None
+    if data is None:
+        return web.Response(status=404, text="404 page not found")
+    return web.Response(body=data, headers={"Content-Type": "text/plain"})
 
 
 async def rmslist(request):
@@ -291,11 +426,15 @@ async def ws_handler(request):
     return ws
 
 
-app = web.Application()
+app = web.Application(middlewares=[log_requests])
 app.router.add_get("/api/status", get_status)
 app.router.add_get("/api/mailbox/{box}", mailbox)
 app.router.add_get("/api/mailbox/{box}/{mid}", message)
 app.router.add_post("/api/mailbox/out", compose)
+app.router.add_post("/api/mailbox/{box}", move)
+app.router.add_delete("/api/mailbox/{box}/{mid}", delete)
+app.router.add_post("/api/mailbox/{box}/{mid}/read", mark_read)
+app.router.add_get("/api/mailbox/{box}/{mid}/{file}", attachment)
 app.router.add_get("/api/rmslist", rmslist)
 app.router.add_route("*", "/api/connect", connect)
 app.router.add_route("*", "/api/disconnect", disconnect)

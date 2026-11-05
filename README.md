@@ -194,6 +194,11 @@ zero. PSKReporter is asked at most every 10 minutes.
 
 ![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
 
+**The Winlink mailbox.** Open a message to read it (that marks it read in
+Pat), then Reply, Reply all, Forward (its attachments go along), Archive or
+Delete (a second click confirms) from the read pane; while a session runs the
+outbox is Pat's, and the page and the server both refuse to change it.
+
 **Winlink packet through a UV-PRO.** With the `uvpro` add-on on and reaching
 the radio through the packet hub's control port (`"control"`), a packet
 gateway picked in the Winlink panel is tuned for you: after you confirm

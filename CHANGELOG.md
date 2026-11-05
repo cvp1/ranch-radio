@@ -7,6 +7,28 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Reply, reply all, forward, archive and delete in the Winlink panel.** The
+  read pane gets an action bar, done the way Pat's own client does it: Reply
+  fills To with the sender, `Re: ` the subject (not again when it already
+  starts with `re:` in any case, e.g. Winlink Express's `RE:`) and quotes the
+  message (`--- <date> <from> wrote: ---`, `>` before each line); Reply all
+  adds a Cc of the other recipients, without your own call and the sender
+  (the compose form has a new Cc field); Forward leaves To empty, prefixes
+  `Fw: ` and re-attaches the original's files (one that can't be read is left
+  off, with a note that stays in the form). Archive moves the message to the
+  Archive box (not offered in the Outbox or Archive); Delete needs a second
+  click within 6 s, bound to the message it was first clicked on. While a
+  session arms or runs, the outbox is Pat's: Delete and Archive there are
+  disabled on the page, and the server answers 409 to a delete or a move out
+  of the outbox, holding a lock across the check and the call to Pat so a
+  connect can't snapshot the outbox mid-change. The mailbox routes now
+  decode and check the message ID (no path separator, no leading dot) and
+  pass Pat a re-encoded one, so an encoded `X%2F..%2F..%2Fout%2F…` source path
+  can't reach the outbox dressed as an inbox move; a compose POST carrying
+  `X-Pat-SourcePath` is refused instead of becoming a new message.
+  `tests/fake_pat.py` gains delete, move, mark-read and attachment routes, a
+  log line for every request it receives, and the knobs
+  `FAKE_PAT_BROKEN_ATTACH`, `FAKE_PAT_BROKEN_READ` and `FAKE_PAT_SLOW_MID`.
 - **MeshCore settings from the page.** The MeshCore tab's Settings form
   changes the node's name, location and location sharing, contact adding,
   extra ACKs, radio (frequency, bandwidth, spreading factor, coding rate,
@@ -58,6 +80,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Opening a Winlink message never marked it read.** The page posted the
+  body `true`; Pat expects `{"read": true}` and answered 400, which the page
+  swallowed, so every inbox message stayed bold. It now posts the object when
+  the message opens, un-bolds the row only after Pat's 200, and says so when
+  Pat refuses ("Could not mark it read").
 - **Winlink on a Mac's radio page reaches the packet hub.** The station page
   has always offered a packet session through the hub's radio; a Mac has no
   station page, and its radio server's Winlink panel knew only its own radio

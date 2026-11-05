@@ -11,19 +11,39 @@ const winlink = (() => {
   const CONFIRM_MS = 6000;
   let box = "in", armed = false, session = null, confirmTimer = null;
   let off = false;          // the Winlink add-on is switched off: Pat isn't running
+  // The message in the read pane: {box, mid, m}. Every action reads it from
+  // here, never from the DOM. readGen drops a read() answer that comes back
+  // after the operator moved on; fwdGen does the same for Forward's fetches.
+  let current = null, readGen = 0, fwdGen = 0, busy = false;
+  let pending = null, delTimer = null;   // Delete's own two-click confirm, bound to {box, mid}
 
+  // The thrown message is what the page shows: the server's sentence, or the
+  // "error" of a JSON body (the 503 while switched off).
   const api = (path, opts) => fetch(path + (token ? `${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : ""), opts)
     .then(async (r) => {
-      if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`);
+      if (!r.ok) {
+        const text = (await r.text()).trim();
+        let msg = text;
+        try { const j = JSON.parse(text); if (typeof j?.error === "string") msg = j.error; } catch { /* plain text */ }
+        throw new Error(msg || `HTTP ${r.status}`);
+      }
       return r;
     });
-  const addrs = (list) => (list || []).map((a) => a.Addr).join(", ");
+  const addrList = (list) => (list || []).map((a) => a?.Addr).filter(Boolean);   // null-safe: Pat sends Cc: null
+  const addrs = (list) => addrList(list).join(", ");
   const when = (d) => (d ? new Date(d).toISOString().slice(0, 16).replace("T", " ") : "");
+  const msgUrl = (b, mid) => `${BASE}winlink/api/mailbox/${b}/${encodeURIComponent(mid)}`;
+  const isCurrent = (b, mid) => current?.mid === mid && current.box === b;
+  const ACTIONS = ["#wl-reply", "#wl-reply-all", "#wl-forward", "#wl-archive", "#wl-delete"];
 
   // ---------- mailbox
 
   async function loadBox(b = box) {
     box = b;
+    readGen++;
+    current = null;
+    resetDelete();
+    renderActions();
     for (const c of $("#wl-boxes").children) on(c, c.dataset.v === box);
     $("#wl-read").hidden = true;
     const list = $("#wl-list");
@@ -47,41 +67,223 @@ const winlink = (() => {
   }
 
   async function read(mid, row) {
+    const b = box, g = ++readGen;   // captured before the await: a late answer is dropped
+    fwdGen++;
+    resetDelete();
     try {
-      const m = await (await api(`${BASE}winlink/api/mailbox/${box}/${encodeURIComponent(mid)}`)).json();
+      const m = await (await api(msgUrl(b, mid))).json();
+      if (g !== readGen || b !== box) return;
+      current = { box: b, mid, m };
+      resetDelete();
       $("#wl-read-head").innerHTML =
         `<b>${esc(m.Subject)}</b><span>From ${esc(m.From?.Addr)} · To ${esc(addrs(m.To))}` +
         `${m.Cc?.length ? ` · Cc ${esc(addrs(m.Cc))}` : ""} · ${esc(when(m.Date))}</span>` +
         (m.Files?.length ? `<span>Attachments: ${m.Files.map((f) =>
-          `<a href="${BASE}winlink/api/mailbox/${box}/${encodeURIComponent(mid)}/${encodeURIComponent(f.Name)}${token ? `?token=${encodeURIComponent(token)}` : ""}" target="_blank">${esc(f.Name)}</a>`).join(", ")}</span>` : "");
+          `<a href="${msgUrl(b, mid)}/${encodeURIComponent(f.Name)}${token ? `?token=${encodeURIComponent(token)}` : ""}" target="_blank">${esc(f.Name)}</a>`).join(", ")}</span>` : "");
       $("#wl-body").textContent = m.Body || "";
       $("#wl-compose").hidden = true;
       $("#wl-read").hidden = false;
-      if (m.Unread && box === "in") {
-        row?.classList.remove("unread");
-        api(`${BASE}winlink/api/mailbox/in/${encodeURIComponent(mid)}/read`, { method: "POST",
-          headers: { "Content-Type": "application/json" }, body: "true" }).catch(() => {});
-      }
+      renderActions();
+      if (m.Unread && b === "in") markRead(b, mid);
     } catch (e) {
+      if (g !== readGen || b !== box) return;
       toast(`Could not open the message: ${e.message}`, "warn");
     }
   }
 
+  // Marked read as soon as it opens (Pat's own viewer waits 2 s, then marks it
+  // anyway); the row loses its bold only once Pat said yes, so a failure shows.
+  async function markRead(b, mid) {
+    try {
+      await api(`${msgUrl(b, mid)}/read`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ read: true }) });
+      if (b === box) $("#wl-list").querySelector(`.wl-msg[data-mid="${CSS.escape(mid)}"]`)?.classList.remove("unread");
+      if (isCurrent(b, mid)) current.m.Unread = false;
+    } catch (e) {
+      toast(`Could not mark it read: ${e.message}`, "warn");
+    }
+  }
+
   function openCompose(show = true) {
+    resetDelete();
     $("#wl-compose").hidden = !show;
     if (show) { $("#wl-read").hidden = true; $("#wl-to").focus(); }
+  }
+
+  function setNote(text) {
+    const n = $("#wl-compose-note");
+    n.textContent = text || "";
+    n.hidden = !text;
+  }
+
+  // ---------- reply, reply all, forward (Pat's conventions: its composer and viewer)
+
+  // Pat's _quoteMsg: the raw Date, '>' before every line. CRLF normalised
+  // first, so the posted body (CRLF again in submitCompose) never has \r\r\n.
+  function quote(m) {
+    const lines = (m.Body || "").replace(/\r\n?/g, "\n").split("\n");
+    return `--- ${m.Date || ""} ${m.From?.Addr || ""} wrote: ---\n` + lines.map((l) => `>${l}`).join("\n") + "\n";
+  }
+
+  function prefill({ to = "", cc = "", subject = "", body = "", files = [], note = "" }) {
+    $("#wl-compose").reset();
+    $("#wl-to").value = to;
+    $("#wl-cc").value = cc;
+    $("#wl-subject").value = subject;
+    $("#wl-text").value = body;
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    $("#wl-files").files = dt.files;
+    setNote(note);
+    openCompose(true);
+    if (to) {
+      $("#wl-text").focus();
+      $("#wl-text").setSelectionRange(0, 0);
+    } else {
+      $("#wl-to").focus();
+    }
+  }
+
+  // Re: unless it already starts with re: in any case (Winlink Express sends
+  // "RE:"; Pat's check is case-sensitive and would make "Re: RE: ...").
+  const reSubject = (s) => (/^re:/i.test(s) ? s : `Re: ${s}`);
+
+  function reply(all) {
+    resetDelete();
+    if (!current) return;
+    const { m } = current;
+    const from = m.From?.Addr || "";
+    let cc = "";
+    if (all) {
+      const skip = new Set([($("#wl-mycall").textContent || "").trim().toUpperCase(), from.toUpperCase()]);
+      const seen = new Set();
+      cc = addrList(m.To).concat(addrList(m.Cc)).filter((a) => {
+        const k = a.toUpperCase();
+        if (skip.has(k) || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      }).join(" ");
+    }
+    prefill({ to: from, cc, subject: reSubject(m.Subject || ""), body: "\n\n" + quote(m) });
+  }
+
+  // Forward re-attaches the original's files, fetched through the API (token
+  // kept). A file that can't be read is left off with a note that stays in
+  // the form; Pat attaches nothing if any one fetch fails, which is harsher.
+  async function forward() {
+    resetDelete();
+    if (!current) return;
+    const { box: b, mid, m } = current;
+    const g = ++fwdGen;
+    const files = [], failed = [];
+    if (m.Files?.length) { busy = true; renderActions(); }
+    try {
+      for (const f of m.Files || []) {
+        try {
+          const blob = await (await api(`${msgUrl(b, mid)}/${encodeURIComponent(f.Name)}`)).blob();
+          files.push(new File([blob], f.Name, { type: blob.type }));
+        } catch {
+          failed.push(f.Name);
+        }
+      }
+    } finally {
+      busy = false;
+      renderActions();
+    }
+    // Obsolete: another message opened, the box changed, Compose pressed, or switched off.
+    if (g !== fwdGen || off || !isCurrent(b, mid)) return;
+    const note = failed.length ? `Forward: ${failed.join(", ")} could not be read; not attached` : "";
+    if (note) toast(note, "warn");
+    prefill({ subject: `Fw: ${m.Subject || ""}`, body: quote(m), files, note });
+  }
+
+  // ---------- archive, delete
+
+  async function change(b, mid, done, failed, call) {
+    busy = true;
+    renderActions();
+    try {
+      await call();
+      toast(done);
+      // Only if the view is still that message; otherwise the toast says it.
+      // A listing that then fails shows "Mailbox unavailable": both are true.
+      if (isCurrent(b, mid)) {
+        $("#wl-read").hidden = true;
+        current = null;
+        loadBox(b);
+      }
+    } catch (e) {
+      toast(`${failed}: ${e.message}`, "warn");
+    } finally {
+      busy = false;
+      renderActions();
+    }
+  }
+
+  function archive() {
+    resetDelete();
+    if (!current || busy) return;
+    const { box: b, mid } = current;
+    change(b, mid, "Archived", "Not archived", () => api(`${BASE}winlink/api/mailbox/archive`,
+      { method: "POST", headers: { "X-Pat-SourcePath": `/api/mailbox/${b}/${encodeURIComponent(mid)}` } }));
+  }
+
+  function resetDelete() {
+    clearTimeout(delTimer);
+    delTimer = pending = null;
+    const d = $("#wl-delete");
+    d.textContent = "Delete";
+    d.classList.remove("wl-confirm");
+  }
+
+  // Two clicks, like Connect, with its own timer. The first binds {box, mid};
+  // the second deletes only if the pane still shows that message.
+  function deleteClick() {
+    if (!current || busy) { resetDelete(); return; }
+    const { box: b, mid } = current;
+    if (!pending) {
+      pending = { box: b, mid };
+      const d = $("#wl-delete");
+      d.textContent = b === "out" ? "Confirm: delete from the outbox — it will not be sent" : "Confirm: delete";
+      d.classList.add("wl-confirm");
+      delTimer = setTimeout(resetDelete, CONFIRM_MS);
+      return;
+    }
+    const p = pending;
+    resetDelete();
+    if (p.box !== b || p.mid !== mid) return;
+    change(b, mid, "Deleted", "Not deleted", () => api(msgUrl(b, mid), { method: "DELETE" }));
+  }
+
+  // Which actions the open message offers: Archive is hidden in Archive and
+  // in the Outbox (archiving an outbox message would silently unsend it; Delete
+  // says so). While a session runs (or a local radio arms for one) the outbox
+  // is Pat's: Delete there is disabled (the server refuses it too).
+  function renderActions() {
+    const b = current?.box;
+    const locked = b === "out" && (armed || !!session);
+    for (const s of ACTIONS) $(s).disabled = off || busy || !current;
+    $("#wl-archive").hidden = b === "archive" || b === "out";
+    for (const s of ["#wl-delete", "#wl-archive"]) {
+      if (locked) $(s).disabled = true;
+      $(s).title = locked ? "The outbox is Pat's while a session runs" : "";
+    }
+    if (locked && pending) resetDelete();
   }
 
   async function submitCompose(e) {
     e.preventDefault();
     const form = new FormData();
     form.append("to", $("#wl-to").value.trim());
+    const cc = $("#wl-cc").value.trim();
+    if (cc) form.append("cc", cc);
     form.append("subject", $("#wl-subject").value.trim());
     form.append("body", $("#wl-text").value.replace(/\r?\n/g, "\r\n"));
     for (const f of $("#wl-files").files) form.append("files", f, f.name);
     try {
       await api(`${BASE}winlink/api/mailbox/out`, { method: "POST", body: form });
       $("#wl-compose").reset();
+      setNote("");
       openCompose(false);
       toast("Queued in the outbox; it goes out on the next session.");
       loadBox("out");
@@ -236,6 +438,7 @@ const winlink = (() => {
     const pw = $("#wl-power");
     pw.textContent = off ? "Switch on" : "Switch off";
     pw.title = off ? "Start Pat" : "Stop Pat; arming a radio for the station still works";
+    renderActions();
   }
 
   // The add-on registry's on/off switch (addons/winlink.py). Off stops Pat. The
@@ -320,6 +523,8 @@ const winlink = (() => {
 
   // {"t": "addon", "addon": "winlink", "on", "error", "snapshot"}: switched on or off
   function power(m) {
+    resetDelete();
+    fwdGen++;
     if (m.snapshot) hello(m.snapshot, { winlink: true });
     else { off = !m.on; renderSession(); }
     if (m.error) setState(`Winlink: ${m.error}`, "warn");
@@ -358,9 +563,15 @@ const winlink = (() => {
   }
 
   for (const c of $("#wl-boxes").children) c.onclick = () => loadBox(c.dataset.v);
-  $("#wl-compose-btn").onclick = () => openCompose($("#wl-compose").hidden);
+  $("#wl-compose-btn").onclick = () => { fwdGen++; openCompose($("#wl-compose").hidden); };
   $("#wl-compose-cancel").onclick = () => openCompose(false);
   $("#wl-compose").onsubmit = submitCompose;
+  $("#wl-compose").addEventListener("reset", () => setNote(""));
+  $("#wl-reply").onclick = () => reply(false);
+  $("#wl-reply-all").onclick = () => reply(true);
+  $("#wl-forward").onclick = forward;
+  $("#wl-archive").onclick = archive;
+  $("#wl-delete").onclick = deleteClick;
   $("#wl-gw-refresh").onclick = loadGateways;
   $("#wl-band").onchange = loadGateways;
   $("#wl-url").oninput = resetConfirm;
@@ -368,6 +579,11 @@ const winlink = (() => {
   $("#wl-stop").onclick = () => send({ t: "winlink_stop" });
   if (viaSel()) viaSel().onchange = () => viaChanged();
   fillBands();
+  renderActions();
 
-  return { hello, event, power, setVias, ownRadio, setPacket };
+  // _current and _api are test hooks (tests/winlink_page_test.py): the open
+  // message, and what an API call would show the operator.
+  const _current = () => (current ? { box: current.box, mid: current.mid } : null);
+  const _api = (path, opts) => api(path, opts).then((r) => `HTTP ${r.status}`, (e) => e.message);
+  return { hello, event, power, setVias, ownRadio, setPacket, _current, _api };
 })();
