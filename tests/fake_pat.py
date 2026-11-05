@@ -25,6 +25,10 @@ Environment:
   FAKE_PAT_SEND_N   how many outbox messages a good session delivers (moves to
                     sent/, as Pat does when the gateway accepts one); default all
   FAKE_PAT_BROKEN_BOX  a mailbox name whose listing answers 500
+  FAKE_PAT_NO_PTT   "1": a session to a non-ARDOP URL (packet, telnet) keys
+                    nothing through the lane, as Pat's AX.25 over the hub's
+                    AGWPE doesn't; it "succeeds" after FAKE_PAT_TX_S. ARDOP
+                    keys through the lane as before
 
 Routes (shapes as in Pat v1.0.0 api/api.go, api/mailbox.go):
   GET  /api/status, /api/mailbox/{box}, /api/mailbox/{box}/{mid}, /api/rmslist
@@ -52,6 +56,7 @@ ID_MODE = os.environ.get("FAKE_PAT_ID", "")
 LATE_ID_S = float(os.environ.get("FAKE_PAT_LATE_ID_S", "0"))
 SEND_N = os.environ.get("FAKE_PAT_SEND_N")
 BROKEN_BOX = os.environ.get("FAKE_PAT_BROKEN_BOX")
+NO_PTT = os.environ.get("FAKE_PAT_NO_PTT") == "1"
 
 BOXES = {"in": [{"MID": "ABC123", "Date": "2026-10-14T20:50:00Z",
                  "From": {"Proto": "", "Addr": "N0DAJ"}, "To": [{"Proto": "", "Addr": "N9ABC"}],
@@ -212,8 +217,10 @@ async def connect(request):
                 ok = False
         if ok:
             # Keyed through Radio Remote's lane, as Pat's hamlib PTT would be.
-            got = await rig("T 1")
-            record(route="ptt_on", reply=got)
+            keys = not (NO_PTT and not url.startswith("ardop"))
+            got = await rig("T 1") if keys else "RPRT 0"
+            if keys:
+                record(route="ptt_on", reply=got)
             if got != "RPRT 0":
                 await logline("Unable to establish connection to remote: PTT refused")
                 ok = False
@@ -235,8 +242,9 @@ async def connect(request):
                     del BOXES["out"][:n]
                     await push({"Notification": {"title": "New message from N0DAJ",
                                                  "body": "Test"}})
-                await rig("T 0")
-                ardop_log("[Main.KeyPTT]  PTT-FALSE")
+                if keys:
+                    await rig("T 0")
+                    ardop_log("[Main.KeyPTT]  PTT-FALSE")
                 if ID_MODE == "end" or (ID_MODE == "after_abort" and ok):
                     await send_id("Rcvd END in IDLE ProtocolState" if ok else "ABORT after transmitting")
                 elif ID_MODE == "after_abort":

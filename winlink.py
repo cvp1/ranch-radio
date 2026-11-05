@@ -181,21 +181,75 @@ class LocalLane:
 
 class NoLane:
     """A session that keys no radio of ours: telnet, or packet through the
-    UV-PRO hub (whose own transmit gate applies)."""
+    hub (whose own transmit gate applies). notice: the host's
+    notice(msg, level, ws), for telling the page what to do about tuning."""
 
     armed = False
+    extra_grace_s = 0.0             # PatEngine.stop: more time for end() (a lane that restores)
 
-    def __init__(self, name):
+    def __init__(self, name, notice=None):
         self.name = name
+        self.notice = notice
 
     def state(self):
         return {"armed": False, "codec_db": None, "id": None}
 
     async def arm(self, ws, url):
+        hz = url_freq_hz(url)
+        if hz and urlsplit(url).scheme.startswith("ax25") and self.notice:
+            # Nothing here can retune the hub's radio: the operator does.
+            self.notice(f"Packet via the {self.name}: Pat can't retune it, so it must already be on "
+                        f"{hz / 1e6:.3f} MHz (its panel's VFO or channel, on the active side).", "info", ws)
         return True
 
     async def end(self, started, ok, reason, closing, notify):
         return
+
+
+class TunedLane(NoLane):
+    """Packet through the hub whose radio a tuner (the UV-PRO add-on,
+    addons/uvpro.py: qsy(hz), restore(closing)) puts on the gateway's
+    frequency before Pat dials and back afterwards. Keys nothing itself.
+
+    If the tuner can't tune, the connect is refused: dialing on whatever
+    channel the radio is on would put a Winlink call out on the wrong
+    frequency (the APRS channel, as like as not)."""
+
+    def __init__(self, name, tuner, notice):
+        super().__init__(name, notice)
+        self.tuner = tuner
+        self.tuned = None               # the tuner's result while the radio is off its channel
+
+    async def arm(self, ws, url):
+        hz = url_hz(url)
+        if not hz:
+            return True                 # no frequency asked for: nothing to tune
+        r = await self.tuner.qsy(hz)
+        if not r.ok:
+            log.warning("winlink: packet via %s: not tuned to %.4f MHz (%s); not connecting",
+                        self.name, hz / 1e6, r.why)
+            self.notice(f"Not connecting: the {self.name} could not be tuned to {hz / 1e6:.3f} MHz "
+                        f"({r.why}). Tune it by hand and connect without freq=, or fix the cause.", "warn", ws)
+            return False
+        self.tuned = r
+        self.extra_grace_s = getattr(self.tuner, "restore_closing_s", 0.0)
+        log.info("winlink: packet via %s: tuned to %.4f MHz (%s)", self.name, hz / 1e6, r.how)
+        self.notice(f"{self.name} tuned to {hz / 1e6:.3f} MHz ({r.how}); back to {r.back} after the session.",
+                    "info", ws)
+        return True
+
+    async def end(self, started, ok, reason, closing, notify):
+        r, self.tuned = self.tuned, None
+        if r is None:
+            return
+        done, why = await self.tuner.restore(closing=closing)
+        if done:
+            log.info("winlink: %s back on %s", self.name, r.back)
+            notify({"notify": {"title": f"{self.name} back on {r.back}"}})
+        else:
+            log.warning("winlink: %s NOT put back on %s: %s", self.name, r.back, why)
+            self.notice(f"{self.name} NOT put back on {r.back}: {why}. The add-on keeps trying; "
+                        "check the radio.", "warn", None)
 
 
 class PatEngine:
@@ -226,6 +280,8 @@ class PatEngine:
         self._stop_asked = False
         self._closing = False
         self._restarting = False
+        self._admitting = False          # a connect is arming its lane (no session task yet)
+        self._admit_stop = False         # Stop pressed meanwhile: don't start it
         self._tasks = []
         self.running = False         # between start() and stop(): the Winlink add-on's switch
 
@@ -241,10 +297,16 @@ class PatEngine:
     async def stop(self):
         self.running = False
         self._closing = True
+        end = time.monotonic() + ABORT_GRACE_S
+        while self._admitting and time.monotonic() < end:
+            await asyncio.sleep(0.05)      # a connect arming its lane: it sees _closing and undoes it
         if self.session and not self.session.done():
             await self.abort("server stopping")
+            # A lane that puts the radio back (TunedLane) gets a bounded extra
+            # wait for that, so a restart doesn't strand the radio off its channel.
+            grace = ABORT_GRACE_S + (getattr(self.lane, "extra_grace_s", 0.0) or 0.0)
             try:
-                await asyncio.wait_for(asyncio.shield(self.session), ABORT_GRACE_S)
+                await asyncio.wait_for(asyncio.shield(self.session), grace)
             except (TimeoutError, asyncio.CancelledError):
                 self.session.cancel()
         for t in self._tasks:
@@ -351,9 +413,20 @@ class PatEngine:
 
     async def connect(self, ws, url, via=None):
         st = self.station
-        if self.session and not self.session.done():
+        if self._admitting or (self.session and not self.session.done()):
             st.notice("A Winlink session is already running.", "warn", ws)
             return
+        # Reserved from here until the session task exists (or the connect is
+        # refused): arming may take seconds (a tuner writing the radio), and a
+        # second connect must not slip in meanwhile.
+        self._admitting, self._admit_stop = True, False
+        try:
+            await self._admit(ws, url, via)
+        finally:
+            self._admitting = False
+
+    async def _admit(self, ws, url, via):
+        st = self.station
         why = check_url(url, st.band_of)
         lane = None
         if not why:
@@ -368,8 +441,19 @@ class PatEngine:
         if self.session and not self.session.done():
             st.notice("A Winlink session is already running.", "warn", ws)
             return
-        if not await lane.arm(ws, url):
+        try:
+            armed = await lane.arm(ws, url)
+        except Exception as e:             # never dial on a half-armed lane
+            log.exception("winlink: arming %s", lane.name)
+            st.notice(f"Not connecting: arming {lane.name} failed ({type(e).__name__}: {e}).", "warn", ws)
+            await self._end_unstarted(lane, f"arming failed: {e}")
+            return
+        if not armed:
             return                         # refused; the reason was sent to the page
+        if self._closing or self._admit_stop:
+            st.notice("Stopped before connecting.", "info", ws)
+            await self._end_unstarted(lane, "stopped before it started")
+            return
         self.lane = lane
         if not isinstance(lane, LocalLane):  # a local radio's arming told the pages itself
             self._send({**lane.state(), "armed": True, "via": lane.name})
@@ -381,14 +465,20 @@ class PatEngine:
         if isinstance(lane, NoLane) and urlsplit(url).scheme.startswith("ax25") and hz:
             # Pat would QSY first and fail ("Unable to QSY: missing rig
             # reference ... ax25+agwpe", linux-station 2026-10-17): no rig control
-            # reaches the UV-PRO through Pat. The radio is tuned on its own
-            # panel; Pat gets the URL without freq=.
+            # reaches the hub's radio through Pat. The radio is tuned on its own
+            # panel, or by the lane's tuner (TunedLane) in arm() above, which
+            # saw the full URL; Pat gets it without freq=.
             pat_url = without_freq(url)
             log.info("winlink: packet via %s: freq dropped for Pat (no QSY); the radio must be on %.4f MHz",
                      lane.name, hz / 1e6)
-            st.notice(f"Packet via the {lane.name}: Pat can't retune it, so it must already be on "
-                      f"{hz / 1e6:.3f} MHz (its panel's VFO, on the active side).", "info", ws)
         self.session = asyncio.create_task(self._session(url, queued, pat_url))
+
+    async def _end_unstarted(self, lane, reason):
+        """A lane armed (or half-armed) for a session that never started: undo it."""
+        try:
+            await lane.end(time.time(), False, reason, lambda: self._closing, self._send)
+        except Exception:                  # noqa: BLE001 - logged; the connect is refused either way
+            log.exception("winlink: undoing %s", lane.name)
 
     async def restart_pat(self, why):
         """Start Pat again (e.g. its modem moved to another radio) and wait
@@ -486,7 +576,8 @@ class PatEngine:
             try:
                 await lane.end(started, ok, reason, lambda: self._closing, self._send)
             except asyncio.CancelledError:
-                pass
+                log.warning("winlink: ending the session on %s was cut short (stopping)%s", lane.name,
+                            "; the radio may not be back on its channel" if isinstance(lane, TunedLane) else "")
             except Exception:              # never leave the session looking alive
                 log.exception("winlink: ending the session on %s", lane.name)
             self.lane = self.session_owner = None
@@ -511,6 +602,9 @@ class PatEngine:
         return None
 
     async def stop_session(self, ws=None):
+        if self._admitting and not (self.session and not self.session.done()):
+            self._admit_stop = True        # still arming: it is undone instead of started
+            return
         if not (self.session and not self.session.done()):
             return
         dirty = self._stop_asked           # a second Stop aborts the modem hard
