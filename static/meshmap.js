@@ -8,6 +8,8 @@
 // The APRS page (aprs.js) also uses: a selected station's track (setTrack),
 // a clickable "me" (meSelectable), a text glyph and a kind class per node
 // (glyph, kind), an ambiguity box (box_deg, degrees on a side), and noFit.
+// The MeshCore tab (addons/meshcore.js) also draws links between nodes
+// (setLinks: a repeater's neighbours, each with its SNR as the label).
 // No library: Web Mercator tiles in a div, an SVG on top in world pixels.
 
 const meshMap = (() => {
@@ -18,7 +20,7 @@ const meshMap = (() => {
 
   function create(el, { onSelect, meSelectable = false }) {
     el.innerHTML = `<div class="mm-tiles"></div><svg class="mm-svg"><g class="mm-world">` +
-      `<g class="mm-boxes"></g><g class="mm-track"></g><g class="mm-trace"></g><g class="mm-nodes"></g><g class="mm-pulses"></g></g></svg>` +
+      `<g class="mm-boxes"></g><g class="mm-links"></g><g class="mm-track"></g><g class="mm-trace"></g><g class="mm-nodes"></g><g class="mm-pulses"></g></g></svg>` +
       `<div class="mm-note"></div>` +
       `<div class="mm-ctl"><button class="chip chip-mini" data-z="1" title="Zoom in">+</button>` +
       `<button class="chip chip-mini" data-z="-1" title="Zoom out">−</button>` +
@@ -28,8 +30,9 @@ const meshMap = (() => {
     const world = el.querySelector(".mm-world"), traceG = el.querySelector(".mm-trace");
     const nodesG = el.querySelector(".mm-nodes"), pulsesG = el.querySelector(".mm-pulses");
     const boxesG = el.querySelector(".mm-boxes"), trackG = el.querySelector(".mm-track");
+    const linksG = el.querySelector(".mm-links");
     const tiles = new Map();
-    let nodes = [], myId = null, selected = null, trace = null, track = [];
+    let nodes = [], myId = null, selected = null, trace = null, track = [], links = [];
     let z = 12, cx = 0, cy = 0, moved = false, w = 0, h = 0;
 
     // ---------- projection (world pixels at zoom z)
@@ -88,6 +91,7 @@ const meshMap = (() => {
       for (const [key, img] of tiles) if (!want.has(key)) { img.remove(); tiles.delete(key); }
       world.setAttribute("transform", `translate(${-x0} ${-y0})`);
       drawNodes();
+      drawLinks();
       drawTrace();
       drawTrack();
       const all = nodes.filter((x) => !x.me).length, on = placed().filter((x) => !x.me).length;
@@ -133,6 +137,18 @@ const meshMap = (() => {
       const back = trace.route_back ? path([trace.to, ...trace.route_back, myId]) : "";
       if (back) traceG.innerHTML += `<polyline class="mm-back" points="${back}"></polyline>`;
       if (out) traceG.innerHTML += `<polyline class="mm-out" points="${out}"></polyline>`;
+    }
+
+    function drawLinks() {
+      linksG.innerHTML = "";
+      const at = (id) => { const n = byId(id); return n && n.lat != null && (n.lat || n.lon) ? n : null; };
+      for (const l of links || []) {
+        const a = at(l.from), b = at(l.to);
+        if (!a || !b) continue;
+        const x1 = px(a.lon), y1 = py(a.lat), x2 = px(b.lon), y2 = py(b.lat);
+        linksG.innerHTML += `<line class="mm-link" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>` +
+          (l.label ? `<text class="mm-link-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 3}" text-anchor="middle">${esc(l.label)}</text>` : "");
+      }
     }
 
     function drawTrack() {
@@ -198,6 +214,7 @@ const meshMap = (() => {
       select(id) { selected = id; drawNodes(); },
       setTrace(rec) { trace = rec; drawTrace(); },
       setTrack(points) { track = points || []; drawTrack(); },
+      setLinks(list) { links = list || []; drawLinks(); },
       pulse(id) {
         const nd = byId(id);
         if (!nd || nd.lat == null || (!nd.lat && !nd.lon) || !w) return;

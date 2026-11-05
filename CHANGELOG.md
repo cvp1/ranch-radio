@@ -7,6 +7,28 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The MeshCore tab works like the Mesh tab, and uses what MeshCore has.**
+  Same layout and styles as the Mesh tab: channel and Direct tabs with
+  unread counts, a To bar, a sender to click for a direct message, ACK
+  marks, and the map (`meshmap.js`) of this node and every contact that
+  shares a location, pulsing on activity. The node list finds, filters to
+  Recent, keeps favourites (the node's own favourite flag) on top and shows
+  each node's hops and distance; its card shows the route by repeater name
+  and the node's clock when its advert says it is wrong. From the card:
+  Find path (drawn on the map), Trace (each hop's SNR), Forget route,
+  Remove; and for a repeater or room server, Log in, Status (battery,
+  uptime, noise floor, airtime, packet and duplicate counts), Telemetry,
+  Neighbours (drawn on the map with their SNR), Owner, Set clock and a
+  Console for remote commands. Each request goes on the air, so one per
+  node at a time and one every 2 s. A repeater's password can be kept in a
+  file (`"logins": {"<key prefix>": "<password file>"}`), read when used and
+  never sent to a page or logged; a typed one is not kept either; remote
+  commands and replies are never written to the log. The header adds the
+  node's own counters (noise floor, last RSSI and SNR, airtime, packets)
+  and what it hears on the air. Direct messages are retried until their
+  ACK (flooded from the second retry) and report tries and round trip.
+  Join a `#hashtag` channel or leave one; with "Add contacts by hand" on,
+  nodes heard but not added show up with a + to add them.
 - **Reply, reply all, forward, archive and delete in the Winlink panel.** The
   read pane gets an action bar, done the way Pat's own client does it: Reply
   fills To with the sender, `Re: ` the subject (not again when it already
