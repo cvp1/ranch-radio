@@ -11,6 +11,13 @@
   - switch off stops the bridge (the port is free); a send while off is
     refused; switch on starts a fresh bridge
   - messages survive a server restart through the log, mode 600
+  - settings: the snapshot has the node's sections and the radio presets
+    (the host's first, then the built-in one); a valid write reaches the
+    node and the page gets the read-back; out-of-range, wrong-type, unknown
+    and multi-line values are refused before the node sees them; a refused
+    write says why; a Wi-Fi write says to reboot; the Wi-Fi password reaches
+    the node and nowhere else (no snapshot, page message, log or notice)
+  - reboot: the page is told, and the bridge comes back
 
     python3 tests/meshcore_addon_test.py
 """
@@ -40,12 +47,14 @@ STARTS = os.path.join(TMP, "starts")
 MSG_LOG = os.path.join(TMP, "meshcore.jsonl")
 MARK = os.path.join(TMP, "port-marker")
 ALPHA = "a1" * 32
+PWD = "ranch-pa55-Wd!"
 fails = 0
 
 with open(CFG, "w") as f:
     json.dump({"meshcore": {"port": MARK, "python": sys.executable,
                             "bridge": os.path.join(ROOT, "tests", "fake_meshcore_bridge.py"),
-                            "log": MSG_LOG}}, f)
+                            "log": MSG_LOG,
+                            "presets": [{"label": "Local", "freq": 908.205, "bw": 62.5, "sf": 9, "cr": 8}]}}, f)
 
 
 def check(name, got, want):
@@ -114,13 +123,17 @@ def start():
     raise SystemExit("server did not start")
 
 
+SERVER_OUT = []
+
+
 def stop(p):
     p.terminate()
     try:
-        p.communicate(timeout=10)
+        out, _ = p.communicate(timeout=10)
     except subprocess.TimeoutExpired:
         p.kill()
-        p.communicate()
+        out, _ = p.communicate()
+    SERVER_OUT.append(out or "")
 
 
 def mc(e):
@@ -144,6 +157,14 @@ def commands(text):
     try:
         with open(CMD_LOG) as f:
             return [c for c in map(json.loads, filter(str.strip, f)) if c.get("text") == text]
+    except OSError:
+        return []
+
+
+def commands_cmd(cmd):
+    try:
+        with open(CMD_LOG) as f:
+            return [c for c in map(json.loads, filter(str.strip, f)) if c.get("cmd") == cmd]
     except OSError:
         return []
 
@@ -246,17 +267,83 @@ try:
     check("  a fresh bridge started", lines(STARTS) - before, 1)
     page.close()
 
+    # --- settings
+    page = Page()
+    s = snapshot(page)
+    check("settings: the node's sections", [x["name"] for x in (s.get("config") or {}).get("sections") or []],
+          ["node", "radio", "wifi", "bluetooth"])
+    check("  presets: the host's, then the built-in", [p["label"] for p in s.get("presets") or []],
+          ["Local", "USA/Canada (recommended)"])
+
+    def cfg_event(pred, since):
+        return page.wait(lambda e: mc(e) and e.get("config") and pred(e["config"]), since=since)
+
+    def saved(words, since):
+        return page.wait(lambda e: e.get("t") == "notice" and words in e.get("msg", ""), since=since)
+
+    m = len(page.events)
+    page.do("set", section="radio", values={"freq": 908.205, "sf": 9, "cr": 8})
+    check("a radio write: the page gets the read-back",
+          cfg_event(lambda c: c["values"]["radio"]["sf"] == 9, m) is not None, True)
+    check("  it reached the node", [c.get("values") for c in commands_cmd("set")][-1:],
+          [{"freq": 908.205, "sf": 9, "cr": 8}])
+    check("  with a saved notice", saved("Radio settings saved", m) is not None, True)
+
+    before = len(commands_cmd("set"))
+    for label, sec, vals, words in [
+            ("SF 13 is refused", "radio", {"sf": 13}, "outside"),
+            ("a bandwidth not on the list is refused", "radio", {"bw": 63}, "not one of"),
+            ("a frequency out of range is refused", "radio", {"freq": 1000.0}, "outside"),
+            ("SF as text is refused", "radio", {"sf": "9"}, "not a whole number"),
+            ("a 32-byte name is refused", "node", {"name": "x" * 32}, "longer than"),
+            ("a name over two lines is refused", "node", {"name": "a\nb"}, "one line"),
+            ("an empty name is refused", "node", {"name": "  "}, "can't be empty"),
+            ("share location as text is refused", "node", {"share_location": "yes"}, "not on/off"),
+            ("a short Wi-Fi password is refused", "wifi", {"password": "short"}, "at least 8"),
+            ("an unknown setting is refused", "radio", {"bogus": 1}, "has no setting"),
+            ("an unknown section is refused", "lora", {"sf": 9}, "no settings section"),
+            ("only an empty password: nothing to save", "wifi", {"password": ""}, "Nothing to save")]:
+        m = len(page.events)
+        page.do("set", section=sec, values=vals)
+        check(label, page.wait(warned(words), since=m, timeout=3) is not None, True)
+    check("  and none of them reached the node", len(commands_cmd("set")), before)
+
+    m = len(page.events)
+    page.do("set", section="node", values={"name": "refuse"})
+    check("a write the node refuses says why", saved("not saved: RuntimeError: the node refused", m) is not None, True)
+
+    m = len(page.events)
+    page.do("set", section="wifi", values={"enabled": True, "ssid": "RanchNet", "password": PWD})
+    check("a Wi-Fi write says to reboot", saved("Reboot the node to apply", m) is not None, True)
+    check("  the password reached the node (after the read-back)", [c["values"].get("password") for c in commands_cmd("set")][-1], PWD)
+    check("  the read-back has the network, not the password",
+          (cfg_event(lambda c: c["values"]["wifi"]["ssid"] == "RanchNet", m) or {}).get("config", {})
+          .get("values", {}).get("wifi", {}).get("password"), "")
+    check("  the password is in no page message", any(PWD in json.dumps(e) for e in page.events), False)
+
+    m = len(page.events)
+    page.do("reboot")
+    check("reboot: the page is told", saved("rebooting", m) is not None, True)
+    check("  and the node comes back", page.wait(lambda e: mc(e) and (e.get("status") or {}).get("connected")
+                                                 is True, since=m, timeout=20) is not None, True)
+    page.close()
+
     stop(server)
     server = start()
     page = Page()
+    check("the password is in no snapshot", PWD in json.dumps(page.hello), False)
     texts = [x["text"] for x in snapshot(page).get("messages") or []]
     check("after a restart: our messages are back", all(t in texts for t in ("hi all", "hi alpha")), True)
     check("  with their final state", next((x["ack"] for x in snapshot(page)["messages"] if x["text"] == "hi alpha"),
                                          None), "delivered")
     check("the log is private (mode 600)", stat.S_IMODE(os.stat(MSG_LOG).st_mode), 0o600)
+    with open(MSG_LOG) as f:
+        check("the password is not in the message log", PWD in f.read(), False)
     page.close()
 finally:
     stop(server)
+check("the password is not in the server's log", any(PWD in o for o in SERVER_OUT), False)
+check("  (the server's log was captured)", any("MeshCore: writing Wi-Fi settings" in o for o in SERVER_OUT), True)
 
 print("PASS" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)

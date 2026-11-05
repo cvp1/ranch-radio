@@ -1,7 +1,9 @@
 """meshcore_bridge.py's port argument, without a node or the meshcore package.
 
-  - a serial device and tcp:HOST:PORT parse to the right link
-  - tcp: with no port, a bad port or no host is refused
+  - a serial device, tcp:HOST:PORT and ble:NAME parse to the right link
+  - tcp: with no port, a bad port or no host is refused; ble: needs a name
+  - a comma list is tried in order, and a serial device that isn't
+    plugged in is left out
   - a bad port spec exits 2 with a status line saying why, before the
     bridge imports the meshcore package (so it is checked on any Python)
 
@@ -24,10 +26,11 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:58} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
-def parse(spec):
+def parse(spec, fn="parse_port"):
     """parse_port(spec) in a child: importing the bridge takes over its stdout."""
+    conv = "list(b.parse_port(sys.argv[2]))" if fn == "parse_port" else "[list(l) for l in b.candidates(sys.argv[2])]"
     code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import meshcore_bridge as b\n"
-            "try:\n    r = list(b.parse_port(sys.argv[2]))\n"
+            f"try:\n    r = {conv}\n"
             "except ValueError as e:\n    r = 'ValueError'\n"
             "b.emit(r=r)")
     out = subprocess.run([sys.executable, "-c", code, ROOT, spec], capture_output=True, text=True, timeout=30)
@@ -41,6 +44,12 @@ check("tcp: no port is refused", parse("tcp:192.168.1.50"), "ValueError")
 check("tcp: a port that isn't a number is refused", parse("tcp:192.168.1.50:http"), "ValueError")
 check("tcp: port 0 is refused", parse("tcp:192.168.1.50:0"), "ValueError")
 check("tcp: no host is refused", parse("tcp::5000"), "ValueError")
+check("ble:NAME", parse("ble:NODE"), ["ble", "NODE"])
+check("ble: no name is refused", parse("ble:"), "ValueError")
+check("a list, in order; a missing serial device left out",
+      parse("tcp:192.168.1.50:5000, /dev/no-such-node ,ble:NODE", "candidates"),
+      [["tcp", "192.168.1.50", 5000], ["ble", "NODE"]])
+check("a list with one bad entry is refused", parse("tcp:192.168.1.50,ble:NODE", "candidates"), "ValueError")
 
 r = subprocess.run([sys.executable, BRIDGE, "tcp:192.168.1.50"], capture_output=True, text=True, timeout=30,
                    stdin=subprocess.DEVNULL)
