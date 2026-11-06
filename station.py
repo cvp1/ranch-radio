@@ -403,7 +403,7 @@ class Station:
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError, AttributeError):
             return None
 
-    def winlink_listen_target(self, need_hub=True):
+    def winlink_listen_target(self, need_hub=True, need_up=True):
         """As server.Station.winlink_listen_target: the hub and the tuner a
         listen window uses, or (None, why not)."""
         name = self.packet_cfg.get("name") or "UV-PRO"
@@ -413,7 +413,7 @@ class Station:
             return {"hub": hub, "name": name, "tuner": uv}, None
         if not (self.packet_agwpe and hub):
             return None, "No packet radio is set up on this station."
-        if not self.packet_up:
+        if need_up and not self.packet_up:
             return None, f"The {name} packet hub is not running."
         return {"hub": hub, "name": name, "tuner": uv}, None
 

@@ -399,6 +399,7 @@ class PatEngine:
         self.blocked = None             # preflight's refusal: Pat is not launched
         self._blocked_gen = None
         self.proc = None
+        self.proc_argv = None           # the running child's argv (built from `want` at its spawn)
         self.proc_gen = None
         self.status_gen = None
         # Pat's occupancy (A4), whoever started its exchange. _status_live:
@@ -448,6 +449,7 @@ class PatEngine:
         self._listen_task = None
         self._listen_end_task = None
         self._listen_restore = None
+        self._listen_abort = False      # Stop listening (or stop()) while a window is still starting
 
     # --- lifecycle ---
 
@@ -480,6 +482,13 @@ class PatEngine:
         self.running = False
         self._closing = True
         self._wake.set()                   # a supervisor napping (crashed Pat, refused config) returns
+        self._listen_abort = True          # a window still starting undoes itself (it sees _closing too)
+        if self._listen_busy == "starting":
+            end = time.monotonic() + LIFE_WAIT_S + ABORT_GRACE_S
+            while self._listen_busy == "starting" and time.monotonic() < end:
+                await asyncio.sleep(0.05)
+        if self._listen_end_task and not self._listen_end_task.done():
+            await asyncio.wait({self._listen_end_task}, timeout=3 * ABORT_GRACE_S + 2 * STOP_WAIT_S)
         if self.listening or self._listen_busy or self._listen_lane:
             # B4 from stop(): the hub window, Pat and the radio, in that order.
             try:
@@ -563,6 +572,7 @@ class PatEngine:
                 await self._nap(30)
                 continue
             self.proc, self.proc_gen, self._spawn_req = proc, gen, covers
+            self.proc_argv = argv
             if "--listen" in argv:
                 self._note_listen_child(proc.pid, argv)
             if self._closing:              # stopped while it was being started
@@ -1251,6 +1261,7 @@ class PatEngine:
                           "after a crash")
         # Reserved from here (no await above): a connect or a second window waits.
         self._listen_busy = "starting"
+        self._listen_abort = False
         self._send_listen()
         handed = False
         try:
@@ -1263,6 +1274,8 @@ class PatEngine:
                 return refuse(f"the UV-PRO add-on is off, so nothing can put the {name} on "
                               f"{plan.mhz_text()} MHz and back")
             hs = await self._hub_status(hub)
+            if self._closing or self._listen_abort:
+                return refuse("stopped before it started")
             if hs is None:
                 return refuse(f"the {name} packet hub is not answering")
             if not (hs.get("tx") or {}).get("enabled"):
@@ -1305,7 +1318,14 @@ class PatEngine:
         """Tuned: Pat with --listen, the hub's window, then read it all back.
         Anything missing runs the end path (B4)."""
         st = self.station
+
+        def still_wanted():
+            if self._closing:
+                raise PatRestartError("the server is stopping")
+            if self._listen_abort:
+                raise PatRestartError("stopped from the page")
         try:
+            still_wanted()
             busy = (self._closing and "the server is stopping") or (
                 self.inbound and f"Pat is in a session with {self.inbound['call']}") or (
                 self._our_session() and "a Winlink session started")
@@ -1314,11 +1334,13 @@ class PatEngine:
             self._set_listen_stage(rec, "starting")
             self.want["listen"] = rec["method"]
             await self.restart_pat("a listen window")
+            still_wanted()
             code, body = await self._hub_post(rec["hub"], "/api/inbound",
                                               {"calls": [rec["call"]], "seconds": max(1, rec["until"] - time.time())})
             if code != 200:
                 raise PatRestartError(f"the hub did not open its inbound window ({code}: {body})")
             why = await self._listen_readback(rec)
+            still_wanted()
             if why:
                 raise PatRestartError(why)
         except (PatRestartError, OSError) as e:
@@ -1374,7 +1396,10 @@ class PatEngine:
                 reason = "the window ran out"
             else:
                 target_for = getattr(self.station, "winlink_listen_target", None)
-                target, why = target_for() if target_for else (None, "no packet hub")
+                # The add-ons switched off end it at once; the hub itself is
+                # asked here, and must fail HUB_MISSES times in a row (a radio
+                # link that drops for a moment comes back by itself).
+                target, why = target_for(need_up=False) if target_for else (None, "no packet hub")
                 if why:
                     reason = why.rstrip(".")
                 elif target["tuner"] is None:
@@ -1382,10 +1407,11 @@ class PatEngine:
                 elif time.monotonic() - asked >= HUB_POLL_S:
                     asked = time.monotonic()
                     hs = await self._hub_status(w["hub"])
-                    if hs is None:
+                    if hs is None or not (hs.get("radio") or {}).get("up"):
                         misses += 1
                         if misses >= HUB_MISSES:
-                            reason = "the packet hub stopped answering"
+                            reason = ("the packet hub stopped answering" if hs is None
+                                      else "the packet hub's radio is down")
                     else:
                         misses = 0
                         if not (hs.get("inbound") and w["call"] in hs["inbound"].get("calls", [])):
@@ -1397,10 +1423,14 @@ class PatEngine:
     # end (B4)
 
     async def listen_stop(self, ws=None):
-        if not (self.listening or self._listen_busy == "starting"):
-            if self._listen_busy == "ending":
-                return
-            self.station.notice("Not listening.", "info", ws)
+        if self._listen_busy == "starting":
+            # Still being set up: it is undone at its next step (one end path).
+            self._listen_abort = True
+            self.station.notice("Stopping: the window is undone as soon as its current step is done.", "info", ws)
+            return
+        if not self.listening:
+            if self._listen_busy != "ending":
+                self.station.notice("Not listening.", "info", ws)
             return
         await self._end_listen("stopped from the page")
 
@@ -1445,7 +1475,7 @@ class PatEngine:
         if stopping:
             async with self._life:
                 await self._end_child(self.proc)
-        elif proc is not None and proc.returncode is None and "--listen" in (self._argv_of(proc) or ["--listen"]):
+        elif proc is not None and proc.returncode is None and "--listen" in (self.proc_argv or ["--listen"]):
             try:
                 await self.restart_pat("the listen window ended")
             except PatRestartError as e:
@@ -1475,10 +1505,6 @@ class PatEngine:
         self._send_listen()
         st.notice(f"Listening ended: {reason}.", "info")
         log.warning("winlink: listen window ended (%s)", reason)
-
-    def _argv_of(self, proc):
-        rec = self._read_listen() or {}
-        return rec.get("argv") if rec.get("pid") == proc.pid else None
 
     async def _listeners_cleared(self):
         """Pat's listeners after the window: [] (or Pat not running) is clear."""

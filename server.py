@@ -487,10 +487,12 @@ class Station(TxAudio):
             return None, f"{scheme} is not set up on this station."
         return winlink.LocalLane(self), None
 
-    def winlink_listen_target(self, need_hub=True):
+    def winlink_listen_target(self, need_hub=True, need_up=True):
         """What a Winlink listen window uses here: ({"hub": its URL, "name",
         "tuner": the UV-PRO add-on or None}, None), or (None, why not).
-        need_hub=False (crash recovery): just the tuner, whatever the hub."""
+        need_hub=False (crash recovery): just the tuner, whatever the hub;
+        need_up=False (a window's watcher, which asks the hub itself): not
+        the Packet add-on's last poll of the hub."""
         packet = self.addons.get("packet") if self.addons else None
         uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
         if not need_hub:
@@ -500,7 +502,7 @@ class Station(TxAudio):
             return None, "No packet radio is set up on this station."
         if not self.addons.is_on("packet"):
             return None, "The Packet add-on is switched off."
-        if not packet.state.get("up"):
+        if need_up and not packet.state.get("up"):
             return None, f"The {packet.hub_name} packet hub is not running."
         return {"hub": packet.url, "name": packet.hub_name, "tuner": uv}, None
 

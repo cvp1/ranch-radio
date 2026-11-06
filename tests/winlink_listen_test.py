@@ -13,15 +13,21 @@ state across restarts, as a radio keeps its channel). E-2/E-3 run a real Pat
   B-1   render: the listen block -> both flags (Mac), station.json keeps it;
         absent -> none; bad frequency, hours or method -> HostError naming the field
   B-2   start: record before the QSY, the radio on the frequency, Pat with
-        --listen before http, the hub window open, all read back
+        --listen before http, the hub window open, all read back; Stop listening
+  B-2b  Stop while the window is still starting: undone, never left listening
   B-3   Pat's listener never comes up: everything undone, the page told
   B-4   refusals change nothing (no QSY, no restart, no hub call)
-  B-5   end at `until`: hub window closed -> Pat without the flag -> radio back
-  B-7   while listening: connect refused, outbox DELETE 409, a second Listen refused
+  B-5   end at `until` (in process, a 3 s window): hub window closed -> Pat without
+        the flag -> radio back
+  B-5b  the Packet add-on switched off mid-window: the same end path
+  B-7   while listening: connect refused, outbox DELETE 409, UV-PRO page writes refused,
+        a second Listen refused
   B-8   a clean server stop while listening: everything undone within grace
   B-11  the server SIGKILLed mid-window: the next start undoes it before Pat runs
   B-11b the server SIGKILLed mid outbound packet session: the next start puts the radio back
   B-12  a stale record whose pid is not Pat: that process is not signalled
+  B-9   the page: hidden without a plan; two-click confirm text, the state chip,
+        Stop listening; a closed page leaves the window open
   E-2   real Pat listening through the hub: active_listeners and MyCall on the hub; both clear after
   E-3   real Pat answers N0XYZ; Pat's dirty disconnect leaves the link; at the end the
         hub link is gone (a DISC on air) before the radio is put back (B-6)
@@ -430,6 +436,12 @@ if picked("B-2") or picked("B-7"):
             time.sleep(1.0)            # negative check: a window for a dial to reach Pat
             check("B-7   nothing dialed", len([r for r in jsonl(s.flog) if r.get("route") == "connect"]), n_conn)
             b1, p1, h1 = s.mark()
+            s.page.events.clear()
+            s.page.send({"t": "addon", "addon": "uvpro", "do": "settings", "values": {"squelch_level": 5}})
+            check("B-7 a UV-PRO page write while listening: refused (the radio is the window's)",
+                  bool(s.page.wait(lambda e: e.get("t") == "notice" and "using the radio" in e.get("msg", ""), 5)), True)
+            time.sleep(0.5)            # negative check
+            check("B-7   nothing written to the radio", s.writes(b1), [])
             s.listen_on(0.25)
             check("B-7 a second Listen: refused",
                   bool(s.page.wait(lambda e: e.get("t") == "notice" and "Not listening" in e.get("msg", ""), 5)), True)
@@ -490,6 +502,26 @@ if picked("B-3"):
         check("B-3   the radio back on channel 1", s.radio(), (0, 1))
         check("B-3   records gone", (os.path.exists(s.record), os.path.exists(s.qsy_record)), (False, False))
         check("B-3   undone in order: hub window, Pat, radio", in_order(end_order(s, b0, p0)), True) or print("      ", end_order(s, b0, p0))
+    finally:
+        s.stop()
+        s.close()
+
+
+# ------------------------------------------------------------ B-2b: Stop while the window is starting
+
+if picked("B-2b"):
+    s = Stack()
+    try:
+        b0, p0, h0 = s.mark()
+        s.listen_on(0.25)
+        wait_for(lambda: (s.snap().get("listen") or {}).get("busy") == "starting", 5, 0.02)
+        s.page.send({"t": "winlink_listen_stop"})
+        check("B-2b Stop while starting: undone, back to idle", bool(s.idle()), True)
+        check("B-2b   never left listening: no hub window, Pat without the flag, radio back, no records",
+              (s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
+               os.path.exists(s.record), os.path.exists(s.qsy_record)), (None, [False], (0, 1), False, False))
+        time.sleep(2.0)                # negative check: nothing reopens it
+        check("B-2b   still idle 2 s later", (s.window(), s.hub.inbound()), (None, None))
     finally:
         s.stop()
         s.close()
@@ -609,7 +641,7 @@ if picked("B-5") or picked("B-4"):
         def band_of(self, hz):
             return None
 
-        def winlink_listen_target(self, need_hub=True):
+        def winlink_listen_target(self, need_hub=True, need_up=True):
             return {"hub": hub.url, "name": "UV-PRO", "tuner": self.tuner}, None
 
     async def until(pred, t=20.0):
@@ -701,6 +733,28 @@ if picked("B-5") or picked("B-4"):
         check("B-5 after: channel 1, no hub window, Pat lists no listener, no record", r.get("after"),
               ((0, 1), None, [], False))
         check("B-5 the page told why", r.get("notes"), ["Listening ended: the window ran out."])
+
+
+# ------------------------------------------------------------ B-5b: what a window stands on goes away
+
+if picked("B-5b"):
+    s = Stack()
+    try:
+        b0, p0, h0 = s.mark()
+        s.listen_on(0.25)
+        check("B-5b precondition: listening", bool(s.listening()), True)
+        s.page.events.clear()
+        s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
+        check("B-5b the Packet add-on switched off: the window ends, saying why",
+              bool(s.page.wait(lambda e: e.get("t") == "notice" and "Listening ended" in e.get("msg", "")
+                               and "Packet add-on" in e.get("msg", ""), 20)), True)
+        check("B-5b   idle, hub window closed, Pat without the flag, radio back, no records",
+              (bool(s.idle()), s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
+               os.path.exists(s.record)), (True, None, [False], (0, 1), False))
+        check("B-5b   in order: hub window, Pat, radio", in_order(end_order(s, b0, p0)), True)
+    finally:
+        s.stop()
+        s.close()
 
 
 # ------------------------------------------------------------ B-8: a clean stop while listening
@@ -1030,7 +1084,7 @@ if picked("E-2") or picked("E-3"):
                       (bool(discs), "DISC ignored" in peer.events), (True, True))
                 check("B-6 order: DISC on air -> hub link gone -> radio put back",
                       bool(discs and gone and back and discs[0] < gone < back[0]), True) or print(
-                          "      ", discs[:1], gone, back[:1])
+                          "      ", discs[:1], gone, back[:1], b1, jsonl(s.blog)[-3:])
                 check("E-3   the hub window closed", s.hub.inbound(), None)
                 check("E-3   the radio back on channel 1", s.radio(), (0, 1))
             # E-2: after the window, both clear
@@ -1046,6 +1100,9 @@ if picked("E-2") or picked("E-3"):
             out = s.stop()
             s.close()
             hub.stop()
+        for line in out.splitlines():
+            if "listen window ending" in line or "the session with" in line:
+                print("      server:", line.split(" winlink ", 1)[-1])
         started = [("listening on ax25+agwpe" in l) for l in out.splitlines() if "Pat started (pid" in l]
         check("E-2 Pat's launches as the server logged them: plain, listening, plain", started, [False, True, False])
         if fails:
