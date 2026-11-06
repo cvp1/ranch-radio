@@ -55,6 +55,7 @@ class Addon:
     css = False                   # static/addons/<name>.css exists
     page = True                   # False: its page is its own tab, not an add-on panel
     routes = ()                   # page message types ("t") the host hands to it
+    state_dir = None              # the host's state directory (beside --addons-state), or None
 
     def __init__(self, host, opts):
         self.host = host
@@ -114,6 +115,9 @@ class Addons:
                 if not (isinstance(cls, type) and issubclass(cls, Addon)):
                     raise TypeError("ADDON is not an Addon subclass")
                 rec["addon"] = cls(host, opts)
+                # Where an add-on keeps what must outlive the process (the
+                # UV-PRO's Winlink QSY record): beside the on/off state file.
+                rec["addon"].state_dir = os.path.dirname(self.state_path) if self.state_path else None
             except Exception as e:   # a broken add-on must not take the radio server down
                 log.error("add-on %s not loaded: %s: %s", name, type(e).__name__, e)
                 rec["error"], rec["on"] = f"not loaded: {type(e).__name__}: {e}", False

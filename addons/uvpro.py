@@ -117,6 +117,11 @@ QSY_RETRY_EVERY_S = 5.0       # a restore that failed is tried again this often.
 QSY_RETRY_MAX_S = 600.0       # ...for this long, then the page and the log are told
 QSY_POLL_S = 1.0              # how often the restore wait looks again
 QSY_NAME = "WL QSY"           # the scratch channel's name while a session uses it
+# The QSY recovery record, kept in the host's state directory (beside
+# --addons-state) from before the first write until the radio is back: a
+# server that crashed or was stopped mid-session leaves it, and the next
+# start of the add-on puts the radio back from it (plan winlink-listen F16).
+QSY_FILE = "uvpro-qsy.json"
 TUNED_REFUSAL = ("A Winlink packet session is using the radio (tuned for Winlink); "
                  "try again after it is put back.")
 # Page verbs refused while the radio is tuned for Winlink: what would move it
@@ -306,6 +311,10 @@ class UvproAddon(Addon):
 
     async def start(self):
         self._closing = False
+        if self._qsy is None and self._load_qsy():
+            # A record from before this start: the radio may still be on the
+            # Winlink frequency. Put it back once the radio is read.
+            self._restore_task = asyncio.create_task(self._recover())
         if self.hub:
             self._first = asyncio.create_task(self._first_read())
         else:
@@ -315,8 +324,10 @@ class UvproAddon(Addon):
         self._closing = True
         if self._qsy is not None:
             log.warning("UV-PRO: stopping with the radio still tuned for Winlink (%.4f MHz on %s); it may be "
-                        "off its APRS channel: put it back on %s by hand", self._qsy["hz"] / 1e6,
-                        _where(self._qsy["target"]), _where(self._qsy["prev"].get("channel_a", 0)))
+                        "off its APRS channel: %s", self._qsy["hz"] / 1e6, _where(self._qsy["target"]),
+                        f"it is put back on {_where(self._qsy['prev'].get('channel_a', 0))} when the add-on "
+                        "starts again (the record is kept)" if self._qsy_path() else
+                        f"put it back on {_where(self._qsy['prev'].get('channel_a', 0))} by hand")
         if self._restore_task and not self._restore_task.done():
             self._restore_task.cancel()
         self._restore_task = None
@@ -1088,7 +1099,82 @@ class UvproAddon(Addon):
 
     def _set_stage(self, stage):
         self._qsy["stage"] = stage
+        self._save_qsy()
         self.emit({"qsy": self._qsy_out()})
+
+    def _qsy_path(self):
+        return os.path.join(self.state_dir, QSY_FILE) if self.state_dir else None
+
+    def _save_qsy(self):
+        """Keep the recovery record on disk (or remove it once the radio is
+        back). Without a state directory it lives in memory only, as before."""
+        path = self._qsy_path()
+        if not path:
+            return
+        try:
+            if self._qsy is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"address": self.cmd[2], **self._qsy}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("UV-PRO: QSY record %s not written: %s", path, e)
+
+    def _load_qsy(self):
+        """Read a recovery record left by an earlier run: True if one was taken up."""
+        path = self._qsy_path()
+        if not path or not os.path.exists(path):
+            return False
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            prev, written = d["prev"], d.get("written")
+            if not isinstance(prev, dict) or not isinstance(d["target"], int) or not isinstance(d["hz"], int):
+                raise ValueError("bad fields")
+            if written is not None:
+                cid, old = written
+                if not isinstance(cid, int) or not isinstance(old, dict):
+                    raise ValueError("bad written")
+                written = (cid, old)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            log.warning("UV-PRO: QSY record %s not usable (%s); check the radio's channel by hand", path, e)
+            return False
+        if d.get("address") not in (None, self.cmd[2]):
+            log.warning("UV-PRO: QSY record %s is for another radio (%s); left alone", path, d.get("address"))
+            return False
+        self._qsy = {"prev": prev, "written": written, "target": d["target"], "hz": d["hz"],
+                     "stage": str(d.get("stage") or "picked")}
+        self._gave_up = False
+        log.warning("UV-PRO: the radio was left tuned for Winlink (%.4f MHz on %s, stage %s) by an earlier run; "
+                    "putting it back on %s once it is read", d["hz"] / 1e6, _where(d["target"]),
+                    self._qsy["stage"], _where(prev.get("channel_a", 0)))
+        return True
+
+    async def _recover(self):
+        """Put the radio back from a record an earlier run left (then the usual retry)."""
+        if self.hub:
+            await self._session()
+        t0 = time.monotonic()
+        while not self._closing and not (self._bridge_up() and self._read.is_set()):
+            if time.monotonic() - t0 > READ_TIMEOUT_S:
+                break
+            await asyncio.sleep(QSY_POLL_S / 4)
+        if self._closing or self._qsy is None:
+            return
+        ok, why = await self.restore()
+        back = _where((self._qsy or {}).get("prev", {}).get("channel_a", 0)) if not ok else None
+        if ok:
+            self.notice("UV-PRO: back on its channel after a Winlink QSY an earlier run left.", "info", None)
+        else:
+            log.warning("UV-PRO: not put back on %s yet: %s; retrying", back, why)
+            self._restore_task = None
+            self._schedule_retry()
 
     async def qsy(self, hz):
         """Put the radio on HZ for a Winlink packet session (winlink.TunedLane).
@@ -1176,6 +1262,7 @@ class UvproAddon(Addon):
         # The record before the first write: whatever happens next, restore() knows the way back.
         self._qsy = {"prev": prev, "written": written, "target": target, "hz": hz, "stage": "picked"}
         self._gave_up = False
+        self._save_qsy()                # on disk before the first write, too
         self.emit({"qsy": self._qsy_out()})
         log.info("UV-PRO: tuning for Winlink: %.4f MHz on %s (back to %s after)", hz / 1e6, how, back)
         if written:
@@ -1221,7 +1308,8 @@ class UvproAddon(Addon):
         # or it transmits, and not to a bridge that isn't there.
         t0 = time.monotonic()
         while True:
-            why = "the UV-PRO is not connected" if not self._bridge_up() else await self._busy()
+            why = ("the UV-PRO is not connected" if not self._bridge_up()
+                   else "the radio is not read yet" if self.settings is None else await self._busy())
             if why is None:
                 break
             limit = self.restore_closing_s if closing and closing() else self.restore_wait_s
@@ -1251,6 +1339,7 @@ class UvproAddon(Addon):
                     self._schedule_retry()
                     return False, f"{_where(cid)} not written back: {res.get('error')}"
         self._qsy = None
+        self._save_qsy()
         self.emit({"qsy": None})
         log.info("UV-PRO: back from Winlink (on %s)", _where(rec["prev"].get("channel_a", 0)))
         t = self._restore_task
