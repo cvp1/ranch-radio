@@ -22,6 +22,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,10 +31,10 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
 
-from ax25 import Frame, KissDecoder, U_DISC, U_DM, U_SABM, kiss_wrap  # noqa: E402
+from ax25 import Address, Frame, KissDecoder, U_DISC, U_DM, U_SABM, kiss_wrap  # noqa: E402
 from ax25_link import Link  # noqa: E402
 from fake_kiss_radio import FakeKissRadio as _FakeKissRadio  # noqa: E402
-from testkit import free_port  # noqa: E402
+from testkit import free_port, real_pat_env  # noqa: E402
 
 AGW_HDR = struct.Struct("<B3xcxBx10s10sI4x")
 fails = 0
@@ -896,6 +898,241 @@ def scenario_real_pat_sends_message():
         hub.stop(); sim.stop(); radio.stop()
         shutil.rmtree(tmp, ignore_errors=True)
 
+# ------------------------------------------- answering inbound connects (A0)
+# Plan winlink-p2p A0: an inbound SABM is answered only inside an inbound
+# window (POST /api/inbound); otherwise ignored, with nothing transmitted.
+
+def sabm(src="N0XYZ", dest="N9ABC"):
+    return Frame(Address.from_text(dest), Address.from_text(src), kind="U", utype=U_SABM,
+                 pf=True, command=True).encode()
+
+
+def frames_to(radio, call, since=0):
+    """Names of the frames the hub put on the air addressed to call."""
+    out = []
+    for _, raw in radio.transmitted()[since:]:
+        f = Frame.decode(raw)
+        if str(f.dest) == call:
+            out.append(f.name())
+    return out
+
+
+def registered(hub, call, timeout=10):
+    return wait_for(lambda: any(call in c["calls"] for c in hub.status()["clients"]["agw"]), timeout)
+
+
+def heard_sabm(hub, n, timeout=10):
+    """Wait until the hub has read n frames off the radio (it decided on them)."""
+    return wait_for(lambda: hub.counts().get("rx_frames", 0) >= n, timeout)
+
+
+def scenario_inbound_ignored_without_window():
+    """A0-1: SABM to a registered call (Pat's MyCall) with no window:
+    nothing transmitted, counted as ignored. (On main: a UA goes out.)"""
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True)
+    try:
+        a = Agw(hub.agw)
+        a.send("X", "N9ABC")                 # as Pat registers its MyCall
+        check_true("A0-1 precondition: N9ABC registered", bool(registered(hub, "N9ABC")))
+        check("A0-1 status: no inbound window", hub.status()["inbound"] if "inbound" in hub.status() else None,
+              None)
+        mark = len(hub.output())
+        radio.inject(sabm(), lossy=False)
+        check_true("A0-1 the hub read the SABM", bool(heard_sabm(hub, 1)))
+        time.sleep(1.0)                # negative check: a window for a UA to show up
+        check("A0-1 nothing transmitted (no UA, no DM)", frames_to(radio, "N0XYZ"), [])
+        check("A0-1 counted as ignored", hub.counts().get("inbound_ignored"), 1)
+        check_true("A0-1 logged with the caller",
+                   bool(hub.wait_log("inbound connect from N0XYZ to N9ABC ignored: no inbound window", mark, 3)))
+        check("A0-1 the AGWPE client was told nothing", a.got("C"), [])
+        a.close()
+    finally:
+        hub.stop(); radio.stop()
+
+
+def scenario_inbound_window():
+    """A0-2: window open -> UA and *** CONNECTED To; after `seconds` ->
+    ignored again; a restarted hub starts closed."""
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True)
+    try:
+        a = Agw(hub.agw)
+        a.send("X", "N9ABC")
+        registered(hub, "N9ABC")
+        t0 = time.time()
+        code, body = hub.post("/api/inbound", {"calls": ["n9abc"], "seconds": 4})
+        check("A0-2 open a 4 s window", (code, (body.get("inbound") or {}).get("calls")), (200, ["N9ABC"]))
+        check_true("A0-2 status shows it, until ~4 s from now",
+                   2.5 < ((hub.status()["inbound"] or {}).get("until", 0) - t0) < 5.5)
+        radio.inject(sabm(), lossy=False)
+        c = a.wait("C", 10)
+        check_true("A0-2 client gets *** CONNECTED To Station N0XYZ",
+                   bool(c) and c[0][3].startswith(b"*** CONNECTED To Station N0XYZ"), repr(c))
+        check("A0-2 a UA went out to N0XYZ", wait_for(lambda: frames_to(radio, "N0XYZ"), 5), ["UA"])
+        check_true("A0-2 the hub lists the link", bool(wait_for(lambda: hub.status()["links"], 5)))
+        # The caller hangs up: DISC, the hub answers UA and drops the link.
+        radio.inject(Frame(Address.from_text("N9ABC"), Address.from_text("N0XYZ"), kind="U", utype=U_DISC,
+                           pf=True, command=True).encode(), lossy=False)
+        check_true("A0-2 link gone after the caller's DISC", bool(wait_for(lambda: not hub.status()["links"], 10)))
+        check_true("A0-2 the window runs out by itself",
+                   bool(wait_for(lambda: hub.status()["inbound"] is None, 8)))
+        n_tx, n_rx = len(radio.transmitted()), hub.counts().get("rx_frames", 0)
+        radio.inject(sabm(), lossy=False)
+        heard_sabm(hub, n_rx + 1)
+        time.sleep(1.0)                # negative check
+        check("A0-2 after it ran out: nothing transmitted", frames_to(radio, "N0XYZ", n_tx), [])
+        check("A0-2 after it ran out: counted as ignored", hub.counts().get("inbound_ignored"), 1)
+        code, _ = hub.post("/api/inbound", {"calls": ["N9ABC"], "seconds": 3600})
+        check("A0-2 a long window, then the hub restarts", code, 200)
+        a.close()
+    finally:
+        hub.stop(); radio.stop()
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True)
+    try:
+        check("A0-2 restarted hub: no inbound window", hub.status()["inbound"], None)
+        a = Agw(hub.agw)
+        a.send("X", "N9ABC")
+        registered(hub, "N9ABC")
+        radio.inject(sabm(), lossy=False)
+        heard_sabm(hub, 1)
+        time.sleep(1.0)                # negative check
+        check("A0-2 restarted hub: SABM ignored, nothing transmitted", frames_to(radio, "N0XYZ"), [])
+        a.close()
+    finally:
+        hub.stop(); radio.stop()
+
+
+def scenario_inbound_guards():
+    """A0-3: /api/inbound needs the header and this machine; transmit off
+    ignores a SABM even inside a window; bad requests are refused."""
+    radio = FakeKissRadio().start()
+    hub = HubProc(radio, tx=True)
+    try:
+        check("A0-3 open without X-Ranch-Radio -> 403",
+              hub.post("/api/inbound", {"calls": ["N9ABC"], "seconds": 60}, csrf=False)[0], 403)
+        check("A0-3   and no window", hub.status()["inbound"], None)
+        check("A0-3 close without X-Ranch-Radio -> 403", hub.post("/api/inbound/close", {}, csrf=False)[0], 403)
+        check("A0-3 seconds 0 -> 400", hub.post("/api/inbound", {"calls": ["N9ABC"], "seconds": 0})[0], 400)
+        check("A0-3 seconds over 12 h -> 400",
+              hub.post("/api/inbound", {"calls": ["N9ABC"], "seconds": 12 * 3600 + 1})[0], 400)
+        check("A0-3 bad call -> 400", hub.post("/api/inbound", {"calls": ["N9ABC-16"], "seconds": 60})[0], 400)
+        check("A0-3 no calls -> 400", hub.post("/api/inbound", {"calls": [], "seconds": 60})[0], 400)
+        a = Agw(hub.agw)
+        a.send("X", "N9ABC")
+        registered(hub, "N9ABC")
+        check("A0-3 window open", hub.post("/api/inbound", {"calls": ["N9ABC"], "seconds": 60})[0], 200)
+        hub.set_tx(False)
+        mark = len(hub.output())
+        radio.inject(sabm(), lossy=False)
+        heard_sabm(hub, 1)
+        check_true("A0-3 tx off: logged as ignored (transmit is off)",
+                   bool(hub.wait_log("ignored: transmit is off", mark, 5)))
+        time.sleep(0.5)                # negative check
+        check("A0-3 tx off inside a window: nothing transmitted", frames_to(radio, "N0XYZ"), [])
+        check("A0-3 close -> 200, window gone",
+              (hub.post("/api/inbound/close", {})[0], hub.status()["inbound"]), (200, None))
+        a.close()
+    finally:
+        hub.stop(); radio.stop()
+    # Off-host: the request's peer is another machine (in process: this Mac's
+    # LAN address doesn't reach its own listeners, so it is rewritten here).
+    import tnc_hub
+    from aiohttp import web as aweb
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def offhost():
+        args = tnc_hub.parse_args(["--tnc", "/dev/null", "--mycall", "N9ABC", "--tx", "--no-aprs",
+                                  "--log-dir", tempfile.mkdtemp(prefix="tnchub-")])
+        hub = tnc_hub.Hub(args)
+        app = tnc_hub.make_web(hub)
+
+        @aweb.middleware
+        async def from_lan(req, handler):
+            return await handler(req.clone(remote="192.168.1.50"))   # ranch-radio: allow (example LAN address)
+        app.middlewares.insert(0, from_lan)
+        async with TestClient(TestServer(app)) as c:
+            r1 = await c.post("/api/inbound", json={"calls": ["N9ABC"], "seconds": 60},
+                              headers={"X-Ranch-Radio": "1"})
+            r2 = await c.post("/api/inbound/close", json={}, headers={"X-Ranch-Radio": "1"})
+            return r1.status, r2.status, hub.inbound
+    check("A0-3 from another machine: open and close -> 403, no window", asyncio.run(offhost()),
+          (403, 403, None))
+
+
+def pat_bin():
+    return os.environ.get("PAT") or shutil.which("pat")
+
+
+def scenario_real_pat_inbound_ignored():
+    """E-4: real Pat (pat http) after an outbound packet session keeps its
+    AGWPE registration (F10). With no inbound window, a SABM to its MyCall
+    gets nothing back. (On main the hub UAs, then DISCs when Pat closes it.)"""
+    pat = pat_bin()
+    if not pat:
+        print("skip  E-4 real Pat inbound scenario (no pat on PATH; set PAT=)")
+        return
+    radio = FakeKissRadio().start()
+    sim = SimStation(radio, mode="rms")
+    hub = HubProc(radio, tx=True)
+    tmp = tempfile.mkdtemp(prefix="pat-")
+    proc = None
+    try:
+        cfg = {"mycall": "N9ABC", "secure_login_password": "", "locator": "FN31",
+               "ax25": {"engine": "agwpe", "beacon": {"every": 0}},
+               "agwpe": {"addr": f"127.0.0.1:{hub.agw}", "radio_port": 0},
+               "connect_aliases": {}, "listen": [], "schedule": {}, "hamlib_rigs": {},
+               "version_reporting_disabled": True}
+        cfgp = os.path.join(tmp, "config.json")
+        with open(cfgp, "w") as fh:
+            json.dump(cfg, fh)
+        env = real_pat_env(tmp, "N9ABC")
+        port = free_port()
+        proc = subprocess.Popen([pat, "--config", cfgp, "--mbox", os.path.join(tmp, "mbox"),
+                                 "--log", os.path.join(tmp, "pat.log"), "http", "--addr", f"127.0.0.1:{port}"],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def pat_up():
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=1).close()
+                return True
+            except OSError:
+                return False
+        check_true("E-4 real pat http is up", bool(wait_for(pat_up, 20)))
+        q = urllib.parse.urlencode({"url": "ax25+agwpe:///W7TST-10"})
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/connect?{q}", timeout=90) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        check("E-4 an outbound packet session through the hub", (code, "fq" in sim.events), (200, True))
+        check_true("E-4 precondition: Pat still holds N9ABC on the hub", bool(registered(hub, "N9ABC")),
+                   str(hub.status()["clients"]["agw"]))
+        n_tx, n_rx = len(radio.transmitted()), hub.counts().get("rx_frames", 0)
+        radio.inject(sabm(), lossy=False)
+        heard_sabm(hub, n_rx + 1)
+        time.sleep(2.0)                # negative check: Pat closes an unwanted conn well within this
+        check("E-4 no window: nothing transmitted to the caller (no UA, no DISC)",
+              frames_to(radio, "N0XYZ", n_tx), [])
+        check("E-4 no window: counted as ignored", hub.counts().get("inbound_ignored"), 1)
+    except Exception:
+        try:
+            print("      pat.log tail:\n" + open(os.path.join(tmp, "pat.log"), errors="replace").read()[-2500:])
+            print("      gateway events:", sim.events)
+        except OSError:
+            pass
+        raise
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        hub.stop(); sim.stop(); radio.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 def gaia(cmd, body=b"", group=2, reply=False, flags=0):
     data = group.to_bytes(2, "big") + (cmd | (0x8000 if reply else 0)).to_bytes(2, "big") + body
@@ -1287,7 +1524,9 @@ SCENARIOS = [scenario_cross_site_guard, scenario_on_needs_tx_at_start, scenario_
              scenario_connect_no_answer, scenario_connect_busy, scenario_wrong_source_connect,
              scenario_radio_drop_ends_link, scenario_lend_radio, scenario_real_pat,
              scenario_real_pat_sends_message, scenario_aprs_store, scenario_aprs_loop_latency,
-             scenario_igate, scenario_digi, scenario_igate_beacon]
+             scenario_igate, scenario_digi, scenario_igate_beacon,
+             scenario_inbound_ignored_without_window, scenario_inbound_window, scenario_inbound_guards,
+             scenario_real_pat_inbound_ignored]
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY", "")
