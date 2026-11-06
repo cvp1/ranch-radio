@@ -7,6 +7,39 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **The packet hub answers inbound connects only inside an inbound window.**
+  A station calling a call an AGWPE client registered (Pat's MyCall, held
+  after any packet session) got an automatic UA, then DISCs when Pat closed
+  the unwanted connection: transmissions nobody asked for. Such a call is
+  now ignored, with no UA and no DM, counted (`inbound_ignored`) and logged,
+  unless `POST /api/inbound {"calls", "seconds"}` (this machine only, with
+  `X-Ranch-Radio: 1`) opened a window for it; it ends on
+  `/api/inbound/close` or by itself, and a restarted hub starts closed.
+  Nothing uses inbound connects yet; a listen window will.
+- **Pat has one lifecycle owner, and a config check before every start.**
+  Start, stop, `restart_pat` and the inbound-session cap go through one
+  lock; Pat's command line is built from the wanted state when it is
+  started; `restart_pat` works whether Pat is running or not and returns
+  only once the new Pat is up and has sent its status (else it raises).
+  Before every start Pat's config is read for `listen`, `schedule`,
+  `ax25.beacon.every` (and `agwpe.addr`) only: if Pat would listen, beacon
+  or run scheduled connects on its own, or the file can't be read, Pat is
+  not started and the Winlink panel and `doctor` say what to clear. The
+  config is found from `--winlink-pat-config` (host file
+  `"winlink": {"pat_config": ...}`), else a `--config` in the Pat command,
+  else Pat's default for the OS.
+- **Winlink knows when Pat is busy, whoever started it.** A session another
+  station started (Pat's `Got connect` log line and its Status) is shown as
+  "Answering CALL"; while it runs, or while Pat's state is unknown, the
+  outbox can't be changed (409) and a connect is refused, re-checked after
+  every step of arming, before anything is dialed. Such a session gets the
+  same `--winlink-session-max` cap: a graceful disconnect, then (on packet,
+  until the hub's link is gone) SIGTERM and SIGKILL, and Pat is started
+  again.
+- **Packet URLs are checked against the data sub-bands.** 2 m from 144.1
+  MHz (47 CFR 97.305(c)), 1.25 m 222-225, 70 cm 420-450 MHz; 144.390 MHz
+  (the APRS channel, +-10 kHz) is always refused.
+
 - **The tab bar is grouped: Radios, Messaging, Mesh, Tools.** It had grown
   a flat tab per add-on (eight on a radio with every module). Each radio,
   service and add-on now belongs to one group: Radios (the HF radios, the
@@ -21,6 +54,17 @@ All notable changes to Ranch Radio are recorded here. The format follows
   group with `Addon.group`; the page lays it out in `static/nav.js`.
 
 ### Added
+
+- **Winlink peer-to-peer (P2P).** The session panel's Gateway | Peer switch
+  calls another station directly: packet through the hub
+  (`ax25+agwpe:///CALL?freq=`), an HF modem the server lists, or telnet
+  (`telnet://MYCALL:PASS@host:port/CALL`). A peer is one valid callsign,
+  not this station's own (an SSID of it is fine), and a radio peer needs
+  its frequency. Compose has **P2P only** (Pat's `X-P2POnly`), shown as a
+  P2P badge; Reply and Forward keep it. A session's counts are measured:
+  sent is what Pat moved to sent, left what is still in the outbox; the
+  "still in the outbox" warning is for gateway sessions only and leaves
+  P2P-only messages out. Telnet passwords are masked in logs and pages.
 
 - **The MeshCore tab works like the Mesh tab, and uses what MeshCore has.**
   Same layout and styles as the Mesh tab: channel and Direct tabs with
