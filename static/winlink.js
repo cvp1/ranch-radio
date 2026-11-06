@@ -13,6 +13,9 @@ const winlink = (() => {
   let off = false;          // the Winlink add-on is switched off: Pat isn't running
   let blocked = null;       // Pat not launched: its config would listen/beacon/schedule (the server says why)
   let inbound = null;       // {call, since}: Pat is in a session another station started
+  // A listen window (plan winlink-listen): {plan, window, busy}; null when the
+  // host file sets none up (the row stays hidden).
+  let listen = null, listenTimer = null;
   let modems = ["ardop"];   // HF modem schemes a peer session may use (the server's `modems`)
   let mode = store.get("wl.mode", "gateway");   // "gateway" | "peer" (P2P)
   // The message in the read pane: {box, mid, m}. Every action reads it from
@@ -270,13 +273,15 @@ const winlink = (() => {
   // is Pat's: Delete there is disabled (the server refuses it too).
   function renderActions() {
     const b = current?.box;
-    const locked = b === "out" && (armed || !!session || !!inbound);
+    const listening = !!(listen && (listen.window || listen.busy));
+    const locked = b === "out" && (armed || !!session || !!inbound || listening);
     for (const s of ACTIONS) $(s).disabled = off || busy || !current;
     $("#wl-archive").hidden = b === "archive" || b === "out";
     for (const s of ["#wl-delete", "#wl-archive"]) {
       if (locked) $(s).disabled = true;
       $(s).title = locked ? (inbound && !session ? `The outbox is Pat's while it is in a session with ${inbound.call}`
-                                                 : "The outbox is Pat's while a session runs") : "";
+        : listening && !session ? "The outbox is Pat's while it listens: a station that calls may take it"
+          : "The outbox is Pat's while a session runs") : "";
     }
     if (locked && pending) resetDelete();
   }
@@ -508,15 +513,21 @@ const winlink = (() => {
   // The idle line: switched off, Pat refused (its config), answering a
   // station that called us, or armed/idle.
   function idleState() {
+    const w = listen?.window;
     if (off) setState("Switched off · Pat isn't running", "warn");
     else if (blocked) setState(`Off · ${blocked}`, "warn");
     else if (inbound && !session) setState(`Answering ${inbound.call} · a station called this one`, "on");
+    else if (listen?.busy === "starting") setState(`Starting to listen on ${mhzText(listen.plan)} MHz…`, "on");
+    else if (listen?.busy === "ending") setState("Ending the listen window…", "on");
+    else if (w) setState(`Listening on ${mhzText(listen.plan)} MHz until ${clock(w.until)} · answering calls to ${w.call}`, "on");
     else setState(session ? `Armed · session to ${session}` : armed ? "Armed" : "Idle", armed ? "on" : "");
   }
 
   function renderSession() {
+    const listening = !!(listen && (listen.window || listen.busy));
     $("#wl-stop").disabled = !session;
-    $("#wl-connect").disabled = !!session || off || !!blocked || !!inbound;
+    $("#wl-connect").disabled = !!session || off || !!blocked || !!inbound || listening;
+    renderListen();
     $("#wl-compose-btn").disabled = off;
     $("#winlink").classList.toggle("wl-armed", armed);
     $("#winlink").classList.toggle("wl-off", off);
@@ -524,6 +535,56 @@ const winlink = (() => {
     pw.textContent = off ? "Switch on" : "Switch off";
     pw.title = off ? "Start Pat" : "Stop Pat; arming a radio for the station still works";
     renderActions();
+  }
+
+  // ---------- listen window: answer stations that call this one, for a bounded time
+
+  const mhzText = (plan) => (plan.hz / 1e6).toFixed(3);
+  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const hoursText = (h) => (h < 1 ? `${Math.round(h * 60)} min` : `${h} h`);
+
+  function renderListen() {
+    const row = $("#wl-listen");
+    row.hidden = !listen || off;
+    if (!listen) return;
+    const w = listen.window, busy = listen.busy, sel = $("#wl-listen-hours");
+    const max = listen.plan.max_hours;
+    if (sel.dataset.max !== String(max)) {          // the choices, once per plan
+      const hs = [0.25, 0.5, 1, 2, 4, 8, 12].filter((h) => h < max).concat([max]);
+      sel.replaceChildren(...hs.map((h) => Object.assign(document.createElement("option"),
+        { value: String(h), textContent: hoursText(h) })));
+      sel.value = String(max);
+      sel.dataset.max = String(max);
+    }
+    $("#wl-listen-btn").hidden = !!w || busy === "ending";
+    $("#wl-listen-stop").hidden = !w && busy !== "starting";
+    $("#wl-listen-btn").disabled = !!session || !!inbound || !!blocked || !!busy || armed;
+    sel.disabled = !!w || !!busy;
+    if ((w || busy) && listenTimer) resetListenConfirm();
+  }
+
+  function resetListenConfirm() {
+    clearTimeout(listenTimer);
+    listenTimer = null;
+    $("#wl-listen-btn").textContent = "Listen";
+    $("#wl-listen-btn").classList.remove("wl-confirm");
+  }
+
+  // Two clicks, like Connect: the confirm names the frequency, the hours, and
+  // that APRS and the iGate are off-frequency for the window.
+  function listenClick() {
+    if (!listen) return;
+    const h = Number($("#wl-listen-hours").value);
+    if (!listenTimer) {
+      const b = $("#wl-listen-btn");
+      b.textContent = `Confirm: answer calls on ${mhzText(listen.plan)} MHz for ${hoursText(h)}`
+        + " · APRS and iGate off-frequency meanwhile";
+      b.classList.add("wl-confirm");
+      listenTimer = setTimeout(resetListenConfirm, CONFIRM_MS);
+      return;
+    }
+    resetListenConfirm();
+    send({ t: "winlink_listen", hours: h });
   }
 
   // The add-on registry's on/off switch (addons/winlink.py). Off stops Pat. The
@@ -598,6 +659,7 @@ const winlink = (() => {
     off = !!snap.off;
     blocked = snap.blocked || null;
     inbound = snap.inbound || null;
+    listen = snap.listen || null;
     if (Array.isArray(snap.modems) && snap.modems.length) modems = snap.modems;
     $("#wl-mycall").textContent = snap.mycall || "";
     $("#wl-log").textContent = (snap.log || []).join("\n");
@@ -639,6 +701,11 @@ const winlink = (() => {
       // What the peer left is in the inbox now (and its share of the outbox
       // gone): refresh the list, unless a message is open (keep the reader).
       if (was && !inbound && !current) loadBox(box);
+    }
+    if ("listen" in m) {
+      listen = m.listen || null;
+      if (!session) idleState();
+      renderSession();
     }
     if (m.log) log(m.log);
     if (m.status && "mycall" in m.status) $("#wl-mycall").textContent = m.status.mycall;
@@ -686,6 +753,8 @@ const winlink = (() => {
   $("#wl-peer-modem").onchange = peerChanged;
   $("#wl-connect").onclick = connectClick;
   $("#wl-stop").onclick = () => send({ t: "winlink_stop" });
+  $("#wl-listen-btn").onclick = listenClick;
+  $("#wl-listen-stop").onclick = () => send({ t: "winlink_listen_stop" });
   if (viaSel()) viaSel().onchange = () => viaChanged();
   fillBands();
   renderActions();

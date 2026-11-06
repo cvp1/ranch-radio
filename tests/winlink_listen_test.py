@@ -97,6 +97,16 @@ if picked("B-1"):
     check("B-1   and parses it the same way (one ListenPlan)",
           listen_plan.ListenPlan.from_block(sj["winlink"]["listen"]).flags(),
           ["--winlink-listen", "ax25+agwpe=145.09", "--winlink-listen-max-h", "2"])
+    import types
+    import winlink as W
+    eng = W.PatEngine(types.SimpleNamespace(notice=lambda *a, **k: None), types.SimpleNamespace(
+        winlink_pat="pat", winlink_pat_port=1, winlink_session_max=60, winlink_pat_config=None,
+        winlink_listen=listen_plan.ListenPlan.from_block(sj["winlink"]["listen"]), addons_state="/tmp/x/addons.json"))
+    check("B-1   station.py's engine takes that plan (as station.py builds its args)",
+          (eng.listen_plan.hz, eng.listen_plan.max_hours, eng.listen_path), (145_090_000, 2.0, "/tmp/x/winlink-listen.json"))
+    eng = W.PatEngine(types.SimpleNamespace(notice=lambda *a, **k: None), types.SimpleNamespace(
+        winlink_pat="pat", winlink_pat_port=1, winlink_session_max=60, winlink_pat_config=None))
+    check("B-1   no plan in the args: no listening (hidden)", (eng.listen_plan, eng.listen_state()), (None, None))
     check("B-1 Linux: no listen block -> station.json has none", "listen" in render.station_json(station)["winlink"],
           False)
     for name, block, field in (
@@ -807,6 +817,76 @@ if picked("B-12"):
         for o in others:
             o.kill()
         s.close()
+
+
+# ------------------------------------------------------------ B-9: the page
+
+if picked("B-9"):
+    CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
+    if not CHROME:
+        print("skip  B-9 the listen row on the page (no Chromium; set CHROME=)")
+    else:
+        from cdp_browser import Browser
+        TEXT = "(s) => (document.querySelector(s)?.textContent || '')"
+        VISIBLE = ("(s) => { const e = document.querySelector(s); "
+                   "return !!e && !e.closest('[hidden]') && e.offsetParent !== null; }")
+        b = Browser(CHROME, free_port())
+        try:
+            s = Stack(listen=None)
+            try:
+                b.goto(f"http://127.0.0.1:{s.web}/?v=noplan#/winlink")
+                b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")
+                check("B-9 no plan: the listen row is hidden", b.js(f"({VISIBLE})('#wl-listen')"), False)
+            finally:
+                s.stop()
+                s.close()
+            s = Stack()
+            try:
+                b.goto(f"http://127.0.0.1:{s.web}/?v=listen#/winlink")
+                b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")
+                b.js("window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(e.message))")
+                check("B-9 a plan: the listen row shows, Listen and the hours", (
+                    b.wait(f"({VISIBLE})('#wl-listen-btn')", 10), b.js(f"({VISIBLE})('#wl-listen-stop')")), (True, False))
+                check("B-9   hours offered up to max_hours (4), defaulting to it",
+                      (b.js("[...document.querySelectorAll('#wl-listen-hours option')].map((o) => o.textContent)"),
+                       b.js("document.querySelector('#wl-listen-hours').value")),
+                      (["15 min", "30 min", "1 h", "2 h", "4 h"], "4"))
+                b.js("document.querySelector('#wl-listen-hours').value = '0.25'")
+                b.js("document.querySelector('#wl-listen-btn').click()")
+                check("B-9 the first click asks to confirm: frequency, hours, APRS and iGate off-frequency",
+                      b.js(f"({TEXT})('#wl-listen-btn')"),
+                      "Confirm: answer calls on 145.090 MHz for 15 min · APRS and iGate off-frequency meanwhile")
+                time.sleep(1.0)        # negative check: one click starts nothing
+                check("B-9   one click starts nothing", (s.window(), s.writes()), (None, []))
+                b.js("document.querySelector('#wl-listen-btn').click()")
+                chip = b.wait(f"({TEXT})('#wl-state').startsWith('Listening on 145.090 MHz until')", 30)
+                check("B-9 confirmed: the state chip says Listening, until when, for which call",
+                      bool(chip) and "answering calls to N9ABC" in b.js(f"({TEXT})('#wl-state')"), True)
+                check("B-9   Stop listening shows, Listen hides, Connect disabled",
+                      (b.js(f"({VISIBLE})('#wl-listen-stop')"), b.js(f"({VISIBLE})('#wl-listen-btn')"),
+                       b.js("document.querySelector('#wl-connect').disabled")), (True, False, True))
+                check("B-9   the server is listening", (s.window() or {}).get("hz"), 145_090_000)
+                check("B-9 no JS errors (the first page)", b.js("window.__errs"), [])
+                # Closing the page does not end a window (unattended VHF data is lawful, 97.221(b))
+                b.goto("about:blank")
+                time.sleep(2.0)        # negative check: a page gone is not an end
+                check("B-9 the page closed: still listening", ((s.window() or {}).get("hz"), s.radio()),
+                      (145_090_000, (2, 0)))
+                b.goto(f"http://127.0.0.1:{s.web}/?v=listen2#/winlink")
+                b.js("window.__errs2 = []; window.addEventListener('error', (e) => window.__errs2.push(e.message))")
+                check("B-9 a page opened later shows the window",
+                      bool(b.wait(f"({TEXT})('#wl-state').startsWith('Listening on 145.090 MHz')", 15)), True)
+                b.js("document.querySelector('#wl-listen-stop').click()")
+                check("B-9 Stop listening: Idle, Listen back", (
+                    bool(b.wait(f"({TEXT})('#wl-state') === 'Idle'", 40)), b.wait(f"({VISIBLE})('#wl-listen-btn')", 5)),
+                    (True, True))
+                check("B-9   the radio is back", s.radio(), (0, 1))
+                check("B-9 no JS errors (the second page)", b.js("window.__errs2"), [])
+            finally:
+                s.stop()
+                s.close()
+        finally:
+            b.close()
 
 
 # ------------------------------------------------------------ E-2, E-3: real Pat (B-6)
