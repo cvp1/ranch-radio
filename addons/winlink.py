@@ -2,7 +2,7 @@
 
 Like Mesh it has its own panel (static/winlink.js) and keeps that panel's wire
 protocol: the page sends {"t": "winlink_connect" | "winlink_stop" |
-"winlink_prompt"} (ROUTES) and gets {"t": "winlink", ...} back; the mailbox
+"winlink_prompt" | "winlink_listen" | "winlink_listen_stop"} (ROUTES) and gets {"t": "winlink", ...} back; the mailbox
 is Pat's API passed through under /winlink/api/ (registered once, answering
 503 while switched off).
 

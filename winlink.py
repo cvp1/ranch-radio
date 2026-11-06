@@ -31,6 +31,14 @@ four keys only (listen, schedule, ax25.beacon.every, agwpe.addr; the file
 holds the Winlink password, nothing else is read or logged): a config that
 would make Pat listen, beacon or run scheduled connects on its own keeps Pat
 from being launched at all, with the reason on the page (preflight()).
+
+Listen windows (plan winlink-listen, listen_start/_end_listen): with a
+host-file plan (listen_plan.ListenPlan, VHF/UHF packet only), the page can
+open a bounded window in which Pat answers stations that call this one:
+the radio tuned (TunedLane), Pat relaunched with --listen, the hub's
+inbound window opened, all read back; ended in the order hub window,
+session, Pat, radio. A record beside --addons-state lets the next start
+undo a window a crash left, before any Pat runs.
 """
 
 import asyncio
