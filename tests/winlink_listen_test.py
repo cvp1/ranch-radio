@@ -214,7 +214,7 @@ class Stack:
     Pat unless pat_cmd), a listen plan on 145.090, on a Hub of its own."""
 
     def __init__(self, hub=None, env=None, listen=f"ax25+agwpe={LISTEN_MHZ:g}", max_h="4", pat_cmd=None,
-                 uvpro=True, tmp=None, ports=None, state=True, wait=True, pat_home=None):
+                 uvpro=True, tmp=None, ports=None, state=True, wait=True, pat_home=None, packet_status=True):
         self.hub = hub or Hub()
         self.own_hub = hub is None
         self.tmp = tmp or tempfile.mkdtemp(prefix="wllisten-")
@@ -233,7 +233,9 @@ class Stack:
             cfg["uvpro"] = {"enabled": True, "address": "00:11:22:33:44:55", "python": sys.executable,
                             "bridge": os.path.join(HERE, "fake_uvpro_bridge.py"),
                             "control": f"tcp:127.0.0.1:{self.hub.proc.ctrl}",
-                            "packet_status": f"{self.hub.url}/api/status", "calls": ["N9ABC"], "restore_wait_s": 3}
+                            "calls": ["N9ABC"], "restore_wait_s": 3}
+            if packet_status:          # the tuner's own "no link up" check (off: only the engine's guards)
+                cfg["uvpro"]["packet_status"] = f"{self.hub.url}/api/status"
         self.addons = os.path.join(self.tmp, "addons.json")
         with open(self.addons, "w") as f:
             json.dump(cfg, f)
@@ -805,6 +807,173 @@ if picked("B-12"):
         for o in others:
             o.kill()
         s.close()
+
+
+# ------------------------------------------------------------ E-2, E-3: real Pat (B-6)
+
+class Peer:
+    """A station on the air that calls N9ABC (ax25_link in its own loop
+    thread): it acknowledges what it hears at the link layer and never
+    sends a byte of its own ("the peer goes silent"). ignore_disc: it stops
+    answering a DISC, so the hub retries until it gives up."""
+
+    def __init__(self, radio, call="N0XYZ", to="N9ABC"):
+        import asyncio
+        import threading
+        self.radio, self.me, self.to = radio, call, to
+        self.link, self.events, self.rx = None, [], bytearray()
+        self.ignore_disc = False
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        radio.on_air = lambda raw: self.loop.call_soon_threadsafe(self._heard, raw)
+
+    def call(self):
+        self.loop.call_soon_threadsafe(self._call)
+
+    def _call(self):
+        from ax25_link import Link
+        self.link = Link(self.me, self.to, self._send, self, frack=1.0, n2=10, baud=96000, ack_delay=0.05)
+        self.link.connect()
+
+    def _send(self, f):
+        self.radio.inject(f.encode(), lossy=False)
+
+    def _heard(self, raw):
+        from ax25 import U_DISC, Frame
+        try:
+            f = Frame.decode(raw)
+        except Exception:              # noqa: BLE001
+            return
+        if str(f.dest) != self.me:
+            return
+        if self.ignore_disc and f.kind == "U" and f.utype == U_DISC:
+            self.events.append("DISC ignored")
+            return
+        if self.link is not None:
+            self.link.handle(f)
+
+    def on_connected(self, link, inbound):
+        self.events.append("connected")
+
+    def on_data(self, link, data):
+        self.rx += data
+
+    def on_disconnected(self, link, reason):
+        self.events.append(f"disconnected: {reason}")
+
+    def stop(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+def frames_to(radio, call, since=0):
+    from ax25 import Frame
+    out = []
+    for t, raw in radio.transmitted()[since:]:
+        try:
+            f = Frame.decode(raw)
+        except Exception:              # noqa: BLE001
+            continue
+        if str(f.dest) == call:
+            out.append((t, f.name()))
+    return out
+
+
+if picked("E-2") or picked("E-3"):
+    if not PAT:
+        print("skip  E-2/E-3 real Pat listening through the hub (no pat on PATH; set PAT=)")
+    else:
+        import threading
+        home = tempfile.mkdtemp(prefix="wlpat-")
+        hub = Hub()
+        cfg = testkit.pat_config(os.path.join(home, "config.json"),
+                                 agwpe={"addr": f"127.0.0.1:{hub.proc.agw}", "radio_port": 0})
+        patlog = os.path.join(home, "pat.log")
+        # packet_status off: the UV-PRO add-on can't see the hub's links, so
+        # only the engine's own wait for the link to clear keeps the radio put (B-6).
+        s = Stack(hub=hub, pat_home=home, packet_status=False,
+                  pat_cmd=f"{PAT} --config {cfg} --mbox {os.path.join(home, 'mbox')} --log {patlog}")
+        peer = None
+        try:
+            # E-2: the window opens on a real Pat
+            s.listen_on(0.25)
+            ok = s.listening(40)
+            check("E-2 real Pat: listening (read back by the server)", bool(ok), True)
+            check("E-2   Pat's own status: active_listeners [ax25+agwpe]",
+                  (s.snap().get("status") or {}).get("active_listeners"), ["ax25+agwpe"])
+            check("E-2   the hub lists N9ABC registered", s.hub.registered(), ["N9ABC"])
+            if picked("E-3"):
+                # E-3: N0XYZ calls in; the hub answers, Pat accepts
+                peer = Peer(hub.radio)
+                n_tx = len(hub.radio.transmitted())
+                peer.call()
+                check("E-3 the hub answers N0XYZ's SABM with UA",
+                      bool(wait_for(lambda: "UA" in [n for _, n in frames_to(hub.radio, "N0XYZ", n_tx)], 10)), True)
+                check("E-3 Pat accepts: 'Got connect (ax25+agwpe:N0XYZ)' in its log",
+                      bool(wait_for(lambda: "Got connect (ax25+agwpe:N0XYZ)" in open(patlog, errors="replace").read(), 15)),
+                      True)
+                check("E-3 the page is told Pat is answering N0XYZ",
+                      bool(wait_for(lambda: (s.snap().get("inbound") or {}).get("call") == "N0XYZ", 10)), True)
+                links = lambda: [l for l in hub.status()["links"] if l["local"] == "N9ABC"]   # noqa: E731
+                check("E-3 the hub holds the link", [l["remote"] for l in links()], ["N0XYZ"])
+                # Pat's dirty disconnect alone does nothing on AX.25 (F9)
+                import urllib.request
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{s.patp}/api/disconnect?dirty=true", timeout=5).read()
+                except OSError:
+                    pass
+                time.sleep(3.0)        # negative check: longer than the hub's DISC retries (0.4 s x 4)
+                check("E-3 Pat's dirty disconnect alone: the hub link is still up", [l["remote"] for l in links()],
+                      ["N0XYZ"])
+                # B-6: end the window with the exchange up; the peer now ignores DISC
+                peer.ignore_disc = True
+                seen = []
+                stop_poll = threading.Event()
+
+                def poll():
+                    while not stop_poll.is_set():
+                        try:
+                            seen.append((time.time(), bool(links())))
+                        except Exception:  # noqa: BLE001
+                            pass
+                        time.sleep(0.05)
+                threading.Thread(target=poll, daemon=True).start()
+                b1, p1, _ = s.mark()
+                off = time.time() - time.monotonic()      # the fake radio stamps with monotonic
+                s.page.send({"t": "winlink_listen_stop"})
+                check("E-3 Stop listening with the exchange up: back to idle", bool(s.idle(60)), True)
+                stop_poll.set()
+                discs = [t + off for t, n in frames_to(hub.radio, "N0XYZ", n_tx) if n == "DISC"]
+                gone = next((t for t, up in seen if not up and all(not u for _, u in seen if _ >= t)), None)
+                back = [c["t"] for c in jsonl(s.blog)[b1:] if c.get("cmd") == "settings"
+                        and (c.get("values") or {}).get("channel_a") == 0]
+                check("E-3 the hub sent N0XYZ a DISC (Pat's graceful close), the peer ignored it",
+                      (bool(discs), "DISC ignored" in peer.events), (True, True))
+                check("B-6 order: DISC on air -> hub link gone -> radio put back",
+                      bool(discs and gone and back and discs[0] < gone < back[0]), True) or print(
+                          "      ", discs[:1], gone, back[:1])
+                check("E-3   the hub window closed", s.hub.inbound(), None)
+                check("E-3   the radio back on channel 1", s.radio(), (0, 1))
+            # E-2: after the window, both clear
+            if not picked("E-3"):
+                s.page.send({"t": "winlink_listen_stop"})
+                s.idle(40)
+            check("E-2 after: Pat lists no listener", wait_for(
+                lambda: (s.snap().get("status") or {}).get("active_listeners") == [], 15), True)
+            check("E-2 after: N9ABC no longer registered on the hub", wait_for(lambda: s.hub.registered() == [], 15), True)
+        finally:
+            if peer:
+                peer.stop()
+            out = s.stop()
+            s.close()
+            hub.stop()
+        started = [("listening on ax25+agwpe" in l) for l in out.splitlines() if "Pat started (pid" in l]
+        check("E-2 Pat's launches as the server logged them: plain, listening, plain", started, [False, True, False])
+        if fails:
+            try:
+                print("      pat.log tail:\n" + open(patlog, errors="replace").read()[-2500:])
+            except OSError:
+                pass
+            print("\n".join("   | " + l for l in out.splitlines() if "winlink" in l or "UV-PRO" in l)[-3000:])
 
 
 print("\nPASS" if not fails else f"\n{fails} FAILED")
