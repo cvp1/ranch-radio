@@ -290,7 +290,7 @@ async def admission_cases():
             await await_for(lambda: not eng.status.get("connected") and not getattr(eng, "inbound", None), 5)
 
         # A-4 peer: refusals change nothing; an SSID of our own call is another station.
-        for name, url in (("own exact MyCall", "telnet://N9ABC:pw@127.0.0.1:9/N9ABC"),
+        for name, url in () if not picked("A-4") else (("own exact MyCall", "telnet://N9ABC:pw@127.0.0.1:9/N9ABC"),
                           ("malformed call", "telnet://N9ABC:pw@127.0.0.1:9/N9_BC"),
                           ("SSID 16", "telnet://N9ABC:pw@127.0.0.1:9/N0XYZ-16"),
                           ("a packet peer with no freq=", "ax25+agwpe:///N0XYZ")):
@@ -299,12 +299,15 @@ async def admission_cases():
             await asyncio.wait_for(eng.connect(None, url, peer=True), 10)
             res[f"peer refused: {name}"] = (len(recs(flog, "connect")) - n0, lanes[-1].arms,
                                             any(lvl == "warn" for lvl, _ in st.notes[notes0:]))
-        lanes.append(TLane())
-        n0 = len(recs(flog, "connect"))
-        await asyncio.wait_for(eng.connect(None, "telnet://N9ABC:pw@127.0.0.1:9/N9ABC-5", peer=True), 10)
-        await await_for(lambda: len(recs(flog, "connect")) > n0, 10)
-        res["peer accepted: N9ABC-5 with MyCall N9ABC"] = [r["url"] for r in recs(flog, "connect")[n0:]]
-        await await_for(lambda: not (eng.session and not eng.session.done()), 15)
+        if picked("A-4"):
+            lanes.append(TLane())
+            n0 = len(recs(flog, "connect"))
+            await asyncio.wait_for(eng.connect(None, "telnet://N9ABC:pw@127.0.0.1:9/N9ABC-5", peer=True), 10)
+            await await_for(lambda: len(recs(flog, "connect")) > n0, 10)
+            res["peer accepted: N9ABC-5 with MyCall N9ABC"] = [r["url"] for r in recs(flog, "connect")[n0:]]
+            await await_for(lambda: not (eng.session and not eng.session.done()), 15)
+        if not picked("A-8"):
+            return res
 
         # A-8: an inbound call arriving at each await of the admission.
         orig_ready = eng._ready
