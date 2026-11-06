@@ -27,6 +27,7 @@ OFF_WHY = "Switched off: the node's port is free for other apps"
 
 class MeshAddon(Addon):
     name = "mesh"
+    group = "mesh"
     label = "Mesh"
     title = "Meshtastic node"
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel

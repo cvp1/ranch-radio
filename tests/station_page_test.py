@@ -125,21 +125,36 @@ try:
     time.sleep(2)
     b.goto(f"http://127.0.0.1:{WEB}/")
     b.wait(f"({TEXT})('#conn b') === 'Connected'")
-    b.wait(f"{TABS}.length >= 5")
+    b.wait(f"{TABS}.length >= 4")
+    check("nav, grouped: Overview, Radios, Winlink, Mesh (Packet's hub is down: no tab)",
+          [x.split()[0] for x in tabs()], ["Overview", "Radios", "Winlink", "Mesh"])
+    check("  Radios is a closed group with both radios in its title",
+          b.js(f"(() => {{ const t = {TABS}[1]; return [t.classList.contains('st-group-tab'), t.title]; }})()"),
+          [True, "Radios: G90, QMX"])
+    check("  the Overview tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
+    check("overview: a card per radio and service, in the bar's group order",
+          b.js("[...document.querySelectorAll('.st-card b')].map((e) => e.textContent)"),
+          ["G90", "QMX", "Winlink", "Packet (UV-PRO)", "Mesh"])
+    check("  names the shared port", str(SHARED) in b.js(f"({TEXT})('#st-help')"), True)
+    b.js(f"{TABS}[1].click()")
+    b.wait("location.hash === '#/g90'")
+    check("opening Radios opens its first radio and shows the group",
+          b.wait(f"{TABS}.length >= 5 && {TABS}.map((t) => t.querySelector('span').textContent)"),
+          ["Overview", "G90", "QMX", "Winlink", "Mesh"])
+    check("  inside a frame named Radios",
+          b.js("document.querySelector('#st-nav .st-group .st-group-name')?.textContent"), "Radios")
     t = tabs()
-    check("nav: Overview, both radios, Winlink, Mesh (Packet's hub is down: no tab)",
-          [x.split()[0] for x in t], ["Overview", "G90", "QMX", "Winlink", "Mesh"])
     check("  one radio carries the shared port", sum(" · " in x for x in t), 1)
     own = {x.split()[0]: x.split()[-1] for x in t if x.split()[0] in ("G90", "QMX")}
     check("  each radio's own port", own, {"G90": str(G90["rigctl"]), "QMX": str(QMX["rigctl"])})
-    check("  the Overview tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
-    check("overview: a card per radio and service",
-          b.js("[...document.querySelectorAll('.st-card b')].map((e) => e.textContent)"),
-          ["G90", "QMX", "Winlink", "Mesh", "Packet (UV-PRO)"])
-    check("  names the shared port", str(SHARED) in b.js(f"({TEXT})('#st-help')"), True)
     shot("overview")
 
     b.js(f"{TABS}.find((t) => t.textContent.startsWith('QMX')).click()")
+    b.wait(f"location.hash === '#/qmx'")
+    b.js("location.hash = '#/home'")
+    b.wait(f"{TABS}[1].classList.contains('st-group-tab')")
+    check("  Radios now opens the radio last used", b.js(f"{TABS}[1].getAttribute('href')"), "#/qmx")
+    b.js(f"{TABS}[1].click()")
     b.wait(f"location.hash === '#/qmx'")
     check("QMX tab: its page in a frame", bool(b.wait(f"{FRAME}?.src.includes('/r/qmx/')")), True)
     check("  connected", b.wait(f"{FRAME}.contentDocument?.querySelector('#conn b')?.textContent === 'Connected' && 'yes'"), "yes")
@@ -150,8 +165,8 @@ try:
     b.js(f"{TABS}.find((t) => t.textContent.startsWith('G90')).click()")
     b.wait(f"{FRAME}?.src.includes('/r/g90/')")
     check("G90 tab: G90 frame shown, QMX frame kept but hidden",
-          b.js("[...document.querySelectorAll('#view-radio iframe')].map((f) => [f.src.split('/r/')[1], f.hidden])"),
-          [["qmx/", True], ["g90/", False]])
+          sorted(b.js("[...document.querySelectorAll('#view-radio iframe')].map((f) => [f.src.split('/r/')[1], f.hidden])")),
+          [["g90/", False], ["qmx/", True]])
     b.goto(f"http://127.0.0.1:{WEB}/#/qmx")
     check("reload at #/qmx comes back to the QMX", bool(b.wait(f"{FRAME}?.src.includes('/r/qmx/')")), True)
 

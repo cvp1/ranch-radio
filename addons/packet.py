@@ -38,6 +38,7 @@ POLL_S = 10
 
 class Packet(Addon):
     name = "packet"
+    group = "messaging"
     label = "Packet"
     title = "APRS and the Winlink packet link (the packet hub)"
 

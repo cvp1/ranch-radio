@@ -26,6 +26,7 @@ from addons import Addon
 
 class WinlinkAddon(Addon):
     name = "winlink"
+    group = "messaging"
     label = "Winlink"
     title = "Winlink mail (Pat)"
     page = False                 # its page is the Winlink panel (winlink.js)

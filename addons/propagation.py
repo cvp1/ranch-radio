@@ -290,6 +290,7 @@ def parse_psk(xml_text):
 
 class Propagation(Addon):
     name = "propagation"
+    group = "tools"
     label = "Propagation"
     title = "Space weather and what the bands are doing (heard in the last hour)"
     css = True

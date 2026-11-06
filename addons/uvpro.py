@@ -246,6 +246,7 @@ def _where(cid):
 
 class UvproAddon(Addon):
     name = "uvpro"
+    group = "radios"
     label = "UV-PRO"
     title = "BTECH UV-PRO: channels, settings, battery and APRS beacon over Bluetooth"
     css = True
