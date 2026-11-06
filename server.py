@@ -487,6 +487,12 @@ class Station(TxAudio):
             return None, f"{scheme} is not set up on this station."
         return winlink.LocalLane(self), None
 
+    async def winlink_hub_links(self):
+        """The packet hub's links, or None (no hub here, or it can't be asked):
+        how Winlink tells a packet session it did not start has really ended."""
+        packet = self.addons.get("packet") if self.addons and self.addons.is_on("packet") else None
+        return await packet.links() if packet else None
+
     async def winlink_arm(self, ws, on, freq_hz=None):
         """freq_hz: the session's target frequency (connect URL), which sets
         the codec's band; without one, the radio's current frequency."""
@@ -1262,6 +1268,11 @@ def main():
     p.add_argument("--winlink-pat", metavar="CMD",
                    help="run Pat (Winlink engine) with this command, e.g. 'pat'; needs "
                         "--winlink-rigctl-port, and Pat's hamlib rig pointed at it")
+    p.add_argument("--winlink-pat-config", metavar="FILE",
+                   help="Pat's config file, read (listen, schedule, ax25.beacon.every only) before "
+                        "every start: Pat is not launched while it would listen, beacon or run "
+                        "scheduled connects on its own (default: a --config in --winlink-pat, else "
+                        "Pat's own default for this OS)")
     p.add_argument("--winlink-pat-port", type=int, default=8095,
                    help="port for Pat's API on 127.0.0.1 (never exposed; default 8095)")
     p.add_argument("--winlink-session-max", type=float, default=900,

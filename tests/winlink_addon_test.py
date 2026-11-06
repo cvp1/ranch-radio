@@ -26,6 +26,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import winlink_test_lib as L  # noqa: E402
+import testkit  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="wladdon-")
 STATE = os.path.join(TMP, "addons.json")     # never the real ~/.local/state one
@@ -76,7 +77,7 @@ def start_off(env=None):
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(L.WEB),
          "--rigctl-port", str(L.APPS), "--winlink-rigctl-port", str(L.LANE),
-         "--winlink-pat", f"{sys.executable} tests/fake_pat.py", "--winlink-pat-port", str(L.PATP),
+         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(L.PATP),
          "--addons-state", STATE],
         cwd=L.ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):

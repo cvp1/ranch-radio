@@ -30,6 +30,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
+import testkit  # noqa: E402
 
 B = 24000 + random.randrange(0, 4000, 40)
 WEB, SHARED, LANE, PAT, ARDOP, HUB, CDP = B, B + 1, B + 2, B + 3, B + 4, B + 6, B + 7
@@ -87,7 +88,7 @@ cfg = {
         {"id": "qmx", "name": "QMX", **QMX, "audio_in": "qmx-in", "audio_out": "qmx-out"},
     ],
     "packet": {"url": f"http://127.0.0.1:{HUB}", "agwpe": "127.0.0.1:8000"},
-    "winlink": {"pat": f"{sys.executable} tests/fake_pat.py", "pat_port": PAT, "lane_port": LANE,
+    "winlink": {"pat": testkit.fake_pat_cmd(), "pat_port": PAT, "lane_port": LANE,
                 "ardopcf": f"{sys.executable} tests/fake_ardopcf.py", "ardop_port": ARDOP,
                 "ardop_logs": os.path.join(TMP, "ardop")},
     "mesh": {"port": "/dev/null", "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py", "log": ""},

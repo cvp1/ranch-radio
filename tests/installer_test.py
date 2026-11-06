@@ -18,6 +18,11 @@
     python3 tests/installer_test.py            (INSTALLER_E2E=0 skips install.sh)
 """
 import json
+import os as _os  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+# doctor's Winlink check reads Pat's config: point its default at an empty
+# directory, so the suite never reads this machine's own Pat config.
+_os.environ["XDG_CONFIG_HOME"] = _tempfile.mkdtemp(prefix="rr-xdg-")
 import os
 import shutil
 import subprocess

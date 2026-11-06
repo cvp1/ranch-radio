@@ -94,7 +94,7 @@ RULES = [
     (("radios", "*", "rigctl_host"), TOKEN), (("radios", "*", "tls_names", "*"), TOKEN),
     (("radios", "*", "log"), TOKEN), (("radios", "*", "path"), TOKEN), (("radios", "*", "label"), LABEL),
     (("radios", "*", "jtdx_profile"), TOKEN),
-    (("winlink", "pat"), TOKEN), (("winlink", "ardopcf"), TOKEN), (("winlink", "ardop_logs"), TOKEN),
+    (("winlink", "pat"), TOKEN), (("winlink", "pat_config"), TOKEN), (("winlink", "ardopcf"), TOKEN), (("winlink", "ardop_logs"), TOKEN),
     (("winlink", "ardopcf", "bin"), TOKEN), (("winlink", "ardopcf", "label"), LABEL),
     (("winlink", "ardopcf", "audio_in"), TEXT), (("winlink", "ardopcf", "audio_out"), TEXT),
     (("winlink", "ardopcf", "hostcommands"), TEXT),
@@ -469,6 +469,8 @@ def server_args(h, r, pth):
     if r.get("lane"):
         if not linux and w:                     # a Mac's server runs Pat itself
             a += ["--winlink-pat", w["pat"]]
+            if w.get("pat_config"):
+                a += ["--winlink-pat-config", pth(w["pat_config"])]
         a += ["--winlink-rigctl-port", str(r["lane"])]
         if r.get("codec_db"):
             a += ["--winlink-codec-db", r["codec_db"]]

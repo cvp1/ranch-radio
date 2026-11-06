@@ -36,6 +36,7 @@ import time
 import types
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APPS = 15000 + random.randrange(1000)
@@ -190,7 +191,7 @@ def start(env_extra=None, *extra):
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
          "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
-         "--winlink-pat", f"{sys.executable} tests/fake_pat.py", "--winlink-pat-port", str(PATP),
+         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(PATP),
          "--addons-state", state, *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
@@ -585,12 +586,17 @@ def a7b():
             res["admitting: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
             res["admitting: move from out"] = await probe(c.post("/winlink/api/mailbox/archive", headers=src))
             eng._admitting = False
+            # No Status from Pat yet: its state is unknown, which counts as
+            # busy (A4). Then Pat says it is idle, as its WebSocket would.
+            res["unknown: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
+            eng.pat_ws, eng._status_live = object(), True
+            eng.status = {"connected": False, "dialing": False, "active_listeners": [], "remote_addr": ""}
             res["idle: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
             res["idle: move from out"] = await probe(c.post("/winlink/api/mailbox/archive", headers=src))
         try:
             got = asyncio.Event()
 
-            async def fake_admit(ws, url, via):
+            async def fake_admit(ws, url, via, peer=False):
                 got.set()
 
             eng._admit = fake_admit
@@ -623,6 +629,7 @@ def a7b():
 r = a7b()
 check("A7b _admitting: delete out -> 409, Pat not called", r.get("admitting: delete out"), (409, 0))
 check("A7b _admitting: move from out -> 409, Pat not called", r.get("admitting: move from out"), (409, 0))
+check("A7b Pat's state unknown: delete out -> 409, Pat not called", r.get("unknown: delete out"), (409, 0))
 check("A7b idle: delete out passes through", r.get("idle: delete out"), (200, 1))
 check("A7b idle: move from out passes through", r.get("idle: move from out"), (200, 1))
 check("A7b connect() waits for a held outbox lock (early, admitting, after)",

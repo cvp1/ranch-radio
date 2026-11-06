@@ -17,7 +17,8 @@ Writes update the values and send them back, then done; a channel named
 away (exit 3). "refresh" re-sends everything; if $FAKE_UVPRO_TX names a file
 that exists, the state then says the radio is transmitting.
 Each start appends a line to $FAKE_UVPRO_STARTS and every command received
-goes to $FAKE_UVPRO_LOG. Channels whose ids $FAKE_UVPRO_INEXACT lists (comma
+goes to $FAKE_UVPRO_LOG. $FAKE_UVPRO_CH3 (MHz) makes channel 3 a simplex
+channel on that frequency instead of APRS. Channels whose ids $FAKE_UVPRO_INEXACT lists (comma
 separated) are reported as not read back byte for byte ("exact").
 FAKE_UVPRO_NO_VFO=1 is a radio like the UV-50PRO: supports_vfo false and
 both VFO records reading 0.000000 MHz. FAKE_UVPRO_FAIL_NEXT=<cmd> ("settings"
@@ -55,6 +56,11 @@ def ch(i, name, rx, tx, tone="", tx_disable=False):
 
 CHANNELS = [ch(0, "2M CALL", 146.52, 146.52), ch(1, "RPT", 146.94, 146.34, "100.0"),
             ch(2, "APRS", 144.39, 144.39), ch(3, "NOAA", 162.55, 162.55, tx_disable=True)]
+if os.environ.get("FAKE_UVPRO_CH3"):
+    # Winlink's packet tests: channel 3 as a gateway's simplex channel (MHz),
+    # since Winlink never tunes to the APRS channel (winlink.check_url).
+    _f = float(os.environ["FAKE_UVPRO_CH3"])
+    CHANNELS[2] = ch(2, "WL2K", _f, _f)
 SETTINGS = {"channel_a": 0, "channel_b": 2, "scan": False, "squelch_level": 3, "mic_gain": 4, "bt_mic_gain": 4,
             "tail_elim": True, "power_saving_mode": False, "dis_tone": False, "imperial_unit": True,
             "ptt_lock": False, "ch_data_lock": False, "double_channel": 1}

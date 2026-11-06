@@ -57,3 +57,14 @@ def real_pat_env(home, *calls):
                 f.write(stamp + "\n")
     return {**os.environ, "HOME": home, "XDG_CONFIG_HOME": home, "XDG_DATA_HOME": home,
             "XDG_STATE_HOME": home}
+
+
+def fake_pat_cmd(**over):
+    """The command for tests/fake_pat.py as Pat, with --config naming a
+    fresh clean config (see pat_config): the server's preflight reads that
+    file, never this machine's own Pat config."""
+    import shlex
+    import sys
+    import tempfile
+    cfg = pat_config(tempfile.NamedTemporaryFile(prefix="patcfg-", suffix=".json", delete=False).name, **over)
+    return f"{shlex.quote(sys.executable)} tests/fake_pat.py --config {shlex.quote(cfg)}"
