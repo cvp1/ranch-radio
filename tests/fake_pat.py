@@ -48,7 +48,10 @@ Command line, as Pat's: global flags BEFORE the command, then `http --addr`.
                     is absent (Pat's fallback, app/app.go), so a test can
                     show a config that would listen on its own
   --listen/-l M,..  the methods listed in Status active_listeners (only
-                    before `http`: after it Pat's http command ignores it)
+                    before `http`: after it Pat's http command ignores it).
+                    Listening on ax25+agwpe opens the config's agwpe.addr and
+                    registers MyCall there (an AGWPE 'X' frame), as Pat's
+                    listener opens its AGWPE port (F10); held until exit
 
 Inbound sessions (another station calling us), announced the way Pat does:
 the log line "Got connect (<method>:<call>)", then a Status push with
@@ -80,6 +83,7 @@ Routes (shapes as in Pat v1.0.0 api/api.go, api/mailbox.go):
   GET|POST /api/disconnect?dirty=
   GET  /ws  MyCall, Status, LogLine, Prompt; reads prompt_response / Pong
 
+Every FAKE_PAT_LOG line carries "t", the time it was written.
 FAKE_PAT_LOG gets a {"route": "req", "method", "path", "headers"} line for
 every request at entry, before any validation, so a test can prove that no
 request reached Pat; the per-route lines ("compose", "move", "delete",
@@ -179,8 +183,9 @@ prompt_answers = {}
 
 def record(**kw):
     if LOG:
+        import time
         with open(LOG, "a") as f:
-            f.write(json.dumps(kw) + "\n")
+            f.write(json.dumps({**kw, "t": time.time()}) + "\n")
 
 
 async def push(obj):
@@ -597,5 +602,28 @@ async def _signals(app_):
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, on_sigterm)
 app.on_startup.append(_signals)
+
+_agw = {}
+
+
+async def _agw_register(app_):
+    """Listening on ax25+agwpe: register MyCall with the AGWPE TNC (the hub)."""
+    import struct
+    addr = (CONFIG.get("agwpe") or {}).get("addr")
+    if "ax25+agwpe" not in LISTEN or not addr:
+        return
+    host, port = addr.rsplit(":", 1)
+    hdr = struct.Struct("<B3xcxBx10s10sI4x")
+    try:
+        r, w = await asyncio.open_connection(host, int(port))
+        w.write(hdr.pack(0, b"X", 0, MYCALL.encode(), b"", 0))
+        await w.drain()
+        h = hdr.unpack(await asyncio.wait_for(r.readexactly(hdr.size), 5))
+        data = await r.readexactly(h[5]) if h[5] else b""
+        _agw["conn"] = (r, w)
+        record(route="agw_register", call=MYCALL, ok=data == b"\x01")
+    except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as e:
+        record(route="agw_register", call=MYCALL, ok=False, error=str(e))
+app.on_startup.append(_agw_register)
 record(route="start", pid=os.getpid(), argv=sys.argv[1:], listen=list(LISTEN))
 web.run_app(app, host=HOST, port=int(PORT), print=None, handle_signals=False)

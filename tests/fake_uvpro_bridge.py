@@ -29,7 +29,8 @@ back may leave the radio changed when it reports a failure. FAKE_UVPRO_SETTINGS
 names a file the "radio" keeps its settings, channels and VFOs in across
 bridge restarts, as a real radio keeps its channel when the server dies
 (read at start if it exists, written after every change). Each logged
-command gets "t", the time it arrived.
+command gets "t", the time it arrived, and with $FAKE_UVPRO_PROBE (a path)
+"probe": whether that file existed when the command arrived.
 """
 import json
 import os
@@ -135,7 +136,9 @@ for line in sys.stdin:
     m = json.loads(line)
     if os.environ.get("FAKE_UVPRO_LOG"):
         with open(os.environ["FAKE_UVPRO_LOG"], "a") as f:
-            f.write(json.dumps({**m, "t": time.time()}) + "\n")
+            probe = os.environ.get("FAKE_UVPRO_PROBE")
+            f.write(json.dumps({**m, "t": time.time(),
+                                **({"probe": os.path.exists(probe)} if probe else {})}) + "\n")
     cmd, ref, values = m.get("cmd"), m.get("ref"), m.get("values") or {}
     if cmd == "refresh":
         everything()

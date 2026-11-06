@@ -30,7 +30,7 @@ class WinlinkAddon(Addon):
     label = "Winlink"
     title = "Winlink mail (Pat)"
     page = False                 # its page is the Winlink panel (winlink.js)
-    routes = ("winlink_connect", "winlink_stop", "winlink_prompt")
+    routes = ("winlink_connect", "winlink_stop", "winlink_prompt", "winlink_listen", "winlink_listen_stop")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -74,6 +74,10 @@ class WinlinkAddon(Addon):
             await e.stop_session(ws)
         elif verb == "winlink_prompt":
             await e.answer_prompt(m["id"], m["value"])
+        elif verb == "winlink_listen":          # a listen window (winlink.PatEngine.listen_start)
+            await e.listen_start(ws, m.get("hours"))
+        elif verb == "winlink_listen_stop":
+            await e.listen_stop(ws)
         else:
             await super().command(ws, verb, m)
 

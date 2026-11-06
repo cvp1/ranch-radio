@@ -403,6 +403,20 @@ class Station:
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError, AttributeError):
             return None
 
+    def winlink_listen_target(self, need_hub=True):
+        """As server.Station.winlink_listen_target: the hub and the tuner a
+        listen window uses, or (None, why not)."""
+        name = self.packet_cfg.get("name") or "UV-PRO"
+        uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
+        hub = self.packet_url.rstrip("/") if self.packet_url else None
+        if not need_hub:
+            return {"hub": hub, "name": name, "tuner": uv}, None
+        if not (self.packet_agwpe and hub):
+            return None, "No packet radio is set up on this station."
+        if not self.packet_up:
+            return None, f"The {name} packet hub is not running."
+        return {"hub": hub, "name": name, "tuner": uv}, None
+
     def lane_for(self, url, via):
         scheme = urlsplit(url).scheme
         if scheme == "telnet":
