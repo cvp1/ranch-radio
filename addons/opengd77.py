@@ -106,6 +106,7 @@ def _ranges(nums):
 
 class OpenGD77Addon(Addon):
     name = "opengd77"
+    group = "radios"
     css = True
 
     def __init__(self, host, opts):

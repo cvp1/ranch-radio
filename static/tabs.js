@@ -1,7 +1,7 @@
 "use strict";
 
 // Single-radio page tabs: the radio, Winlink, Mesh and each add-on get their
-// own view, as on the station page. The bar appears only when this server runs
+// own view, as on the station page, grouped in the bar by nav.js. The bar appears only when this server runs
 // Winlink, has a Meshtastic node (winlink.js / mesh.js un-hide their panels) or
 // lists add-ons (addons.js), and never inside the station page's frame
 // (station.js has its own tabs there).
@@ -26,16 +26,6 @@
     return (VIEWS.includes(r) || addonNames().includes(r)) && on(r) ? r : "radio";
   };
 
-  function tab(id, label, opts = {}) {
-    const a = document.createElement("a");
-    a.href = `#/${id}`;
-    a.className = "st-tab" + (route() === id ? " on" : "") + (opts.off ? " off" : "");
-    a.innerHTML = (opts.dot ? `<i class="st-dot ${opts.dot}"></i>` : "") + `<span>${esc(label)}</span>` +
-      (opts.badge ? `<b class="st-badge">${opts.badge}</b>` : "");
-    if (opts.title) a.title = opts.title;
-    return a;
-  }
-
   function meshUnread() {
     let n = 0;
     for (const b of mesh.querySelectorAll("#mesh-tabs .mesh-unread")) n += parseInt(b.textContent, 10) || 0;
@@ -51,26 +41,25 @@
     document.body.classList.toggle("addon-view", isAddon);
     for (const p of document.querySelectorAll(".panel.addon")) p.classList.toggle("addon-current", p.dataset.addon === view);
     if (!any) return;
-    nav.innerHTML = "";
-    const tucked = [];
-    const add = (id, label, opts = {}) => {
-      if (opts.off && on("modules") && id !== view) tucked.push(label);
-      else nav.append(tab(id, label, opts));
-    };
-    add("radio", $(".brand-name").textContent || "Radio");
+    // Grouped (nav.js): Radios, Messaging, Mesh, Tools; Modules last.
+    const connected = !mesh.classList.contains("mesh-off");
+    const items = [{ id: "radio", label: $(".brand-name").textContent || "Radio", group: "radios" }];
     if (on("winlink")) {
-      add("winlink", "Winlink", { dot: wl.classList.contains("wl-armed") ? "tx" : "",
-        title: "Winlink mail over HF (ARDOP)" });
+      items.push({ id: "winlink", label: "Winlink", group: "messaging",
+        dot: wl.classList.contains("wl-armed") ? "tx" : "", title: "Winlink mail over HF (ARDOP)" });
     }
     if (on("mesh")) {
-      const connected = !mesh.classList.contains("mesh-off");
-      add("mesh", "Mesh", { dot: connected ? "ok" : "off", off: !connected,
-        badge: view === "mesh" ? "" : meshUnread() || "" });
+      items.push({ id: "mesh", label: "Mesh", short: "Meshtastic", group: "mesh", title: "Meshtastic node",
+        dot: connected ? "ok" : "off", off: !connected, badge: view === "mesh" ? "" : meshUnread() || "" });
     }
-    for (const d of addons.list()) add(d.name, d.label, addons.tab(d.name) || {});
+    for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
+    const tucked = navGroups.render(nav, { view, items, tuck: on("modules") });
     if (on("modules")) {
-      nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" +
-        (tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : "") }));
+      nav.append(Object.assign(document.createElement("a"), {
+        href: "#/modules", className: "st-tab" + (view === "modules" ? " on" : ""),
+        title: "Every module: what's on, what it needs, add or remove" +
+          (tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : ""),
+        innerHTML: "<span>Modules</span>" }));
     }
   }
 

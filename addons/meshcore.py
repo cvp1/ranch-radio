@@ -80,6 +80,7 @@ AIR_WINDOW_S = 600.0
 
 class MeshCoreAddon(Addon):
     name = "meshcore"
+    group = "mesh"
     label = "MeshCore"
     title = "MeshCore companion node"
     css = True

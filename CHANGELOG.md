@@ -5,6 +5,21 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The tab bar is grouped: Radios, Messaging, Mesh, Tools.** It had grown
+  a flat tab per add-on (eight on a radio with every module). Each radio,
+  service and add-on now belongs to one group: Radios (the HF radios, the
+  UV-PRO, the MD-UV390), Messaging (Winlink, Packet), Mesh (Meshtastic,
+  MeshCore) and Tools (Propagation, and any add-on that names no group).
+  The group holding the open view shows its members in place, in a frame
+  named for it; every other group is one tab, with its members' most
+  urgent dot (on the air, then connected) and their unread counts, that
+  opens the member last used there. A group of one is just that member's
+  tab, so a small station looks as before. Modules stays last, and the
+  station's Overview cards follow the same order. An add-on names its
+  group with `Addon.group`; the page lays it out in `static/nav.js`.
+
 ### Added
 
 - **The MeshCore tab works like the Mesh tab, and uses what MeshCore has.**

@@ -51,6 +51,7 @@ class Addon:
     name = ""
     label = ""
     title = ""
+    group = "tools"               # where its tab sits (static/nav.js): radios, messaging, mesh, tools
     css = False                   # static/addons/<name>.css exists
     page = True                   # False: its page is its own tab, not an add-on panel
     routes = ()                   # page message types ("t") the host hands to it
@@ -170,7 +171,7 @@ class Addons:
         for name, rec in self._panels().items():
             a = rec["addon"]
             out.append({"name": name, "label": a.label if a else name, "title": a.title if a else "",
-                        "css": bool(a and a.css), "on": rec["on"], "error": rec["error"]})
+                        "group": a.group if a else "tools", "css": bool(a and a.css), "on": rec["on"], "error": rec["error"]})
         return out
 
     def snapshot(self):

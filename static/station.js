@@ -29,39 +29,25 @@ const station = (() => {
 
   // ---------- navigation
 
-  function tab(id, label, opts = {}) {
-    const a = document.createElement("a");
-    a.href = `#/${id}`;
-    a.className = "st-tab" + (route() === id ? " on" : "") + (opts.off ? " off" : "");
-    a.innerHTML = (opts.dot ? `<i class="st-dot ${opts.dot}"></i>` : "") + `<span>${esc(label)}</span>` +
-      (opts.sub ? `<small>${esc(opts.sub)}</small>` : "") +
-      (opts.badge ? `<b class="st-badge">${opts.badge}</b>` : "");
-    if (opts.title) a.title = opts.title;
-    return a;
-  }
-
   function renderNav() {
+    // Grouped (nav.js): Overview, then Radios, Messaging, Mesh, Tools, then
+    // Modules. A service or add-on that is off or not connected leaves the bar
+    // (it got crowded): its Overview card stays, and opening it from there
+    // works. Its tab stays while it is the open view.
+    const view = route();
+    const items = present().map((r) => ({ id: r.id, label: r.name, group: "radios", dot: "ok", sub: portsOf(r),
+      title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
+    if (wlOn) items.push({ id: "winlink", label: "Winlink", group: "messaging", dot: wlArmed ? "tx" : "",
+      title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` });
+    if (packet.configured) items.push({ id: "packet", label: "Packet", group: "messaging", dot: packet.present ? "ok" : "off",
+      off: !packet.present, title: `${packetName()} packet hub: APRS and the Winlink packet link` });
+    if (meshOn) items.push({ id: "mesh", label: "Mesh", short: "Meshtastic", group: "mesh", title: "Meshtastic node",
+      dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected });
+    for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
+    const end = modules.enabled() ? [{ id: "modules", label: "Modules", title: "Every module: what's on, what it needs, add or remove" }] : [];
     const nav = $("#st-nav");
-    nav.innerHTML = "";
-    // A service or add-on that is off or not connected leaves the bar (it got
-    // crowded): its Overview card stays, and opening it from there works. Its
-    // tab stays while it is the open view, so it never vanishes from under you.
-    const view = route(), tucked = [];
-    const add = (id, label, opts = {}) => {
-      if (opts.off && id !== view) tucked.push(label);
-      else nav.append(tab(id, label, opts));
-    };
-    nav.append(tab("home", "Overview"));
-    for (const r of present()) {
-      nav.append(tab(r.id, r.name, { dot: "ok", sub: portsOf(r),
-        title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
-    }
-    if (wlOn) add("winlink", "Winlink", { dot: wlArmed ? "tx" : "", title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` });
-    if (meshOn) add("mesh", "Mesh", { dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected });
-    if (packet.configured) add("packet", "Packet", { dot: packet.present ? "ok" : "off", off: !packet.present, title: `${packetName()} packet hub: APRS and the Winlink packet link` });
-    for (const d of addons.list()) add(d.name, d.label, addons.tab(d.name) || {});
+    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Overview" }], items, end });
     if (tucked.length) nav.firstChild.title = `Off or not connected: ${tucked.join(", ")} (their cards are here)`;
-    if (modules.enabled()) nav.append(tab("modules", "Modules", { title: "Every module: what's on, what it needs, add or remove" }));
   }
 
   // ---------- views
@@ -206,25 +192,30 @@ const station = (() => {
   function renderCards() {
     const el = $("#st-cards");
     el.innerHTML = "";
+    // Cards in the bar's group order (nav.js): radios, messaging, mesh, tools.
+    const cards = [];
+    const put = (group, c) => cards.push([navGroups.rank(group), cards.length, c]);
     for (const r of radios) {
-      el.append(card(r.name, r.present ? "ok" : "off", r.present ? [
+      put("radios", card(r.name, r.present ? "ok" : "off", r.present ? [
         `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`,
         r.winlink ? "Winlink over ARDOP" : "",
         "Open the radio →"].filter(Boolean) : ["Not connected", `rigctl <code>${r.rigctl}</code> when plugged in`],
         r.present ? `#/${r.id}` : null));
     }
-    if (wlOn) el.append(card("Winlink", wlArmed ? "tx" : "ok", [wlArmed ? "Session on the air" : "Mailbox and sessions", "Open →"], "#/winlink"));
-    if (meshOn) el.append(card("Mesh", meshConnected ? "ok" : "off",
+    if (wlOn) put("messaging", card("Winlink", wlArmed ? "tx" : "ok", [wlArmed ? "Session on the air" : "Mailbox and sessions", "Open →"], "#/winlink"));
+    if (meshOn) put("mesh", card("Mesh", meshConnected ? "ok" : "off",
       [meshConnected ? `Meshtastic node connected${meshUnread ? ` · ${meshUnread} new` : ""}` : "Node not connected", meshConnected ? "Open →" : ""].filter(Boolean),
       "#/mesh"));
     const packetTitle = packet.title || `Packet (${packetName()})`;
-    if (packet.configured) el.append(card(packetTitle, packet.present ? "ok" : "off",
+    if (packet.configured) put("messaging", card(packetTitle, packet.present ? "ok" : "off",
       [packet.present ? "APRS and Winlink packet hub" : "Hub not running", packet.present ? "Open →" : ""].filter(Boolean),
       packet.present ? "#/packet" : null));
     for (const d of addons.list()) {
       const c = addons.card(d.name);
-      if (c) el.append(card(d.label, c.state, c.lines, `#/${d.name}`));
+      if (c) put(d.group, card(d.label, c.state, c.lines, `#/${d.name}`));
     }
+    cards.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    el.append(...cards.map((x) => x[2]));
     const p = present();
     const sp = sharedPort ?? 0;
     $("#st-help").innerHTML = !p.length
