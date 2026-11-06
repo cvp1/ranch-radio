@@ -255,12 +255,13 @@ class Stack:
         self.addons = os.path.join(self.tmp, "addons.json")
         with open(self.addons, "w") as f:
             json.dump(cfg, f)
-        self.env = dict(os.environ, FAKE_PAT_RIGCTL=str(self.lane), FAKE_PAT_LOG=self.flog, FAKE_PAT_NO_PTT="1",
+        # Real Pat's own HOME/XDG first; then this stack's fakes, whatever the
+        # environment already holds (the in-process B-5 sets some for itself).
+        self.env = testkit.real_pat_env(pat_home, "N9ABC") if pat_home else dict(os.environ)
+        self.env.update(FAKE_PAT_RIGCTL=str(self.lane), FAKE_PAT_LOG=self.flog, FAKE_PAT_NO_PTT="1",
                         FAKE_UVPRO_LOG=self.blog, FAKE_UVPRO_STATE=self.radio_file, FAKE_UVPRO_CH3=f"{LISTEN_MHZ:g}",
                         FAKE_UVPRO_PROBE=os.path.join(self.tmp, "state", "winlink-listen.json"))
         self.env.update(env or {})
-        if pat_home:
-            self.env.update(testkit.real_pat_env(pat_home, "N9ABC"))
         self.listen, self.max_h, self.use_state, self.has_uvpro = listen, max_h, state, uvpro
         self.page = None
         self.start(wait)
@@ -622,6 +623,7 @@ if picked("B-5") or picked("B-4"):
     tmp = tempfile.mkdtemp(prefix="wllisten-ip-")
     state_dir = os.path.join(tmp, "state")
     blog, flog, radio_file = (os.path.join(tmp, n) for n in ("bridge.jsonl", "fakepat.jsonl", "radio.json"))
+    saved_env = dict(os.environ)
     os.environ.update(FAKE_UVPRO_STATE=radio_file, FAKE_UVPRO_CH3=f"{LISTEN_MHZ:g}", FAKE_UVPRO_LOG=blog,
                       FAKE_PAT_LOG=flog, FAKE_PAT_NO_PTT="1", FAKE_PAT_RIGCTL="0")
 
@@ -719,6 +721,8 @@ if picked("B-5") or picked("B-4"):
         r = {"error": repr(e)}
     finally:
         hub.stop()
+        os.environ.clear()
+        os.environ.update(saved_env)
     if picked("B-4"):
         a = r.get("admission") or ([], None, None, None)
         check("B-4 a connect being admitted: refused, saying why", bool(a[0] and "session is running" in a[0][0]), True)
