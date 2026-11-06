@@ -46,29 +46,19 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlspli
 import aiohttp
 from aiohttp import web
 
+from listen_plan import APRS_GUARD_HZ, APRS_HZ, PACKET_BANDS, ListenPlan, packet_band_of  # noqa: F401
 from pat_config import pat_config_path, preflight  # noqa: F401 - re-exported for callers
 
 log = logging.getLogger("winlink")
 
 BOXES = ("in", "out", "sent", "archive")
 RADIO_TRANSPORTS = ("ardop", "ax25", "ax25+agwpe", "ax25+linux", "ax25+serial-tnc")
-# Where a packet (ax25*) URL may put us: the VHF/UHF segments where US
-# amateurs may send data, 47 CFR 97.305(c) (eCFR, current as of 2026-11-06;
-# the same table at law.cornell.edu/cfr/text/47/97.305):
-#   2 m     144.1-148.0 MHz   MCW, phone, image, RTTY, data, test
-#   1.25 m  222-225 MHz       RTTY, data, test, MCW, phone, SS, image
-#           (219-220 MHz is data too, but 97.303(l)(1) restricts it to fixed
-#           point-to-point digital message forwarding: not offered)
-#   70 cm   entire band       MCW, phone, image, RTTY, data, SS, test
-#           (US band 420-450 MHz, 97.301(a))
-# Below 144.1 MHz on 2 m is CW only: a packet URL at 144.050 is refused.
-# Only for packet URLs: the HF band list in server.py also drives auto-tune
-# and codec levels, and an HF rig never tunes these. (Without the VHF list
-# every packet gateway was refused as off-band, linux-station 2026-10-17,
-# N7RCC-10 on 145.010.) Plan winlink-listen's validator uses the same table.
-PACKET_BANDS = [("2 m", 144.1e6, 148e6), ("1.25 m", 222e6, 225e6), ("70 cm", 420e6, 450e6)]
-# The national APRS channel, never a Winlink packet frequency (+-10 kHz).
-APRS_HZ, APRS_GUARD_HZ = 144.390e6, 10e3
+# Where a packet (ax25*) URL may put us: the VHF/UHF data sub-bands of 47 CFR
+# 97.305(c), never the APRS channel; the table lives in listen_plan.py, which
+# the listen window's validator (and render.py) share. Only for packet URLs:
+# the HF band list in server.py also drives auto-tune and codec levels, and an
+# HF rig never tunes these. (Without the VHF list every packet gateway was
+# refused as off-band, linux-station 2026-10-17, N7RCC-10 on 145.010.)
 VHF_HZ = 100e6               # at and above this, a packet URL is checked against PACKET_BANDS
 TRANSPORTS = RADIO_TRANSPORTS + ("telnet",)
 LOG_KEEP = 300               # log lines kept for a page that opens later
@@ -160,11 +150,6 @@ def check_url(url, band_of):
         elif band_of(hz) is None:
             return f"{float(freq[0]):g} kHz is outside the amateur bands; not transmitting there."
     return None
-
-
-def packet_band_of(hz):
-    """The packet data sub-band (PACKET_BANDS) name hz is in, or None."""
-    return next((n for n, lo, hi in PACKET_BANDS if lo <= hz <= hi), None)
 
 
 def check_peer(url, mycall):

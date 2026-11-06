@@ -730,11 +730,15 @@ def main():
 
     addon_cfg = dict(cfg.get("addons") or {})
     wl = cfg.get("winlink") or {}
+    from listen_plan import ListenPlan
     if wl.get("pat"):             # Winlink (Pat) is an add-on (addons/winlink.py); the lanes are not
         addon_cfg.setdefault("winlink", {"lane_for": station.lane_for, "engine_args": SimpleNamespace(
             winlink_pat=" ".join(shlex.quote(_expand(w)) for w in shlex.split(wl["pat"])), winlink_pat_port=int(wl.get("pat_port", 8095)),
             winlink_pat_config=_expand(wl["pat_config"]) if wl.get("pat_config") else None,
-            winlink_session_max=float(wl.get("session_max", 900)))})
+            winlink_session_max=float(wl.get("session_max", 900)),
+            # The listen window (winlink.listen), parsed as render.py checked it.
+            winlink_listen=ListenPlan.from_block(wl["listen"]) if "listen" in wl else None,
+            addons_state=cfg.get("addons_state", "~/.local/state/radio-remote/addons.json"))})
     m = cfg.get("mesh") or {}
     if m.get("port"):             # Mesh is an add-on (addons/mesh.py); "mesh" configures it
         addon_cfg.setdefault("mesh", dict(m))

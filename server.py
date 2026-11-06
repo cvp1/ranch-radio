@@ -1277,6 +1277,13 @@ def main():
                    help="port for Pat's API on 127.0.0.1 (never exposed; default 8095)")
     p.add_argument("--winlink-session-max", type=float, default=900,
                    help="seconds a Winlink session may run before it is cut (default 900)")
+    p.add_argument("--winlink-listen", metavar="METHOD=MHZ",
+                   help="offer a listen window on the page: Pat answers stations that call this one "
+                        "on this frequency, through the packet hub, for a bounded time. Only "
+                        "ax25+agwpe, in a VHF/UHF packet data sub-band, never 144.390 "
+                        "(e.g. ax25+agwpe=145.090). Unset = no listening (the host file's winlink.listen)")
+    p.add_argument("--winlink-listen-max-h", type=float, default=4.0, metavar="HOURS",
+                   help="the longest listen window, 0.25 to 12 hours (default 4)")
     p.add_argument("--winlink-ardop-log", metavar="DIR",
                    help="ardopcf's log directory (its --logdir), read only: tells which station "
                         "IDs went on air through the lane and whether one is owed; a session "
@@ -1358,6 +1365,12 @@ def main():
     if args.winlink_pat:
         if not args.winlink_rigctl_port:
             p.error("--winlink-pat needs --winlink-rigctl-port (Pat keys only through that lane)")
+    if args.winlink_listen:
+        from listen_plan import ListenError, ListenPlan
+        try:
+            ListenPlan.from_args(args)
+        except ListenError as e:
+            p.error(str(e))
     saver = None
     if args.codec_save:
         host, _, rid = args.codec_save.partition(":")
