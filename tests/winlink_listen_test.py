@@ -260,7 +260,7 @@ class Stack:
         self.env = testkit.real_pat_env(pat_home, "N9ABC") if pat_home else dict(os.environ)
         self.env.update(FAKE_PAT_RIGCTL=str(self.lane), FAKE_PAT_LOG=self.flog, FAKE_PAT_NO_PTT="1",
                         FAKE_UVPRO_LOG=self.blog, FAKE_UVPRO_STATE=self.radio_file, FAKE_UVPRO_CH3=f"{LISTEN_MHZ:g}",
-                        FAKE_UVPRO_PROBE=os.path.join(self.tmp, "state", "winlink-listen.json"))
+                        FAKE_UVPRO_PROBE=os.path.join(self.tmp, "state", "winlink-listen.json"), FAKE_UVPRO_LOG_T="1")
         self.env.update(env or {})
         self.listen, self.max_h, self.use_state, self.has_uvpro = listen, max_h, state, uvpro
         self.page = None
@@ -624,7 +624,7 @@ if picked("B-5") or picked("B-4"):
     state_dir = os.path.join(tmp, "state")
     blog, flog, radio_file = (os.path.join(tmp, n) for n in ("bridge.jsonl", "fakepat.jsonl", "radio.json"))
     saved_env = dict(os.environ)
-    os.environ.update(FAKE_UVPRO_STATE=radio_file, FAKE_UVPRO_CH3=f"{LISTEN_MHZ:g}", FAKE_UVPRO_LOG=blog,
+    os.environ.update(FAKE_UVPRO_STATE=radio_file, FAKE_UVPRO_CH3=f"{LISTEN_MHZ:g}", FAKE_UVPRO_LOG=blog, FAKE_UVPRO_LOG_T="1",
                       FAKE_PAT_LOG=flog, FAKE_PAT_NO_PTT="1", FAKE_PAT_RIGCTL="0")
 
     class Host:
