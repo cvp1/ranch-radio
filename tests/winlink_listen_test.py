@@ -1103,6 +1103,7 @@ if picked("E-2") or picked("E-3"):
                 peer.stop()
             out = s.stop()
             s.close()
+            hub_out = hub.proc.output()
             hub.stop()
         for line in out.splitlines():
             if "listen window ending" in line or "the session with" in line:
@@ -1110,6 +1111,7 @@ if picked("E-2") or picked("E-3"):
         started = [("listening on ax25+agwpe" in l) for l in out.splitlines() if "Pat started (pid" in l]
         check("E-2 Pat's launches as the server logged them: plain, listening, plain", started, [False, True, False])
         if fails:
+            print("      hub log tail:\n" + "\n".join("      h| " + l for l in hub_out.splitlines()[-25:]))
             try:
                 print("      pat.log tail:\n" + open(patlog, errors="replace").read()[-2500:])
             except OSError:
