@@ -1165,6 +1165,8 @@ class PatEngine:
     def _note_listen_child(self, pid, argv):
         """The supervisor started a listening Pat: its pid goes in the record
         (a crash recovery ends it, and only it)."""
+        if not self.listen_path:
+            return                      # no state kept here (and no window can be opened)
         rec = self._read_listen()
         if rec is None:
             log.warning("winlink: a listening Pat (pid %d) started with no window record", pid)
