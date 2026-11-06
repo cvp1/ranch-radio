@@ -69,6 +69,7 @@ RADIO_TRANSPORTS = ("ardop", "ax25", "ax25+agwpe", "ax25+linux", "ax25+serial-tn
 PACKET_BANDS = [("2 m", 144.1e6, 148e6), ("1.25 m", 222e6, 225e6), ("70 cm", 420e6, 450e6)]
 # The national APRS channel, never a Winlink packet frequency (+-10 kHz).
 APRS_HZ, APRS_GUARD_HZ = 144.390e6, 10e3
+VHF_HZ = 100e6               # at and above this, a packet URL is checked against PACKET_BANDS
 TRANSPORTS = RADIO_TRANSPORTS + ("telnet",)
 LOG_KEEP = 300               # log lines kept for a page that opens later
 REPLAY_S = 1.0               # Pat replays its log on every WebSocket connect
@@ -146,11 +147,13 @@ def check_url(url, band_of):
             hz = float(freq[0]) * 1000
         except ValueError:
             return "The frequency is not a number (kHz)."
-        if u.scheme.startswith("ax25"):
+        if u.scheme.startswith("ax25") and hz >= VHF_HZ:
+            # VHF/UHF packet: only the data sub-bands, never the APRS channel.
+            # (HF packet keeps the HF band check below, as before.)
             if abs(hz - APRS_HZ) <= APRS_GUARD_HZ:
                 return (f"{float(freq[0]):g} kHz is the APRS channel (144.390 MHz); "
                         "Winlink packet never goes out there.")
-            if not packet_band_of(hz):
+            if not packet_band_of(hz) and band_of(hz) is None:
                 return (f"{float(freq[0]):g} kHz is outside the packet data sub-bands "
                         "(2 m 144.1-148, 1.25 m 222-225, 70 cm 420-450 MHz; 47 CFR 97.305(c)); "
                         "not transmitting there.")
@@ -1037,8 +1040,13 @@ class PatEngine:
     async def _outbox_change(self, call):
         async with self._outbox_lock:
             if self.outbox_busy():
-                text = (f"Pat is in a session with {self.inbound['call']}; the outbox can't be changed "
-                        "until it ends." if self.inbound and not self._our_session() else OUTBOX_BUSY)
+                if self.inbound and not self._our_session():
+                    text = (f"Pat is in a session with {self.inbound['call']}; the outbox can't be "
+                            "changed until it ends.")
+                elif not (self._admitting or self._our_session()) and not self._status_live:
+                    text = "Pat's state is not known (it isn't answering); the outbox can't be changed now."
+                else:
+                    text = OUTBOX_BUSY
                 return web.Response(status=409, text=text)
             return await call()
 
