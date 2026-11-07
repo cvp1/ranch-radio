@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **iGate watch** (`igate_watch.py`, on by default; `--igate-watch-min 0`
+  turns it off). The packet hub notices when fewer than two other stations'
+  iGates carried APRS-IS traffic onto the air here in a day, the path
+  messages from the internet need to reach a receive-only station. The store
+  tallies every RF copy per iGate per local day (schema 3, `igate_days`,
+  30 days kept), so two iGates delivering the same packet both count. A day
+  with under 200 frames heard, or one the tally only saw part of, is judged
+  unknown, never low. A desktop notification goes out on a drop and on the
+  recovery only; `api/status` shows the last day judged.
 - **Winlink over VARA HF (xara), beside ARDOP, on a Mac** (module `vara`,
   host file `winlink.xara`; plan winlink-vara, PR A). xara, unregistered,
   keys the radio through its own lane on the radio's server

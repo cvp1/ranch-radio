@@ -53,6 +53,15 @@ port 'is', shown "via internet"; never acked, matched or sent).
 With --igate-beacon-min and --lat/--lon it beacons its own position to
 APRS-IS (never RF) as a receive-only iGate.
 
+iGate watch (igate_watch.py, on unless --igate-watch-min 0): messages from
+APRS-IS reach this station only through other stations' transmitting iGates.
+The store tallies, per local day, every RF copy of an APRS-IS packet each one
+sent onto the air. Once a day ends it is judged: fewer than
+--igate-watch-min iGates (default 2) with --igate-watch-packets each is low,
+and a day with under --igate-watch-rf frames heard is unknown (the radio
+wasn't hearing). A desktop notification goes out only when the state changes
+between ok and low; status shows "aprs": {"igate_watch": ...}.
+
 Fill-in digipeater (optional, --digi CALL): WIDE1-1 requests that no wide
 digipeater repeats within --digi-viscous seconds, and requests to CALL by
 name (digi.py). Through the transmit gate like everything else, with its own
@@ -111,6 +120,7 @@ import aprs_store
 import ax25
 import digi
 import igate
+import igate_watch
 import webguard
 from ax25 import U_DISC, U_DM, U_FRMR, U_SABM, U_UA, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
 from ax25_link import CONNECTED, CONNECTING, DISCONNECTED, Link, TxRefused
@@ -798,6 +808,7 @@ class Hub:
         self.aprs = None                # AprsStore (APRS plan M2), None with --no-aprs
         self.aprs_summary = {}          # refreshed from the store every few seconds
         self.igate = None               # igate.IGate with --igate-login: heard packets to APRS-IS
+        self.igate_watch = None         # igate_watch.Watch: do other iGates still carry APRS-IS traffic here?
         self.digi = digi.Digi(args.digi, args.digi_viscous) if args.digi else None
         self._digi_timer = None
         self.loop_lag = collections.deque(maxlen=3000)   # event-loop lag samples, ms
@@ -1187,7 +1198,8 @@ class Hub:
             return {"enabled": False, "me": me, "loop": loop, "messaging": msg, "probe": None}
         return {"enabled": True, "me": me, "loop": loop, "queue": self.aprs.qsize(),
                 "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary, "messaging": msg,
-                "probe": self.probe.status() if self.probe else None}
+                "probe": self.probe.status() if self.probe else None,
+                "igate_watch": self.igate_watch.status() if self.igate_watch else {"enabled": False}}
 
     async def open_aprs(self):
         """Open the store, backfill it once from the logs and reload the heard
@@ -1765,6 +1777,15 @@ def make_web(hub):
 
 # ------------------------------------------------------------------ main
 
+async def _notify(title, text):
+    """A desktop notification (ranch_radio.updater.notify), off the event loop. Never raises."""
+    try:
+        from ranch_radio import updater
+        await asyncio.get_running_loop().run_in_executor(None, updater.notify, title, text)
+    except Exception:     # noqa: BLE001
+        log.exception("notification not sent: %s", title)
+
+
 async def amain(args):
     hub = Hub(args)
     tasks = [asyncio.create_task(hub.lag_ticker())]
@@ -1794,6 +1815,10 @@ async def amain(args):
     if not args.no_aprs:
         await hub.open_aprs()
         tasks.append(asyncio.create_task(hub.aprs_refresh()))
+        if args.igate_watch_min > 0:
+            hub.igate_watch = igate_watch.Watch(hub.aprs.call, _notify, args.igate_watch_min,
+                                                args.igate_watch_packets, args.igate_watch_rf)
+            tasks.append(asyncio.create_task(hub.igate_watch.run()))
         if args.aprs_messaging != "off":
             hub.aprs_msg = aprs_msg.Engine(hub, args.aprs_messaging, args.aprs_owned_calls, args.aprs_firmware_acks,
                                            args.aprs_path, cooldown_s=args.aprs_cooldown)
@@ -1893,6 +1918,13 @@ def parse_args(argv=None):
     p.add_argument("--log-dir", default=str(HERE / "packet-logs"))
     p.add_argument("--aprs-db", help="APRS store (default: <log-dir>/aprs.db)")
     p.add_argument("--no-aprs", action="store_true", help="no APRS store, API or backfill")
+    p.add_argument("--igate-watch-min", type=int, default=igate_watch.MIN_IGATES,
+                   help="notify when fewer iGates than this carried APRS-IS traffic onto the air here "
+                        "in a day (igate_watch.py; 0: off)")
+    p.add_argument("--igate-watch-packets", type=int, default=igate_watch.MIN_PACKETS,
+                   help="packets an iGate must send onto the air in a day to count (default %(default)s)")
+    p.add_argument("--igate-watch-rf", type=int, default=igate_watch.MIN_RF,
+                   help="RF frames a day must have, or it is judged unknown (default %(default)s)")
     p.add_argument("--lat", type=float, help="this station's latitude, for the map and distances")
     p.add_argument("--lon", type=float, help="this station's longitude")
     p.add_argument("--igate-login", help="APRS-IS login (callsign-SSID); turns the receive-only iGate on")
