@@ -891,13 +891,14 @@ class Hub:
         """A packet line from the APRS-IS observer (igate.py, observe=). Stored
         as port 'is' and handed to messaging as evidence; it can never reach
         transmit(): nothing here calls it."""
+        parts = aprs_store.parse_line(text)
+        d = aprs.decode(*parts) if parts else None
+        if d is not None and d.get("error") == "embedded line break":
+            self.counts["is_line_break"] += 1        # a bare CR or LF inside: never stored, never two packets
+            return
         if self.aprs:
             self.aprs.ingest(t, "is", text)
-        parts = aprs_store.parse_line(text)
-        if parts is None:
-            return
-        d = aprs.decode(*parts)
-        if d.get("error") == "embedded line break":
+        if d is None:
             return
         if self.aprs_msg:
             self.aprs_msg.on_is(t, d)
