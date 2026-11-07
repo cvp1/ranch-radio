@@ -460,8 +460,12 @@ try:
     check("QSY session ended ok", e and e.get("ok"), True)
     check("Pat's QSY reached the radio",
           [(r["hz"], r["reply"]) for r in fake_log(flog) if r["route"] == "qsy"], [(3588500, "RPRT 0")])
-    check("Pat's QSX answered ok (no Pat error)",
-          [(r["hz"], r["reply"]) for r in fake_log(flog) if r["route"] == "qsx"], [(10136000, "RPRT 0")])
+    # The server puts the radio on the session's frequency before Pat dials
+    # (hold Pat until the tune is done, 2026-11-07), so the frequency Pat
+    # reads to put back afterwards is the session's own: its QSX is a no-op,
+    # never a band change. (Before, it reverted toward 30 m and was ignored.)
+    check("Pat's QSX answered ok (no Pat error), back to where it already is",
+          [(r["hz"], r["reply"]) for r in fake_log(flog) if r["route"] == "qsx"], [(3588500, "RPRT 0")])
     time.sleep(3)
     check("after session: radio stays on the session frequency", freq(), 3588500)
     check("after session: only the session's band tuned", tunes(page), ["ATU tuning for 80 m (band change)"])
@@ -469,8 +473,8 @@ try:
 finally:
     out = stop(server)
 lane = [l for l in out.splitlines() if "winlink lane" in l and "set_freq" in l]
-check("lane log names the QSY and the ignored QSX",
-      [("3588500 Hz applied" in l, "10136000 Hz ignored" in l) for l in lane], [(True, False), (False, True)])
+check("lane log: Pat's QSY and its no-op QSX, both on the session frequency, never 30 m",
+      [("3588500 Hz applied" in l, "10136000" in l) for l in lane], [(True, False), (True, False)])
 for l in [x for x in out.splitlines() if "refused" in x or "tun" in x] + lane:
     print("   log:", l[:200])
 

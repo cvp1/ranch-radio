@@ -453,5 +453,74 @@ finally:
     lib.stop(server)
     kill(xp)
 
+# --- hold Pat until the tune is done (2026-11-07) --------------------------------
+# A VARA session on another band, with --auto-tune: Pat QSYs inside its
+# /api/connect and the modem keys at once, so the band change's tune ran under
+# xara's first key, which was refused, and xara exited. Now the server puts
+# the radio on the session's frequency and waits out its tune before Pat dials.
+
+server, f = start(extra=("--auto-tune",))
+xp = xara(f)
+try:
+    page = lib.WebPage(lib.WEB)
+    time.sleep(3.5)                                   # past the post-connect arming window
+    page.send({"t": "winlink_connect", "url": VURL})  # 20 m (sim start) -> 80 m
+    tune_at = None
+    end = time.time() + 20
+    while time.time() < end and tune_at is None:
+        if any(e.get("t") == "notice" and "ATU tuning for 80 m" in e.get("msg", "") for e in page.events):
+            tune_at = time.time()
+        time.sleep(0.05)
+    check("hold Pat: the band change tunes 80 m", tune_at is not None, True)
+    e = ended(page)
+    check("hold Pat: the session ends ok", bool(e and e.get("ok")), True)
+    conn = [r["t"] for r in lib.fake_log(f["pat"]) if r["route"] == "connect"]
+    check("hold Pat: Pat dials only after the tune is over (sim tune 2.5 s)",
+          bool(conn and tune_at) and conn[0] - tune_at >= 2.3, True)
+    check("hold Pat: no xara key was refused", [e["reply"] for e in events(xp, "key") if e["reply"] != "RPRT 0"], [])
+    check("hold Pat: the page was told it waits for the tune",
+          any("waiting for the ATU tune" in x.get("msg", "") for x in page.events if x.get("t") == "notice"), True)
+    page.close()
+finally:
+    out = lib.stop(server)
+    kill(xp)
+
+# --- STOP TX during a VARA session ------------------------------------------------
+
+server, f = start()
+xp = xara(f, {"FAKE_XARA_BURST_S": "1.5", "FAKE_XARA_BURSTS": "6"})
+try:
+    page = lib.WebPage(lib.WEB)
+    page.send({"t": "winlink_connect", "url": VURL})
+    page.wait(lambda e: e.get("t") == "winlink" and e.get("armed"), 8)
+    time.sleep(1.5)
+    page.events.clear()
+    page.send({"t": "tx_stop"})
+    e = ended(page, 15)
+    check("STOP: the VARA session ends, not ok", bool(e) and e.get("ok") is False, True)
+    time.sleep(0.5)
+    check("STOP: RX and both lanes refuse", after(page, e), ("0", "RPRT -11", "RPRT -11"))
+    page.events.clear()
+    page.send({"t": "winlink_connect", "url": VURL})
+    n = page.wait(lambda x: x.get("t") == "notice" and "STOP TX" in x.get("msg", ""), 5)
+    check("STOP: a new connect is refused, saying why", bool(n), True)
+    check("STOP: ...and never armed", any(x.get("armed") for x in page.events if x.get("t") == "winlink"), False)
+    page.send({"t": "winlink_arm", "v": True, "scheme": "varahf"})
+    n = page.wait(lambda x: x.get("t") == "notice" and "not armed" in x.get("msg", ""), 5)
+    check("STOP: a manual arm is refused", bool(n), True)
+    page.send({"t": "tx_resume"})
+    time.sleep(0.3)
+    if xp.poll() is not None:                         # xara exits on a refused key; launchd restarts it
+        xp = xara(f)
+    page.events.clear()
+    page.send({"t": "winlink_connect", "url": VURL})
+    e = ended(page)
+    check("Resume: the next session runs and ends ok", bool(e and e.get("ok")), True)
+    page.close()
+finally:
+    out = lib.stop(server)
+    kill(xp)
+check("STOP: logged with who pressed it", "STOP TX by" in out, True)
+
 print("\nPASS" if not fails else f"\n{fails} FAILED")
 sys.exit(1 if fails else 0)

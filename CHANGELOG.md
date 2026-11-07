@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **STOP TX: an always-visible kill switch on the radio page.** One press,
+  in every view, ends this radio's transmission and any ATU tune, aborts a
+  running Winlink session and listen window, and disarms both Winlink lanes
+  (ARDOP and VARA HF). It then latches on the server: rigctl `T 1` and
+  `G TUNE`, the page's PTT and tune, auto-tune, Winlink connects and listen
+  windows are all refused until a page presses Resume. A reload or a second
+  page sees the latch. Resume re-arms nothing. The latch does not survive a
+  server restart. It covers this radio's server only; the packet hub keeps
+  its own transmit gate.
 - **iGate watch** (`igate_watch.py`, on by default; `--igate-watch-min 0`
   turns it off). The packet hub notices when fewer than two other stations'
   iGates carried APRS-IS traffic onto the air here in a day, the path
@@ -288,6 +297,17 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Auto-tune no longer loops.** On the first VARA trial an IC-7300
+  re-tuned 20 m 15 times in 34 s and the page had no way to stop it. A
+  frequency report during a tune, or within 1 s of its end, no longer counts
+  as a band change; the band is read once the tune is over. As a backstop,
+  a band auto-tuned twice within 60 s switches auto-tune off for the run,
+  with a warning on the page and in the log.
+- **A Winlink session no longer dials under an ATU tune.** Before Pat
+  dials a local session, the server puts the radio on the session's
+  frequency and waits for any tune to finish, up to 20 s past the settle
+  time. On the trial, the band change's tune landed on xara's first key,
+  which was refused, and xara exited.
 - **The UV-PRO add-on reconnects within seconds after an update, not four
   minutes.** When the packet hub restarts with it, the hub closes its control
   port until its own link to the radio is up; the bridge then waited out its

@@ -553,7 +553,8 @@ class RigctlSession:
                 if self.station.ptt_owner is not None or s.get("tx"):
                     return f"RPRT {RIG_ENAVAIL}\n", False
                 log.info("rigctl: ATU tune requested by %s", self.owner.peer)
-                await self.station.start_tune()
+                if not await self.station.start_tune():
+                    return f"RPRT {RIG_ENAVAIL}\n", False
                 return ok, False
             return f"RPRT {RIG_ENIMPL}\n", False
         return f"RPRT {RIG_ENIMPL}\n", False

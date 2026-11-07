@@ -151,6 +151,8 @@ function connect() {
       if (typeof modules !== "undefined") modules.event(m);
     } else if (m.t === "notice") {
       toast(m.msg, m.level);
+    } else if (m.t === "tx_stop") {
+      txStop.show(m.stopped || null);
     } else if (m.t === "ptt_released") {
       // The server let go of our PTT (time limit, another operator, the
       // radio) while the button was held: stop the keep-alives and let go
@@ -1182,6 +1184,7 @@ function setListen(onState) { on($("#btn-listen"), onState); $("#btn-listen span
 // ============================================================ transmit
 
 let armed = false, pttHeld = false, pttKeepalive = null, txSince = 0;
+let txStopped = null;  // STOP TX latched on the server: {at, by}, or null
 let wlArmed = false;   // a Winlink session owns the radio: the page's PTT waits
 
 // Outside the amateur bands a radio won't transmit (the IC-7300 keyed nothing
@@ -1229,11 +1232,37 @@ function setArmed(v) {
   render();
 }
 
+// STOP TX: one press, no confirm, from any view. The server latches it (a
+// reload, or another page, sees it); Resume asks first, as it allows keying.
+const txStop = {
+  show(stopped) {
+    txStopped = stopped;
+    document.body.classList.toggle("tx-stopped", !!stopped);
+    $("#tx-stop-banner").hidden = !stopped;
+    $("#tx-stop").textContent = stopped ? "TX STOPPED" : "STOP TX";
+    if (stopped) {
+      pttUp();
+      const at = new Date(stopped.at * 1000);
+      $("#tx-stop-detail").textContent = `at ${at.toLocaleTimeString()} by ${stopped.by}. Nothing on this radio keys or tunes until Resume.`;
+    }
+    renderTx();
+  },
+};
+$("#tx-stop").addEventListener("click", () => {
+  pttUp();
+  send({ t: "tx_stop" });
+  if (!ws || ws.readyState !== 1) toast("Not connected to the station: STOP TX did not reach it. Switch the radio off.", "warn");
+});
+$("#tx-resume").addEventListener("click", () => {
+  if (confirm("Resume transmit? Nothing is re-armed; Winlink must be started again.")) send({ t: "tx_resume" });
+});
+
 function renderTx() {
   const ptt = $("#ptt");
-  ptt.disabled = !armed || !CFG.tx_allowed || !S.connected || wlArmed || needsData() || outOfBand();
+  ptt.disabled = !armed || !CFG.tx_allowed || !S.connected || wlArmed || txStopped || needsData() || outOfBand();
   $("#btn-arm").disabled = !CFG.tx_allowed;
   $("#ptt-sub").textContent = !CFG.tx_allowed ? "receive-only station"
+    : txStopped ? "transmit stopped · Resume TX first"
     : wlArmed ? "Winlink session armed · waits until it ends"
     : outOfBand() ? "outside the amateur bands · tune into a band"
     : needsData() ? `turn DATA on · plain ${S.mode} sends no audio from here`
@@ -1385,6 +1414,7 @@ function applyCaps() {
 
 function applyConfig(cfg) {
   CFG = cfg;
+  txStop.show(cfg.tx_stopped || null);
   if (cfg.caps) CAPS = cfg.caps;
   applyCaps();
   $("#sim-badge").hidden = !CFG.sim;

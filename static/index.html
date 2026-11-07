@@ -30,10 +30,17 @@
   <div class="spacer"></div>
   <span id="rtt" class="stat" title="Round-trip latency to the station"></span>
   <span id="utc" class="stat clock"></span>
+  <!-- STOP TX (2026-11-07): always here, in every view. Latches on the server. -->
+  <button id="tx-stop" class="tx-stop" type="button" title="Stop every transmission and ATU tune now; nothing keys until Resume">STOP TX</button>
   <button id="power-btn" class="icon-btn" title="Radio power" aria-label="Radio power">
     <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 7.2a8 8 0 1 0 11.2 0"/></svg>
   </button>
 </header>
+
+<div id="tx-stop-banner" class="tx-stop-banner" role="alert" hidden>
+  <b>Transmit stopped</b> <span id="tx-stop-detail"></span>
+  <button id="tx-resume" type="button">Resume TX</button>
+</div>
 
 <main class="grid">
   <!-- VFO -->
