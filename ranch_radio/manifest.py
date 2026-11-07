@@ -78,6 +78,10 @@ def normalize(rule, value):
     return value.strip() if isinstance(value, str) else value
 
 PAT_FIX = "install Pat (https://getpat.io) and set its path with --set pat=PATH"
+# xara (VARA HF, unregistered build: its default features). No macOS release
+# binary: built from the pinned tag. Manual only: the Rust toolchain is ~1 GB.
+XARA_FIX = ("brew install rust && cargo install --locked --git https://github.com/x0rro/xara "
+            "--tag v0.1.3 --root ~/.local xara")
 ARDOP_FIX = "build it from this repo: ardop/build.sh (see ardop/README.md)"
 # The benlink the UV-PRO bridge is tested against (CI and tests/ci/Dockerfile
 # pin the same commit; tests/modules_test.py checks they agree). A newer
@@ -112,6 +116,28 @@ MANIFESTS = {
                                "bash {repo}/ardop/build.sh && mkdir -p {dir} && install -m 755 {repo}/ardop/build/ardopcf {path}",
                       "linux": "bash {repo}/ardop/build.sh && mkdir -p {dir} && install -m 755 {repo}/ardop/build/ardopcf {path}"}},
         ],
+    },
+    # VARA HF beside ARDOP (plan winlink-vara): its own module, nested in the
+    # Winlink block, so Winlink without it stays complete (its ASK fields live
+    # here only) and turning it off renders the host as before. macOS only in
+    # this version; the Linux station is PR B.
+    "vara": {
+        "label": "Winlink over VARA HF (xara)",
+        "family": "files",
+        "block": ("winlink", "xara"),
+        "os": ["macos"],
+        "requires": ["winlink"],
+        "template": {"macos": {"label": "ranch-radio.xara", "bin": "~/.local/bin/xara",
+                               "port": 8300, "lane_port": 4534, "audio_in": ASK, "audio_out": ASK,
+                               "call": ASK, "hf": 2300, "drive_db": -5,
+                               "log": "~/Library/Logs/ranch-radio-xara.log",
+                               "state": "~/Library/Application Support/ranch-radio/xara"}},
+        "rules": {"audio_in": "audio_name", "audio_out": "audio_name", "call": "callsign"},
+        "ask": {"audio_in": "the radio's sound card name for xara to listen on, e.g. \"USB Audio CODEC\" "
+                            "(xara --list-devices)",
+                "audio_out": "the radio's sound card name for xara to play into",
+                "call": "your callsign (xara sends its CW ID with it)"},
+        "needs": [{"bin": "xara", "key": "bin", "default": "~/.local/bin/xara", "fix": XARA_FIX}],
     },
     "mesh": {
         "label": "Mesh (Meshtastic node)",

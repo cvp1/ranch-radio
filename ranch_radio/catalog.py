@@ -29,6 +29,12 @@ MODULES = [
      "code": "addons/winlink.py runs Pat (winlink.py); the lane (codec_level.py, station_id.py) is core; "
              "ardop/ builds ardopcf", "platforms": ["macos", "linux"],
      "ships": "flags on the radio's server (macOS, plus an ardopcf agent) or the station's winlink block (Linux), rendered; Pat and ardopcf via doctor --fix"},
+    {"name": "vara", "kind": "service", "title": "Winlink over VARA HF (xara, unregistered), beside ARDOP",
+     "code": "station_id.py VaraLogTail (xara's CW ID), the VARA lane in server.py / rigctl_server.py, "
+             "pat_config.py vara_refusal; xara itself is built by the operator (doctor prints how)",
+     "platforms": ["macos"],
+     "ships": "macOS: a xara launchd agent and three --winlink-vara-* flags on the radio's server, rendered "
+              "from the host file's winlink.xara block"},
     {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, DMs, nodes, map); on/off switch",
      "code": "addons/mesh.py over mesh.py, mesh_bridge.py (runs in the meshtastic venv)", "platforms": ["macos", "linux"],
      "ships": "macOS: --mesh-port on the radio's agent; Linux: the station's mesh block; the meshtastic venv via doctor --fix"},

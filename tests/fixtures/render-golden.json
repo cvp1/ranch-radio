@@ -1,0 +1,167 @@
+{
+ "linux-direwolf": [
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/station.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-direwolf.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio station: one page (7300), the shared rigctl port (4532), Winlink and Mesh\nAfter=network-online.target sound.target pipewire.service\nWants=pipewire.service\n\n[Service]\nExecStart=/usr/bin/python3 %h/ranch-radio/station.py --config %h/.config/radio-remote/station.json\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=15\n\n[Install]\nWantedBy=default.target\n"
+  },
+  {
+   "fmt": "json",
+   "path": ".config/radio-remote/station.json",
+   "text": "{\n  \"name\": \"linux-direwolf\",\n  \"radios\": [],\n  \"packet\": {\n    \"url\": \"http://127.0.0.1:7310\",\n    \"agwpe\": \"127.0.0.1:8000\",\n    \"name\": \"KISS TNC\"\n  },\n  \"host_file\": \"linux-direwolf\"\n}\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/packet-hub.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-direwolf.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Packet hub (APRS + Winlink over network KISS TNC)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nExecStart=/usr/bin/python3 %h/ranch-radio/tnc_hub.py --tnc tcp:direwolf.local:8001 --mycall N9ABC --allow-calls N9ABC\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=10\nNotifyAccess=main\n\n[Install]\nWantedBy=default.target\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/ranch-radio-update.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-direwolf.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio: check for updates and say so (ranch-radio update --scheduled)\n\n[Service]\nType=oneshot\nEnvironment=RANCH_RADIO_UPDATE_JOB=1\nExecStart=/usr/bin/python3 %h/ranch-radio/ranch-radio update linux-direwolf --scheduled\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/ranch-radio-update.timer",
+   "text": "# Rendered by ranch-radio from hosts/linux-direwolf.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio: check for updates and say so, daily at 10:00\n\n[Timer]\nOnCalendar=*-*-* 10:00:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+  }
+ ],
+ "linux-laptop": [
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/qmx-remote.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-laptop.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Radio Remote for the QRP Labs QMX (USB)\nAfter=network-online.target sound.target pipewire.service wireplumber.service\nWants=pipewire.service wireplumber.service\nBindsTo=dev-qmx.device\nAfter=dev-qmx.device\nWants=qmx-remote.socket\nAfter=qmx-remote.socket\n\n[Service]\nExecStartPre=/usr/bin/mkdir -p %h/.local/state/radio-remote/ardop/qmx\nExecStartPre=-/bin/sh -c 'for i in $$(seq 40); do pactl get-sink-volume alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo >/dev/null 2>&1 && pactl get-source-volume alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo >/dev/null 2>&1 && exit 0; sleep 0.5; done; echo sound card not in PipeWire after 20 s >&2'\nExecStart=/usr/bin/python3 %h/ranch-radio/server.py --rig qmx --port /dev/qmx --audio-device pipewire:alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo,alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo --tx-timeout 60 --host 127.0.0.1 --listen 7302 --rigctl-host 0.0.0.0 --rigctl-port 4534 --winlink-rigctl-port 4538 --winlink-ardop-log %h/.local/state/radio-remote/ardop/qmx --winlink-mode USB\nRestart=on-failure\nRestartSec=5\nNotifyAccess=main\nFileDescriptorStoreMax=16\nFileDescriptorStorePreserve=restart\nRuntimeDirectory=qmx-remote\nRuntimeDirectoryPreserve=restart\nTimeoutStopSec=10\n\n[Install]\nWantedBy=dev-qmx.device\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/qmx-remote.socket",
+   "text": "# Rendered by ranch-radio from hosts/linux-laptop.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=rigctl port (4534) for Ranch Radio (QMX), held across server restarts\nBindsTo=dev-qmx.device\nAfter=dev-qmx.device\n\n[Socket]\nListenStream=0.0.0.0:4534\n\n[Install]\nWantedBy=dev-qmx.device\n"
+  },
+  {
+   "fmt": "text",
+   "path": ".config/wireplumber/wireplumber.conf.d/51-ranch-radio-audio.conf",
+   "text": "# Rendered by ranch-radio from hosts/linux-laptop.json. Edit that file, then `ranch-radio install`.\n# WirePlumber reads this at start: systemctl --user restart wireplumber.\nmonitor.alsa.rules = [\n  # QMX transmit audio\n  {\n    matches = [ { node.name = \"~alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo*\" } ]\n    actions = {\n      update-props = {\n        node.name = \"alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\"\n        priority.session = 100\n      }\n    }\n  }\n  # QMX receive audio\n  {\n    matches = [ { node.name = \"~alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo*\" } ]\n    actions = {\n      update-props = {\n        node.name = \"alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\"\n        priority.session = 100\n      }\n    }\n  }\n]\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/station.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-laptop.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio station: one page (7300), the shared rigctl port (4532), Winlink and Mesh\nAfter=network-online.target sound.target pipewire.service\nWants=pipewire.service\n\n[Service]\nExecStart=/usr/bin/python3 %h/ranch-radio/station.py --config %h/.config/radio-remote/station.json --https --tls-name %l\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=15\n\n[Install]\nWantedBy=default.target\n"
+  },
+  {
+   "fmt": "json",
+   "path": ".config/radio-remote/station.json",
+   "text": "{\n  \"name\": \"linux-laptop\",\n  \"radios\": [\n    {\n      \"id\": \"qmx\",\n      \"name\": \"QMX\",\n      \"device\": \"/dev/qmx\",\n      \"unit\": \"qmx-remote.service\",\n      \"web\": 7302,\n      \"rigctl\": 4534,\n      \"lane\": 4538,\n      \"audio_in\": \"alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\",\n      \"audio_out\": \"alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\",\n      \"jtdx_profile\": \"QMX\"\n    }\n  ],\n  \"mesh\": {\n    \"port\": \"/dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560\",\n    \"keys\": [\n      \"HomeNet=~/.config/ranch-radio/keys/mesh_channel\"\n    ]\n  },\n  \"host_file\": \"linux-laptop\"\n}\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/ranch-radio-update.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-laptop.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio: check for updates and say so (ranch-radio update --scheduled)\n\n[Service]\nType=oneshot\nEnvironment=RANCH_RADIO_UPDATE_JOB=1\nExecStart=/usr/bin/python3 %h/ranch-radio/ranch-radio update linux-laptop --scheduled\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/ranch-radio-update.timer",
+   "text": "# Rendered by ranch-radio from hosts/linux-laptop.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio: check for updates and say so, daily at 10:00\n\n[Timer]\nOnCalendar=*-*-* 10:00:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+  }
+ ],
+ "linux-station": [
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/g90-remote.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Radio Remote for the Xiegu G90 (via Digirig)\nAfter=network-online.target sound.target pipewire.service wireplumber.service\nWants=pipewire.service wireplumber.service\nBindsTo=dev-g90.device\nAfter=dev-g90.device\nWants=g90-remote.socket\nAfter=g90-remote.socket\n\n[Service]\nExecStartPre=/usr/bin/mkdir -p %h/.local/state/radio-remote/ardop/g90\nExecStartPre=-/bin/sh -c 'for i in $$(seq 40); do pactl get-sink-volume alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo >/dev/null 2>&1 && pactl get-source-volume alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback >/dev/null 2>&1 && exit 0; sleep 0.5; done; echo sound card not in PipeWire after 20 s >&2'\nExecStart=/usr/bin/python3 %h/ranch-radio/server.py --rig g90 --port /dev/g90 --audio-device pipewire:alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback,alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo --tx-timeout 60 --auto-tune --host 127.0.0.1 --listen 7301 --rigctl-host 0.0.0.0 --rigctl-port 4533 --winlink-rigctl-port 4537 --winlink-codec-db default=-32,40m=-32,20m=-32 --winlink-codec-mixer Device:Speaker --voice-codec-db default=-32 --codec-min-db -36 --codec-save linux-station:g90 --winlink-ardop-log %h/.local/state/radio-remote/ardop/g90 --winlink-mode USB+DATA\nRestart=on-failure\nRestartSec=5\nNotifyAccess=main\nFileDescriptorStoreMax=16\nFileDescriptorStorePreserve=restart\nRuntimeDirectory=g90-remote\nRuntimeDirectoryPreserve=restart\nTimeoutStopSec=10\n\n[Install]\nWantedBy=dev-g90.device\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/g90-remote.socket",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=rigctl port (4533) for Ranch Radio (G90), held across server restarts\nBindsTo=dev-g90.device\nAfter=dev-g90.device\n\n[Socket]\nListenStream=0.0.0.0:4533\n\n[Install]\nWantedBy=dev-g90.device\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/g90-remote.service.d/digirig-mixer.conf",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n[Service]\nExecStartPre=-/usr/bin/amixer -q -c Device cset name=Auto\\x20Gain\\x20Control off\nExecStartPre=-/usr/bin/pactl set-source-volume alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback 0.1\nExecStartPre=-/usr/bin/pactl set-sink-volume alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo 100%\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/qmx-remote.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Radio Remote for the QRP Labs QMX (USB)\nAfter=network-online.target sound.target pipewire.service wireplumber.service\nWants=pipewire.service wireplumber.service\nBindsTo=dev-qmx.device\nAfter=dev-qmx.device\nWants=qmx-remote.socket\nAfter=qmx-remote.socket\n\n[Service]\nExecStartPre=/usr/bin/mkdir -p %h/.local/state/radio-remote/ardop/qmx\nExecStartPre=-/bin/sh -c 'for i in $$(seq 40); do pactl get-sink-volume alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo >/dev/null 2>&1 && pactl get-source-volume alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo >/dev/null 2>&1 && exit 0; sleep 0.5; done; echo sound card not in PipeWire after 20 s >&2'\nExecStart=/usr/bin/python3 %h/ranch-radio/server.py --rig qmx --port /dev/qmx --audio-device pipewire:alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo,alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo --tx-timeout 60 --host 127.0.0.1 --listen 7302 --rigctl-host 0.0.0.0 --rigctl-port 4534 --winlink-rigctl-port 4538 --winlink-ardop-log %h/.local/state/radio-remote/ardop/qmx --winlink-mode USB\nRestart=on-failure\nRestartSec=5\nNotifyAccess=main\nFileDescriptorStoreMax=16\nFileDescriptorStorePreserve=restart\nRuntimeDirectory=qmx-remote\nRuntimeDirectoryPreserve=restart\nTimeoutStopSec=10\n\n[Install]\nWantedBy=dev-qmx.device\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/qmx-remote.socket",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=rigctl port (4534) for Ranch Radio (QMX), held across server restarts\nBindsTo=dev-qmx.device\nAfter=dev-qmx.device\n\n[Socket]\nListenStream=0.0.0.0:4534\n\n[Install]\nWantedBy=dev-qmx.device\n"
+  },
+  {
+   "fmt": "text",
+   "path": ".config/wireplumber/wireplumber.conf.d/51-ranch-radio-audio.conf",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n# WirePlumber reads this at start: systemctl --user restart wireplumber.\nmonitor.alsa.rules = [\n  # G90 transmit audio\n  {\n    matches = [ { node.name = \"~alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo*\" } ]\n    actions = {\n      update-props = {\n        node.name = \"alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo\"\n        priority.session = 100\n      }\n    }\n  }\n  # G90 receive audio\n  {\n    matches = [ { node.name = \"~alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback*\" } ]\n    actions = {\n      update-props = {\n        node.name = \"alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback\"\n        priority.session = 100\n      }\n    }\n  }\n  # QMX transmit audio\n  {\n    matches = [ { node.name = \"~alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo*\" } ]\n    actions = {\n      update-props = {\n        node.name = \"alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\"\n        priority.session = 100\n      }\n    }\n  }\n  # QMX receive audio\n  {\n    matches = [ { node.name = \"~alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo*\" } ]\n    actions = {\n      update-props = {\n        node.name = \"alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\"\n        priority.session = 100\n      }\n    }\n  }\n]\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/station.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio station: one page (7300), the shared rigctl port (4532), Winlink and Mesh\nAfter=network-online.target sound.target pipewire.service\nWants=pipewire.service\n\n[Service]\nExecStart=/usr/bin/python3 %h/ranch-radio/station.py --config %h/.config/radio-remote/station.json --https --tls-name %l\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=15\n\n[Install]\nWantedBy=default.target\n"
+  },
+  {
+   "fmt": "json",
+   "path": ".config/radio-remote/station.json",
+   "text": "{\n  \"name\": \"linux-station\",\n  \"radios\": [\n    {\n      \"id\": \"g90\",\n      \"name\": \"G90\",\n      \"device\": \"/dev/g90\",\n      \"unit\": \"g90-remote.service\",\n      \"web\": 7301,\n      \"rigctl\": 4533,\n      \"lane\": 4537,\n      \"audio_in\": \"alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.mono-fallback\",\n      \"audio_out\": \"alsa_output.usb-C-Media_Electronics_Inc._USB_Audio_Device-00.analog-stereo\"\n    },\n    {\n      \"id\": \"qmx\",\n      \"name\": \"QMX\",\n      \"device\": \"/dev/qmx\",\n      \"unit\": \"qmx-remote.service\",\n      \"web\": 7302,\n      \"rigctl\": 4534,\n      \"lane\": 4538,\n      \"audio_in\": \"alsa_input.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\",\n      \"audio_out\": \"alsa_output.usb-QRP_Labs_QMX_Transceiver-02.analog-stereo\",\n      \"jtdx_profile\": \"QMX\"\n    }\n  ],\n  \"packet\": {\n    \"url\": \"http://127.0.0.1:7310\",\n    \"agwpe\": \"127.0.0.1:8000\"\n  },\n  \"winlink\": {\n    \"pat\": \"~/.local/bin/pat\",\n    \"pat_port\": 8095,\n    \"lane_port\": 4539,\n    \"ardopcf\": \"~/.local/bin/ardopcf\",\n    \"ardop_port\": 8515,\n    \"ardop_logs\": \"~/.local/state/radio-remote/ardop\"\n  },\n  \"mesh\": {\n    \"port\": \"/dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560\",\n    \"keys\": [\n      \"HomeNet=~/.config/ranch-radio/keys/mesh_channel\"\n    ]\n  },\n  \"addons\": {\n    \"uvpro\": {\n      \"enabled\": true,\n      \"address\": \"00:11:22:33:44:55\",\n      \"calls\": [\n        \"N9ABC\"\n      ],\n      \"hub\": \"http://127.0.0.1:7310\",\n      \"control\": \"tcp:127.0.0.1:8002\"\n    }\n  },\n  \"host_file\": \"linux-station\"\n}\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/uvpro-hub.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=UV-PRO packet hub (APRS + Winlink over the radio's Bluetooth KISS TNC)\nAfter=bluetooth.target network-online.target\nWants=bluetooth.target\n\n[Service]\nExecStart=/usr/bin/python3 %h/ranch-radio/tnc_hub.py --tnc bt:00:11:22:33:44:55 --mycall N9ABC --allow-calls N9ABC --tx --aprs-txdelay-ms 300\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=10\nFileDescriptorStoreMax=1\nFileDescriptorStorePreserve=yes\nNotifyAccess=main\n\n[Install]\nWantedBy=default.target\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/ranch-radio-update.service",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio: check for updates and say so (ranch-radio update --scheduled)\n\n[Service]\nType=oneshot\nEnvironment=RANCH_RADIO_UPDATE_JOB=1\nExecStart=/usr/bin/python3 %h/ranch-radio/ranch-radio update linux-station --scheduled\n"
+  },
+  {
+   "fmt": "systemd",
+   "path": ".config/systemd/user/ranch-radio-update.timer",
+   "text": "# Rendered by ranch-radio from hosts/linux-station.json. Edit that file, then `ranch-radio install`.\n\n[Unit]\nDescription=Ranch Radio: check for updates and say so, daily at 10:00\n\n[Timer]\nOnCalendar=*-*-* 10:00:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+  }
+ ],
+ "mac-aioc": [
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.packet-hub.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>\n\t</dict>\n\t<key>KeepAlive</key>\n\t<true/>\n\t<key>Label</key>\n\t<string>org.ranch-radio.packet-hub</string>\n\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/ranch-radio/.venv/bin/python</string>\n\t\t<string>/Users/you/ranch-radio/tnc_hub.py</string>\n\t\t<string>--tnc</string>\n\t\t<string>/tmp/kisstnc</string>\n\t\t<string>--mycall</string>\n\t\t<string>N9ABC</string>\n\t\t<string>--allow-calls</string>\n\t\t<string>N9ABC</string>\n\t\t<string>--control-port</string>\n\t\t<string>0</string>\n\t\t<string>--title</string>\n\t\t<string>Packet (AIOC)</string>\n\t</array>\n\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>StandardErrorPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-packet-hub.log</string>\n\t<key>StandardOutPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-packet-hub.log</string>\n\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n\t<key>WorkingDirectory</key>\n\t<string>/Users/you/ranch-radio</string>\n</dict>\n</plist>\n"
+  },
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.direwolf.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>\n\t</dict>\n\t<key>KeepAlive</key>\n\t<true/>\n\t<key>Label</key>\n\t<string>org.ranch-radio.direwolf</string>\n\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/ranch-radio/.venv/bin/python</string>\n\t\t<string>/Users/you/ranch-radio/direwolf_tnc.py</string>\n\t\t<string>--usb</string>\n\t\t<string>1209:7388</string>\n\t\t<string>--audio</string>\n\t\t<string>AIOC Audio</string>\n\t\t<string>--mycall</string>\n\t\t<string>N9ABC</string>\n\t\t<string>--ptt</string>\n\t\t<string>off</string>\n\t\t<string>--igate-login</string>\n\t\t<string>N9ABC-10</string>\n\t\t<string>--igate-passcode-file</string>\n\t\t<string>/Users/you/.config/ranch-radio/aprs-is-passcode</string>\n\t</array>\n\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>StandardErrorPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-direwolf.log</string>\n\t<key>StandardOutPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-direwolf.log</string>\n\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n\t<key>WorkingDirectory</key>\n\t<string>/Users/you/ranch-radio</string>\n</dict>\n</plist>\n"
+  },
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.update.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>\n\t\t<key>RANCH_RADIO_UPDATE_JOB</key>\n\t\t<string>1</string>\n\t</dict>\n\t<key>Label</key>\n\t<string>org.ranch-radio.update</string>\n\t<key>ProcessType</key>\n\t<string>Background</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/ranch-radio/.venv/bin/python</string>\n\t\t<string>/Users/you/ranch-radio/ranch-radio</string>\n\t\t<string>update</string>\n\t\t<string>mac-aioc</string>\n\t\t<string>--scheduled</string>\n\t</array>\n\t<key>StandardErrorPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-update.log</string>\n\t<key>StandardOutPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-update.log</string>\n\t<key>StartCalendarInterval</key>\n\t<dict>\n\t\t<key>Hour</key>\n\t\t<integer>10</integer>\n\t\t<key>Minute</key>\n\t\t<integer>0</integer>\n\t</dict>\n</dict>\n</plist>\n"
+  }
+ ],
+ "mac-shack": [
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.ic7300-remote.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/bin:/bin</string>\n\t</dict>\n\t<key>KeepAlive</key>\n\t<true/>\n\t<key>Label</key>\n\t<string>org.ranch-radio.ic7300-remote</string>\n\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/ranch-radio/.venv/bin/python</string>\n\t\t<string>/Users/you/ranch-radio/server.py</string>\n\t\t<string>--port</string>\n\t\t<string>/dev/cu.usbserial-21210</string>\n\t\t<string>--https</string>\n\t\t<string>--tx-timeout</string>\n\t\t<string>60</string>\n\t\t<string>--auto-tune</string>\n\t\t<string>--rigctl-host</string>\n\t\t<string>0.0.0.0</string>\n\t\t<string>--tls-name</string>\n\t\t<string>mac-shack</string>\n\t\t<string>--tls-name</string>\n\t\t<string>192.168.1.21</string>\n\t\t<string>--winlink-pat</string>\n\t\t<string>pat</string>\n\t\t<string>--winlink-rigctl-port</string>\n\t\t<string>4533</string>\n\t\t<string>--winlink-codec-db</string>\n\t\t<string>default=-38,80m=-38,40m=-44,20m=-50</string>\n\t\t<string>--voice-codec-db</string>\n\t\t<string>default=-38,20m=-32</string>\n\t\t<string>--codec-save</string>\n\t\t<string>mac-shack:ic7300</string>\n\t\t<string>--winlink-ardop-log</string>\n\t\t<string>/Users/you/Library/Logs/ardopcf</string>\n\t\t<string>--mesh-port</string>\n\t\t<string>ble:NODEM_7720</string>\n\t\t<string>--mesh-key</string>\n\t\t<string>HomeNet=/Users/you/.config/ranch-radio/keys/mesh_channel</string>\n\t\t<string>--addons</string>\n\t\t<string>/Users/you/.config/radio-remote/addons.json</string>\n\t\t<string>--host-file</string>\n\t\t<string>mac-shack</string>\n\t</array>\n\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>StandardErrorPath</key>\n\t<string>/Users/you/ranch-radio/server.log</string>\n\t<key>StandardOutPath</key>\n\t<string>/Users/you/ranch-radio/server.log</string>\n\t<key>WorkingDirectory</key>\n\t<string>/Users/you/ranch-radio</string>\n</dict>\n</plist>\n"
+  },
+  {
+   "fmt": "json",
+   "path": ".config/radio-remote/addons.json",
+   "text": "{\n  \"opengd77\": {\n    \"enabled\": true,\n    \"port\": \"auto\",\n    \"label\": \"MD-UV390\",\n    \"poll\": 2,\n    \"dmrconf\": \"/opt/homebrew/bin/dmrconf\"\n  }\n}\n"
+  },
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.ardopcf.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>KeepAlive</key>\n\t<true/>\n\t<key>Label</key>\n\t<string>org.ranch-radio.ardopcf</string>\n\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/bin/ardopcf</string>\n\t\t<string>--logdir</string>\n\t\t<string>/Users/you/Library/Logs/ardopcf</string>\n\t\t<string>--hostcommands</string>\n\t\t<string>CONSOLELOG 2</string>\n\t\t<string>8515</string>\n\t\t<string>USB Audio CODEC</string>\n\t\t<string>USB Audio CODEC</string>\n\t</array>\n\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>StandardErrorPath</key>\n\t<string>/Users/you/Library/Logs/ardopcf/console.log</string>\n\t<key>StandardOutPath</key>\n\t<string>/Users/you/Library/Logs/ardopcf/console.log</string>\n</dict>\n</plist>\n"
+  },
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.ic7300-widget.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>Label</key>\n\t<string>org.ranch-radio.ic7300-widget</string>\n\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n\t<key>ProcessType</key>\n\t<string>Interactive</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/Applications/ic7300-widget.app/Contents/MacOS/ic7300-widget</string>\n\t\t<string>org.ranch-radio.ic7300-remote</string>\n\t</array>\n\t<key>RunAtLoad</key>\n\t<true/>\n</dict>\n</plist>\n"
+  },
+  {
+   "fmt": "plist",
+   "path": "Library/LaunchAgents/org.ranch-radio.update.plist",
+   "text": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>\n\t\t<key>RANCH_RADIO_UPDATE_JOB</key>\n\t\t<string>1</string>\n\t</dict>\n\t<key>Label</key>\n\t<string>org.ranch-radio.update</string>\n\t<key>ProcessType</key>\n\t<string>Background</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/you/ranch-radio/.venv/bin/python</string>\n\t\t<string>/Users/you/ranch-radio/ranch-radio</string>\n\t\t<string>update</string>\n\t\t<string>mac-shack</string>\n\t\t<string>--scheduled</string>\n\t</array>\n\t<key>StandardErrorPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-update.log</string>\n\t<key>StandardOutPath</key>\n\t<string>/Users/you/Library/Logs/ranch-radio-update.log</string>\n\t<key>StartCalendarInterval</key>\n\t<dict>\n\t\t<key>Hour</key>\n\t\t<integer>10</integer>\n\t\t<key>Minute</key>\n\t\t<integer>0</integer>\n\t</dict>\n</dict>\n</plist>\n"
+  }
+ ]
+}
