@@ -86,6 +86,8 @@ import time
 
 from aiohttp import web
 
+import aprs
+import aprs_msg
 import aprs_store
 import ax25
 import digi
@@ -825,6 +827,11 @@ class Hub:
         self._note_heard(f, text)
         if self.igate:
             self.igate.offer(f)
+        if self.aprs_msg:
+            try:
+                self.aprs_msg.on_rf(rec["t"], f)
+            except Exception:     # noqa: BLE001 - the receive path never stops for messaging
+                log.exception("messaging: heard frame not handled")
         log.info("RX %s", text)
         if self.digi:
             self.digi.heard(f, now())
@@ -879,6 +886,21 @@ class Hub:
                                           [str(d) for d in reversed(f.digis)])
                     link.accept(f)
                     return
+
+    def on_is_line(self, t, text):
+        """A packet line from the APRS-IS observer (igate.py, observe=). Stored
+        as port 'is' and handed to messaging as evidence; it can never reach
+        transmit(): nothing here calls it."""
+        if self.aprs:
+            self.aprs.ingest(t, "is", text)
+        parts = aprs_store.parse_line(text)
+        if parts is None:
+            return
+        d = aprs.decode(*parts)
+        if d.get("error") == "embedded line break":
+            return
+        if self.aprs_msg:
+            self.aprs_msg.on_is(t, d)
 
     # -- fill-in digipeater (digi.py) --
 
@@ -1138,10 +1160,13 @@ class Hub:
                 "max_ms": round(lag[-1], 1) if lag else None, "samples": len(lag)}
         me = ({"lat": self.args.lat, "lon": self.args.lon}
               if self.args.lat is not None and self.args.lon is not None else None)
+        msg = (self.aprs_msg.status() if self.aprs_msg else
+               {"mode": self.args.aprs_messaging, "effective": "off",
+                "why": "no APRS store (--no-aprs)" if self.args.no_aprs and self.args.aprs_messaging != "off" else None})
         if not self.aprs:
-            return {"enabled": False, "me": me, "loop": loop}
+            return {"enabled": False, "me": me, "loop": loop, "messaging": msg}
         return {"enabled": True, "me": me, "loop": loop, "queue": self.aprs.qsize(),
-                "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary}
+                "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary, "messaging": msg}
 
     async def open_aprs(self):
         """Open the store, backfill it once from the logs and reload the heard
@@ -1643,6 +1668,42 @@ def make_web(hub):
     async def aprs_messages(req):
         return web.json_response({"messages": await from_store("messages", req.query.get("with", "")[:12] or None)})
 
+    # APRS messaging (plan 2026-11-07, 3.5): a page sends like radio PTT.
+    async def aprs_message(req):
+        if not hub.aprs_msg:
+            return web.json_response({"error": "messaging is off"}, status=409)
+        try:
+            body = await req.json()
+            to, text = body.get("to"), body.get("text")
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"to\", \"text\"}"}, status=400)
+        try:
+            row = await hub.aprs_msg.compose(to, text)
+        except aprs_msg.MsgError as e:
+            return web.json_response({"error": str(e)}, status=409 if str(e).startswith(("not now", "messaging is off"))
+                                     else 400)
+        log.warning("APRS message %s to %s from the page (%s)", row["msgno"], row["dst"], req.remote)
+        return web.json_response({"id": row["id"], "state": row["state"], "msgno": row["msgno"]})
+
+    async def aprs_thread(req):
+        call = req.query.get("with", "")[:12]
+        owned = hub.aprs_msg.owned if hub.aprs_msg else [hub.args.mycall]
+        if not call:
+            return web.json_response({"with": None, "threads": await from_store("correspondents", owned)})
+        rows = await from_store("thread", call, owned)
+        active = {r["id"]: r for r in (hub.aprs_msg.out.values() if hub.aprs_msg else ())}
+        out = []
+        for r in rows:
+            if r["dir"] == "out":
+                live = active.get(r["id"])
+                r = {**r, **(hub.aprs_msg.describe(live) if live else {}), "via": "rf"}
+            else:
+                r = {**r, "via": "internet" if r["port"] == "is" else "rf"}
+            out.append(r)
+        return web.json_response({"with": aprs.norm_call(call), "messages": out})
+
+    app.router.add_post("/api/aprs/message", aprs_message)
+    app.router.add_get("/api/aprs/thread", aprs_thread)
     app.router.add_get("/api/aprs/stations", aprs_stations)
     app.router.add_get("/api/aprs/objects", aprs_objects)
     app.router.add_get("/api/aprs/station/{call}", aprs_station)
@@ -1689,11 +1750,25 @@ async def amain(args):
     if not args.no_aprs:
         await hub.open_aprs()
         tasks.append(asyncio.create_task(hub.aprs_refresh()))
+        if args.aprs_messaging != "off":
+            hub.aprs_msg = aprs_msg.Engine(hub, args.aprs_messaging, args.aprs_owned_calls, args.aprs_firmware_acks,
+                                           args.aprs_path, cooldown_s=args.aprs_cooldown)
+            await hub.aprs_msg.start()
+            if hub.aprs_msg.why:
+                log.warning("messaging: %s", hub.aprs_msg.why)
+            log.info("messaging: %s (configured %s) as %s", hub.aprs_msg.effective, args.aprs_messaging,
+                     ", ".join(hub.aprs_msg.owned))
     if args.igate_login:
         beacon = (igate.beacon_info(args.lat, args.lon, args.igate_comment)
                   if args.igate_beacon_min else None)
+        own = {ax25.base_call(c) for c in args.aprs_owned_calls}
+        observe = None
+        if args.igate_observe:
+            calls = "/".join(sorted(f"{c}*" for c in own))
+            observe = f"b/{calls} g/{calls}"
         hub.igate = igate.IGate(args.igate_login, args.igate_passcode, args.igate_server,
-                                beacon=beacon, beacon_s=args.igate_beacon_min * 60).start()
+                                beacon=beacon, beacon_s=args.igate_beacon_min * 60, own_bases=own,
+                                observe=observe, on_line=hub.on_is_line).start()
     hub.radio.start()
     servers = []
     if args.agw_port:
@@ -1719,6 +1794,8 @@ async def amain(args):
         await hub.radio.stop()
         if hub.igate:
             await hub.igate.stop()
+        if hub.aprs_msg:
+            await hub.aprs_msg.stop()
         for t in tasks:
             t.cancel()
         if hub.aprs:
@@ -1777,6 +1854,19 @@ def parse_args(argv=None):
     p.add_argument("--igate-beacon-min", type=int, default=0,
                    help="minutes between the iGate's position beacons to APRS-IS (needs --lat/--lon; 0: none)")
     p.add_argument("--igate-comment", default=igate.BEACON_COMMENT, help="the iGate beacon's comment")
+    p.add_argument("--igate-observe", action="store_true",
+                   help="also read APRS-IS for our own calls (filter b/<call>* g/<call>*), stored as port 'is'; "
+                        "receive only")
+    # APRS messaging (aprs_msg.py; plan 2026-11-07, 3.4).
+    p.add_argument("--aprs-messaging", choices=aprs_msg.MODES, default="off",
+                   help="off; send (compose, retries, matching acks; never acks); full (acks too)")
+    p.add_argument("--aprs-owned-calls", type=lambda s: [c.strip().upper() for c in s.split(",") if c.strip()],
+                   help="exact call-SSIDs messaging owns (default: --mycall)")
+    p.add_argument("--aprs-firmware-acks", choices=("true", "false", "null"), default="null",
+                   help="whether the radio's firmware acks messages by itself (full needs false)")
+    p.add_argument("--aprs-path", default="WIDE1-1,WIDE2-1", help="the messages' and acks' digipeater path")
+    p.add_argument("--aprs-cooldown", type=float, default=aprs_msg.COOLDOWN_S,
+                   help="seconds after start before any message or ack goes")
     p.add_argument("--digi", metavar="CALL", help="be a fill-in digipeater as CALL (callsign-SSID)")
     p.add_argument("--digi-viscous", type=float, default=5.0,
                    help="seconds a WIDE1-1 request waits for a wide digipeater to repeat it first")
@@ -1797,6 +1887,20 @@ def parse_args(argv=None):
         p.error("--ack-airtime-reserve-s must be 0 or more and below --max-airtime-s-per-min")
     if not 0 <= a.aprs_txdelay_ms <= 2000:
         p.error("--aprs-txdelay-ms must be 0-2000")
+    a.aprs_firmware_acks = {"true": True, "false": False, "null": None}[a.aprs_firmware_acks]
+    a.aprs_owned_calls = a.aprs_owned_calls or [a.mycall.upper()]
+    allow = a.allow_calls or [ax25.base_call(a.mycall)]
+    for c in a.aprs_owned_calls:
+        ax25.parse_call(c)
+        if ax25.base_call(c) not in allow:
+            p.error(f"--aprs-owned-calls {c}: not admitted by --allow-calls ({', '.join(allow)})")
+    a.aprs_path = [x.strip().upper() for x in a.aprs_path.split(",") if x.strip()]
+    if len(a.aprs_path) > 2:
+        p.error("--aprs-path: at most 2 hops (WIDE1-1,WIDE2-1)")
+    for x in a.aprs_path:
+        ax25.parse_call(x)
+    if not 0 <= a.aprs_cooldown <= 3600:
+        p.error("--aprs-cooldown must be 0-3600 seconds")
     a.igate_passcode = None
     if a.igate_login:
         ax25.parse_call(a.igate_login)
