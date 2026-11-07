@@ -326,18 +326,27 @@ async def t_refusals():
 async def t_schema_and_restart():
     d = tempfile.mkdtemp(prefix="probe-v1-")
     v1 = os.path.join(d, "aprs_store_v1.py")
+    path = os.path.join(d, "v1.db")
     src = subprocess.run(["git", "show", "origin/main:aprs_store.py"], cwd=ROOT, capture_output=True, text=True)
-    if src.returncode != 0:
-        print("skip  a version 1 file: origin/main is not in this checkout")
-    else:
+    if src.returncode == 0 and "SCHEMA_VERSION = 1" in src.stdout:
         with open(v1, "w") as f:
             f.write(src.stdout)
-        path = os.path.join(d, "v1.db")
         made = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(1, sys.argv[2]);"
                                "import aprs_store_v1 as s; db = s.Db(sys.argv[3]);"
                                "db.ingest(1.0, 'rf', 'W7TST>APRS::N9ABC    :old{1'); db.close()", d, ROOT, path],
                               capture_output=True, text=True)
         check("a version 1 file made by main's aprs_store", (made.returncode, made.stderr[-200:]), (0, ""))
+    else:
+        # A shallow checkout (CI) has no main: version 1's own DDL, the same tables.
+        print("note  origin/main not here: the version 1 file is built from schema 1's DDL")
+        con = sqlite3.connect(path)
+        con.executescript(aprs_store.SCHEMA)
+        con.execute("PRAGMA user_version=1")
+        con.execute("INSERT INTO messages (t, dir, port, src, dst, text, msgno, state) VALUES "
+                    "(1.0, 'in', 'rf', 'W7TST', 'N9ABC', 'old', '1', 'received')")
+        con.commit()
+        con.close()
+    if True:
         con = sqlite3.connect(path)
         check("  it is version 1, without probes", (con.execute("PRAGMA user_version").fetchone()[0],
               con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='probes'").fetchone()[0]), (1, 0))
