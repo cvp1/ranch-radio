@@ -777,15 +777,22 @@ class Station(TxAudio):
         self._tune_ours_at, self._tune_seen = time.monotonic(), False
         await self.radio.set("tuner", 2)
 
-    async def unkey(self, reason=None, write=True, force=False, by=None):
+    async def unkey(self, reason=None, write=True, force=False, by=None, own=False):
         """Release the key. write=False: the radio already stopped (unkeyed
         at the radio); only release ownership and restore RX. force: write
         OFF even if nobody holds PTT (a tune we started, F7). by: the client
         whose own key-up this is; any other release of a browser's PTT
-        latches that browser off until it lets go (F17)."""
+        latches that browser off until it lets go (F17). own: this is the
+        owner's own key-up (a rigctl client's T 0); every other release of a
+        Winlink lane's key is "forced" in the station-ID ledger."""
         owner = self.ptt_owner
         was = force or owner is not None or self.radio.state["tx"]
         self.ptt_owner = None
+        if owner is not None and getattr(owner, "lane", None) == "winlink":
+            # The one place a lane's transmission ends, whatever ended it (its
+            # T 0, a disconnect, the keepalive or time limit, a disarm, the
+            # radio): the ledger learns of it exactly once, with how.
+            self.id_ledger.ptt_released(time.time(), owner.modem, "normal" if own else "forced")
         if (owner is not None and owner is not by
                 and isinstance(owner, web.WebSocketResponse) and not owner.closed):
             # Only browsers: they repeat the key-down twice a second while the
@@ -1096,7 +1103,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
         if args.winlink_rigctl_port:
             # Pat's private lane: this machine only, whatever --rigctl-host says.
             app["winlink_rigctl"] = await rigctl_server.serve(
-                station, "127.0.0.1", args.winlink_rigctl_port, lane="winlink")
+                station, "127.0.0.1", args.winlink_rigctl_port, lane="winlink", modem="ardop")
 
     async def on_shutdown(app):
         # F10: close every client before the web server waits on them (an open

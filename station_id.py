@@ -31,6 +31,8 @@ from collections import deque
 log = logging.getLogger("station_id")
 
 SLOP_S = 0.5            # log line vs lane decision timing (same host clock)
+BURST_KEEP_S = 120.0    # a lane's burst history: this long...
+BURST_KEEP_N = 256      # ...and at most this many per lane
 NO_CW_S = 1.5           # after the IDFrame, a CW ID starts within this or there is none
 STALE_ID_S = 30.0       # an ID that started but never ended stops counting as in progress
 POLL_S = 0.25
@@ -102,20 +104,38 @@ class IdLedger:
         self.tracked = tracked
         self.on_change = on_change
         self.clock = clock
-        self.ptts = deque(maxlen=1000)    # (wall, accepted)
+        self.ptts = deque(maxlen=1000)    # (wall, accepted, modem): every lane PTT request
         self.last_tx = None               # wall time of the last accepted PTT
         self.ids = deque(maxlen=20)       # {"reason", "start", "end", "on_air"}
+        # Per lane modem, each transmission: [accepted T 1 wall, release wall
+        # or None (still keyed), release kind ("normal": the owner's own T 0;
+        # "forced": a disconnect, the keepalive or time limit, a disarm, the
+        # radio)]. Bounded: BURST_KEEP_S and BURST_KEEP_N.
+        self.bursts = {}
 
     # --- inputs ---
 
-    def ptt(self, accepted, wall=None):
+    def ptt(self, accepted, wall=None, modem="ardop"):
         t = self.clock() if wall is None else wall
-        self.ptts.append((t, accepted))
+        self.ptts.append((t, accepted, modem))
         if accepted:
+            b = self.bursts.setdefault(modem, deque(maxlen=BURST_KEEP_N))
+            if not (b and b[-1][1] is None):     # a repeated T 1 while keyed is the same burst
+                b.append([t, None, None])
+            while b and b[0][1] is not None and b[0][1] < t - BURST_KEEP_S:
+                b.popleft()
             was = self.owed()
             self.last_tx = t
             if self.owed() != was:
                 self._changed()
+
+    def ptt_released(self, wall, modem, kind):
+        """A Winlink lane's transmission ended (Station.unkey, exactly once
+        per burst). kind: "normal" (the owner's own T 0) or "forced"."""
+        b = self.bursts.get(modem)
+        if b and b[-1][1] is None:
+            b[-1][1], b[-1][2] = wall, kind
+        log.info("station ID: %s lane PTT released (%s)", modem, kind)
 
     def id_started(self, reason, wall):
         self.ids.append({"reason": reason, "start": wall, "end": None, "on_air": None})
@@ -127,7 +147,7 @@ class IdLedger:
             return None
         cur["end"] = wall
         acc = ref = 0
-        for t, ok in self.ptts:
+        for t, ok, _modem in self.ptts:
             if cur["start"] - SLOP_S <= t <= wall + SLOP_S:
                 acc += ok
                 ref += not ok

@@ -21,6 +21,9 @@ PTT ("T 1") goes through Station.key, the same path as the browser's PTT, so
 --no-tx, single-operator ownership and the --tx-timeout limit all apply. A
 rigctl client that holds PTT must keep talking (JTDX/WSJT-X poll every
 second or so): silence for RIGCTL_KEEPALIVE_S, or a disconnect, unkeys.
+"T 0" releases only the sender's own PTT: from a client that is not keying
+it means "I am not transmitting", which is true, and changes nothing
+(JTDX sends it when idle; before, it cut whoever was on the air).
 """
 
 import asyncio
@@ -47,9 +50,10 @@ class RigctlOwner:
     closed = False
     keepalive_s = RIGCTL_KEEPALIVE_S
 
-    def __init__(self, peer, lane=None):
+    def __init__(self, peer, lane=None, modem=None):
         self.peer = peer
         self.lane = lane
+        self.modem = modem       # a Winlink lane's modem ("ardop"): whose bursts the ID ledger keeps
         if lane == "winlink":
             self.keepalive_s = WINLINK_KEEPALIVE_S
         self.lost_msg = f"rigctl client {peer} went quiet"
@@ -204,11 +208,12 @@ def dump_state(caps, tx_allowed=False):
 class RigctlSession:
     """One client connection. Pure command -> reply logic; I/O lives below."""
 
-    def __init__(self, station, peer="?", lane=None):
+    def __init__(self, station, peer="?", lane=None, modem=None):
         self.station = station
         self.radio, self.caps = station.radio, station.radio.caps
         self.lane = lane         # "winlink": Pat's own listener, keys only while armed
-        self.owner = RigctlOwner(peer, lane)
+        self.modem = modem if lane == "winlink" else None
+        self.owner = RigctlOwner(peer, lane, self.modem)
         self.vfo = None          # VFO named on the command being handled
         # VFO this client selected with "V" (None = the radio's own). Virtual:
         # the radio is never switched. Hamlib before 4.6 (JTDX bundles 4.5)
@@ -432,8 +437,10 @@ class RigctlSession:
         if cmd in ("T", "set_ptt"):
             on = bool(args) and args[-1] != "0"
             if not on:
-                if self.holds_ptt() or s.get("tx"):
-                    await self.station.unkey()
+                # Only the sender's own PTT: another client's (or the radio's
+                # own) transmission is not this client's to end.
+                if self.holds_ptt():
+                    await self.station.unkey(own=True)
                 return ok, False
             st = self.station
             if self.lane == "winlink" and not st.winlink_armed:
@@ -465,7 +472,7 @@ class RigctlSession:
                 return f"RPRT {RIG_ENAVAIL}\n", False
             log.info("rigctl: PTT ON from %s", self.owner.peer)
             if self.lane == "winlink":
-                st.id_ledger.ptt(True)
+                st.id_ledger.ptt(True, modem=self.modem)
             return ok, False
         if cmd in ("s", "get_split_vfo"):
             on = s.get("split") if self.real_split else self.station.emu_split
@@ -618,9 +625,10 @@ class _Conn:
         self.handed_over = False  # left open in systemd's fd store for the next process
 
 
-async def serve(station, host, port, sock=None, adopted=(), lane=None):
+async def serve(station, host, port, sock=None, adopted=(), lane=None, modem=None):
     """lane="winlink": Pat's private listener (no systemd handover; PTT only
-    while a Winlink session is armed, longer keepalive)."""
+    while a Winlink session is armed, longer keepalive); modem: the lane's
+    modem ("ardop"), which the station-ID ledger files its bursts under."""
     conns = set()
     handover = Handover(station, enabled=lane is None)
     saved = handover.load() if adopted else None
@@ -646,7 +654,7 @@ async def serve(station, host, port, sock=None, adopted=(), lane=None):
             # Pat stays connected all the time: it must not hold the radio
             # where it last put it (that is for apps like JTDX).
             station.rigctl_connected(True)
-        sess = RigctlSession(station, f"{peer[0]}:{peer[1]}" if peer else "?", lane)
+        sess = RigctlSession(station, f"{peer[0]}:{peer[1]}" if peer else "?", lane, modem)
         conn = _Conn(writer, name)
         conn.sess = sess
         if carried and saved:
