@@ -167,6 +167,14 @@ check("  and an explicit observe: false wins",
                                             "observe": False}}}, "p", "/r", lambda x: x), False)
 
 
+probe_h = copy.deepcopy(aprs_h)
+probe_h["packet"]["aprs"]["probe"] = {"target": "WXBOT", "text": "wx 85602"}
+pargv = render.hub_argv(probe_h, "/usr/bin/python3", "/r", lambda x: x)
+check("a probe block renders its target and text",
+      pargv[pargv.index("--aprs-probe-target"):pargv.index("--aprs-probe-target") + 4],
+      ["--aprs-probe-target", "WXBOT", "--aprs-probe-text", "wx 85602"])
+
+
 def aprs_set(k, v):
     return lambda h: h["packet"]["aprs"].__setitem__(k, v)
 

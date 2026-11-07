@@ -349,7 +349,7 @@
   });
   $("msg-arm").onclick = () => {
     if (!armed && !confirm("Arm sending APRS messages from this browser, under your callsign?")) return;
-    armed = !armed; drawCompose();
+    armed = !armed; drawCompose(); loadProbes();
   };
   ["input", "change"].forEach((ev) => { $("msg-text").addEventListener(ev, drawCompose); $("msg-to").addEventListener(ev, drawCompose); });
   $("msg-compose").addEventListener("submit", async (e) => {
@@ -402,7 +402,43 @@
     try { mst = await getJSON("api/status"); } catch (e) { mst = null; }
     drawCompose();
     if (peer && !$("aprs-messages").hidden) openThread(peer);
+    loadProbes();
   }
+
+  // ---------- the round-trip probe (plan 2026-11-07, section 4)
+
+  const LEG_NAMES = { L1: "sent", L2: "digipeated", L3: "APRS-IS via RF", L4: "reply on RF", L5: "acked" };
+  function probeWhy() {
+    const pr = mst && mst.aprs.probe;
+    if (!pr) return "messaging is off";
+    if (!armed) return "arm TX in this browser to probe";
+    return pr.refuse || "";
+  }
+  async function loadProbes() {
+    let d;
+    try { d = await getJSON("api/aprs/probes"); } catch (e) { return; }
+    const pr = d.probe;
+    $("probe-target").textContent = pr && pr.target ? `to ${pr.target}` : "";
+    const reason = probeWhy();
+    $("probe-btn").disabled = !!reason;
+    $("probe-why").textContent = reason;
+    $("probe-table").innerHTML = d.probes.length ? "<tr><th>started</th><th>to</th><th>state</th>" +
+      Object.values(LEG_NAMES).map((n) => `<th>${n}</th>`).join("") + "</tr>" +
+      d.probes.map((p) => `<tr class="probe-row" data-id="${p.id}"><td>${when(p.t)}</td><td class="mono">${esc(p.target)} ` +
+        `<span class="muted">${esc(p.token)}</span></td><td>${esc(p.state)}</td>` +
+        Object.keys(LEG_NAMES).map((k) => { const l = (p.legs || {})[k] || { v: "waiting" };
+          const tip = l.evidence || l.why || "";
+          return `<td><span class="leg v-${l.v.replace(" ", "-")}" data-leg="${k}" title="${esc(tip)}">${esc(l.v === "unknown" ? "unknown ?" : l.v)}</span></td>`; }).join("") +
+        "</tr>").join("") : `<tr><td class="empty">no probes yet</td></tr>`;
+  }
+  $("probe-btn").onclick = async () => {
+    if (probeWhy()) return;
+    if (!confirm("Send one probe message now (it retries for up to 23 minutes until acked)?")) return;
+    const r = await fetch("api/aprs/probe", { method: "POST", headers: { "content-type": "application/json", "X-Ranch-Radio": "1" },
+      body: JSON.stringify({ armed: true }) });
+    if (!r.ok) $("probe-why").textContent = (await r.json()).error || "refused";
+    loadProbes();
+  };
 
   // ---------- start
 

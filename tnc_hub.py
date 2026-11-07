@@ -106,6 +106,7 @@ from aiohttp import web
 
 import aprs
 import aprs_msg
+import aprs_probe
 import aprs_store
 import ax25
 import digi
@@ -1183,9 +1184,10 @@ class Hub:
                {"mode": self.args.aprs_messaging, "effective": "off",
                 "why": "no APRS store (--no-aprs)" if self.args.no_aprs and self.args.aprs_messaging != "off" else None})
         if not self.aprs:
-            return {"enabled": False, "me": me, "loop": loop, "messaging": msg}
+            return {"enabled": False, "me": me, "loop": loop, "messaging": msg, "probe": None}
         return {"enabled": True, "me": me, "loop": loop, "queue": self.aprs.qsize(),
-                "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary, "messaging": msg}
+                "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary, "messaging": msg,
+                "probe": self.probe.status() if self.probe else None}
 
     async def open_aprs(self):
         """Open the store, backfill it once from the logs and reload the heard
@@ -1721,6 +1723,29 @@ def make_web(hub):
             out.append(r)
         return web.json_response({"with": aprs.norm_call(call), "messages": out})
 
+    # The round-trip probe (aprs_probe.py; plan 2026-11-07, section 4).
+    async def aprs_probe_start(req):
+        if not hub.probe:
+            return web.json_response({"error": "messaging is off"}, status=409)
+        try:
+            body = await req.json()
+            armed = body.get("armed") is True
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"armed\": true}"}, status=400)
+        try:
+            p = await hub.probe.begin(armed)
+        except aprs_probe.ProbeError as e:
+            return web.json_response({"error": str(e)}, status=409)
+        log.warning("APRS probe %d from the page (%s)", p["id"], req.remote)
+        return web.json_response(hub.probe.describe(p))
+
+    async def aprs_probes(_):
+        rows = await from_store("probes", 20)
+        return web.json_response({"probes": [hub.probe.describe(p) if hub.probe else p for p in rows],
+                                  "probe": hub.probe.status() if hub.probe else None})
+
+    app.router.add_post("/api/aprs/probe", aprs_probe_start)
+    app.router.add_get("/api/aprs/probes", aprs_probes)
     app.router.add_post("/api/aprs/message", aprs_message)
     app.router.add_get("/api/aprs/thread", aprs_thread)
     app.router.add_get("/api/aprs/stations", aprs_stations)
@@ -1777,6 +1802,7 @@ async def amain(args):
                 log.warning("messaging: %s", hub.aprs_msg.why)
             log.info("messaging: %s (configured %s) as %s", hub.aprs_msg.effective, args.aprs_messaging,
                      ", ".join(hub.aprs_msg.owned))
+            hub.probe = await aprs_probe.Probe(hub, hub.aprs_msg, args.aprs_probe_target, args.aprs_probe_text).start()
     if args.igate_login:
         beacon = (igate.beacon_info(args.lat, args.lon, args.igate_comment)
                   if args.igate_beacon_min else None)
@@ -1813,6 +1839,8 @@ async def amain(args):
         await hub.radio.stop()
         if hub.igate:
             await hub.igate.stop()
+        if hub.probe:
+            await hub.probe.stop()
         if hub.aprs_msg:
             await hub.aprs_msg.stop()
         for t in tasks:
@@ -1886,6 +1914,8 @@ def parse_args(argv=None):
     p.add_argument("--aprs-path", default="WIDE1-1,WIDE2-1", help="the messages' and acks' digipeater path")
     p.add_argument("--aprs-cooldown", type=float, default=aprs_msg.COOLDOWN_S,
                    help="seconds after start before any message or ack goes")
+    p.add_argument("--aprs-probe-target", help="the round-trip probe's target station (a call)")
+    p.add_argument("--aprs-probe-text", default="", help="the probe message's text (a 3-character token is added)")
     p.add_argument("--digi", metavar="CALL", help="be a fill-in digipeater as CALL (callsign-SSID)")
     p.add_argument("--digi-viscous", type=float, default=5.0,
                    help="seconds a WIDE1-1 request waits for a wide digipeater to repeat it first")
@@ -1918,6 +1948,10 @@ def parse_args(argv=None):
         p.error("--aprs-path: at most 2 hops (WIDE1-1,WIDE2-1)")
     for x in a.aprs_path:
         ax25.parse_call(x)
+    if a.aprs_probe_target:
+        ax25.parse_call(a.aprs_probe_target)
+    if len(a.aprs_probe_text) > 63 or any(not (" " <= ch <= "~") or ch in "|~{}" for ch in a.aprs_probe_text):
+        p.error("--aprs-probe-text: up to 63 printable ASCII characters, no | ~ { }")
     if not 0 <= a.aprs_cooldown <= 3600:
         p.error("--aprs-cooldown must be 0-3600 seconds")
     a.igate_passcode = None

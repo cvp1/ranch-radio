@@ -27,7 +27,7 @@ import aprs
 
 log = logging.getLogger("aprs_store")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2                # 2: probes (the APRS round-trip probe, aprs_probe.py)
 DUP_WINDOW_S = 30
 IS_KEEPS_RF_S = 600               # an untimestamped IS fix never replaces an RF fix this fresh
 RETENTION = {"packets": 30 * 86400, "positions": 7 * 86400, "stations": 90 * 86400,
@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS tombstones (kind TEXT, key TEXT, rev INTEGER);
 CREATE INDEX IF NOT EXISTS tombstones_rev ON tombstones (rev);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
+
+PROBES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS probes (
+  id INTEGER PRIMARY KEY, t REAL, target TEXT, text TEXT, token TEXT, msg_id INTEGER, msgno TEXT,
+  t_first REAL, window_end REAL, state TEXT, legs TEXT, coverage TEXT, notes TEXT, last_seen REAL);
+"""
+PROBE_COLS = ("t", "target", "text", "token", "msg_id", "msgno", "t_first", "window_end", "state", "legs",
+              "coverage", "notes", "last_seen")
 
 STATION_COLS = ("call", "first", "last", "count", "rf_last", "direct_last", "is_last", "rf_path",
                 "lat", "lon", "pos_t", "pos_reported_t", "pos_port", "ambiguity", "box_deg", "symbol",
@@ -136,7 +144,10 @@ class Db:
         if v > SCHEMA_VERSION:
             raise RuntimeError(f"{self.path}: schema {v} is newer than this code ({SCHEMA_VERSION})")
         self.db.executescript(SCHEMA)
-        # Later versions migrate here, one step at a time: if v < 2: ALTER ...
+        # Later versions migrate here, one step at a time. 1 -> 2: the probes
+        # table (new; nothing in a version 1 file changes).
+        if v < 2:
+            self.db.executescript(PROBES_SCHEMA)
         self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.db.execute("INSERT OR IGNORE INTO meta VALUES ('rev', '0')")
 
@@ -435,6 +446,36 @@ class Db:
             if len(out) >= n:
                 break
         return list(out.values())
+
+    # ---------- probes (aprs_probe.py; schema 2). legs, coverage, notes: JSON.
+
+    def probe_insert(self, row):
+        unknown = row.keys() - set(PROBE_COLS)
+        if unknown:
+            raise ValueError(f"not probe columns: {sorted(unknown)}")
+        row = {k: _json(v) if k in ("legs", "coverage", "notes") else v for k, v in row.items()}
+        # Column names are allow-listed against PROBE_COLS above; values stay bound.
+        cur = self.db.execute(f"INSERT INTO probes ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",  # nosec B608
+                              tuple(row.values()))
+        return cur.lastrowid
+
+    def probe_update(self, pid, changes):
+        unknown = changes.keys() - set(PROBE_COLS)
+        if unknown:
+            raise ValueError(f"not probe columns: {sorted(unknown)}")
+        changes = {k: _json(v) if k in ("legs", "coverage", "notes") else v for k, v in changes.items()}
+        self.db.execute(f"UPDATE probes SET {', '.join(f'{k}=?' for k in changes)} WHERE id=?",  # nosec B608
+                        (*changes.values(), pid))
+        return True
+
+    def probes(self, n=20):
+        out = []
+        for r in self.db.execute("SELECT * FROM probes ORDER BY id DESC LIMIT ?", (n,)):
+            d = dict(r)
+            for k in ("legs", "coverage", "notes"):
+                d[k] = _load(d[k])
+            out.append(d)
+        return out
 
     # ---------- retention
 
