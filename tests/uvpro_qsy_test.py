@@ -71,17 +71,39 @@ class Host:
         self.sent.append(json.loads(payload))
 
 
+class FakeHub:
+    """The packet hub's hold API as the add-on sees it: records each POST in
+    the shared event list (with the radio's writes), answers 200, or a code,
+    or raises as an unreachable hub does."""
+
+    def __init__(self, events):
+        self.events, self.code, self.up, self.holds = events, 200, True, []
+
+    async def post(self, path, body):
+        self.events.append(("hub", path, body.get("by")))
+        if not self.up:
+            raise ConnectionRefusedError("hub not running")
+        if self.code == 200:
+            if path == "/api/hold":
+                self.holds = [body["by"]]
+            elif path == "/api/hold/release":
+                self.holds = []
+        return self.code, ({} if self.code == 200 else {"error": f"HTTP {self.code}"})
+
+
 class Radio:
     """The bridge's side: applies a write, sends it back, then done."""
 
-    def __init__(self, a, mode="ok"):
+    def __init__(self, a, mode="ok", events=None):
         self.a, self.mode, self.cmds, self.record_at_first = a, mode, [], "unset"
+        self.events = events if events is not None else []
         self.fail = set()               # commands answered done ok:false
 
     async def send(self, d):
         if self.record_at_first == "unset" and d.get("cmd") in ("channel", "settings"):
             self.record_at_first = self.a._qsy is not None
         self.cmds.append(d)
+        self.events.append(("radio", d.get("cmd"), d.get("id")))
         if self.mode == "raise":
             raise BrokenPipeError("bridge gone")
         if self.mode == "silent":
@@ -120,8 +142,11 @@ def addon(channels=None, settings=None, vfos=None, supports_vfo=False, mode="ok"
     a.device = {"supports_vfo": supports_vfo}
     a.exact = {"channels": [c["id"] for c in a.channels + a.vfos], "settings": True, "beacon": True}
     a.status = {"is_in_tx": False}
-    radio = Radio(a, mode)
+    a.events = []
+    radio = Radio(a, mode, a.events)
     a._send_bridge = radio.send
+    a.fakehub = FakeHub(a.events)
+    a.hub_url, a._hold_post = "http://fake-hub.invalid", a.fakehub.post   # never a real hub
     return a, radio
 
 
@@ -416,6 +441,9 @@ async def new_instance_restores():
     def make():
         a = uvpro.UvproAddon(Host(), opts)
         a.state_dir = d
+        a.events = []
+        a.fakehub = FakeHub(a.events)
+        a.hub_url, a._hold_post = "http://fake-hub.invalid", a.fakehub.post
         return a
 
     def radio():
@@ -447,6 +475,7 @@ async def new_instance_restores():
     await a2.start()
     out["restored"] = await until(lambda: radio() == (0, 1)) and radio()
     out["record gone"] = await until(lambda: not os.path.exists(os.path.join(d, "uvpro-qsy.json")), 5)
+    out["hold"] = [(p, b) for _, p, b in a2.events]
     await a2.stop()
     for k in ("FAKE_UVPRO_STATE", "FAKE_UVPRO_CH3"):
         os.environ.pop(k, None)
@@ -455,6 +484,111 @@ r = run(new_instance_restores())
 check("B-10 precondition: tuned to channel 3, dual watch off", r.get("tuned"), (True, (2, 0)))
 check("B-10 a new add-on instance puts the radio back (channel 1, dual watch A)", r.get("restored"), (0, 1))
 check("B-10   and its record is gone", r.get("record gone"), True)
+check("B-10   the new instance re-asserts the hold before restoring, releases after",
+      r.get("hold"), [("/api/hold", "winlink-qsy"), ("/api/hold/release", "winlink-qsy")])
+
+
+# --- the off-channel hold (APRS messaging plan 2026-11-07, 3.2) -------------------
+
+async def hold_before_first_write():
+    a, radio = addon(qsy_channel=4)
+    r = await a.qsy(145_050_000)
+    first_radio = next(i for i, e in enumerate(a.events) if e[0] == "radio")
+    holds = [i for i, e in enumerate(a.events) if e[:2] == ("hub", "/api/hold")]
+    return r.ok, bool(holds) and holds[0] < first_radio, a.fakehub.holds
+check("qsy: the hold is set (and answered) before the first channel write", run(hold_before_first_write()),
+      (True, True, ["winlink-qsy"]))
+
+
+async def hold_hub_unreachable():
+    a, radio = addon(qsy_channel=4)
+    a.fakehub.up = False
+    r = await a.qsy(145_050_000)
+    return r.ok, (r.why or "").startswith("APRS hold not set: the packet hub did not answer"), radio.writes(), a._qsy
+check("hub unreachable: qsy refuses, the radio is not written, no record", run(hold_hub_unreachable()),
+      (False, True, [], None))
+
+
+async def hold_hub_refuses():
+    a, radio = addon(qsy_channel=4)
+    a.fakehub.code = 500
+    r = await a.qsy(145_050_000)
+    return r.ok, "HTTP 500" in (r.why or ""), radio.writes()
+check("hub answers 500 (hold not saved): qsy refuses, nothing written", run(hold_hub_refuses()), (False, True, []))
+
+
+async def hold_no_hub_named():
+    a = uvpro.UvproAddon(Host(), {"address": "00:11:22:33:44:55", "control": "tcp:127.0.0.1:1"})
+    a.connected, a.proc = True, SimpleNamespace(returncode=None, stdin=SimpleNamespace(is_closing=lambda: False))
+    a.channels, a.settings, a.status = copy.deepcopy(BASE), dict(SETTINGS), {"is_in_tx": False}
+    a.exact = {"channels": [c["id"] for c in a.channels], "settings": True, "beacon": True}
+    sent = []
+
+    async def rec(d):
+        sent.append(d)
+    a._send_bridge = rec
+    r = await a.qsy(144_390_000)
+    return r.ok, "no packet hub is named" in (r.why or ""), sent
+check("no hub named (no \"hub\", no packet_status): refused, nothing sent", run(hold_no_hub_named()),
+      (False, True, []))
+check("the hub's URL comes from \"hub\", else from packet_status",
+      (uvpro.UvproAddon(Host(), {"address": "x", "control": "tcp:127.0.0.1:1", "hub": "http://h:1"}).hub_url,
+       uvpro.UvproAddon(Host(), {"address": "x", "control": "tcp:127.0.0.1:1",
+                                 "packet_status": "http://h:2/api/status"}).hub_url),
+      ("http://h:1", "http://h:2"))
+
+
+async def hold_released_after_restore():
+    a, radio = addon(qsy_channel=4)
+    await a.qsy(145_050_000)
+    held = list(a.fakehub.holds)
+    n = len(a.events)
+    done = await a.restore()
+    after = a.events[n:]
+    rel = [i for i, e in enumerate(after) if e[:2] == ("hub", "/api/hold/release")]
+    last_radio = max(i for i, e in enumerate(after) if e[0] == "radio")
+    return held, done, bool(rel) and rel[0] > last_radio, a.fakehub.holds
+check("restore: released only after the restore's writes", run(hold_released_after_restore()),
+      (["winlink-qsy"], (True, None), True, []))
+
+
+async def hold_kept_on_give_up():
+    saved = uvpro.QSY_RETRY_EVERY_S, uvpro.QSY_POLL_S, uvpro.QSY_RETRY_MAX_S
+    uvpro.QSY_RETRY_EVERY_S, uvpro.QSY_POLL_S, uvpro.QSY_RETRY_MAX_S = 0.05, 0.02, 0.3
+    try:
+        a, radio = addon(restore_wait_s=0.05)
+        await a.qsy(144_390_000)
+        radio.fail.add("settings")             # every restore fails
+        await a.restore()
+        for _ in range(100):
+            if a._gave_up:
+                break
+            await asyncio.sleep(0.05)
+        return (a._gave_up, a.fakehub.holds, [e for e in a.events if e[:2] == ("hub", "/api/hold/release")],
+                any("keeps holding APRS" in m for lvl, m in a.host.notices if lvl == "warn"))
+    finally:
+        uvpro.QSY_RETRY_EVERY_S, uvpro.QSY_POLL_S, uvpro.QSY_RETRY_MAX_S = saved
+check("a restore given up after QSY_RETRY_MAX_S keeps the hold, and says so", run(hold_kept_on_give_up()),
+      (True, ["winlink-qsy"], [], True))
+
+
+async def hold_reasserted_from_record():
+    import tempfile
+    a, radio = addon()
+    a.state_dir = tempfile.mkdtemp(prefix="uvqsy-")
+    await a.qsy(144_390_000)                   # tuned, record on disk; then "the add-on restarts"
+    b, radio_b = addon()
+    b.state_dir = a.state_dir
+    b.settings = dict(a.settings)
+    loaded = b._load_qsy()
+    b._read.set()
+    await b._recover()
+    first_hold = next(i for i, e in enumerate(b.events) if e[:2] == ("hub", "/api/hold"))
+    first_radio = next(i for i, e in enumerate(b.events) if e[0] == "radio")
+    rel = next(i for i, e in enumerate(b.events) if e[:2] == ("hub", "/api/hold/release"))
+    return loaded, first_hold < first_radio < rel, b._qsy
+check("add-on restart with a record: hold re-asserted, then the restore, then the release",
+      run(hold_reasserted_from_record()), (True, True, None))
 
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
