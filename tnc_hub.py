@@ -91,7 +91,7 @@ import ax25
 import digi
 import igate
 import webguard
-from ax25 import U_SABM, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
+from ax25 import U_DISC, U_DM, U_FRMR, U_SABM, U_UA, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
 from ax25_link import CONNECTED, CONNECTING, DISCONNECTED, Link, TxRefused
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -106,6 +106,8 @@ RECONNECT_MIN_S, RECONNECT_MAX_S = 2.0, 30.0
 LEND_MAX_S = 300              # one request; the borrower asks again to keep it
 LEND_AFTER_TX_S = 5.0         # a frame handed to the radio may still be on the air
 INBOUND_MAX_S = 12 * 3600     # one inbound window request (a listen window's cap, plan D2)
+LINK_UTYPES = (U_SABM, U_UA, U_DISC, U_DM, U_FRMR)
+HOLD_BY = __import__("re").compile(r"[a-z0-9][a-z0-9-]{0,39}")
 
 # The radio's command protocol on the KISS channel: Gaia frames, FF 01 flags
 # length, then 4 command bytes (group, command; bit 15 = reply), length bytes
@@ -197,39 +199,193 @@ def now():
 
 # ------------------------------------------------------------------ gate
 
+# Frame classes (APRS messaging plan, 2026-11-07, section 3.3). The hub sets
+# the class from where a frame came from, never from anything the caller says:
+#   app        a KISS or AGWPE client's UI frame (and any U frame not a link's)
+#   ack, msg   the messaging engine's own acks and messages (aprs_msg.py)
+#   digi       the fill-in digipeater (another station's frame repeated)
+#   connected  I and S frames, and SABM/UA/DISC/DM/FRMR of a link in hub.links
+UI_CLASSES = ("app", "msg", "ack")
+APRS_BAUD = 1200              # the APRS channel's rate, whatever --baud says for T1
+HDLC_FLAG_BITS = 16           # one opening and one closing flag
+FCS_BYTES = 2
+STUFFING = 1.2                # worst-case bit stuffing (one extra bit per five ones)
+
+
+def ui_airtime_s(nbytes, txdelay_ms=300, baud=APRS_BAUD):
+    """Seconds one UI frame of NBYTES (address..info, no FCS) keeps the channel:
+    (flags + (bytes + FCS) x 8 x stuffing) / baud + TX delay. Conservative by
+    design: every bit stuffed at the worst rate, the radio's whole key-up delay."""
+    return (HDLC_FLAG_BITS + (nbytes + FCS_BYTES) * 8 * STUFFING) / baud + txdelay_ms / 1000.0
+
+
 class TxGate:
-    def __init__(self, enabled, allow_calls, max_per_min, ui_per_min, digi_per_min=6):
+    """Every frame's last check before the radio. Caps per minute (a sliding
+    60 s window): the overall runaway guard with ACK_RESERVE frames kept for
+    acks; UI counts for app + msg + ack with acks' own reserve; UI airtime with
+    an ack reserve. Digipeated frames keep their own cap and count only toward
+    the overall one; connected-mode frames count only toward the overall one,
+    so a Winlink transfer keeps its full rate."""
+
+    def __init__(self, enabled, allow_calls, max_per_min, ui_per_min, digi_per_min=6, ui_total_per_min=12,
+                 ack_reserve=4, msg_per_min=2, ack_per_min=6, airtime_s_per_min=15.0,
+                 ack_airtime_reserve_s=3.0, overall_ack_reserve=4, txdelay_ms=300):
         self.enabled = enabled
         self.allowed_by_start = enabled
         self.allow = {c.upper() for c in allow_calls}
         self.max_per_min, self.ui_per_min, self.digi_per_min = max_per_min, ui_per_min, digi_per_min
-        self.sent = collections.deque()      # (t, kind): "ui", "digi" or "other"
+        self.ui_total, self.ack_reserve = ui_total_per_min, ack_reserve
+        self.msg_per_min, self.ack_per_min = msg_per_min, ack_per_min
+        self.airtime_s, self.ack_airtime_reserve_s = float(airtime_s_per_min), float(ack_airtime_reserve_s)
+        self.overall_ack_reserve = overall_ack_reserve
+        self.txdelay_ms = txdelay_ms
+        self.holds = []                      # off-channel holds (Hub.state): no ack or msg while any
+        self.sent = collections.deque()      # (t, cls, airtime_s)
 
-    def check(self, f: Frame, raw: bytes, digi=False):
-        """Why this frame may not go, or None. digi: another station's frame
-        the fill-in digipeater repeats (its source isn't ours; its own limit)."""
+    def _prune(self, t):
+        while self.sent and t - self.sent[0][0] > 60:
+            self.sent.popleft()
+
+    def usage(self):
+        """What the last minute used, per class, and the UI airtime."""
+        self._prune(now())
+        n = collections.Counter(c for _, c, _ in self.sent)
+        return {"total": len(self.sent), **{c: n[c] for c in ("app", "msg", "ack", "digi", "connected")},
+                "ui_airtime_s": round(sum(a for _, c, a in self.sent if c in UI_CLASSES), 2)}
+
+    def caps(self):
+        return {"total_per_min": self.max_per_min, "total_ack_reserve": self.overall_ack_reserve,
+                "ui_total_per_min": self.ui_total, "ack_reserve": self.ack_reserve,
+                "app_per_min": self.ui_per_min, "msg_per_min": self.msg_per_min, "ack_per_min": self.ack_per_min,
+                "digi_per_min": self.digi_per_min, "airtime_s_per_min": self.airtime_s,
+                "ack_airtime_reserve_s": self.ack_airtime_reserve_s, "txdelay_ms": self.txdelay_ms}
+
+    def check(self, f: Frame, raw: bytes, cls="app"):
+        """Why this frame may not go, or None. Every refusal names the cap."""
         if not self.enabled:
             return "transmit is off"
-        if not digi and f.src.call not in self.allow:
+        if cls != "digi" and f.src.call not in self.allow:
             return f"source {f.src} is not an allowed callsign ({', '.join(sorted(self.allow))})"
         if len(raw) > ax25.MAX_FRAME_BYTES:
             return "frame too long"
+        if cls in ("ack", "msg") and self.holds:
+            h = self.holds[0]
+            return f"off-channel hold by {h['by']} ({h.get('why') or 'off the APRS channel'})"
         t = now()
-        while self.sent and t - self.sent[0][0] > 60:
-            self.sent.popleft()
-        if len(self.sent) >= self.max_per_min:
-            return f"rate limit ({self.max_per_min} frames/min)"
-        if digi:
-            if sum(1 for _, k in self.sent if k == "digi") >= self.digi_per_min:
+        self._prune(t)
+        total = len(self.sent)
+        if cls == "ack":
+            if total >= self.max_per_min:
+                return f"rate limit ({self.max_per_min} frames/min)"
+        elif total >= self.max_per_min - self.overall_ack_reserve:
+            return (f"rate limit ({self.max_per_min} frames/min, the last {self.overall_ack_reserve} "
+                    f"kept for acks)")
+        n = collections.Counter(c for _, c, _ in self.sent)
+        if cls == "digi":
+            if n["digi"] >= self.digi_per_min:
                 return f"digipeater rate limit ({self.digi_per_min}/min)"
             return None
-        is_ui = f.kind == "U" and f.utype == U_UI
-        if is_ui and sum(1 for _, k in self.sent if k == "ui") >= self.ui_per_min:
-            return f"UI rate limit ({self.ui_per_min}/min)"
+        if cls == "connected":
+            return None
+        ui = n["app"] + n["msg"] + n["ack"]
+        if cls == "ack":
+            if n["ack"] >= self.ack_per_min:
+                return f"ack rate limit ({self.ack_per_min}/min)"
+            if ui >= self.ui_total:
+                return f"UI total rate limit ({self.ui_total}/min)"
+        else:
+            if ui >= self.ui_total - self.ack_reserve:
+                return (f"UI total rate limit ({self.ui_total}/min, the last {self.ack_reserve} "
+                        f"kept for acks)")
+            if cls == "app" and n["app"] >= self.ui_per_min:
+                return f"UI rate limit ({self.ui_per_min}/min)"
+            if cls == "msg" and n["msg"] >= self.msg_per_min:
+                return f"message rate limit ({self.msg_per_min}/min)"
+        used = sum(a for _, c, a in self.sent if c in UI_CLASSES)
+        air = ui_airtime_s(len(raw), self.txdelay_ms)
+        budget = self.airtime_s if cls == "ack" else self.airtime_s - self.ack_airtime_reserve_s
+        if used + air > budget + 1e-9:
+            return (f"UI airtime limit ({self.airtime_s:g} s/min" +
+                    ("" if cls == "ack" else f", the last {self.ack_airtime_reserve_s:g} s kept for acks") +
+                    f"; {used:.1f} s used, this frame {air:.1f} s)")
         return None
 
-    def record(self, f: Frame, digi=False):
-        self.sent.append((now(), "digi" if digi else "ui" if f.kind == "U" and f.utype == U_UI else "other"))
+    def record(self, f: Frame, raw: bytes, cls="app"):
+        air = ui_airtime_s(len(raw), self.txdelay_ms) if cls in UI_CLASSES else 0.0
+        self.sent.append((now(), cls, air))
+
+
+# ------------------------------------------------------- transmit state
+
+# The operator's stop and the off-channel holds, on disk (plan 2026-11-07,
+# sections 3.1 and 3.2): <log-dir>/tx-state.json, written atomically (temp
+# file, fsync, rename, fsync of the directory). Off is written BEFORE the live
+# gate clears and before the page is told, so a crash can never restart a
+# transmitting hub after an Off was acknowledged. Holds survive a restart too.
+STATE_FILE = "tx-state.json"
+TEST_CRASH_ENV = "RANCH_RADIO_TEST_CRASH_AT"   # tests only: os._exit at a named point
+
+
+def test_point(name):
+    """A named crash point for the stop and messaging tests (unset: nothing)."""
+    if os.environ.get(TEST_CRASH_ENV) == name:
+        log.warning("test crash point %s", name)
+        logging.shutdown()
+        os._exit(75)
+
+
+class TxState:
+    def __init__(self, path):
+        self.path = pathlib.Path(path)
+        self.inhibit = False
+        self.holds = []
+        self.t = None
+        self.by = None
+        self.notice = None          # why transmit came up off, for the page
+
+    def load(self):
+        """'missing', 'ok' or 'bad' (unreadable or corrupt: the caller starts off)."""
+        try:
+            raw = self.path.read_text()
+        except FileNotFoundError:
+            return "missing"
+        except OSError as e:
+            self.notice = f"transmit state {self.path.name} unreadable ({e.strerror or e}): transmit starts off"
+            return "bad"
+        try:
+            d = json.loads(raw)
+            inhibit = d["tx_inhibit"]
+            holds = d.get("holds", [])
+            if not isinstance(inhibit, bool) or not isinstance(holds, list) \
+                    or not all(isinstance(h, dict) and isinstance(h.get("by"), str) for h in holds):
+                raise ValueError("bad fields")
+        except (ValueError, KeyError, TypeError) as e:
+            self.notice = f"transmit state {self.path.name} is corrupt ({e}): transmit starts off"
+            return "bad"
+        self.inhibit, self.holds, self.t, self.by = inhibit, holds, d.get("t"), d.get("by")
+        return "ok"
+
+    def save(self, inhibit=None, holds=None, by=None):
+        """Write the whole state; raises OSError (nothing in memory changes then)."""
+        new_inhibit = self.inhibit if inhibit is None else inhibit
+        new_holds = self.holds if holds is None else holds
+        t = now()
+        data = json.dumps({"tx_inhibit": new_inhibit, "t": t, "by": by or self.by, "holds": new_holds})
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, data.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, self.path)
+        dfd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+        self.inhibit, self.holds, self.t, self.by = new_inhibit, list(new_holds), t, by or self.by
 
 
 # ------------------------------------------------------------- jsonl log
@@ -575,8 +731,30 @@ class Hub:
     def __init__(self, args):
         self.args = args
         allow = args.allow_calls or [ax25.base_call(args.mycall)]
-        self.gate = TxGate(args.tx, allow, args.max_frames_per_min, args.max_ui_per_min,
-                           args.max_digi_per_min)
+        # Off until the transmit state is read (below): a hub stopped by the
+        # operator stays stopped across a restart, --tx or not.
+        self.gate = TxGate(False, allow, args.max_frames_per_min, args.max_ui_per_min, args.max_digi_per_min,
+                           ui_total_per_min=args.max_ui_total_per_min, ack_reserve=args.ack_reserve,
+                           msg_per_min=args.max_msg_per_min, ack_per_min=args.max_ack_per_min,
+                           airtime_s_per_min=args.max_airtime_s_per_min,
+                           ack_airtime_reserve_s=args.ack_airtime_reserve_s,
+                           overall_ack_reserve=min(args.ack_reserve, max(0, args.max_frames_per_min - 1)),
+                           txdelay_ms=args.aprs_txdelay_ms)
+        self.gate.allowed_by_start = args.tx
+        self.state = TxState(pathlib.Path(args.log_dir) / STATE_FILE)
+        loaded = self.state.load()
+        if loaded == "missing":
+            self.gate.enabled = args.tx
+        elif loaded == "ok":
+            self.gate.enabled = args.tx and not self.state.inhibit
+            if self.state.inhibit:
+                self.state.notice = "stopped by the operator" + (f" ({self.state.by})" if self.state.by else "")
+        else:
+            log.warning("%s", self.state.notice)
+        self.gate.holds = self.state.holds
+        self.last_ui_tx = None          # the last app/msg/ack frame sent (the engine paces after it)
+        self.aprs_msg = None            # aprs_msg.Engine with --aprs-messaging send|full
+        self.probe = None
         self.radio = RadioPort(args.tnc, self.on_radio_frame, self.on_radio_state, self.on_radio_control)
         self.control_clients = set()
         self.links = {}                 # (local, remote) -> (Link, AgwClient)
@@ -721,25 +899,43 @@ class Hub:
 
     # -- transmit --
 
+    def frame_class(self, f: Frame, origin: str, digi=False):
+        """The gate class, from the origin the hub itself gave the frame (a
+        client can't choose it: KISS and AGWPE origins are kiss:/agw:)."""
+        if digi:
+            return "digi"
+        if origin == "aprs:ack":
+            return "ack"
+        if origin == "aprs:msg":
+            return "msg"
+        if f.kind in ("I", "S"):
+            return "connected"
+        if f.kind == "U" and f.utype in LINK_UTYPES and (str(f.src), str(f.dest)) in self.links:
+            return "connected"
+        return "app"
+
     def transmit(self, f: Frame, origin: str, digi=False):
         """Every frame leaves through here. Raises TxRefused."""
         try:
             raw = f.encode()
         except FrameError as e:
             raise TxRefused(str(e)) from e
-        why = self.lent_why() or self.gate.check(f, raw, digi=digi)
+        cls = self.frame_class(f, origin, digi)
+        why = self.lent_why() or self.gate.check(f, raw, cls)
         text = f.tnc2()
         if why:
             self.counts["tx_refused"] += 1
-            self.txlog.write({"t": now(), "dir": "refused", "origin": origin, "why": why,
+            self.txlog.write({"t": now(), "dir": "refused", "origin": origin, "cls": cls, "why": why,
                               "text": text})
             log.warning("TX refused (%s) from %s: %s", why, origin, text)
             raise TxRefused(why)
         self.radio.write(raw)
         self.last_tx = now()
-        self.gate.record(f, digi=digi)
+        if cls in UI_CLASSES:
+            self.last_ui_tx = self.last_tx
+        self.gate.record(f, raw, cls)
         self.counts["tx_frames"] += 1
-        rec = {"t": now(), "dir": "tx", "origin": origin, "text": text}
+        rec = {"t": now(), "dir": "tx", "origin": origin, "cls": cls, "text": text}
         self.recent.append(rec)
         self.txlog.write(rec)
         log.info("TX %s (%s)", text, origin)
@@ -829,6 +1025,64 @@ class Hub:
             log.warning("inbound window for %s closed", ", ".join(self.inbound["calls"]))
         self.inbound = None
 
+    # -- the operator's stop and off-channel holds (tx-state.json) --
+
+    def switch_tx(self, want, who):
+        """Off: persist the inhibit first, then clear the gate (Off always
+        works; a failed write is returned so the page can say so). On: only
+        with --tx; persist, then enable. Returns (status, body)."""
+        if want and not self.gate.allowed_by_start:
+            return 403, {"error": "started without --tx"}
+        if not want:
+            try:
+                test_point("tx-off-before-fsync")
+                self.state.save(inhibit=True, by=who)
+                test_point("tx-off-after-fsync")
+                err = None
+            except OSError as e:
+                err = f"stopped, not persisted ({e.strerror or e}): a restart may transmit again"
+            self.gate.enabled = False
+            self.state.notice = "stopped by the operator" if err is None else err
+            log.warning("transmit switched OFF from the page (%s)%s", who, f"; {err}" if err else "")
+            for link, _ in list(self.links.values()):
+                link.abort("transmit switched off")
+            if err:
+                return 500, {"enabled": False, "error": err}
+            return 200, {"enabled": False}
+        try:
+            self.state.save(inhibit=False, by=who)
+        except OSError as e:
+            return 500, {"enabled": self.gate.enabled,
+                         "error": f"not switched on: the transmit state could not be saved ({e.strerror or e})"}
+        self.gate.enabled = True
+        self.state.notice = None
+        log.warning("transmit switched ON from the page (%s)", who)
+        return 200, {"enabled": True}
+
+    def set_hold(self, by, why, back):
+        """An off-channel hold (the UV-PRO add-on, before it retunes). Kept in
+        memory even when the write fails (it only stops APRS); raises OSError
+        then, so the caller refuses to retune."""
+        hold = {"by": by, "why": why, "back": back, "t": now()}
+        holds = [h for h in self.state.holds if h["by"] != by] + [hold]
+        try:
+            self.state.save(holds=holds)
+        finally:
+            self.state.holds = holds
+            self.gate.holds = holds
+            log.warning("off-channel hold set by %s: %s (back: %s)", by, why or "-", back or "-")
+
+    def release_hold(self, by, who):
+        """Release BY's hold. On a failed write the hold stays (the safe side)."""
+        holds = [h for h in self.state.holds if h["by"] != by]
+        if len(holds) == len(self.state.holds):
+            return False
+        self.state.save(holds=holds)
+        self.gate.holds = self.state.holds
+        log.warning("off-channel hold by %s released (%s)", by, who)
+        self.txlog.write({"t": now(), "dir": "hold-released", "by": by, "who": who})
+        return True
+
     # -- links --
 
     def _new_link(self, local, remote, client, digis=()):
@@ -854,8 +1108,10 @@ class Hub:
                       "last_rx": r.last_rx, "error": r.error, "lent": self.lent},
             "inbound": (dict(self.inbound) if self.inbound and now() < self.inbound["until"] else None),
             "tx": {"enabled": self.gate.enabled, "allowed_by_start": self.gate.allowed_by_start,
+                   "inhibit": self.state.inhibit, "notice": self.state.notice, "holds": list(self.state.holds),
                    "allow_calls": sorted(self.gate.allow),
-                   "max_per_min": self.gate.max_per_min, "ui_per_min": self.gate.ui_per_min},
+                   "max_per_min": self.gate.max_per_min, "ui_per_min": self.gate.ui_per_min,
+                   "caps": self.gate.caps(), "used": self.gate.usage()},
             "mycall": self.args.mycall,
             "title": getattr(self.args, "title", "UV-PRO Packet"),
             "counts": dict(self.counts),
@@ -1243,21 +1499,54 @@ def make_web(hub):
         return web.json_response(hub.status())
 
     async def set_tx(req):
-        body = await req.json()
-        want = bool(body.get("enabled"))
+        try:
+            body = await req.json()
+            want = bool(body.get("enabled"))
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"enabled\": bool}"}, status=400)
         # On from any page when started with --tx, like PTT on the radio pages
         # (APRS plan D7, 2026-10-19); --tx is the hard switch. Anyone may stop.
-        if want and not hub.gate.allowed_by_start:
-            return web.json_response({"error": "started without --tx"}, status=403)
-        hub.gate.enabled = want
-        log.warning("transmit switched %s from the page (%s)", "ON" if want else "OFF", req.remote)
-        if not want:
-            for link, _ in list(hub.links.values()):
-                link.abort("transmit switched off")
-        return web.json_response({"enabled": hub.gate.enabled})
+        code, out = hub.switch_tx(want, str(req.remote))
+        return web.json_response(out, status=code)
 
     def local(req):
         return req.remote in ("127.0.0.1", "::1")
+
+    async def hold(req):
+        if not local(req):
+            return web.json_response({"error": "holds are only set from this machine"}, status=403)
+        try:
+            body = await req.json()
+            by, why, back = body.get("by"), str(body.get("why") or "")[:120], str(body.get("back") or "")[:60]
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"by\", \"why\", \"back\"}"}, status=400)
+        if not isinstance(by, str) or not HOLD_BY.fullmatch(by):
+            return web.json_response({"error": "by: a lower-case name"}, status=400)
+        try:
+            hub.set_hold(by, why, back)
+        except OSError as e:
+            return web.json_response({"error": f"hold set, not persisted ({e.strerror or e})",
+                                      "holds": hub.state.holds}, status=500)
+        return web.json_response({"holds": hub.state.holds})
+
+    async def hold_release(req):
+        # The add-on (this machine) after a verified restore, or the operator
+        # from the packet page (any page, as transmit Off is).
+        try:
+            body = await req.json()
+            by = body.get("by")
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"by\"}"}, status=400)
+        if not isinstance(by, str) or not HOLD_BY.fullmatch(by):
+            return web.json_response({"error": "by: a lower-case name"}, status=400)
+        who = ("operator " if body.get("operator") else "") + str(req.remote)
+        try:
+            if not hub.release_hold(by, who):
+                return web.json_response({"error": f"no hold by {by}", "holds": hub.state.holds}, status=404)
+        except OSError as e:
+            return web.json_response({"error": f"not released: the transmit state could not be saved "
+                                               f"({e.strerror or e})", "holds": hub.state.holds}, status=500)
+        return web.json_response({"holds": hub.state.holds})
 
     async def lend(req):
         if not local(req):
@@ -1319,6 +1608,8 @@ def make_web(hub):
     app.router.add_post("/api/inbound", inbound)
     app.router.add_post("/api/inbound/close", inbound_close)
     app.router.add_post("/api/tx", set_tx)
+    app.router.add_post("/api/hold", hold)
+    app.router.add_post("/api/hold/release", hold_release)
     app.router.add_post("/api/lend", lend)
     app.router.add_post("/api/return", give_back)
 
@@ -1465,7 +1756,16 @@ def parse_args(argv=None):
     # a second (~120/min). 60/min killed a lossy Winlink transfer in testing
     # (2026-10-14); a refused frame ends the link.
     p.add_argument("--max-frames-per-min", type=int, default=300)
-    p.add_argument("--max-ui-per-min", type=int, default=6)
+    p.add_argument("--max-ui-per-min", type=int, default=6, help="UI frames from apps (KISS/AGWPE) a minute")
+    # The gate's classes (APRS messaging plan 2026-11-07, 3.3).
+    p.add_argument("--max-ui-total-per-min", type=int, default=12, help="UI frames a minute: apps, messages, acks")
+    p.add_argument("--ack-reserve", type=int, default=4,
+                   help="of those (and of --max-frames-per-min), how many only acks may use")
+    p.add_argument("--max-msg-per-min", type=int, default=2)
+    p.add_argument("--max-ack-per-min", type=int, default=6)
+    p.add_argument("--max-airtime-s-per-min", type=float, default=15.0, help="UI airtime a minute, seconds")
+    p.add_argument("--ack-airtime-reserve-s", type=float, default=3.0)
+    p.add_argument("--aprs-txdelay-ms", type=int, default=300, help="the radio's key-up delay, for airtime")
     p.add_argument("--log-dir", default=str(HERE / "packet-logs"))
     p.add_argument("--aprs-db", help="APRS store (default: <log-dir>/aprs.db)")
     p.add_argument("--no-aprs", action="store_true", help="no APRS store, API or backfill")
@@ -1488,6 +1788,15 @@ def parse_args(argv=None):
         p.error("--maxframe must be 1-7")
     if not 16 <= a.paclen <= 256:
         p.error("--paclen must be 16-256")
+    for k in ("max_ui_total_per_min", "max_msg_per_min", "max_ack_per_min", "max_frames_per_min"):
+        if getattr(a, k) < 1:
+            p.error(f"--{k.replace('_', '-')} must be at least 1")
+    if not 0 <= a.ack_reserve < a.max_ui_total_per_min:
+        p.error("--ack-reserve must be 0 or more and below --max-ui-total-per-min")
+    if not 0 <= a.ack_airtime_reserve_s < a.max_airtime_s_per_min:
+        p.error("--ack-airtime-reserve-s must be 0 or more and below --max-airtime-s-per-min")
+    if not 0 <= a.aprs_txdelay_ms <= 2000:
+        p.error("--aprs-txdelay-ms must be 0-2000")
     a.igate_passcode = None
     if a.igate_login:
         ax25.parse_call(a.igate_login)

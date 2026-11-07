@@ -565,14 +565,17 @@ def scenario_on_needs_tx_at_start():
 
 def scenario_frame_rate_cap():
     radio = FakeKissRadio().start()
-    hub = HubProc(radio, tx=True, extra=["--max-frames-per-min", "5", "--max-ui-per-min", "100"])
+    # 9/min overall, of which the last 4 are kept for acks (plan 2026-11-07,
+    # 3.3): an app's frames stop at 5. The UI caps are raised out of the way.
+    hub = HubProc(radio, tx=True, extra=["--max-frames-per-min", "9", "--max-ui-per-min", "100",
+                                         "--max-ui-total-per-min", "100", "--max-airtime-s-per-min", "100"])
     try:
         k = Kiss(hub.kiss)
         for i in range(9):
             k.send(aprs("N9ABC-7", f">burst {i}"))
         check_true("all 9 frames decided on", bool(processed(hub, 9)), str(hub.counts()))
         on_air(radio, hub)
-        check("overall frame cap holds at 5 per minute", len(radio.transmitted()), 5)
+        check("overall frame cap holds at 9 - 4 (ack reserve) per minute", len(radio.transmitted()), 5)
         k.close()
     finally:
         hub.stop(); radio.stop()
