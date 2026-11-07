@@ -242,6 +242,61 @@ L.id_started("CW ID (Closing)", at(0), "xara")
 check("cross-source: an ardopcf end does not touch xara's open ID",
       (L.id_ended(at(1.0), "ardopcf"), xid(L)["end"]), (None, None))
 
+# panel p2b05e28fee F1: a lead-window match must not cross a session boundary.
+# "tx cw" at t, the page closes (disarm), xara's T 1 is refused at t+0.1, a NEW
+# session is armed and keys at t+0.8, its own T 0: that CW never went out.
+# The log line read before the new key (the tail polls every 250 ms) ...
+L = vara()
+L.ptt(True, at(-20), "varahf")
+L.ptt_released(at(-15), "varahf", "normal")
+L.id_started("CW ID (Closing)", at(0), "xara")
+L.new_generation()                                   # disarm (page closed)
+L.ptt(False, at(0.1), "varahf")                      # xara's CW key refused
+L.new_generation()                                   # a new session armed
+L.ptt(True, at(0.8), "varahf")
+L.ptt_released(at(4.0), "varahf", "normal")
+check("F1 CW refused, a new session's key in the lead window: not on air, owed",
+      (xid(L)["on_air"], L.owed()), (False, True))
+# ... and read after it: the ID's generation is the one current when its line was
+# written, so the tail stamps it with the generation at the line's wall time.
+L = vara()
+L.ptt(True, at(-20), "varahf")
+L.ptt_released(at(-15), "varahf", "normal")
+L.new_generation(at(-1))                             # the session whose CW this is
+L.new_generation(at(0.05))                           # disarm (page closed)
+L.ptt(False, at(0.1), "varahf")                      # xara's CW key refused
+L.new_generation(at(0.5))                            # a new session armed
+L.ptt(True, at(0.8), "varahf")
+L.ptt_released(at(4.0), "varahf", "normal")
+clock[0] = at(4.2)
+L.id_started("CW ID (Closing)", at(0), "xara")       # the line, delivered late
+check("F1 the same with the log line delivered late: not on air, owed",
+      (xid(L)["on_air"], L.owed()), (False, True))
+L = vara()
+L.id_started("CW ID (Closing)", at(0), "xara")
+L.new_generation(at(0.2))                            # disarmed
+L.new_generation(at(0.5))                            # the next session armed
+L.ptt(True, at(0.8), "varahf")                       # no refusal seen, but another session's key
+L.ptt_released(at(4.0), "varahf", "normal")
+check("F1 a lead-window key from another arm generation is not the CW's", xid(L)["on_air"] is True, False)
+
+# panel p2b05e28fee F2: an ardopcf ID cut by a forced release on the ARDOP lane
+L = vara()
+L.ptt(True, at(100), "ardop")
+L.id_started("Rcvd END in IDLE ProtocolState", at(100.1), "ardopcf")
+L.ptt_released(at(101), "ardop", "forced")           # disconnect / limit / disarm mid-ID
+L.id_ended(at(103), "ardopcf")
+check("F2 ardopcf ID with a forced release inside it: not on air, owed",
+      (L.last("ardopcf")["on_air"], L.owed()), (False, True))
+L = vara()
+L.ptt(True, at(100), "ardop")
+L.id_started("Rcvd END in IDLE ProtocolState", at(100.1), "ardopcf")
+L.ptt_released(at(101), "ardop", "normal")
+L.ptt(True, at(101.2), "ardop")
+L.ptt_released(at(103), "ardop", "normal")
+L.id_ended(at(103), "ardopcf")
+check("F2 control: the same ID released normally is on air", L.last("ardopcf")["on_air"], True)
+
 # 4.2 negative control: a transmitting session whose log has no "tx cw" line
 L = vara()
 L.ptt(True, at(0), "varahf")

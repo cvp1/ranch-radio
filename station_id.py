@@ -145,6 +145,12 @@ class IdLedger:
         # "forced": a disconnect, the keepalive or time limit, a disarm, the
         # radio)]. Bounded: BURST_KEEP_S and BURST_KEEP_N.
         self.bursts = {}
+        # Arm generations: the server starts a new one at every arm and every
+        # disarm (new_generation). A xara CW ID and a burst that starts after
+        # its line may be matched only within one generation: a key from the
+        # next session is never the CW of the last one.
+        self.gen = 0
+        self.gens = deque([(float("-inf"), 0)], maxlen=256)   # (wall it began, generation)
 
     @property
     def tracked(self):
@@ -155,13 +161,26 @@ class IdLedger:
 
     # --- inputs ---
 
+    def new_generation(self, wall=None):
+        """A Winlink session was armed or disarmed (Station.winlink_arm/_disarm)."""
+        self.gen += 1
+        self.gens.append((self.clock() if wall is None else wall, self.gen))
+
+    def gen_at(self, wall):
+        """The arm generation current at wall time."""
+        g = 0
+        for t, n in self.gens:
+            if t <= wall:
+                g = n
+        return g
+
     def ptt(self, accepted, wall=None, modem="ardop"):
         t = self.clock() if wall is None else wall
         self.ptts.append((t, accepted, modem))
         if accepted:
             b = self.bursts.setdefault(modem, deque(maxlen=BURST_KEEP_N))
             if not (b and b[-1][1] is None):     # a repeated T 1 while keyed is the same burst
-                b.append([t, None, None])
+                b.append([t, None, None, self.gen_at(t)])
             while b and b[0][1] is not None and b[0][1] < t - BURST_KEEP_S:
                 b.popleft()
             was = self.owed()
@@ -197,8 +216,14 @@ class IdLedger:
             if m == modem and cur["start"] - SLOP_S <= t <= wall + SLOP_S:
                 acc += ok
                 ref += not ok
-        self._finish(cur, wall, acc > 0 and ref == 0,
-                     "refused its PTT (no session armed)" if ref else "never saw it key")
+        # A key of this lane ended by force (a disconnect, a limit, a disarm,
+        # the radio) inside the ID: the ID was cut, whatever the log says.
+        cut = any(b[2] == "forced" and b[1] is not None and cur["start"] <= b[1] <= wall
+                  for b in self.bursts.get(modem, ()))
+        self._finish(cur, wall, acc > 0 and ref == 0 and not cut,
+                     "refused its PTT (no session armed)" if ref
+                     else "released it before it ended (a disconnect, a limit or a disarm)" if cut
+                     else "never saw it key")
         return cur
 
     def tick(self, wall=None):
@@ -225,7 +250,13 @@ class IdLedger:
             b = next((b for b in reversed(bursts)
                       if b[0] <= t + SLOP_S and (b[1] is None or b[1] >= t)), None)
             if b is None:
-                b = next((b for b in bursts if t <= b[0] <= t + XARA_CW_LEAD_S), None)
+                # A fresh key after the line (their QRT): only in the line's own
+                # arm generation, and only if no refused T 1 on the lane came
+                # between the line and that key (the CW's own key was refused).
+                g = self.gen_at(t)
+                b = next((b for b in bursts if t <= b[0] <= t + XARA_CW_LEAD_S and b[3] == g
+                          and not any(not ok and m == modem and t - SLOP_S <= w <= b[0]
+                                      for w, ok, m in self.ptts)), None)
             if b is None:
                 refused = any(not ok and m == modem and t - SLOP_S <= w <= t + XARA_CW_LEAD_S
                               for w, ok, m in self.ptts)

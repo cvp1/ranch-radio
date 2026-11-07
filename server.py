@@ -616,6 +616,7 @@ class Station(TxAudio):
                 await self.codec.leave()
             return
         self.winlink_scheme = scheme
+        self.id_ledger.new_generation()          # a new session: its keys are its own
         self.winlink_owner = ws
         log.info("winlink: session armed (%s)", rigctl_server.MODEM_NAMES.get(scheme, scheme))
         self._codec_broadcast("winlink")
@@ -699,6 +700,7 @@ class Station(TxAudio):
         self.winlink_owner = None
         self.winlink_qsy_hz = None
         self.winlink_scheme = None
+        self.id_ledger.new_generation()          # disarmed: no later key belongs to that session
         log.info("winlink: disarmed%s", f" ({reason})" if reason else "")
         if self.winlink is not None and reason:
             await self.winlink.abort(reason)   # no-op unless a session is still running
