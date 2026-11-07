@@ -1392,9 +1392,9 @@ def scenario_igate():
         radio.inject(aprs("K7OWN", "?APRS?"))
         radio.inject(aprs("KD7XYZ", ">last one"))
         got = wait_for(lambda: len(srv.packets()) >= 2 and srv.packets(), 15) or srv.packets()
-        check("gated: the first copy and the last packet, with qAR", got,
-              ["KF7ABC-9>APRS,K7RDG-1*,WIDE2-1,qAR,N9ABC-10:!4049.00N/10510.00W>trail",
-               "KD7XYZ>APRS,qAR,N9ABC-10:>last one"])
+        check("gated: the first copy and the last packet, with qAO (receive-only)", got,
+              ["KF7ABC-9>APRS,K7RDG-1*,WIDE2-1,qAO,N9ABC-10:!4049.00N/10510.00W>trail",
+               "KD7XYZ>APRS,qAO,N9ABC-10:>last one"])
         ig = wait_for(lambda: (lambda i: i["gated"] + i["skipped"] + i["dupes"] >= 5 and i)(hub.status()["igate"]), 10)
         check("api/status counts", ig and (ig["gated"], ig["dupes"], ig["skipped"]), (2, 1, 2))
         time.sleep(0.5)    # a quiet window: the server's packet line must not come out of the radio

@@ -2,7 +2,9 @@
 
   - which heard frames are gated and how each line reads (the APRS-IS iGate
     rules: no TCPIP/TCPXX/NOGATE/RFONLY, no queries, third-party unwrapped,
-    info cut at CR/LF, ",qAR,<login>" after the path)
+    info cut at CR/LF, ",qAO,<login>" after the path: a receive-only iGate;
+    our own calls, outer or inner source, never gated)
+  - the observer's line splitting: CR LF only, 512-byte cap
   - the passcode file and the server's host:port
   - the host file renders the iGate onto the hub's command line, on macOS and
     Linux, as a path to the passcode file; a block missing its passcode, or
@@ -48,19 +50,19 @@ def line(f, login="N9ABC-10"):
 
 
 # ---------------------------------------------------------------- what is gated
-check("a digipeated position: path as heard, last digi starred, then qAR and our login",
+check("a digipeated position: path as heard, last digi starred, then qAO and our login",
       line(heard("KF7ABC-9", b"!4049.00N/10510.00W>test", digis=["K7RDG-1", "WIDE2-1"], used=1)),
-      "KF7ABC-9>APRS,K7RDG-1*,WIDE2-1,qAR,N9ABC-10:!4049.00N/10510.00W>test")
-check("heard direct", line(heard("KF7ABC-9", b">status")), "KF7ABC-9>APRS,qAR,N9ABC-10:>status")
+      "KF7ABC-9>APRS,K7RDG-1*,WIDE2-1,qAO,N9ABC-10:!4049.00N/10510.00W>test")
+check("heard direct", line(heard("KF7ABC-9", b">status")), "KF7ABC-9>APRS,qAO,N9ABC-10:>status")
 for bad in ("TCPIP", "TCPXX", "NOGATE", "RFONLY"):
     check(f"not gated: {bad} in the path", line(heard("KF7ABC-9", b">x", digis=[bad])), None)
 check("not gated: a query", line(heard("KF7ABC-9", b"?APRS?")), None)
 check("not gated: empty info", line(heard("KF7ABC-9", b"")), None)
 check("the info stops at the first CR or LF",
-      line(heard("KF7ABC-9", b">first line\r\nsecond")), "KF7ABC-9>APRS,qAR,N9ABC-10:>first line")
+      line(heard("KF7ABC-9", b">first line\r\nsecond")), "KF7ABC-9>APRS,qAO,N9ABC-10:>first line")
 check("third party: the inner packet, without the RF header",
       line(heard("KI6RVO-2", b"}N1KXJ-14>APSTKA,WIDE1:=4201.46N/07103.52Wu", dest="APDW18")),
-      "N1KXJ-14>APSTKA,WIDE1,qAR,N9ABC-10:=4201.46N/07103.52Wu")
+      "N1KXJ-14>APSTKA,WIDE1,qAO,N9ABC-10:=4201.46N/07103.52Wu")
 check("not gated: third party that came from APRS-IS (TCPIP inside)",
       line(heard("KI6RVO-2", b"}N1KXJ-14>APSTKA,TCPIP,KI6RVO-2*:=4201.46N/07103.52Wu", dest="APDW18")), None)
 check("not gated: a malformed third-party packet", line(heard("KI6RVO-2", b"}garbage")), None)
@@ -70,6 +72,33 @@ check("not gated: connected-mode frames", line(sabm), None)
 nol3 = heard("KF7ABC-9", b">x")
 nol3.pid = 0xCF
 check("not gated: a UI frame that isn't APRS (PID other than F0)", line(nol3), None)
+own = {"N9ABC"}
+check("positive control: another station's frame is gated with own calls set",
+      igate.gate_line(heard("KF7ABC-9", b">x"), "N9ABC-10", own)[0], b"KF7ABC-9>APRS,qAO,N9ABC-10:>x")
+check("not gated: our own call as the outer source (any SSID)",
+      igate.gate_line(heard("N9ABC-7", b":W7TST    :hi{01}", digis=["K7RDG-1"], used=1), "N9ABC-10", own)[0], None)
+check("not gated: our own call as the inner source of a wrapped frame",
+      igate.gate_line(heard("AA7JB", b"}N9ABC>APZRR0,K7RDG-1*:>wrapped", dest="APDW18"), "N9ABC-10", own)[0], None)
+check("  without own calls the same wrapped frame would be gated (the check is what stops it)",
+      line(heard("AA7JB", b"}N9ABC>APZRR0,K7RDG-1*:>wrapped", dest="APDW18")), "N9ABC>APZRR0,K7RDG-1*,qAO,N9ABC-10:>wrapped")
+
+# ---------------------------------------------------------------- the observer's lines
+cnt = {"too_long": 0}
+sp = igate.LineSplitter(cnt)
+check("lines split on CR LF", sp.feed(b"A>B:1\r\nC>D:2\r\nE>F"), [b"A>B:1", b"C>D:2"])
+check("  a line completed by the next read", sp.feed(b":3\r\n"), [b"E>F:3"])
+check("  a bare CR or LF inside a line does not split it", sp.feed(b"G>H:a\rI>J:b\nK\r\n"), [b"G>H:a\rI>J:b\nK"])
+long = b"X>Y:" + b"z" * 10000
+check("  a 10 kB line is dropped, in pieces too", sp.feed(long[:3000]) + sp.feed(long[3000:] + b"\r\nOK>Y:fine\r\n"),
+      [b"OK>Y:fine"])
+check("  and counted once", cnt["too_long"], 1)
+check("  a line of exactly 512 bytes is kept", len(sp.feed(b"x" * 512 + b"\r\n")[0]), 512)
+check("  513 bytes is dropped", (sp.feed(b"x" * 513 + b"\r\n"), cnt["too_long"]), ([], 2))
+g = igate.IGate("N9ABC-10", "12345", observe="b/N9ABC* g/N9ABC*")
+check("login line with the observer's filter", g.login_line(),
+      b"user N9ABC-10 pass 12345 vers RanchRadio 0.1 filter b/N9ABC* g/N9ABC*")
+check("login line without", igate.IGate("N9ABC-10", "12345").login_line(), b"user N9ABC-10 pass 12345 vers RanchRadio 0.1")
+
 _, k1 = igate.gate_line(heard("KF7ABC-9", b">x", digis=["K7RDG-1"], used=1), "N9ABC-10")
 _, k2 = igate.gate_line(heard("KF7ABC-9", b">x", digis=["HELIO"], used=1), "N9ABC-10")
 check("two digipeaters' copies share one duplicate key", k1 == k2, True)
