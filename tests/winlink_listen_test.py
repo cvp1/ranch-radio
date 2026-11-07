@@ -879,6 +879,56 @@ if picked("B-12"):
         s.close()
 
 
+if picked("B-13"):
+    # A record written by ANOTHER server that is still running (a second server
+    # on the same state: every test server once read the live one) is that
+    # server's window: its listening Pat, the hub's inbound window and the
+    # record are left alone. Once that owner is gone, the same record is stale.
+    s = Stack(wait=False)
+    s.stop()
+    os.makedirs(s.state_dir, exist_ok=True)
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "server.py"])
+    pat = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "--listen", "ax25+agwpe",
+                            "http", "--addr", f"127.0.0.1:{s.patp}"])
+    rec = {"stage": "listening", "pid": pat.pid, "pat_port": s.patp, "hub": s.hub.url, "call": "N9ABC",
+           "method": "ax25+agwpe", "hz": 145_090_000, "until": time.time() + 900, "server_pid": owner.pid}
+    def open_window():
+        import urllib.request
+        req = urllib.request.Request(f"{s.hub.url}/api/inbound", method="POST",
+                                     data=json.dumps({"calls": ["N9ABC"], "seconds": 900}).encode(),
+                                     headers={"Content-Type": "application/json", "X-Ranch-Radio": "1"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.load(r)["inbound"]["calls"]
+
+    try:
+        check("B-13 precondition: the owner's window is open on the hub", open_window(), ["N9ABC"])
+        with open(s.record, "w") as f:
+            json.dump(rec, f)
+        restart_same(s)
+        time.sleep(2.0)
+        check("B-13 owner alive: its listening Pat not signalled", (pat.poll(), alive(pat.pid)), (None, True))
+        check("B-13   the hub's inbound window still open", (s.hub.inbound() or {}).get("calls"), ["N9ABC"])
+        check("B-13   the record kept", os.path.exists(s.record), True)
+        out = s.stop()
+        check("B-13   logged as another running server's", "belongs to a running server" in out, True)
+        owner.kill()
+        owner.wait()
+        with open(s.record, "w") as f:
+            json.dump(rec, f)
+        restart_same(s)
+        check("B-13 positive control, owner gone: the stale listening Pat is ended",
+              wait_for(lambda: pat.poll() is not None, 15), True)
+        check("B-13   the hub window closed by the server", wait_for(lambda: len(s.hub.closed()) == 1, 10)
+              and s.hub.inbound(), None)
+        check("B-13   the record gone", wait_for(lambda: not os.path.exists(s.record), 10), True)
+        s.stop()
+    finally:
+        for o in (owner, pat):
+            if o.poll() is None:
+                o.kill()
+        s.close()
+
+
 # ------------------------------------------------------------ B-9: the page
 
 if picked("B-9"):
