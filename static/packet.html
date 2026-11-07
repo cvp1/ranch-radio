@@ -75,6 +75,19 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
 #aprs-detail .close { margin-left: auto; }
 #aprs-detail dl { display: grid; grid-template-columns: 110px 1fr; gap: 3px 10px; margin: 10px 0; font-size: 12.5px; }
 #aprs-detail dt { color: var(--dim); } #aprs-detail dd { margin: 0; word-break: break-word; }
+/* Messages (APRS messaging, plan 2026-11-07) */
+.msg-split { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .msg-split { grid-template-columns: 1fr; } }
+.msg-text { flex: 1 1 320px; }
+.msg-why { color: var(--warm); font-size: 12.5px; margin: 4px 0 8px; min-height: 1em; }
+#msg-arm.on { border-color: var(--tx); color: var(--tx); }
+#msg-threads tr[data-call] { cursor: pointer; }
+#msg-threads tr.sel td { background: rgba(255,255,255,.05); }
+.msg-hold { border: 1px solid var(--warm); color: var(--warm); border-radius: 10px; padding: 8px 12px; margin: 0 0 10px;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.st-acked { color: var(--accent); } .st-failed, .st-rejected { color: var(--tx); } .st-pending, .st-queued { color: var(--warm); }
+.badge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 5px; border-radius: 9px; background: var(--warm);
+  color: #0b0f14; font: 700 11px/16px var(--sans); }
 #aprs-detail h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
 </style>
 </head>
@@ -104,8 +117,28 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
 </div>
 <div class="tab-body" id="aprs-map" data-tab="map" hidden><div id="map-full"></div></div>
 <div class="tab-body" id="aprs-messages" data-tab="messages" hidden>
-  <div class="aprs-bar"><input id="msg-with" type="search" placeholder="With a station (call)">
-    <span class="muted">Read only: sending comes with messaging (M3)</span></div>
+  <div class="aprs-bar">
+    <button id="msg-arm" role="switch" aria-checked="false" title="Arms sending from this browser only">TX <b>SAFE</b></button>
+    <span class="pill muted" id="msg-mode"><i></i><span>messaging …</span></span>
+    <span class="msg-why" id="msg-pause"></span>
+  </div>
+  <div id="msg-holds"></div>
+  <div class="msg-split">
+    <section><h2>Threads</h2><table id="msg-threads"></table></section>
+    <section>
+      <h2 id="msg-with-h">New message</h2>
+      <form id="msg-compose" class="aprs-bar" autocomplete="off">
+        <input id="msg-to" placeholder="To (callsign)" maxlength="9" size="10">
+        <input id="msg-text" placeholder="Message (67 characters, no | ~ { })" class="msg-text">
+        <span class="muted" id="msg-count">0/67</span>
+        <button id="msg-send" type="submit">Send</button>
+      </form>
+      <div class="msg-why" id="msg-note"></div>
+      <table id="msg-thread"></table>
+    </section>
+  </div>
+  <h2 style="margin-top:14px">Heard messages</h2>
+  <div class="aprs-bar"><input id="msg-with" type="search" placeholder="With a station (call)"></div>
   <section><table id="msg-table"></table></section>
 </div>
 <aside id="aprs-detail" hidden></aside>
@@ -146,8 +179,9 @@ async function refresh() {
   else pill($("radio"), r.up ? "ok" : "bad",
        r.up ? `radio linked · last packet ${ago(r.last_rx)}` : `radio not linked${r.error ? " · " + r.error : ""}`);
   txEnabled = s.tx.enabled; txAllowed = s.tx.allowed_by_start;
-  pill($("tx"), txEnabled ? "bad" : "ok",
-       txEnabled ? `transmit ON as ${s.tx.allow_calls.join("/")}` : "receive only");
+  pill($("tx"), txEnabled ? "bad" : s.tx.notice ? "warn" : "ok",
+       txEnabled ? `transmit ON as ${s.tx.allow_calls.join("/")}` + ((s.tx.holds || []).length ? " · APRS held" : "")
+                 : "receive only" + (s.tx.notice ? ` · ${s.tx.notice}` : ""));
   const b = $("txbtn");
   b.hidden = !txEnabled && !txAllowed;
   b.textContent = txEnabled ? "Stop transmitting" : "Allow transmit";
@@ -174,6 +208,6 @@ async function refresh() {
 refresh(); setInterval(refresh, 2000);
 </script>
 <script src="static/meshmap.js?v=m2-3"></script>
-<script src="static/aprs.js?v=m2-3"></script>
+<script src="static/aprs.js?v=m3-1"></script>
 </body>
 </html>

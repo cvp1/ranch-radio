@@ -1,9 +1,15 @@
 "use strict";
 
 // APRS on the packet page (APRS plan M2): Stations, Map, Messages and Raw
-// tabs over the hub's store. Read only: nothing here can transmit. Stations
-// and objects arrive as deltas (?rev=), with tombstones for what expired.
-// Uses packet.html's $ and esc, and meshmap.js.
+// tabs over the hub's store. Stations and objects arrive as deltas (?rev=),
+// with tombstones for what expired. Uses packet.html's $ and esc, and
+// meshmap.js.
+//
+// Messages (plan 2026-11-07, 3.5): threads per correspondent and compose.
+// Sending is like PTT on the radio pages: TX ARMED in this browser first
+// (never remembered across a reload), and compose stays disabled while
+// transmit is off or stopped, a hold is on, or messaging is paused. The hub
+// checks all of it again; the page only saves a refused click.
 
 (() => {
   const POLL_MS = 5000;
@@ -262,7 +268,7 @@
   }
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("aprs-detail").hidden) closeDetail(); });
 
-  // ---------- Messages (read only until M3)
+  // ---------- Messages: heard (all), threads, compose
 
   function msgTable(list) {
     return `<table><tr><th>time</th><th>from</th><th>to</th><th>message</th><th>#</th><th>state</th></tr>` +
@@ -279,14 +285,131 @@
     } catch (e) {
       $("msg-table").innerHTML = `<tr><td class="empty">APRS store not answering</td></tr>`;
     }
+    loadThreads();
   }
   $("msg-with").addEventListener("change", loadMessages);
 
+  let armed = false, peer = null, mst = null;     // armed: this browser only, never stored
+  const SEEN = "aprs-msg-seen";
+  const seen = () => { try { return JSON.parse(localStorage.getItem(SEEN) || "{}"); } catch (e) { return {}; } };
+  const BAD = /[|~{}]|[^\x20-\x7e]/;
+
+  function stateText(m) {
+    if (m.dir === "in") return m.state === "acked" ? "received · acked" : "received";
+    const why = m.why ? ` · ${m.why}` : "";
+    if (m.state === "pending") return m.slot ? `pending · slot ${m.slot}` : `pending · not sent yet${why}`;
+    if (m.state === "sending") return "sending";
+    if (m.state === "queued") return "queued (one at a time per station)";
+    return m.state + (m.state === "failed" || m.state === "rejected" ? why : "");
+  }
+  function why() {
+    if (!mst) return "hub not answering";
+    const m = mst.aprs.messaging || {}, tx = mst.tx;
+    if (m.effective === "off") return "messaging is off" + (m.why ? ` (${m.why})` : "");
+    if (!tx.enabled) return tx.inhibit ? "transmit stopped by the operator" : "transmit is off";
+    if ((tx.holds || []).length) return `held: ${tx.holds[0].why || "off the APRS channel"}`;
+    if (m.pause) return `paused: ${m.pause}`;
+    if (!armed) return "arm TX in this browser to send";
+    return "";
+  }
+  function drawCompose() {
+    const reason = why(), text = $("msg-text").value, to = $("msg-to").value.trim();
+    const bad = BAD.test(text) ? "not allowed: | ~ { } and anything outside plain ASCII" : text.length > 67 ? "too long" : "";
+    const ok = !reason;
+    $("msg-text").disabled = $("msg-to").disabled = !ok;
+    $("msg-send").disabled = !ok || !!bad || !text.trim() || !to;
+    $("msg-count").textContent = `${text.length}/67`;
+    $("msg-count").className = bad ? "bad" : "muted";
+    $("msg-pause").textContent = reason;
+    $("msg-note").textContent = bad;
+    const b = $("msg-arm");
+    b.classList.toggle("on", armed); b.setAttribute("aria-checked", armed);
+    b.querySelector("b").textContent = armed ? "ARMED" : "SAFE";
+    if (!mst) return;
+    const m = mst.aprs.messaging || {};
+    const eff = m.effective || "off";
+    $("msg-mode").className = "pill " + (eff === "off" ? "muted" : eff === "full" ? "ok" : "warn");
+    $("msg-mode").querySelector("span").textContent = `messaging ${eff}` + (m.mode && m.mode !== eff ? ` (set: ${m.mode})` : "") +
+      (eff === "send" ? " · no acks sent" : "");
+    $("msg-mode").title = m.why || "";
+    $("msg-holds").innerHTML = (mst.tx.holds || []).map((h) =>
+      `<div class="msg-hold" data-by="${esc(h.by)}"><span>Held by <b>${esc(h.by)}</b>: ${esc(h.why || "off the APRS channel")}` +
+      `${h.back ? ` · back to ${esc(h.back)}` : ""} · since ${when(h.t)}. No APRS message or ack goes out.</span>` +
+      `<button class="msg-release" data-by="${esc(h.by)}" data-back="${esc(h.back || "")}">Release</button></div>`).join("");
+  }
+  $("msg-holds").addEventListener("click", async (e) => {
+    const b = e.target.closest("button.msg-release"); if (!b) return;
+    const by = b.dataset.by, back = b.dataset.back;
+    if (!confirm(`Release the hold set by ${by}?\n\nOnly if the radio is back on its APRS channel` +
+                 `${back ? ` (${back})` : ""}: the hub sends APRS messages and acks again at once.`)) return;
+    const r = await fetch("api/hold/release", { method: "POST", headers: { "content-type": "application/json", "X-Ranch-Radio": "1" },
+      body: JSON.stringify({ by, operator: true }) });
+    if (!r.ok) alert((await r.json()).error || "refused");
+    msgStatus();
+  });
+  $("msg-arm").onclick = () => {
+    if (!armed && !confirm("Arm sending APRS messages from this browser, under your callsign?")) return;
+    armed = !armed; drawCompose();
+  };
+  ["input", "change"].forEach((ev) => { $("msg-text").addEventListener(ev, drawCompose); $("msg-to").addEventListener(ev, drawCompose); });
+  $("msg-compose").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (why()) return;
+    const to = $("msg-to").value.trim().toUpperCase(), text = $("msg-text").value;
+    $("msg-send").disabled = true;
+    try {
+      const r = await fetch("api/aprs/message", { method: "POST", headers: { "content-type": "application/json", "X-Ranch-Radio": "1" },
+        body: JSON.stringify({ to, text }) });
+      const d = await r.json();
+      if (!r.ok) { $("msg-note").textContent = d.error || "refused"; return; }
+      $("msg-text").value = "";
+      openThread(to);
+    } catch (err) {
+      $("msg-note").textContent = "hub not answering";
+    } finally { drawCompose(); }
+  });
+  async function loadThreads() {
+    try {
+      const d = await getJSON("api/aprs/thread");
+      const s = seen();
+      let unread = 0;
+      const rows = d.threads.map((t) => {
+        const n = t.last > (s[t.call] || 0) && t.received ? 1 : 0;
+        unread += n;
+        return `<tr data-call="${esc(t.call)}" class="${t.call === peer ? "sel" : ""}"><td class="mono">${esc(t.call)}${n ? '<span class="badge">new</span>' : ""}</td>` +
+          `<td>${ago(t.last)}</td></tr>`;
+      });
+      $("msg-threads").innerHTML = rows.length ? rows.join("") : `<tr><td class="empty">no conversations yet</td></tr>`;
+      const tab = document.querySelector('nav.tabs button[data-tab="messages"]');
+      tab.innerHTML = "Messages" + (unread ? `<span class="badge" id="msg-unread">${unread}</span>` : "");
+    } catch (e) { /* the store isn't answering: the heard list says so */ }
+  }
+  $("msg-threads").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-call]"); if (tr) openThread(tr.dataset.call); });
+  async function openThread(call) {
+    peer = call; $("msg-to").value = call; $("msg-with-h").textContent = `With ${call}`;
+    try {
+      const d = await getJSON(`api/aprs/thread?with=${encodeURIComponent(call)}`);
+      $("msg-thread").innerHTML = d.messages.length ? "<tr><th>time</th><th></th><th>message</th><th>state</th></tr>" +
+        d.messages.slice().reverse().map((m) => `<tr class="msg-row" data-id="${m.id}" data-state="${esc(m.state || "")}">` +
+          `<td>${when(m.t)}</td><td>${m.dir === "out" ? "→ " + esc(m.dst) : "← " + esc(m.src)}${m.via === "internet" ? ' <span class="muted">via internet</span>' : ""}</td>` +
+          `<td>${esc(m.text)}</td><td class="st-${esc(m.state || "")}">${esc(stateText(m))}</td></tr>`).join("")
+        : `<tr><td class="empty">nothing yet</td></tr>`;
+      const s = seen(); s[call] = Date.now() / 1000; localStorage.setItem(SEEN, JSON.stringify(s));
+    } catch (e) { $("msg-thread").innerHTML = `<tr><td class="empty">APRS store not answering</td></tr>`; }
+    loadThreads(); drawCompose();
+  }
+  async function msgStatus() {
+    try { mst = await getJSON("api/status"); } catch (e) { mst = null; }
+    drawCompose();
+    if (peer && !$("aprs-messages").hidden) openThread(peer);
+  }
+
   // ---------- start
 
-  window.aprsPage = { poll, openDetail, stations, objects, showTab };   // for the page test
-  loadMe().then(() => { showTab(location.hash.slice(1)); poll(); });
+  window.aprsPage = { poll, openDetail, stations, objects, showTab, openThread, msgStatus };   // for the page tests
+  loadMe().then(() => { showTab(location.hash.slice(1)); poll(); msgStatus(); loadThreads(); });
   setInterval(poll, POLL_MS);
-  setInterval(() => { if (!$("aprs-messages").hidden) loadMessages(); }, 15000);
+  setInterval(() => { if (!$("aprs-messages").hidden) loadMessages(); else loadThreads(); }, 15000);
+  setInterval(() => { if (!$("aprs-messages").hidden) msgStatus(); }, 2000);
   setInterval(loadMe, 60000);
 })();
