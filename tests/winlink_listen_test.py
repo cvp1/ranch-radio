@@ -252,6 +252,8 @@ class Stack:
                             "calls": ["N9ABC"], "restore_wait_s": 3}
             if packet_status:          # the tuner's own "no link up" check (off: only the engine's guards)
                 cfg["uvpro"]["packet_status"] = f"{self.hub.url}/api/status"
+            else:                      # the hub still holds APRS while tuned (plan 2026-11-07, 3.2)
+                cfg["uvpro"].update(hub=self.hub.url, packet_status=None)
         self.addons = os.path.join(self.tmp, "addons.json")
         with open(self.addons, "w") as f:
             json.dump(cfg, f)

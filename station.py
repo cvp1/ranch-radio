@@ -671,6 +671,11 @@ def make_app(station, args):
             # add-on's control channel); through this proxy, check the real caller.
             return web.json_response({"error": "lending the radio is only allowed from this machine"},
                                      status=403)
+        if tail == "api/hold" and request.remote not in ("127.0.0.1", "::1"):
+            # An off-channel hold is the UV-PRO add-on's, on this machine (the
+            # hub sees the proxy as loopback). Releasing one is the operator's,
+            # from any page, as transmit Off is.
+            return web.json_response({"error": "holds are only set from this machine"}, status=403)
         # Transmit on/off: any page on the LAN, as on the hub's own page (D7).
         return await proxy(request, station.packet_url.rstrip("/"), tail)
 

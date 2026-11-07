@@ -58,6 +58,12 @@ frequency before Pat dials, and restore() to put it back afterwards:
     channel you keep spare for this, never one you use.
   - else the connect is refused, saying why: Winlink never dials on whatever
     channel the radio happens to be on.
+Before the first write the packet hub is asked to hold APRS (POST /api/hold,
+by "winlink-qsy", to "hub" or the base of "packet_status"): it sends no
+message or ack while the radio may be off its APRS channel. No answer, or a
+refusal, refuses the tune. The hold is released only after a restore that
+was written and read back; a restore given up keeps it (the operator releases
+it on the packet page), and a recovery record found at start re-asserts it.
 Before the first write a recovery record is kept; restore() waits (up to
 "restore_wait_s"; 5 s while the server stops) until no packet link is up on
 the radio and it isn't transmitting, puts channel A / dual watch / scan back,
@@ -117,6 +123,7 @@ QSY_RETRY_EVERY_S = 5.0       # a restore that failed is tried again this often.
 QSY_RETRY_MAX_S = 600.0       # ...for this long, then the page and the log are told
 QSY_POLL_S = 1.0              # how often the restore wait looks again
 QSY_NAME = "WL QSY"           # the scratch channel's name while a session uses it
+HOLD_BY = "winlink-qsy"       # the packet hub's off-channel hold, set by qsy() and released by restore()
 # The QSY recovery record, kept in the host's state directory (beside
 # --addons-state) from before the first write until the radio is back: a
 # server that crashed or was stopped mid-session leaves it, and the next
@@ -271,7 +278,14 @@ class UvproAddon(Addon):
         if transport:
             self.cmd.append(f"--transport={transport}")
         self.calls = {str(c).upper() for c in opts.get("calls", [])}
-        self.packet_status = opts.get("packet_status") or (f"{hub}/api/status" if hub else None)
+        # "packet_status": null switches the add-on's own "no link up" check off.
+        self.packet_status = (opts["packet_status"] if "packet_status" in opts
+                              else (f"{hub}/api/status" if hub else None))
+        # The packet hub's web API, for the off-channel hold (Winlink QSY):
+        # "hub", else the base of "packet_status". In control mode too, where
+        # the radio is never borrowed.
+        status_base = (self.packet_status or "").rpartition("/api/status")
+        self.hub_url = hub or (status_base[0].rstrip("/") if status_base[1] else None)
         self._reset()
         self.read_at = None       # when the radio was last read in full
         self.borrowed = False     # the hub has lent us the radio
@@ -298,6 +312,7 @@ class UvproAddon(Addon):
         self._lock = asyncio.Lock()   # one owner of check-and-write: QSY, restore, page writes
         self._restore_task = None     # the deferred retry of a restore that failed
         self._gave_up = False         # that retry ran out: switching off is allowed again (loudly)
+        self._release_task = None     # a hold release the hub didn't take yet, retried
 
     def _reset(self):
         self.connected, self.error = False, None
@@ -1156,8 +1171,80 @@ class UvproAddon(Addon):
                     self._qsy["stage"], _where(prev.get("channel_a", 0)))
         return True
 
+    # --- the off-channel hold (APRS messaging plan 2026-11-07, 3.2): the packet
+    # hub sends no APRS message or ack while the radio may be off 144.390. Set
+    # before the first channel write; released only after a verified restore.
+
+    async def _hold_post(self, path, body):
+        """POST to the packet hub's API: (status, json). Raises when unreachable."""
+        import aiohttp
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+            async with s.post(self.hub_url + path, json=body, headers={"X-Ranch-Radio": "1"}) as r:
+                try:
+                    d = await r.json(content_type=None)
+                except ValueError:
+                    d = {}
+                return r.status, d
+
+    async def _hold_set(self, hz, back):
+        """Ask the hub to hold APRS: why not, or None once it holds."""
+        if not self.hub_url:
+            return "no packet hub is named (\"hub\") to hold APRS while the radio is off its channel"
+        try:
+            code, d = await self._hold_post("/api/hold", {"by": HOLD_BY, "why": f"Winlink QSY to {hz / 1e6:.4f} MHz",
+                                                           "back": back})
+        except Exception as e:      # noqa: BLE001 - unreachable: refuse to retune
+            return f"the packet hub did not answer ({type(e).__name__}: {e})"
+        if code != 200:
+            return f"the packet hub refused: {d.get('error') or f'HTTP {code}'}"
+        log.info("UV-PRO: the packet hub holds APRS while the radio is off its channel")
+        return None
+
+    async def _hold_release(self):
+        """Tell the hub the radio is back (404, no hold, is done too). A release
+        the hub doesn't take is retried in the background; the hold stays meanwhile."""
+        if not self.hub_url:
+            return True
+        try:
+            code, d = await self._hold_post("/api/hold/release", {"by": HOLD_BY})
+        except Exception as e:      # noqa: BLE001
+            code, d = None, {"error": f"{type(e).__name__}: {e}"}
+        if code in (200, 404):
+            log.info("UV-PRO: APRS hold released")
+            return True
+        log.warning("UV-PRO: APRS hold not released (%s); retrying", d.get("error") or code)
+        if not self._closing and not (self._release_task and not self._release_task.done()):
+            self._release_task = asyncio.create_task(self._retry_release())
+        return False
+
+    async def _retry_release(self):
+        t0 = time.monotonic()
+        while self._qsy is None and time.monotonic() - t0 < QSY_RETRY_MAX_S:
+            await asyncio.sleep(QSY_RETRY_EVERY_S)
+            if self._qsy is not None:
+                return                      # tuned again: that session's hold stands
+            try:
+                code, _ = await self._hold_post("/api/hold/release", {"by": HOLD_BY})
+            except Exception:   # noqa: BLE001
+                continue
+            if code in (200, 404):
+                log.info("UV-PRO: APRS hold released")
+                return
+        if self._qsy is None:
+            self.notice("UV-PRO: the packet hub still holds APRS after Winlink; release it on the packet page.",
+                        "warn", None)
+
     async def _recover(self):
         """Put the radio back from a record an earlier run left (then the usual retry)."""
+        rec = self._qsy or {}
+        why = "not tried"
+        for _ in range(12):                 # the hub may be starting too
+            why = await self._hold_set(rec.get("hz", 0), _where(rec.get("prev", {}).get("channel_a", 0)))
+            if why is None or self._closing:
+                break
+            await asyncio.sleep(QSY_RETRY_EVERY_S)
+        if why:
+            log.warning("UV-PRO: the APRS hold for the left-over Winlink QSY not re-asserted: %s", why)
         if self.hub:
             await self._session()
         t0 = time.monotonic()
@@ -1259,6 +1346,11 @@ class UvproAddon(Addon):
             return QsyResult(False, why)
         prev = {k: self.settings[k] for k in ("channel_a", "double_channel", "scan") if k in self.settings}
         back = _where(prev.get("channel_a", 0))
+        # The hub stops APRS first: no message or ack goes out on the gateway's frequency.
+        why = await self._hold_set(hz, back)
+        if why:
+            await self._hold_release()          # a hold the hub kept but couldn't save
+            return QsyResult(False, f"APRS hold not set: {why}")
         # The record before the first write: whatever happens next, restore() knows the way back.
         self._qsy = {"prev": prev, "written": written, "target": target, "hz": hz, "stage": "picked"}
         self._gave_up = False
@@ -1342,6 +1434,7 @@ class UvproAddon(Addon):
         self._save_qsy()
         self.emit({"qsy": None})
         log.info("UV-PRO: back from Winlink (on %s)", _where(rec["prev"].get("channel_a", 0)))
+        await self._hold_release()             # only now: the restore is written and read back
         t = self._restore_task
         if t and not t.done() and t is not asyncio.current_task():
             t.cancel()
@@ -1368,7 +1461,8 @@ class UvproAddon(Addon):
                 self._gave_up = True
                 log.warning("UV-PRO: gave up putting the radio back on %s after %gs: %s", back, QSY_RETRY_MAX_S, why)
                 self.notice(f"UV-PRO: gave up putting the radio back on {back} after Winlink ({why}). "
-                            "Put it back by hand.", "warn", None)
+                            "Put it back by hand. The packet hub keeps holding APRS until you release "
+                            "the hold on the packet page.", "warn", None)
                 return
 
 

@@ -147,6 +147,7 @@ def lan_ip(port):
 hub_tx = []
 hub_lend = []
 hub_hdr = []          # (X-Ranch-Radio, Origin) as each POST reached the fake hub
+hub_posts = []        # holds and APRS messages that reached the fake hub
 
 
 def fake_hub():
@@ -168,9 +169,15 @@ def fake_hub():
         hub_lend.append(req.path)
         return web.json_response({"lent": None})
 
+    async def recorded(req):
+        hub_posts.append(req.path)
+        return web.json_response({})
+
     app.router.add_post("/api/tx", tx)
     app.router.add_post("/api/lend", lend)
     app.router.add_post("/api/return", lend)
+    for path in ("/api/hold", "/api/hold/release", "/api/aprs/message"):
+        app.router.add_post(path, recorded)
     loop = asyncio.new_event_loop()
 
     def run():
@@ -412,6 +419,13 @@ try:
                                         headers={"Origin": "http://evil.example"})
             out["foreign_mailbox"] = await post(f"{local}/winlink/api/mailbox/out", {},
                                                 headers={"Origin": "http://evil.example"})
+            # APRS messaging (plan 2026-11-07, 3.5): a message from a page is
+            # PTT-like; a foreign page is refused, this station's page passes.
+            out["foreign_msg"] = await post(f"{local}/packet/api/aprs/message", {"to": "W7TST", "text": "x"},
+                                            headers={"Origin": "http://evil.example"})
+            out["local_msg"] = await post(f"{local}/packet/api/aprs/message", {"to": "W7TST", "text": "x"},
+                                          headers={"Origin": local})
+            out["local_hold"] = await post(f"{local}/packet/api/hold", {"by": "winlink-qsy"})
             ip = lan_ip(WEB)
             out["ip"] = ip
             if ip:
@@ -419,6 +433,10 @@ try:
                 out["lan_on"] = await post(f"{lan}/packet/api/tx", {"enabled": True}, headers={"Origin": lan})
                 out["lan_off"] = await post(f"{lan}/packet/api/tx", {"enabled": False}, headers={"Origin": lan})
                 out["lan_lend"] = [await post(f"{lan}/packet/{p}", {"seconds": 60}) for p in ("api/lend", "api/return")]
+                out["lan_hold"] = [await post(f"{lan}/packet/{p}", {"by": "winlink-qsy"}, headers={"Origin": lan})
+                                   for p in ("api/hold", "api/hold/release")]
+                out["lan_msg"] = await post(f"{lan}/packet/api/aprs/message", {"to": "W7TST", "text": "x"},
+                                            headers={"Origin": lan})
                 # The bypass reproduced on 2026-10-19: aiohttp kept "x/../" in the
                 # tail, the lend check missed it, and the hub got /api/lend.
                 bypass = ("x/../api/lend", "x/%2e%2e/api/lend", "x/%2E%2E/api/lend", "./api/lend",
@@ -472,6 +490,9 @@ try:
     check("  the station's WebSocket from a foreign page: refused", o["ws_foreign"], 403)
     check("  a radio's WebSocket from a foreign page: refused", o["ws_radio_foreign"], 403)
     check("  the station's WebSocket from its own page: open", o["ws_own"], True)
+    check("  an APRS message from a foreign page: refused here", o["foreign_msg"], 403)
+    check("  an APRS message from this station's page: passed", o["local_msg"], 200)
+    check("  a hold from this machine: passed", o["local_hold"], 200)
     if o["ip"] is None:
         print("skip  transmit on/off and lending from another machine (no reachable non-loopback address here)")
     else:
@@ -480,6 +501,10 @@ try:
         check("  the hub saw on, on, off", [t for t, _ in hub_tx[n_tx:]],
               [{"enabled": True}, {"enabled": True}, {"enabled": False}])
         check("  lending the radio from another machine: refused here", o["lan_lend"], [403, 403])
+        check("  a hold from another machine: refused here; releasing one passes", o["lan_hold"], [403, 200])
+        check("  an APRS message from another machine's page: passed", o["lan_msg"], 200)
+        check("  what reached the hub", [p for p in hub_posts if p != "/api/aprs/message"],
+              ["/api/hold", "/api/hold/release"])
         check("  dot-segment and encoded paths: refused, never forwarded", o["bypass"], [400] * 12)
         check("  the same through a radio's /r/: refused", o["radio_bypass"], 400)
     check("  lending the radio from this machine: passed to the hub", (o["local_lend"], hub_lend), (200, ["/api/lend"]))

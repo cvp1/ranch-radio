@@ -127,6 +127,7 @@ class Db:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.migrate()
         self.counts = {"ingested": 0, "dups": 0, "non_ui": 0, "unknown": 0}
+        self.owned = set()      # the messaging engine's calls: their messages are its 'out' rows
 
     # ---------- schema
 
@@ -351,6 +352,8 @@ class Db:
         self._save_station(s, {"telem_meta": _json(meta)})
 
     def _message(self, d, t, port):
+        if d["src"] in self.owned:
+            return              # our own message heard back (a digi's copy, or APRS-IS): the engine has it
         dst = aprs.norm_call(d.get("addressee", ""))
         if d.get("msgno"):
             # The sender retries the same message (same msgno and text) until
@@ -365,6 +368,73 @@ class Db:
             " VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, 'received')",
             (t, port, d["src"], dst, d.get("text", ""), d.get("msgno"), d.get("reply_ack"),
              1 if d.get("replyack_capable") else 0))
+
+    # ---------- outbound messages (aprs_msg.py; dir 'out', schema 1's columns)
+
+    OUT_COLS = ("t", "port", "src", "dst", "text", "msgno", "reply_ack", "peer_replyack", "state",
+                "first_sent", "tries", "next_try", "deadline", "acked_t", "why")
+    ACTIVE = ("queued", "pending", "sending")
+
+    def set_owned(self, calls):
+        self.owned = {aprs.norm_call(c) for c in calls}
+
+    def msg_insert(self, row):
+        unknown = row.keys() - set(self.OUT_COLS)
+        if unknown:
+            raise ValueError(f"not message columns: {sorted(unknown)}")
+        cols = ", ".join(row)
+        # Column names are allow-listed against OUT_COLS above; values stay bound.
+        cur = self.db.execute(f"INSERT INTO messages (dir, {cols}) VALUES ('out', {', '.join('?' * len(row))})",  # nosec B608
+                              tuple(row.values()))
+        return cur.lastrowid
+
+    def msg_update(self, mid, changes):
+        unknown = changes.keys() - set(self.OUT_COLS)
+        if unknown:
+            raise ValueError(f"not message columns: {sorted(unknown)}")
+        cols = ", ".join(f"{k}=?" for k in changes)
+        self.db.execute(f"UPDATE messages SET {cols} WHERE id=? AND dir='out'",  # nosec B608
+                        (*changes.values(), mid))
+        return True
+
+    def msg_get(self, mid):
+        r = self.db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
+        return dict(r) if r else None
+
+    def msg_active(self):
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM messages WHERE dir='out' AND state IN ('queued', 'pending', 'sending') ORDER BY id")]
+
+    def msgnos_busy(self, now):
+        """msgnos not to reuse: any outbound message pending, or within its deadline."""
+        return {r[0] for r in self.db.execute(
+            "SELECT msgno FROM messages WHERE dir='out' AND (state IN ('queued', 'pending', 'sending')"
+            " OR deadline > ?)", (now,))}
+
+    def thread(self, call, owned, n=200):
+        """Messages between CALL and our calls, both ways, oldest first."""
+        c = aprs.norm_call(call)
+        own = sorted({aprs.norm_call(x) for x in owned})
+        marks = ", ".join("?" * len(own))
+        rows = self.db.execute(
+            f"SELECT * FROM messages WHERE (src=? AND dst IN ({marks})) OR (dst=? AND src IN ({marks}))"  # nosec B608
+            " ORDER BY t DESC, id DESC LIMIT ?", (c, *own, c, *own, n)).fetchall()
+        return [dict(r) for r in rows][::-1]
+
+    def correspondents(self, owned, n=50):
+        """Who we have threads with, most recent first: (call, last t, unread count)."""
+        own = sorted({aprs.norm_call(x) for x in owned})
+        marks = ", ".join("?" * len(own))
+        out = {}
+        for r in self.db.execute(
+                f"SELECT dir, src, dst, t, state FROM messages WHERE dst IN ({marks}) OR (dir='out' AND src IN ({marks}))"  # nosec B608
+                " ORDER BY t DESC LIMIT 2000", (*own, *own)):
+            peer = r["src"] if r["dir"] == "in" else r["dst"]
+            e = out.setdefault(peer, {"call": peer, "last": r["t"], "received": 0})
+            e["received"] += r["dir"] == "in"
+            if len(out) >= n:
+                break
+        return list(out.values())
 
     # ---------- retention
 

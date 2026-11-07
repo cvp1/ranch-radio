@@ -111,6 +111,7 @@ RULES = [
     (("packet", "igate", "login"), CALL), (("packet", "igate", "passcode"), TOKEN),
     (("packet", "igate", "server"), TOKEN), (("packet", "igate", "comment"), TEXT),
     (("packet", "digi", "call"), CALL),
+    (("packet", "aprs", "owned_calls", "*"), CALL), (("packet", "aprs", "path", "*"), CALL),
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
@@ -121,7 +122,72 @@ PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lan
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
          ("winlink", "ardopcf", "port"), ("station", "rigctl_port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
-         ("packet", "tx"), ("station", "https"), ("addons", "*", "enabled"), ("updates", "apply")]
+         ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
+         ("updates", "apply")]
+
+# APRS messaging (plan 2026-11-07, 3.7): packet.aprs caps -> the hub's flags,
+# with their bounds. The hub's overall runaway cap (300/min) bounds the UI total.
+HUB_OVERALL_PER_MIN = 300
+APRS_CAPS = {"ui_total_per_min": ("--max-ui-total-per-min", int, 1, HUB_OVERALL_PER_MIN),
+             "ack_reserve": ("--ack-reserve", int, 0, HUB_OVERALL_PER_MIN),
+             "msg_per_min": ("--max-msg-per-min", int, 1, 60),
+             "ack_per_min": ("--max-ack-per-min", int, 1, 60),
+             "airtime_s_per_min": ("--max-airtime-s-per-min", (int, float), 1, 60),
+             "ack_airtime_reserve_s": ("--ack-airtime-reserve-s", (int, float), 0, 60),
+             "txdelay_ms": ("--aprs-txdelay-ms", int, 0, 2000)}
+APRS_MODES = ("off", "send", "full")
+APRS_KEYS = {"messaging", "owned_calls", "firmware_acks", "path", "probe", *APRS_CAPS}
+
+
+def _validate_aprs(h, pk):
+    """packet.aprs: refuse what the hub would refuse, before anything renders."""
+    host = h["host"]
+    ap = pk.get("aprs")
+    if ap is None:
+        return
+    if not isinstance(ap, dict):
+        raise HostError(f"{host}: packet.aprs must be an object")
+    unknown = set(ap) - APRS_KEYS
+    if unknown:
+        raise HostError(f"{host}: packet.aprs: unknown key(s) {', '.join(sorted(unknown))}")
+    mode = ap.get("messaging", "off")
+    if mode not in APRS_MODES:
+        raise HostError(f"{host}: packet.aprs.messaging = {mode!r}: one of {', '.join(APRS_MODES)}")
+    fa = ap.get("firmware_acks")
+    if fa is not None and not isinstance(fa, bool):
+        raise HostError(f"{host}: packet.aprs.firmware_acks = {fa!r}: true, false or null (not yet known)")
+    allow = {c.split("-")[0].upper() for c in (pk.get("allow_calls") or [pk.get("mycall", "")])}
+    owned = ap.get("owned_calls", [pk.get("mycall")])
+    if not isinstance(owned, list) or not owned:
+        raise HostError(f"{host}: packet.aprs.owned_calls must be a list of call-SSIDs")
+    for c in owned:
+        if not isinstance(c, str) or c.split("-")[0].upper() not in allow:
+            raise HostError(f"{host}: packet.aprs.owned_calls {c!r} is not admitted by packet.allow_calls "
+                            f"({', '.join(sorted(allow))})")
+    path = ap.get("path")
+    if path is not None and (not isinstance(path, list) or len(path) > 2):
+        raise HostError(f"{host}: packet.aprs.path must be a list of at most 2 hops, like [\"WIDE1-1\", \"WIDE2-1\"]")
+    for k, (_, typ, lo, hi) in APRS_CAPS.items():
+        if k in ap:
+            v = ap[k]
+            if isinstance(v, bool) or not isinstance(v, typ) or not lo <= v <= hi:
+                raise HostError(f"{host}: packet.aprs.{k} = {v!r}: {lo} to {hi}")
+    total = ap.get("ui_total_per_min", 12)
+    if not ap.get("ack_reserve", 4) < total:
+        raise HostError(f"{host}: packet.aprs.ack_reserve must be below ui_total_per_min ({total})")
+    if not ap.get("ack_airtime_reserve_s", 3) < ap.get("airtime_s_per_min", 15):
+        raise HostError(f"{host}: packet.aprs.ack_airtime_reserve_s must be below airtime_s_per_min")
+    pr = ap.get("probe")
+    if pr is not None:
+        if not isinstance(pr, dict) or set(pr) - {"target", "text"}:
+            raise HostError(f"{host}: packet.aprs.probe is {{\"target\": CALL, \"text\": \"...\"}}")
+        t = pr.get("target")
+        if not isinstance(t, str) or not CALL.fullmatch(t):
+            raise HostError(f"{host}: packet.aprs.probe.target = {t!r}: a callsign")
+        text = pr.get("text", "")
+        if not isinstance(text, str) or len(text) > 63 or any(not (" " <= ch <= "~") or ch in "|~{}" for ch in text):
+            raise HostError(f"{host}: packet.aprs.probe.text: up to 63 printable ASCII characters, no | ~ {{ }} "
+                            f"(a 3-character token is added)")
 
 
 def _at(d, path, where=()):
@@ -324,6 +390,7 @@ def validate(h):
         m = dg.get("max_per_min", 6)
         if not isinstance(m, int) or isinstance(m, bool) or not 1 <= m <= 30:
             raise HostError(f"{h['host']}: packet.digi.max_per_min = {m!r}: 1 to 30")
+    _validate_aprs(h, pk)
     u = h.get("updates", True)
     if u is not True and u is not False and not isinstance(u, dict):
         raise HostError(f"{h['host']}: updates must be false or an object like "
@@ -429,6 +496,21 @@ def hub_argv(h, py, repo, pth):
             argv += ["--digi-viscous", str(dg["viscous_s"])]
         if "max_per_min" in dg:
             argv += ["--max-digi-per-min", str(dg["max_per_min"])]
+    ap = p.get("aprs") or {}
+    mode = ap.get("messaging", "off")
+    if mode != "off":                    # APRS messaging (aprs_msg.py); transmits only with "tx"
+        argv += ["--aprs-messaging", mode]
+        if ap.get("owned_calls"):
+            argv += ["--aprs-owned-calls", ",".join(ap["owned_calls"])]
+        if "firmware_acks" in ap:
+            argv += ["--aprs-firmware-acks", {True: "true", False: "false", None: "null"}[ap["firmware_acks"]]]
+        if ap.get("path"):
+            argv += ["--aprs-path", ",".join(ap["path"])]
+    for k, (flag, _, _, _) in APRS_CAPS.items():
+        if k in ap:
+            argv += [flag, str(ap[k])]
+    if ig and ig.get("observe", mode != "off"):
+        argv += ["--igate-observe"]      # read APRS-IS for our own calls (receive only)
     return argv
 
 

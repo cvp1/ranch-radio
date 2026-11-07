@@ -138,5 +138,54 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
         rc, msg = 1, str(e.code)
 check("--set a key the template lacks is refused", (rc, "has no field 'python'" in msg), (1, True))
 
+# packet.aprs and packet.igate.observe (APRS messaging plan 2026-11-07, 3.7):
+# render refuses what the hub would, and renders the rest onto its line.
+aprs_h = copy.deepcopy(station_h)
+aprs_h["packet"]["igate"] = {"login": "N9ABC-10", "passcode": "~/.config/ranch-radio/aprs-is-passcode"}
+aprs_h["packet"]["aprs"] = {"messaging": "send", "owned_calls": ["N9ABC"], "firmware_acks": None,
+                            "path": ["WIDE1-1", "WIDE2-1"], "txdelay_ms": 250, "ui_total_per_min": 12, "ack_reserve": 4,
+                            "msg_per_min": 2, "ack_per_min": 6, "airtime_s_per_min": 15, "ack_airtime_reserve_s": 3}
+validate(aprs_h)
+argv = render.hub_argv(aprs_h, "/usr/bin/python3", "/r", lambda x: x)
+tail = argv[argv.index("--aprs-messaging"):]
+check("a messaging block renders onto the hub's line", tail,
+      ["--aprs-messaging", "send", "--aprs-owned-calls", "N9ABC", "--aprs-firmware-acks", "null",
+       "--aprs-path", "WIDE1-1,WIDE2-1", "--max-ui-total-per-min", "12", "--ack-reserve", "4", "--max-msg-per-min", "2",
+       "--max-ack-per-min", "6", "--max-airtime-s-per-min", "15", "--ack-airtime-reserve-s", "3",
+       "--aprs-txdelay-ms", "250", "--igate-observe"])
+import tnc_hub  # noqa: E402
+argv_no_ig = render.hub_argv({**aprs_h, "packet": {k: v for k, v in aprs_h["packet"].items() if k != "igate"}},
+                             "/usr/bin/python3", "/r", lambda x: x)
+a = tnc_hub.parse_args(argv_no_ig[2:])
+check("  and the hub reads it back as rendered", (a.aprs_messaging, a.aprs_owned_calls, a.aprs_firmware_acks, a.aprs_path,
+      a.max_ui_total_per_min, a.aprs_txdelay_ms), ("send", ["N9ABC"], None, ["WIDE1-1", "WIDE2-1"], 12, 250))
+check("observe is off without messaging (today's hosts render as before)",
+      "--igate-observe" in render.hub_argv({**aprs_h, "packet": {**aprs_h["packet"], "aprs": {}}}, "p", "/r", lambda x: x),
+      False)
+check("  and an explicit observe: false wins",
+      "--igate-observe" in render.hub_argv({**aprs_h, "packet": {**aprs_h["packet"], "igate": {**aprs_h["packet"]["igate"],
+                                            "observe": False}}}, "p", "/r", lambda x: x), False)
+
+
+def aprs_set(k, v):
+    return lambda h: h["packet"]["aprs"].__setitem__(k, v)
+
+
+refused("aprs.messaging an unknown mode", aprs_h, aprs_set("messaging", "auto"))
+refused("aprs.owned_calls not admitted by allow_calls", aprs_h, aprs_set("owned_calls", ["W1AW"]))
+refused("aprs.owned_calls with a shell character", aprs_h, aprs_set("owned_calls", ["N9ABC;x"]))
+refused("aprs.firmware_acks a string", aprs_h, aprs_set("firmware_acks", "false"))
+refused("aprs.path of three hops", aprs_h, aprs_set("path", ["WIDE1-1", "WIDE2-2", "WIDE3-3"]))
+refused("aprs.path with an option in it", aprs_h, aprs_set("path", ["--tx"]))
+refused("aprs.ack_reserve not below ui_total_per_min", aprs_h, aprs_set("ack_reserve", 12))
+refused("aprs.ui_total_per_min over the overall 300", aprs_h, aprs_set("ui_total_per_min", 301))
+refused("aprs.msg_per_min 0", aprs_h, aprs_set("msg_per_min", 0))
+refused("aprs.airtime reserve not below the budget", aprs_h, aprs_set("ack_airtime_reserve_s", 15))
+refused("aprs.txdelay_ms 5000", aprs_h, aprs_set("txdelay_ms", 5000))
+refused("aprs an unknown key", aprs_h, aprs_set("acks", True))
+refused("aprs.probe.text with a {", aprs_h, aprs_set("probe", {"target": "WXBOT", "text": "a{b"}))
+refused("aprs.probe.target not a call", aprs_h, aprs_set("probe", {"target": "WX BOT", "text": "x"}))
+refused("igate.observe not a bool", aprs_h, lambda h: h["packet"]["igate"].__setitem__("observe", "yes"))
+
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

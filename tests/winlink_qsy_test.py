@@ -60,6 +60,7 @@ import testkit  # noqa: E402
 TMP = tempfile.mkdtemp(prefix="wlqsy-")
 fails = 0
 HUB = {"links": []}            # what the stand-in hub's /api/status lists as links
+HOLDS = []                     # the stand-in hub's off-channel hold calls: (path, by), in order
 LINK = {"local": "N9ABC", "remote": "N0DAJ", "state": "connected"}
 
 
@@ -99,8 +100,13 @@ async def hub_main(port, ready):
     async def status(request):
         return web.json_response({"radio": {"up": True, "last_rx": time.time()}, "tx": {"enabled": True},
                                   "links": list(HUB["links"])})
+    async def hold(request):           # the add-on holds APRS before it retunes (plan 2026-11-07, 3.2)
+        HOLDS.append((request.path, (await request.json()).get("by")))
+        return web.json_response({"holds": []})
     app = web.Application()
     app.router.add_get("/api/status", status)
+    app.router.add_post("/api/hold", hold)
+    app.router.add_post("/api/hold/release", hold)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", port).start()
@@ -342,8 +348,10 @@ TX_FLAG = os.path.join(TMP, "tx")
 r = Run({"FAKE_UVPRO_TX": TX_FLAG})
 try:
     b0, p0 = r.mark()
+    h0 = len(HOLDS)
     armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("1 existing channel: the session runs via the hub", armed and armed.get("via"), "Direwolf")
+    check("  the hub was asked to hold APRS before the retune", HOLDS[h0:h0 + 1], [("/api/hold", "winlink-qsy")])
     check("  Pat got the URL without freq= (Pat does not QSY)", r.pat_urls(p0), ["ax25:///N0DAJ"])
     check("  the page is told the radio was tuned (channel 3)",
           has(r.notices("info"), "tuned to 145.090 MHz", "channel 3"), True)
@@ -354,6 +362,8 @@ try:
     check("  the page is told the radio is back on channel 1",
           any("channel 1" in t for t in r.notify_titles()), True)
     check("  the session ended", r.ended() is not None, True)
+    check("  and the hold released once the radio was back",
+          wait_for(lambda: HOLDS[h0:] == [("/api/hold", "winlink-qsy"), ("/api/hold/release", "winlink-qsy")], 10), True)
 
     # 3: no channel on 145.050, the radio has a VFO: VFO A is tuned and put back
     b0, p0 = r.mark()

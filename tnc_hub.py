@@ -26,12 +26,30 @@ Transmit safety (every frame, from every client, goes through one gate):
   of --mycall), any SSID. Nothing goes out under someone else's call.
 - Frames must decode as AX.25 and stay under 400 bytes; KISS parameter
   commands (TXDELAY, etc.) from clients are dropped, never sent to the radio.
-- Rate caps: --max-frames-per-min overall (a runaway guard, default 300,
-  above what 1200 baud can carry), --max-ui-per-min for UI/APRS (default 6).
+- Rate caps by class (set by the hub from where a frame came from: app for
+  KISS/AGWPE, msg and ack for messaging, digi, connected for a link's
+  frames): --max-frames-per-min overall (a runaway guard, default 300, its
+  last --ack-reserve kept for acks); UI frames (app + msg + ack)
+  --max-ui-total-per-min 12 with --ack-reserve 4 for acks, apps
+  --max-ui-per-min 6, messages 2, acks 6; UI airtime 15 s/min with 3 s for
+  acks. Digipeated and connected-mode frames count only toward the overall
+  cap. Every refusal names its cap.
 - Every transmitted and refused frame is logged (packet-logs/tx.jsonl).
+- The operator's Off is persisted (<log-dir>/tx-state.json, fsynced) before
+  transmit clears and before the page is told; a hub restarted with --tx
+  stays off until On. An unreadable or corrupt file starts it off.
+- Off-channel holds (POST /api/hold from this machine; /api/hold/release
+  from the add-on or a page): while any is set, no APRS message or ack goes.
+  The UV-PRO add-on sets one before it retunes the radio for Winlink.
 
-iGate (optional, --igate-login): heard packets go to APRS-IS (igate.py).
+APRS messaging (aprs_msg.py, --aprs-messaging send|full): compose from the
+page (POST /api/aprs/message), retries, acks; see that module.
+
+iGate (optional, --igate-login): heard packets go to APRS-IS (igate.py),
+marked qAO (a receive-only iGate); our own calls' frames are never gated.
 Receive only: nothing from APRS-IS reaches the transmit gate or the radio.
+With --igate-observe it also reads APRS-IS for our own calls (stored as
+port 'is', shown "via internet"; never acked, matched or sent).
 With --igate-beacon-min and --lat/--lon it beacons its own position to
 APRS-IS (never RF) as a receive-only iGate.
 
@@ -86,12 +104,14 @@ import time
 
 from aiohttp import web
 
+import aprs
+import aprs_msg
 import aprs_store
 import ax25
 import digi
 import igate
 import webguard
-from ax25 import U_SABM, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
+from ax25 import U_DISC, U_DM, U_FRMR, U_SABM, U_UA, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
 from ax25_link import CONNECTED, CONNECTING, DISCONNECTED, Link, TxRefused
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -106,6 +126,8 @@ RECONNECT_MIN_S, RECONNECT_MAX_S = 2.0, 30.0
 LEND_MAX_S = 300              # one request; the borrower asks again to keep it
 LEND_AFTER_TX_S = 5.0         # a frame handed to the radio may still be on the air
 INBOUND_MAX_S = 12 * 3600     # one inbound window request (a listen window's cap, plan D2)
+LINK_UTYPES = (U_SABM, U_UA, U_DISC, U_DM, U_FRMR)
+HOLD_BY = __import__("re").compile(r"[a-z0-9][a-z0-9-]{0,39}")
 
 # The radio's command protocol on the KISS channel: Gaia frames, FF 01 flags
 # length, then 4 command bytes (group, command; bit 15 = reply), length bytes
@@ -197,39 +219,193 @@ def now():
 
 # ------------------------------------------------------------------ gate
 
+# Frame classes (APRS messaging plan, 2026-11-07, section 3.3). The hub sets
+# the class from where a frame came from, never from anything the caller says:
+#   app        a KISS or AGWPE client's UI frame (and any U frame not a link's)
+#   ack, msg   the messaging engine's own acks and messages (aprs_msg.py)
+#   digi       the fill-in digipeater (another station's frame repeated)
+#   connected  I and S frames, and SABM/UA/DISC/DM/FRMR of a link in hub.links
+UI_CLASSES = ("app", "msg", "ack")
+APRS_BAUD = 1200              # the APRS channel's rate, whatever --baud says for T1
+HDLC_FLAG_BITS = 16           # one opening and one closing flag
+FCS_BYTES = 2
+STUFFING = 1.2                # worst-case bit stuffing (one extra bit per five ones)
+
+
+def ui_airtime_s(nbytes, txdelay_ms=300, baud=APRS_BAUD):
+    """Seconds one UI frame of NBYTES (address..info, no FCS) keeps the channel:
+    (flags + (bytes + FCS) x 8 x stuffing) / baud + TX delay. Conservative by
+    design: every bit stuffed at the worst rate, the radio's whole key-up delay."""
+    return (HDLC_FLAG_BITS + (nbytes + FCS_BYTES) * 8 * STUFFING) / baud + txdelay_ms / 1000.0
+
+
 class TxGate:
-    def __init__(self, enabled, allow_calls, max_per_min, ui_per_min, digi_per_min=6):
+    """Every frame's last check before the radio. Caps per minute (a sliding
+    60 s window): the overall runaway guard with ACK_RESERVE frames kept for
+    acks; UI counts for app + msg + ack with acks' own reserve; UI airtime with
+    an ack reserve. Digipeated frames keep their own cap and count only toward
+    the overall one; connected-mode frames count only toward the overall one,
+    so a Winlink transfer keeps its full rate."""
+
+    def __init__(self, enabled, allow_calls, max_per_min, ui_per_min, digi_per_min=6, ui_total_per_min=12,
+                 ack_reserve=4, msg_per_min=2, ack_per_min=6, airtime_s_per_min=15.0,
+                 ack_airtime_reserve_s=3.0, overall_ack_reserve=4, txdelay_ms=300):
         self.enabled = enabled
         self.allowed_by_start = enabled
         self.allow = {c.upper() for c in allow_calls}
         self.max_per_min, self.ui_per_min, self.digi_per_min = max_per_min, ui_per_min, digi_per_min
-        self.sent = collections.deque()      # (t, kind): "ui", "digi" or "other"
+        self.ui_total, self.ack_reserve = ui_total_per_min, ack_reserve
+        self.msg_per_min, self.ack_per_min = msg_per_min, ack_per_min
+        self.airtime_s, self.ack_airtime_reserve_s = float(airtime_s_per_min), float(ack_airtime_reserve_s)
+        self.overall_ack_reserve = overall_ack_reserve
+        self.txdelay_ms = txdelay_ms
+        self.holds = []                      # off-channel holds (Hub.state): no ack or msg while any
+        self.sent = collections.deque()      # (t, cls, airtime_s)
 
-    def check(self, f: Frame, raw: bytes, digi=False):
-        """Why this frame may not go, or None. digi: another station's frame
-        the fill-in digipeater repeats (its source isn't ours; its own limit)."""
+    def _prune(self, t):
+        while self.sent and t - self.sent[0][0] > 60:
+            self.sent.popleft()
+
+    def usage(self):
+        """What the last minute used, per class, and the UI airtime."""
+        self._prune(now())
+        n = collections.Counter(c for _, c, _ in self.sent)
+        return {"total": len(self.sent), **{c: n[c] for c in ("app", "msg", "ack", "digi", "connected")},
+                "ui_airtime_s": round(sum(a for _, c, a in self.sent if c in UI_CLASSES), 2)}
+
+    def caps(self):
+        return {"total_per_min": self.max_per_min, "total_ack_reserve": self.overall_ack_reserve,
+                "ui_total_per_min": self.ui_total, "ack_reserve": self.ack_reserve,
+                "app_per_min": self.ui_per_min, "msg_per_min": self.msg_per_min, "ack_per_min": self.ack_per_min,
+                "digi_per_min": self.digi_per_min, "airtime_s_per_min": self.airtime_s,
+                "ack_airtime_reserve_s": self.ack_airtime_reserve_s, "txdelay_ms": self.txdelay_ms}
+
+    def check(self, f: Frame, raw: bytes, cls="app"):
+        """Why this frame may not go, or None. Every refusal names the cap."""
         if not self.enabled:
             return "transmit is off"
-        if not digi and f.src.call not in self.allow:
+        if cls != "digi" and f.src.call not in self.allow:
             return f"source {f.src} is not an allowed callsign ({', '.join(sorted(self.allow))})"
         if len(raw) > ax25.MAX_FRAME_BYTES:
             return "frame too long"
+        if cls in ("ack", "msg") and self.holds:
+            h = self.holds[0]
+            return f"off-channel hold by {h['by']} ({h.get('why') or 'off the APRS channel'})"
         t = now()
-        while self.sent and t - self.sent[0][0] > 60:
-            self.sent.popleft()
-        if len(self.sent) >= self.max_per_min:
-            return f"rate limit ({self.max_per_min} frames/min)"
-        if digi:
-            if sum(1 for _, k in self.sent if k == "digi") >= self.digi_per_min:
+        self._prune(t)
+        total = len(self.sent)
+        if cls == "ack":
+            if total >= self.max_per_min:
+                return f"rate limit ({self.max_per_min} frames/min)"
+        elif total >= self.max_per_min - self.overall_ack_reserve:
+            return (f"rate limit ({self.max_per_min} frames/min, the last {self.overall_ack_reserve} "
+                    f"kept for acks)")
+        n = collections.Counter(c for _, c, _ in self.sent)
+        if cls == "digi":
+            if n["digi"] >= self.digi_per_min:
                 return f"digipeater rate limit ({self.digi_per_min}/min)"
             return None
-        is_ui = f.kind == "U" and f.utype == U_UI
-        if is_ui and sum(1 for _, k in self.sent if k == "ui") >= self.ui_per_min:
-            return f"UI rate limit ({self.ui_per_min}/min)"
+        if cls == "connected":
+            return None
+        ui = n["app"] + n["msg"] + n["ack"]
+        if cls == "ack":
+            if n["ack"] >= self.ack_per_min:
+                return f"ack rate limit ({self.ack_per_min}/min)"
+            if ui >= self.ui_total:
+                return f"UI total rate limit ({self.ui_total}/min)"
+        else:
+            if ui >= self.ui_total - self.ack_reserve:
+                return (f"UI total rate limit ({self.ui_total}/min, the last {self.ack_reserve} "
+                        f"kept for acks)")
+            if cls == "app" and n["app"] >= self.ui_per_min:
+                return f"UI rate limit ({self.ui_per_min}/min)"
+            if cls == "msg" and n["msg"] >= self.msg_per_min:
+                return f"message rate limit ({self.msg_per_min}/min)"
+        used = sum(a for _, c, a in self.sent if c in UI_CLASSES)
+        air = ui_airtime_s(len(raw), self.txdelay_ms)
+        budget = self.airtime_s if cls == "ack" else self.airtime_s - self.ack_airtime_reserve_s
+        if used + air > budget + 1e-9:
+            return (f"UI airtime limit ({self.airtime_s:g} s/min" +
+                    ("" if cls == "ack" else f", the last {self.ack_airtime_reserve_s:g} s kept for acks") +
+                    f"; {used:.1f} s used, this frame {air:.1f} s)")
         return None
 
-    def record(self, f: Frame, digi=False):
-        self.sent.append((now(), "digi" if digi else "ui" if f.kind == "U" and f.utype == U_UI else "other"))
+    def record(self, f: Frame, raw: bytes, cls="app"):
+        air = ui_airtime_s(len(raw), self.txdelay_ms) if cls in UI_CLASSES else 0.0
+        self.sent.append((now(), cls, air))
+
+
+# ------------------------------------------------------- transmit state
+
+# The operator's stop and the off-channel holds, on disk (plan 2026-11-07,
+# sections 3.1 and 3.2): <log-dir>/tx-state.json, written atomically (temp
+# file, fsync, rename, fsync of the directory). Off is written BEFORE the live
+# gate clears and before the page is told, so a crash can never restart a
+# transmitting hub after an Off was acknowledged. Holds survive a restart too.
+STATE_FILE = "tx-state.json"
+TEST_CRASH_ENV = "RANCH_RADIO_TEST_CRASH_AT"   # tests only: os._exit at a named point
+
+
+def test_point(name):
+    """A named crash point for the stop and messaging tests (unset: nothing)."""
+    if os.environ.get(TEST_CRASH_ENV) == name:
+        log.warning("test crash point %s", name)
+        logging.shutdown()
+        os._exit(75)
+
+
+class TxState:
+    def __init__(self, path):
+        self.path = pathlib.Path(path)
+        self.inhibit = False
+        self.holds = []
+        self.t = None
+        self.by = None
+        self.notice = None          # why transmit came up off, for the page
+
+    def load(self):
+        """'missing', 'ok' or 'bad' (unreadable or corrupt: the caller starts off)."""
+        try:
+            raw = self.path.read_text()
+        except FileNotFoundError:
+            return "missing"
+        except OSError as e:
+            self.notice = f"transmit state {self.path.name} unreadable ({e.strerror or e}): transmit starts off"
+            return "bad"
+        try:
+            d = json.loads(raw)
+            inhibit = d["tx_inhibit"]
+            holds = d.get("holds", [])
+            if not isinstance(inhibit, bool) or not isinstance(holds, list) \
+                    or not all(isinstance(h, dict) and isinstance(h.get("by"), str) for h in holds):
+                raise ValueError("bad fields")
+        except (ValueError, KeyError, TypeError) as e:
+            self.notice = f"transmit state {self.path.name} is corrupt ({e}): transmit starts off"
+            return "bad"
+        self.inhibit, self.holds, self.t, self.by = inhibit, holds, d.get("t"), d.get("by")
+        return "ok"
+
+    def save(self, inhibit=None, holds=None, by=None):
+        """Write the whole state; raises OSError (nothing in memory changes then)."""
+        new_inhibit = self.inhibit if inhibit is None else inhibit
+        new_holds = self.holds if holds is None else holds
+        t = now()
+        data = json.dumps({"tx_inhibit": new_inhibit, "t": t, "by": by or self.by, "holds": new_holds})
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, data.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, self.path)
+        dfd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+        self.inhibit, self.holds, self.t, self.by = new_inhibit, list(new_holds), t, by or self.by
 
 
 # ------------------------------------------------------------- jsonl log
@@ -575,8 +751,30 @@ class Hub:
     def __init__(self, args):
         self.args = args
         allow = args.allow_calls or [ax25.base_call(args.mycall)]
-        self.gate = TxGate(args.tx, allow, args.max_frames_per_min, args.max_ui_per_min,
-                           args.max_digi_per_min)
+        # Off until the transmit state is read (below): a hub stopped by the
+        # operator stays stopped across a restart, --tx or not.
+        self.gate = TxGate(False, allow, args.max_frames_per_min, args.max_ui_per_min, args.max_digi_per_min,
+                           ui_total_per_min=args.max_ui_total_per_min, ack_reserve=args.ack_reserve,
+                           msg_per_min=args.max_msg_per_min, ack_per_min=args.max_ack_per_min,
+                           airtime_s_per_min=args.max_airtime_s_per_min,
+                           ack_airtime_reserve_s=args.ack_airtime_reserve_s,
+                           overall_ack_reserve=min(args.ack_reserve, max(0, args.max_frames_per_min - 1)),
+                           txdelay_ms=args.aprs_txdelay_ms)
+        self.gate.allowed_by_start = args.tx
+        self.state = TxState(pathlib.Path(args.log_dir) / STATE_FILE)
+        loaded = self.state.load()
+        if loaded == "missing":
+            self.gate.enabled = args.tx
+        elif loaded == "ok":
+            self.gate.enabled = args.tx and not self.state.inhibit
+            if self.state.inhibit:
+                self.state.notice = "stopped by the operator" + (f" ({self.state.by})" if self.state.by else "")
+        else:
+            log.warning("%s", self.state.notice)
+        self.gate.holds = self.state.holds
+        self.last_ui_tx = None          # the last app/msg/ack frame sent (the engine paces after it)
+        self.aprs_msg = None            # aprs_msg.Engine with --aprs-messaging send|full
+        self.probe = None
         self.radio = RadioPort(args.tnc, self.on_radio_frame, self.on_radio_state, self.on_radio_control)
         self.control_clients = set()
         self.links = {}                 # (local, remote) -> (Link, AgwClient)
@@ -647,6 +845,11 @@ class Hub:
         self._note_heard(f, text)
         if self.igate:
             self.igate.offer(f)
+        if self.aprs_msg:
+            try:
+                self.aprs_msg.on_rf(rec["t"], f)
+            except Exception:     # noqa: BLE001 - the receive path never stops for messaging
+                log.exception("messaging: heard frame not handled")
         log.info("RX %s", text)
         if self.digi:
             self.digi.heard(f, now())
@@ -702,6 +905,22 @@ class Hub:
                     link.accept(f)
                     return
 
+    def on_is_line(self, t, text):
+        """A packet line from the APRS-IS observer (igate.py, observe=). Stored
+        as port 'is' and handed to messaging as evidence; it can never reach
+        transmit(): nothing here calls it."""
+        parts = aprs_store.parse_line(text)
+        d = aprs.decode(*parts) if parts else None
+        if d is not None and d.get("error") == "embedded line break":
+            self.counts["is_line_break"] += 1        # a bare CR or LF inside: never stored, never two packets
+            return
+        if self.aprs:
+            self.aprs.ingest(t, "is", text)
+        if d is None:
+            return
+        if self.aprs_msg:
+            self.aprs_msg.on_is(t, d)
+
     # -- fill-in digipeater (digi.py) --
 
     def _digi_flush(self):
@@ -721,25 +940,43 @@ class Hub:
 
     # -- transmit --
 
+    def frame_class(self, f: Frame, origin: str, digi=False):
+        """The gate class, from the origin the hub itself gave the frame (a
+        client can't choose it: KISS and AGWPE origins are kiss:/agw:)."""
+        if digi:
+            return "digi"
+        if origin == "aprs:ack":
+            return "ack"
+        if origin == "aprs:msg":
+            return "msg"
+        if f.kind in ("I", "S"):
+            return "connected"
+        if f.kind == "U" and f.utype in LINK_UTYPES and (str(f.src), str(f.dest)) in self.links:
+            return "connected"
+        return "app"
+
     def transmit(self, f: Frame, origin: str, digi=False):
         """Every frame leaves through here. Raises TxRefused."""
         try:
             raw = f.encode()
         except FrameError as e:
             raise TxRefused(str(e)) from e
-        why = self.lent_why() or self.gate.check(f, raw, digi=digi)
+        cls = self.frame_class(f, origin, digi)
+        why = self.lent_why() or self.gate.check(f, raw, cls)
         text = f.tnc2()
         if why:
             self.counts["tx_refused"] += 1
-            self.txlog.write({"t": now(), "dir": "refused", "origin": origin, "why": why,
+            self.txlog.write({"t": now(), "dir": "refused", "origin": origin, "cls": cls, "why": why,
                               "text": text})
             log.warning("TX refused (%s) from %s: %s", why, origin, text)
             raise TxRefused(why)
         self.radio.write(raw)
         self.last_tx = now()
-        self.gate.record(f, digi=digi)
+        if cls in UI_CLASSES:
+            self.last_ui_tx = self.last_tx
+        self.gate.record(f, raw, cls)
         self.counts["tx_frames"] += 1
-        rec = {"t": now(), "dir": "tx", "origin": origin, "text": text}
+        rec = {"t": now(), "dir": "tx", "origin": origin, "cls": cls, "text": text}
         self.recent.append(rec)
         self.txlog.write(rec)
         log.info("TX %s (%s)", text, origin)
@@ -829,6 +1066,64 @@ class Hub:
             log.warning("inbound window for %s closed", ", ".join(self.inbound["calls"]))
         self.inbound = None
 
+    # -- the operator's stop and off-channel holds (tx-state.json) --
+
+    def switch_tx(self, want, who):
+        """Off: persist the inhibit first, then clear the gate (Off always
+        works; a failed write is returned so the page can say so). On: only
+        with --tx; persist, then enable. Returns (status, body)."""
+        if want and not self.gate.allowed_by_start:
+            return 403, {"error": "started without --tx"}
+        if not want:
+            try:
+                test_point("tx-off-before-fsync")
+                self.state.save(inhibit=True, by=who)
+                test_point("tx-off-after-fsync")
+                err = None
+            except OSError as e:
+                err = f"stopped, not persisted ({e.strerror or e}): a restart may transmit again"
+            self.gate.enabled = False
+            self.state.notice = "stopped by the operator" if err is None else err
+            log.warning("transmit switched OFF from the page (%s)%s", who, f"; {err}" if err else "")
+            for link, _ in list(self.links.values()):
+                link.abort("transmit switched off")
+            if err:
+                return 500, {"enabled": False, "error": err}
+            return 200, {"enabled": False}
+        try:
+            self.state.save(inhibit=False, by=who)
+        except OSError as e:
+            return 500, {"enabled": self.gate.enabled,
+                         "error": f"not switched on: the transmit state could not be saved ({e.strerror or e})"}
+        self.gate.enabled = True
+        self.state.notice = None
+        log.warning("transmit switched ON from the page (%s)", who)
+        return 200, {"enabled": True}
+
+    def set_hold(self, by, why, back):
+        """An off-channel hold (the UV-PRO add-on, before it retunes). Kept in
+        memory even when the write fails (it only stops APRS); raises OSError
+        then, so the caller refuses to retune."""
+        hold = {"by": by, "why": why, "back": back, "t": now()}
+        holds = [h for h in self.state.holds if h["by"] != by] + [hold]
+        try:
+            self.state.save(holds=holds)
+        finally:
+            self.state.holds = holds
+            self.gate.holds = holds
+            log.warning("off-channel hold set by %s: %s (back: %s)", by, why or "-", back or "-")
+
+    def release_hold(self, by, who):
+        """Release BY's hold. On a failed write the hold stays (the safe side)."""
+        holds = [h for h in self.state.holds if h["by"] != by]
+        if len(holds) == len(self.state.holds):
+            return False
+        self.state.save(holds=holds)
+        self.gate.holds = self.state.holds
+        log.warning("off-channel hold by %s released (%s)", by, who)
+        self.txlog.write({"t": now(), "dir": "hold-released", "by": by, "who": who})
+        return True
+
     # -- links --
 
     def _new_link(self, local, remote, client, digis=()):
@@ -854,8 +1149,10 @@ class Hub:
                       "last_rx": r.last_rx, "error": r.error, "lent": self.lent},
             "inbound": (dict(self.inbound) if self.inbound and now() < self.inbound["until"] else None),
             "tx": {"enabled": self.gate.enabled, "allowed_by_start": self.gate.allowed_by_start,
+                   "inhibit": self.state.inhibit, "notice": self.state.notice, "holds": list(self.state.holds),
                    "allow_calls": sorted(self.gate.allow),
-                   "max_per_min": self.gate.max_per_min, "ui_per_min": self.gate.ui_per_min},
+                   "max_per_min": self.gate.max_per_min, "ui_per_min": self.gate.ui_per_min,
+                   "caps": self.gate.caps(), "used": self.gate.usage()},
             "mycall": self.args.mycall,
             "title": getattr(self.args, "title", "UV-PRO Packet"),
             "counts": dict(self.counts),
@@ -882,10 +1179,13 @@ class Hub:
                 "max_ms": round(lag[-1], 1) if lag else None, "samples": len(lag)}
         me = ({"lat": self.args.lat, "lon": self.args.lon}
               if self.args.lat is not None and self.args.lon is not None else None)
+        msg = (self.aprs_msg.status() if self.aprs_msg else
+               {"mode": self.args.aprs_messaging, "effective": "off",
+                "why": "no APRS store (--no-aprs)" if self.args.no_aprs and self.args.aprs_messaging != "off" else None})
         if not self.aprs:
-            return {"enabled": False, "me": me, "loop": loop}
+            return {"enabled": False, "me": me, "loop": loop, "messaging": msg}
         return {"enabled": True, "me": me, "loop": loop, "queue": self.aprs.qsize(),
-                "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary}
+                "dropped": self.aprs.dropped, "errors": self.aprs.errors, **self.aprs_summary, "messaging": msg}
 
     async def open_aprs(self):
         """Open the store, backfill it once from the logs and reload the heard
@@ -1243,21 +1543,54 @@ def make_web(hub):
         return web.json_response(hub.status())
 
     async def set_tx(req):
-        body = await req.json()
-        want = bool(body.get("enabled"))
+        try:
+            body = await req.json()
+            want = bool(body.get("enabled"))
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"enabled\": bool}"}, status=400)
         # On from any page when started with --tx, like PTT on the radio pages
         # (APRS plan D7, 2026-10-19); --tx is the hard switch. Anyone may stop.
-        if want and not hub.gate.allowed_by_start:
-            return web.json_response({"error": "started without --tx"}, status=403)
-        hub.gate.enabled = want
-        log.warning("transmit switched %s from the page (%s)", "ON" if want else "OFF", req.remote)
-        if not want:
-            for link, _ in list(hub.links.values()):
-                link.abort("transmit switched off")
-        return web.json_response({"enabled": hub.gate.enabled})
+        code, out = hub.switch_tx(want, str(req.remote))
+        return web.json_response(out, status=code)
 
     def local(req):
         return req.remote in ("127.0.0.1", "::1")
+
+    async def hold(req):
+        if not local(req):
+            return web.json_response({"error": "holds are only set from this machine"}, status=403)
+        try:
+            body = await req.json()
+            by, why, back = body.get("by"), str(body.get("why") or "")[:120], str(body.get("back") or "")[:60]
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"by\", \"why\", \"back\"}"}, status=400)
+        if not isinstance(by, str) or not HOLD_BY.fullmatch(by):
+            return web.json_response({"error": "by: a lower-case name"}, status=400)
+        try:
+            hub.set_hold(by, why, back)
+        except OSError as e:
+            return web.json_response({"error": f"hold set, not persisted ({e.strerror or e})",
+                                      "holds": hub.state.holds}, status=500)
+        return web.json_response({"holds": hub.state.holds})
+
+    async def hold_release(req):
+        # The add-on (this machine) after a verified restore, or the operator
+        # from the packet page (any page, as transmit Off is).
+        try:
+            body = await req.json()
+            by = body.get("by")
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"by\"}"}, status=400)
+        if not isinstance(by, str) or not HOLD_BY.fullmatch(by):
+            return web.json_response({"error": "by: a lower-case name"}, status=400)
+        who = ("operator " if body.get("operator") else "") + str(req.remote)
+        try:
+            if not hub.release_hold(by, who):
+                return web.json_response({"error": f"no hold by {by}", "holds": hub.state.holds}, status=404)
+        except OSError as e:
+            return web.json_response({"error": f"not released: the transmit state could not be saved "
+                                               f"({e.strerror or e})", "holds": hub.state.holds}, status=500)
+        return web.json_response({"holds": hub.state.holds})
 
     async def lend(req):
         if not local(req):
@@ -1319,6 +1652,8 @@ def make_web(hub):
     app.router.add_post("/api/inbound", inbound)
     app.router.add_post("/api/inbound/close", inbound_close)
     app.router.add_post("/api/tx", set_tx)
+    app.router.add_post("/api/hold", hold)
+    app.router.add_post("/api/hold/release", hold_release)
     app.router.add_post("/api/lend", lend)
     app.router.add_post("/api/return", give_back)
 
@@ -1352,6 +1687,42 @@ def make_web(hub):
     async def aprs_messages(req):
         return web.json_response({"messages": await from_store("messages", req.query.get("with", "")[:12] or None)})
 
+    # APRS messaging (plan 2026-11-07, 3.5): a page sends like radio PTT.
+    async def aprs_message(req):
+        if not hub.aprs_msg:
+            return web.json_response({"error": "messaging is off"}, status=409)
+        try:
+            body = await req.json()
+            to, text = body.get("to"), body.get("text")
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"to\", \"text\"}"}, status=400)
+        try:
+            row = await hub.aprs_msg.compose(to, text)
+        except aprs_msg.MsgError as e:
+            return web.json_response({"error": str(e)}, status=409 if str(e).startswith(("not now", "messaging is off"))
+                                     else 400)
+        log.warning("APRS message %s to %s from the page (%s)", row["msgno"], row["dst"], req.remote)
+        return web.json_response({"id": row["id"], "state": row["state"], "msgno": row["msgno"]})
+
+    async def aprs_thread(req):
+        call = req.query.get("with", "")[:12]
+        owned = hub.aprs_msg.owned if hub.aprs_msg else [hub.args.mycall]
+        if not call:
+            return web.json_response({"with": None, "threads": await from_store("correspondents", owned)})
+        rows = await from_store("thread", call, owned)
+        active = {r["id"]: r for r in (hub.aprs_msg.out.values() if hub.aprs_msg else ())}
+        out = []
+        for r in rows:
+            if r["dir"] == "out":
+                live = active.get(r["id"])
+                r = {**r, **(hub.aprs_msg.describe(live) if live else {}), "via": "rf"}
+            else:
+                r = {**r, "via": "internet" if r["port"] == "is" else "rf"}
+            out.append(r)
+        return web.json_response({"with": aprs.norm_call(call), "messages": out})
+
+    app.router.add_post("/api/aprs/message", aprs_message)
+    app.router.add_get("/api/aprs/thread", aprs_thread)
     app.router.add_get("/api/aprs/stations", aprs_stations)
     app.router.add_get("/api/aprs/objects", aprs_objects)
     app.router.add_get("/api/aprs/station/{call}", aprs_station)
@@ -1398,11 +1769,25 @@ async def amain(args):
     if not args.no_aprs:
         await hub.open_aprs()
         tasks.append(asyncio.create_task(hub.aprs_refresh()))
+        if args.aprs_messaging != "off":
+            hub.aprs_msg = aprs_msg.Engine(hub, args.aprs_messaging, args.aprs_owned_calls, args.aprs_firmware_acks,
+                                           args.aprs_path, cooldown_s=args.aprs_cooldown)
+            await hub.aprs_msg.start()
+            if hub.aprs_msg.why:
+                log.warning("messaging: %s", hub.aprs_msg.why)
+            log.info("messaging: %s (configured %s) as %s", hub.aprs_msg.effective, args.aprs_messaging,
+                     ", ".join(hub.aprs_msg.owned))
     if args.igate_login:
         beacon = (igate.beacon_info(args.lat, args.lon, args.igate_comment)
                   if args.igate_beacon_min else None)
+        own = {ax25.base_call(c) for c in args.aprs_owned_calls}
+        observe = None
+        if args.igate_observe:
+            calls = "/".join(sorted(f"{c}*" for c in own))
+            observe = f"b/{calls} g/{calls}"
         hub.igate = igate.IGate(args.igate_login, args.igate_passcode, args.igate_server,
-                                beacon=beacon, beacon_s=args.igate_beacon_min * 60).start()
+                                beacon=beacon, beacon_s=args.igate_beacon_min * 60, own_bases=own,
+                                observe=observe, on_line=hub.on_is_line).start()
     hub.radio.start()
     servers = []
     if args.agw_port:
@@ -1428,6 +1813,8 @@ async def amain(args):
         await hub.radio.stop()
         if hub.igate:
             await hub.igate.stop()
+        if hub.aprs_msg:
+            await hub.aprs_msg.stop()
         for t in tasks:
             t.cancel()
         if hub.aprs:
@@ -1465,7 +1852,16 @@ def parse_args(argv=None):
     # a second (~120/min). 60/min killed a lossy Winlink transfer in testing
     # (2026-10-14); a refused frame ends the link.
     p.add_argument("--max-frames-per-min", type=int, default=300)
-    p.add_argument("--max-ui-per-min", type=int, default=6)
+    p.add_argument("--max-ui-per-min", type=int, default=6, help="UI frames from apps (KISS/AGWPE) a minute")
+    # The gate's classes (APRS messaging plan 2026-11-07, 3.3).
+    p.add_argument("--max-ui-total-per-min", type=int, default=12, help="UI frames a minute: apps, messages, acks")
+    p.add_argument("--ack-reserve", type=int, default=4,
+                   help="of those (and of --max-frames-per-min), how many only acks may use")
+    p.add_argument("--max-msg-per-min", type=int, default=2)
+    p.add_argument("--max-ack-per-min", type=int, default=6)
+    p.add_argument("--max-airtime-s-per-min", type=float, default=15.0, help="UI airtime a minute, seconds")
+    p.add_argument("--ack-airtime-reserve-s", type=float, default=3.0)
+    p.add_argument("--aprs-txdelay-ms", type=int, default=300, help="the radio's key-up delay, for airtime")
     p.add_argument("--log-dir", default=str(HERE / "packet-logs"))
     p.add_argument("--aprs-db", help="APRS store (default: <log-dir>/aprs.db)")
     p.add_argument("--no-aprs", action="store_true", help="no APRS store, API or backfill")
@@ -1477,6 +1873,19 @@ def parse_args(argv=None):
     p.add_argument("--igate-beacon-min", type=int, default=0,
                    help="minutes between the iGate's position beacons to APRS-IS (needs --lat/--lon; 0: none)")
     p.add_argument("--igate-comment", default=igate.BEACON_COMMENT, help="the iGate beacon's comment")
+    p.add_argument("--igate-observe", action="store_true",
+                   help="also read APRS-IS for our own calls (filter b/<call>* g/<call>*), stored as port 'is'; "
+                        "receive only")
+    # APRS messaging (aprs_msg.py; plan 2026-11-07, 3.4).
+    p.add_argument("--aprs-messaging", choices=aprs_msg.MODES, default="off",
+                   help="off; send (compose, retries, matching acks; never acks); full (acks too)")
+    p.add_argument("--aprs-owned-calls", type=lambda s: [c.strip().upper() for c in s.split(",") if c.strip()],
+                   help="exact call-SSIDs messaging owns (default: --mycall)")
+    p.add_argument("--aprs-firmware-acks", choices=("true", "false", "null"), default="null",
+                   help="whether the radio's firmware acks messages by itself (full needs false)")
+    p.add_argument("--aprs-path", default="WIDE1-1,WIDE2-1", help="the messages' and acks' digipeater path")
+    p.add_argument("--aprs-cooldown", type=float, default=aprs_msg.COOLDOWN_S,
+                   help="seconds after start before any message or ack goes")
     p.add_argument("--digi", metavar="CALL", help="be a fill-in digipeater as CALL (callsign-SSID)")
     p.add_argument("--digi-viscous", type=float, default=5.0,
                    help="seconds a WIDE1-1 request waits for a wide digipeater to repeat it first")
@@ -1488,6 +1897,29 @@ def parse_args(argv=None):
         p.error("--maxframe must be 1-7")
     if not 16 <= a.paclen <= 256:
         p.error("--paclen must be 16-256")
+    for k in ("max_ui_total_per_min", "max_msg_per_min", "max_ack_per_min", "max_frames_per_min"):
+        if getattr(a, k) < 1:
+            p.error(f"--{k.replace('_', '-')} must be at least 1")
+    if not 0 <= a.ack_reserve < a.max_ui_total_per_min:
+        p.error("--ack-reserve must be 0 or more and below --max-ui-total-per-min")
+    if not 0 <= a.ack_airtime_reserve_s < a.max_airtime_s_per_min:
+        p.error("--ack-airtime-reserve-s must be 0 or more and below --max-airtime-s-per-min")
+    if not 0 <= a.aprs_txdelay_ms <= 2000:
+        p.error("--aprs-txdelay-ms must be 0-2000")
+    a.aprs_firmware_acks = {"true": True, "false": False, "null": None}[a.aprs_firmware_acks]
+    a.aprs_owned_calls = a.aprs_owned_calls or [a.mycall.upper()]
+    allow = a.allow_calls or [ax25.base_call(a.mycall)]
+    for c in a.aprs_owned_calls:
+        ax25.parse_call(c)
+        if ax25.base_call(c) not in allow:
+            p.error(f"--aprs-owned-calls {c}: not admitted by --allow-calls ({', '.join(allow)})")
+    a.aprs_path = [x.strip().upper() for x in a.aprs_path.split(",") if x.strip()]
+    if len(a.aprs_path) > 2:
+        p.error("--aprs-path: at most 2 hops (WIDE1-1,WIDE2-1)")
+    for x in a.aprs_path:
+        ax25.parse_call(x)
+    if not 0 <= a.aprs_cooldown <= 3600:
+        p.error("--aprs-cooldown must be 0-3600 seconds")
     a.igate_passcode = None
     if a.igate_login:
         ax25.parse_call(a.igate_login)
