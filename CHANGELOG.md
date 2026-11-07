@@ -7,6 +7,23 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Winlink over VARA HF (xara), beside ARDOP, on a Mac** (module `vara`,
+  host file `winlink.xara`; plan winlink-vara, PR A). xara, unregistered,
+  keys the radio through its own lane on the radio's server
+  (`--winlink-vara-rigctl-port`, default 4534), only while a VARA session
+  is armed; each Winlink lane keys only for its own modem's session. The
+  page offers one via per modem (`HF · IC-7300 (VARA HF)`), its gateway list
+  (`rmslist?mode=varahf`) and VARA peer URLs; the confirm names the modem.
+  xara's CW ID is read from its log (`--winlink-vara-log`) and counted as on
+  air only when the VARA lane's burst ended with xara's own T 0. A VARA
+  session is refused until Pat's `varahf.addr`, `varahf.rig` (its hamlib
+  address: this radio's lane) and `varahf.ptt_ctrl: false` are right,
+  checked by host and port at every arm and in `doctor`. Every Winlink
+  session now leaves one `winlink session: {...}` JSON line in the server
+  log (scheme, bandwidth, gateway, frequency, seconds, outcome, messages,
+  bytes, xara's highest speed level), the trial's keep-or-drop record.
+  `doctor` warns about a xara agent or listener left behind with VARA off.
+  Linux (the station) is not covered yet.
 - **APRS messaging in the packet hub** (`aprs_msg.py`; host file
   `packet.aprs.messaging`, off by default). `send`: compose from the
   packet page's Messages tab (behind TX ARMED in that browser), send with
@@ -47,6 +64,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **rigctl `T 0` releases only the sender's own PTT**, on every port.
+  From a client that isn't keying it answers `RPRT 0` and changes nothing;
+  before, any client's `T 0` (or one sent while the radio was keyed at its
+  front panel) unkeyed whoever was transmitting.
+- **The station-ID ledger hears how every Winlink lane key ended** (the
+  owner's own `T 0`, or forced: a disconnect, the keepalive, the transmit
+  limit, a disarm, the radio), keeps each ID's source (ardopcf, xara), and
+  judges ardopcf's IDs by the ARDOP lane only. ardopcf's log is followed
+  across an inode change too.
 - **The transmit gate has classes.** `app` (KISS/AGWPE), `msg`, `ack`,
   `digi`, `connected`, set by the hub. Of the overall 300/min, the last 4
   are for acks; UI frames (app, msg, ack) share 12/min with 4 for acks

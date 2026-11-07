@@ -66,6 +66,9 @@ def free_ports(h, n, start=4537):
     for r in h["radios"]:
         used |= {r.get(k) for k in ("web", "rigctl", "lane")}
     used |= {v for v in (h.get("winlink") or {}).values() if isinstance(v, int)}
+    x = (h.get("winlink") or {}).get("xara")
+    if isinstance(x, dict):
+        used |= {x.get("lane_port"), x.get("port"), (x.get("port") or 0) + 1}
     out, p = [], start
     while len(out) < n:
         if p not in used:

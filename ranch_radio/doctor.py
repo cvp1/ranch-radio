@@ -47,6 +47,18 @@ def block_of(h, name):
     return cur
 
 
+def own_block(h, name):
+    """name's block without another module's block nested in it (winlink's
+    without vara's winlink.xara): each module answers for its own fields."""
+    block = block_of(h, name)
+    if not isinstance(block, dict):
+        return block
+    mine = MANIFESTS[name]["block"]
+    nested = {MANIFESTS[o]["block"][len(mine)] for o in MANIFESTS
+              if o != name and len(MANIFESTS[o]["block"]) > len(mine) and MANIFESTS[o]["block"][:len(mine)] == mine}
+    return {k: v for k, v in block.items() if k not in nested}
+
+
 # ---------------------------------------------------------------- static
 
 def static(h):
@@ -70,7 +82,7 @@ def static(h):
         for dep in m.get("requires", []):
             if dep not in present:
                 out.append(Check(name, MISSING, f"needs the {dep} module", f"ranch-radio add {dep}"))
-        block = block_of(h, name)
+        block = own_block(h, name)
         if isinstance(block, dict):
             for f in asked(block):
                 out.append(Check(name, MISSING, f"{f} is still {ASK}", (m.get("ask") or {}).get(f, "")))
@@ -259,7 +271,64 @@ def machine(h, budget_s=None, include_available=False):
                 out += _need(name, n, block, py, sp, h["os"])
     if "winlink" in present and h["os"] in MANIFESTS["winlink"]["os"] and not late("winlink", "Pat's config"):
         out.append(pat_config_check(block_of(h, "winlink") or {}))
+    if "vara" in present and h["os"] in MANIFESTS["vara"]["os"] and not late("vara", "Pat's VARA settings"):
+        out.append(vara_config_check(h))
+    if "vara" not in present and h["os"] == "macos" and not late("vara", "a leftover xara"):
+        out += xara_leftover_checks(h)
     return out
+
+
+def vara_config_check(h):
+    """Pat's varahf settings, checked as the server checks them at every arm
+    (pat_config.vara_refusal): the modem is xara here, Pat's QSY goes through
+    this radio's lane, Pat never keys. Names the field; nothing else."""
+    import shlex
+    from types import SimpleNamespace
+
+    from pat_config import pat_config_path, vara_refusal
+    w = block_of(h, "winlink") or {}
+    x = w.get("xara") or {}
+    lane = next((r.get("lane") for r in h["radios"] if r.get("lane")), None)
+    cmd = [_expand(p) for p in shlex.split(str(w.get("pat") or "pat"))]
+    path = pat_config_path(SimpleNamespace(winlink_pat_config=w.get("pat_config")), cmd)
+    why = vara_refusal(path, x.get("port"), lane)
+    if why:
+        return Check("vara", WARN, f"VARA sessions will be refused: {why}",
+                     "set it by hand in Pat's config (ranch-radio never writes it)")
+    return Check("vara", OK, f"Pat's VARA settings in {path}: xara here, QSY through the lane, Pat never keys")
+
+
+XARA_LABEL = "ranch-radio.xara"
+XARA_PORT = 8300
+
+
+def _xara_probe(label, port):
+    """(agent loaded?, plist path if present, a xara process?, listening on port?):
+    read-only (launchctl print, pgrep, lsof); never connects to the port."""
+    plist = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+
+    def ok(argv):
+        try:
+            return subprocess.run(argv, capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return (ok(["launchctl", "print", f"gui/{os.getuid()}/{label}"]), plist if os.path.exists(plist) else None,
+            ok(["pgrep", "-x", "xara"]), ok(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"]))
+
+
+def xara_leftover_checks(h, probe=None):
+    """VARA off, but a xara agent still loaded or xara still listening (plan
+    winlink-vara A6): install leaves the agent behind. The VARA lane is closed
+    with VARA off, so it can't key; say how to take it out all the same."""
+    loaded, plist, proc, listening = (probe or _xara_probe)(XARA_LABEL, XARA_PORT)
+    if not (loaded or plist or proc or listening):
+        return []
+    seen = ", ".join(w for w, on in (("its agent is loaded", loaded), ("its plist is installed", plist),
+                                     ("a xara process runs", proc), (f"something listens on {XARA_PORT}", listening))
+                     if on)
+    fix = (f"launchctl bootout gui/$(id -u)/{XARA_LABEL}; "
+           f"mv ~/Library/LaunchAgents/{XARA_LABEL}.plist ~/.Trash/{XARA_LABEL}.plist")
+    return [Check("vara", WARN, f"VARA HF is off on this host but xara is still here ({seen})", fix)]
 
 
 def pat_config_check(w):

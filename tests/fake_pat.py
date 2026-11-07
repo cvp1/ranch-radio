@@ -43,6 +43,16 @@ Environment:
                     is a CMS gateway: everything except P2POnly
   (All read once at start: a test that needs one starts its own server.)
 
+VARA HF (varahf:// URLs, plan winlink-vara): as Pat with varahf.ptt_ctrl
+false, this fake never keys the lane for VARA; the modem (tests/fake_xara.py,
+at the config's varahf.addr) keys the radio itself. Like Pat-Vara it opens
+the modem's command port (and data, +1) on first use, sends VERSION, PUBLIC
+ON, CWID ON, COMPRESSION TEXT, MYCALL, LISTEN OFF and BW<n>, then CONNECT;
+/api/connect returns at the modem's DISCONNECTED. A dead modem connection is
+opened again on the next session (Pat's handle re-inits). /api/disconnect
+sends DISCONNECT (graceful) or ABORT (dirty). A varahf URL's freq= is QSY'd
+through the rig varahf.rig names (hamlib_rigs: the ARDOP lane).
+
 Command line, as Pat's: global flags BEFORE the command, then `http --addr`.
   --config FILE     read like Pat reads it: "listen" applies when --listen
                     is absent (Pat's fallback, app/app.go), so a test can
@@ -150,6 +160,7 @@ BROKEN_ATTACH = os.environ.get("FAKE_PAT_BROKEN_ATTACH") == "1"
 BROKEN_READ = os.environ.get("FAKE_PAT_BROKEN_READ") == "1"
 SLOW_MID = os.environ.get("FAKE_PAT_SLOW_MID")
 MYCALL = "N9ABC"
+VARA = CONFIG.get("varahf") or {}
 
 
 def _addr(a):
@@ -321,6 +332,13 @@ async def attachment(request):
 
 async def rmslist(request):
     record(route="rmslist", query=dict(request.query))
+    if request.query.get("mode") == "varahf":
+        return web.Response(text=json.dumps([
+            {"callsign": "N0CALL", "gridsquare": "DM42AA", "distance": 210, "azimuth": 20,
+             "modes": "VARA 500", "freq": {"hz": 3590000, "khz": 3590.0, "desc": "3.590.00 MHz"},
+             "dial": {"hz": 3588500, "khz": 3588.5, "desc": "3.588.50 MHz"},
+             "url": "varahf:///N0CALL?bw=500&freq=3588.5", "prediction": None}]),
+            content_type="text/plain")
     return web.Response(text=json.dumps([
         {"callsign": "N0DAJ", "gridsquare": "DM34OA", "distance": 338, "azimuth": 315,
          "modes": "ARDOP 2000", "freq": {"hz": 3590000, "khz": 3590.0, "desc": "3.590.00 MHz"},
@@ -382,9 +400,127 @@ async def later(delay, coro):
     await coro
 
 
+_vara = {"conn": None, "data": None}
+abort_dirty = [False]
+
+
+async def vara_line(timeout=None):
+    """One reply line from the modem's command port (CR-ended), or None at EOF."""
+    r = _vara["conn"][0]
+    try:
+        raw = await asyncio.wait_for(r.readuntil(b"\r"), timeout)
+    except (asyncio.IncompleteReadError, ConnectionError, OSError):
+        _vara["conn"] = None
+        return None
+    return raw.decode().strip()
+
+
+async def vara_send(line):
+    w = _vara["conn"][1]
+    w.write((line + "\r").encode())
+    await w.drain()
+
+
+async def vara_open():
+    """Pat-Vara's first use: dial command and data ports, then the init lines."""
+    host, port = (VARA.get("addr") or "localhost:8300").rsplit(":", 1)
+    try:
+        _vara["conn"] = await asyncio.open_connection(host, int(port))
+        _vara["data"] = await asyncio.open_connection(host, int(port) + 1)
+    except OSError as e:
+        _vara["conn"] = None
+        record(route="vara_open", ok=False, error=str(e))
+        return False
+    await vara_send("VERSION")
+    v = await vara_line(5)
+    for cmd in ("PUBLIC ON", "CWID ON", "COMPRESSION TEXT", f"MYCALL {MYCALL}", "LISTEN OFF"):
+        await vara_send(cmd)
+        await vara_line(5)
+    record(route="vara_open", ok=v is not None and v.startswith("VERSION VARA"), version=v)
+    return v is not None
+
+
+async def vara_session(url):
+    """(ok, received) for a varahf:// session: the modem keys, never us."""
+    from urllib.parse import parse_qs, urlsplit
+    u = urlsplit(url)
+    q = parse_qs(u.query)
+    target = u.path.strip("/").upper()
+    if _vara["conn"] is not None and _vara["conn"][0].at_eof():
+        _vara["conn"] = None             # the modem went away: Pat's Ping fails, the handle re-inits
+        record(route="vara_reinit")
+    if _vara["conn"] is None and not await vara_open():
+        await logline("Unable to establish connection to remote: VARA modem not answering")
+        return False, 0
+    if q.get("freq") and VARA.get("rig"):
+        rig_addr = (CONFIG.get("hamlib_rigs") or {}).get(VARA["rig"], {}).get("address")
+        if rig_addr:
+            hz = int(float(q["freq"][0]) * 1000)
+            got = await rig(f"F {hz}")
+            record(route="qsy", hz=hz, reply=got, modem="varahf")
+            await logline(f"QSY varahf: {q['freq'][0]}")
+    await vara_send(f"BW{(q.get('bw') or ['2300'])[0]}")
+    if await vara_line(5) is None:
+        await logline("Unable to establish connection to remote: VARA modem closed")
+        return False, 0
+    await vara_send(f"CONNECT {MYCALL} {target}")
+    connected, sent_stop = False, False
+    while True:
+        get = asyncio.ensure_future(vara_line())
+        stop = asyncio.ensure_future(abort.wait())
+        done, _ = await asyncio.wait({get, stop}, return_when=asyncio.FIRST_COMPLETED)
+        if stop in done and not sent_stop and _vara["conn"] is not None:
+            sent_stop = True
+            await vara_send("ABORT" if abort_dirty[0] else "DISCONNECT")
+            record(route="vara_stop", dirty=abort_dirty[0])
+        if get not in done:
+            line = await get
+        else:
+            stop.cancel()
+            line = get.result()
+        if line is None:
+            await logline("Unable to establish connection to remote: VARA modem closed the connection")
+            return False, 0
+        record(route="vara_reply", line=line)
+        if line.startswith("CONNECTED"):
+            connected = True
+            status.update(dialing=False, connected=True)
+            await push({"Status": status})
+            await logline(f"Connected to {target} (VARA HF)")
+        elif line.startswith("DISCONNECTED"):
+            break
+    ok = connected and not sent_stop
+    received = 0
+    if ok:
+        received = 1
+        for m in outbound(url):
+            BOXES["out"].remove(m)
+            BOXES["sent"].append(m)
+            await logline(f">FC EM {m['MID']} accepted")
+    elif sent_stop:
+        await logline("Connect cancelled")
+    await logline("Disconnected.")
+    return ok, received
+
+
 async def connect(request):
     url = request.query.get("url", "")
     record(route="connect", url=url)
+    if url.startswith("varahf:"):
+        abort.clear()
+        abort_dirty[0] = False
+        status.update(dialing=True)
+        await push({"Status": status})
+        await logline(f"Connecting to {url}...")
+        try:
+            ok, received = await vara_session(url)
+        finally:
+            status.update(dialing=False, connected=False)
+            await push({"Status": status})
+        body = json.dumps({"NumReceived": received})
+        if not ok:
+            return web.Response(status=500, text="Session failure\n" + body)
+        return web.Response(text=body, content_type="text/plain")
     abort.clear()
     status.update(dialing=True)
     await push({"Status": status})
@@ -499,6 +635,7 @@ async def disconnect(request):
         return web.Response(text="{}", content_type="text/plain")
     if not (status["connected"] or status["dialing"]):
         return web.Response(status=400, text="Nothing to abort")
+    abort_dirty[0] = dirty == "true"
     abort.set()
     return web.Response(text="{}", content_type="text/plain")
 
