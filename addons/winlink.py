@@ -39,7 +39,8 @@ class WinlinkAddon(Addon):
             raise ValueError("winlink needs engine_args (built by the host from its config)")
         # One engine for the add-on's life: its mailbox routes are registered
         # once, before the web server starts.
-        self.engine = PatEngine(host, opts["engine_args"], lane_for=opts.get("lane_for"))
+        self.engine = PatEngine(host, opts["engine_args"], lane_for=opts.get("lane_for"),
+                                hf_modems=opts.get("hf_modems"))
 
     async def start(self):
         await self.engine.start()

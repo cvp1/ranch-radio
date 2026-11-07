@@ -21,6 +21,9 @@ PTT ("T 1") goes through Station.key, the same path as the browser's PTT, so
 --no-tx, single-operator ownership and the --tx-timeout limit all apply. A
 rigctl client that holds PTT must keep talking (JTDX/WSJT-X poll every
 second or so): silence for RIGCTL_KEEPALIVE_S, or a disconnect, unkeys.
+"T 0" releases only the sender's own PTT: from a client that is not keying
+it means "I am not transmitting", which is true, and changes nothing
+(JTDX sends it when idle; before, it cut whoever was on the air).
 """
 
 import asyncio
@@ -40,6 +43,26 @@ LANE_QSY_SLOP_HZ = 10
 # Pat sends nothing while an ARDOP frame plays, so its lane may stay silent
 # longer; --tx-timeout still bounds every transmission.
 WINLINK_KEEPALIVE_S = 12.0
+# xara (VARA HF) sends one T 1 per key and nothing until its T 0, so its lane
+# must outlast xara's longest key (derived from xara v0.1.3 source, not built):
+#   a steady link sends two data frames in one key (hf/session.rs nframes(),
+#   stays > 5); the longest frame is level 1, FSK 125 symbols at 128/3000 s
+#   (hf/level.rs; airtime = (2 lead-in + 124) x 42.67 ms = 5.376 s), so 2 x
+#   5.376 = 10.752 s (the modulator shares one lead-in: 10.67 s, rounded up);
+#   when Pat's link drops mid-burst (Pat gone, or LISTEN while linked),
+#   drop_link() queues the CW ID behind that burst in the same key
+#   (on_tx_done -> close(0); scheduler.rs release() keeps PTT on while a
+#   burst is queued): 1 + 154 units of 2048 samples at 48 kHz for a 7-character
+#   call of zeros (cwid.rs), 6.613 s;
+#   PTT held after the audio for the TX path (latency - lag; --tx-buffer-ms
+#   default 40 ms plus the device), bounded here at 0.5 s; --ptt-tail-ms
+#   default 100 ms; --ptt-lead-ms default 0 (the agent passes neither).
+#   10.752 + 6.613 + 0.5 + 0.1 = 17.97 s; + 3 s margin = 21 s.
+# Their QRT's CW ID (12 blank words + the call) is 10.16 s; ours rides the
+# QRT frame's key (~1.4 s + 6.6 s). xara's own --ptt-max-s (30) and its
+# 500 ms stall guard stay below this as xara's limits; --tx-timeout bounds all.
+WINLINK_VARA_KEEPALIVE_S = 21.0
+MODEM_NAMES = {"ardop": "ARDOP", "varahf": "VARA HF"}
 
 
 class RigctlOwner:
@@ -47,11 +70,12 @@ class RigctlOwner:
     closed = False
     keepalive_s = RIGCTL_KEEPALIVE_S
 
-    def __init__(self, peer, lane=None):
+    def __init__(self, peer, lane=None, modem=None):
         self.peer = peer
         self.lane = lane
+        self.modem = modem       # a Winlink lane's modem ("ardop", "varahf"): whose bursts the ID ledger keeps
         if lane == "winlink":
-            self.keepalive_s = WINLINK_KEEPALIVE_S
+            self.keepalive_s = WINLINK_VARA_KEEPALIVE_S if modem == "varahf" else WINLINK_KEEPALIVE_S
         self.lost_msg = f"rigctl client {peer} went quiet"
 
     async def send_str(self, _msg):   # Station.notice() targets the owner
@@ -204,11 +228,15 @@ def dump_state(caps, tx_allowed=False):
 class RigctlSession:
     """One client connection. Pure command -> reply logic; I/O lives below."""
 
-    def __init__(self, station, peer="?", lane=None):
+    def __init__(self, station, peer="?", lane=None, modem=None):
         self.station = station
         self.radio, self.caps = station.radio, station.radio.caps
-        self.lane = lane         # "winlink": Pat's own listener, keys only while armed
-        self.owner = RigctlOwner(peer, lane)
+        # "winlink": a Winlink modem's own listener (Pat's hamlib rig for
+        # ARDOP, xara's --ptt for VARA HF); keys only while a session of that
+        # lane's modem is armed.
+        self.lane = lane
+        self.modem = (modem or "ardop") if lane == "winlink" else None
+        self.owner = RigctlOwner(peer, lane, self.modem)
         self.vfo = None          # VFO named on the command being handled
         # VFO this client selected with "V" (None = the radio's own). Virtual:
         # the radio is never switched. Hamlib before 4.6 (JTDX bundles 4.5)
@@ -432,13 +460,19 @@ class RigctlSession:
         if cmd in ("T", "set_ptt"):
             on = bool(args) and args[-1] != "0"
             if not on:
-                if self.holds_ptt() or s.get("tx"):
-                    await self.station.unkey()
+                # Only the sender's own PTT: another client's (or the radio's
+                # own) transmission is not this client's to end.
+                if self.holds_ptt():
+                    await self.station.unkey(own=True)
                 return ok, False
             st = self.station
-            if self.lane == "winlink" and not st.winlink_armed:
-                st.winlink_lane_refused(self.owner.peer)
-                return f"RPRT {RIG_ENAVAIL}\n", False
+            if self.lane == "winlink":
+                # Armed, and for this lane's modem: ardopcf (through Pat) can't
+                # key during a VARA session nor xara during an ARDOP one.
+                why = st.winlink_lane_gate(self.modem)
+                if why:
+                    st.winlink_lane_refused(self.owner.peer, self.modem, why)
+                    return f"RPRT {RIG_ENAVAIL}\n", False
             why = await st.can_key(self.owner)
             if why:
                 # Refused before the split hop: the dial never moves.
@@ -465,7 +499,7 @@ class RigctlSession:
                 return f"RPRT {RIG_ENAVAIL}\n", False
             log.info("rigctl: PTT ON from %s", self.owner.peer)
             if self.lane == "winlink":
-                st.id_ledger.ptt(True)
+                st.id_ledger.ptt(True, modem=self.modem)
             return ok, False
         if cmd in ("s", "get_split_vfo"):
             on = s.get("split") if self.real_split else self.station.emu_split
@@ -618,9 +652,10 @@ class _Conn:
         self.handed_over = False  # left open in systemd's fd store for the next process
 
 
-async def serve(station, host, port, sock=None, adopted=(), lane=None):
+async def serve(station, host, port, sock=None, adopted=(), lane=None, modem=None):
     """lane="winlink": Pat's private listener (no systemd handover; PTT only
-    while a Winlink session is armed, longer keepalive)."""
+    while a Winlink session is armed, longer keepalive); modem: the lane's
+    modem ("ardop"), which the station-ID ledger files its bursts under."""
     conns = set()
     handover = Handover(station, enabled=lane is None)
     saved = handover.load() if adopted else None
@@ -646,7 +681,7 @@ async def serve(station, host, port, sock=None, adopted=(), lane=None):
             # Pat stays connected all the time: it must not hold the radio
             # where it last put it (that is for apps like JTDX).
             station.rigctl_connected(True)
-        sess = RigctlSession(station, f"{peer[0]}:{peer[1]}" if peer else "?", lane)
+        sess = RigctlSession(station, f"{peer[0]}:{peer[1]}" if peer else "?", lane, modem)
         conn = _Conn(writer, name)
         conn.sess = sess
         if carried and saved:

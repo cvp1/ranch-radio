@@ -28,6 +28,7 @@ import aiohttp
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from rigctl_server import RIGCTL_KEEPALIVE_S, WINLINK_KEEPALIVE_S  # noqa: E402
+TX_OFF_CONFIRM = 1.0     # server.TX_OFF_CONFIRM_S: "not transmitting" must hold this long
 
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
 APPS = 15000 + random.randrange(1000)
@@ -285,6 +286,80 @@ check("lane F logged: applied, armed",
       sum("3588500 Hz applied (armed)" in ln for ln in lane_logs), 1)
 for ln in lane_logs:
     print("   log:", ln)
+
+# --- T 0 is the sender's own; every end of a lane key reaches the ID ledger once ---
+# (plan winlink-vara §2.1, A2.) Before, any lane client's T 0 dropped whoever
+# was transmitting (F2): a second Winlink modem's startup T 0 would cut Pat's
+# frame. And the ledger never heard how a key ended, so a CW ID cut off by a
+# disconnect could read as sent.
+def released(out):
+    """The kinds of every "lane PTT released" line, in order."""
+    return [ln.rsplit("(", 1)[-1].rstrip(")") for ln in out.splitlines() if "lane PTT released" in ln]
+
+
+server = start()
+try:
+    page = Page()
+    page.send({"t": "winlink_arm", "v": True})
+    a, b = Client(LANE), Client(LANE)
+    check("two lane clients: A keys", a.cmd("T 1"), ["RPRT 0"])
+    check("B (not keying) sends T 0: answered ok", b.cmd("T 0"), ["RPRT 0"])
+    check("B's T 0 leaves A on the air", ptt(), "1")
+    check("B's T 1 while A keys: refused", b.cmd("T 1"), ["RPRT -11"])
+    check("A's own T 0 unkeys", a.cmd("T 0"), ["RPRT 0"])          # 1: normal
+    check("A unkeyed", ptt(), "0")
+    check("A's second T 0: ok, nothing to release", a.cmd("T 0"), ["RPRT 0"])
+    check("A keys again", a.cmd("T 1"), ["RPRT 0"])
+    a.close()                                                        # 2: forced (disconnect)
+    time.sleep(0.5)
+    check("A disconnected while keyed: unkeyed", ptt(), "0")
+    check("B keys", b.cmd("T 1"), ["RPRT 0"])
+    page.send({"t": "winlink_arm", "v": False})                      # 3: forced (disarm)
+    check("disarm while B keys: unkeyed", ptt(), "0")
+    page.send({"t": "winlink_arm", "v": True})
+    check("B keys for the radio's own unkey", b.cmd("T 1"), ["RPRT 0"])
+    time.sleep(1.5)                                                  # past the 1 s stale-reply grace
+    page.send({"t": "sim_panel", "d": {"tx": False}})                # 4: forced (unkeyed at the radio)
+    time.sleep(TX_OFF_CONFIRM + 0.8)
+    check("unkeyed at the radio: released", ptt(), "0")
+    check("B's T 0 after the radio let go: ok", b.cmd("T 0"), ["RPRT 0"])
+    check("B keys for the keepalive", b.cmd("T 1"), ["RPRT 0"])
+    time.sleep(WINLINK_KEEPALIVE_S + 1.5)                            # 5: forced (went quiet)
+    check(f"B silent past {WINLINK_KEEPALIVE_S:g}s: unkeyed", ptt(), "0")
+    b.close()
+
+    apps_a, apps_b = Client(APPS), Client(APPS)
+    check("apps' port: A keys", apps_a.cmd("T 1"), ["RPRT 0"])
+    check("apps' port: B's T 0 is ok", apps_b.cmd("T 0"), ["RPRT 0"])
+    check("apps' port: B's T 0 leaves A on the air", ptt(), "1")
+    check("apps' port: A's T 0 unkeys", apps_a.cmd("T 0"), ["RPRT 0"])
+    check("apps' port: unkeyed", ptt(), "0")
+    apps_a.close()
+    apps_b.close()
+    page.close()
+finally:
+    out = stop(server)
+check("each end of a lane key reaches the ledger once, with how it ended",
+      released(out), ["normal", "forced", "forced", "forced", "forced"])
+
+# the transmit time limit is a forced release too
+server = start("--tx-timeout", "3")
+try:
+    page = Page()
+    page.send({"t": "winlink_arm", "v": True})
+    lane = Client(LANE)
+    check("tx cap: lane keys", lane.cmd("T 1"), ["RPRT 0"])
+    for _ in range(5):                                # talking, so the keepalive never fires
+        time.sleep(1.0)
+        lane.cmd("t")
+    check("tx cap: unkeyed by the 3 s limit", ptt(), "0")
+    check("tx cap: the owner's T 0 afterwards is ok", lane.cmd("T 0"), ["RPRT 0"])
+    lane.close()
+    page.close()
+finally:
+    out = stop(server)
+check("tx cap: one forced release", released(out), ["forced"])
+check("tx cap: it was the time limit", any("3s transmit time limit" in ln for ln in out.splitlines()), True)
 
 server = start("--no-tx")
 try:

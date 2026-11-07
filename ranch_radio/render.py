@@ -98,6 +98,9 @@ RULES = [
     (("winlink", "ardopcf", "bin"), TOKEN), (("winlink", "ardopcf", "label"), LABEL),
     (("winlink", "ardopcf", "audio_in"), TEXT), (("winlink", "ardopcf", "audio_out"), TEXT),
     (("winlink", "ardopcf", "hostcommands"), TEXT),
+    (("winlink", "xara", "bin"), TOKEN), (("winlink", "xara", "label"), LABEL), (("winlink", "xara", "call"), CALL),
+    (("winlink", "xara", "audio_in"), TEXT), (("winlink", "xara", "audio_out"), TEXT),
+    (("winlink", "xara", "log"), TOKEN), (("winlink", "xara", "state"), TEXT),
     (("packet", "tnc"), TOKEN), (("packet", "mycall"), CALL), (("packet", "allow_calls", "*"), CALL),
     (("packet", "url"), TOKEN), (("packet", "agwpe"), TOKEN),
     (("packet", "name"), LABEL), (("packet", "title"), TEXT),
@@ -120,7 +123,8 @@ RULES = [
 ]
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"),
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
-         ("winlink", "ardopcf", "port"), ("station", "rigctl_port")]
+         ("winlink", "ardopcf", "port"), ("winlink", "xara", "port"), ("winlink", "xara", "lane_port"),
+         ("station", "rigctl_port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
          ("updates", "apply")]
@@ -398,7 +402,50 @@ def validate(h):
     for name, opts in (h.get("addons") or {}).items():
         if not isinstance(opts, dict):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
+    _validate_xara(h, ports)
     listen_plan(h)
+
+
+XARA_HF = (500, 2300, 2750)
+
+
+def _validate_xara(h, ports):
+    """winlink.xara (VARA HF): macOS only for now, a known bandwidth, a drive
+    level that never goes above the codec's (<= 0 dB), and ports no radio uses."""
+    x = (h.get("winlink") or {}).get("xara")
+    if x is None:
+        return
+    host = h["host"]
+    if not isinstance(x, dict):
+        raise HostError(f"{host}: winlink.xara must be an object")
+    if h["os"] != "macos":
+        raise HostError(f"{host}: winlink.xara (VARA HF) ships on macOS only in this version")
+    if not any(r.get("lane") for r in h["radios"]):
+        raise HostError(f"{host}: winlink.xara needs a radio with a Winlink lane (Pat's QSY for VARA goes through it)")
+    for k in ("label", "bin", "port", "lane_port", "audio_in", "audio_out", "call", "hf", "drive_db", "log", "state"):
+        if k not in x:
+            raise HostError(f"{host}: winlink.xara is missing {k!r}")
+    if x["hf"] not in XARA_HF or isinstance(x["hf"], bool):
+        raise HostError(f"{host}: winlink.xara.hf = {x['hf']!r}: one of {', '.join(map(str, XARA_HF))} (Hz)")
+    d = x["drive_db"]
+    if isinstance(d, bool) or not isinstance(d, (int, float)) or not -60 <= d <= 0:
+        raise HostError(f"{host}: winlink.xara.drive_db = {d!r}: a number of dB, -60 to 0")
+    w = h.get("winlink") or {}
+    taken = dict(ports)
+    for k in ("pat_port", "lane_port", "ardop_port"):
+        if isinstance(w.get(k), int):
+            taken.setdefault(w[k], f"winlink.{k}")
+    a = w.get("ardopcf")
+    if isinstance(a, dict) and isinstance(a.get("port"), int):
+        for p in (a["port"], a["port"] + 1):
+            taken.setdefault(p, "winlink.ardopcf.port")
+    mine = {x["lane_port"]: "winlink.xara.lane_port", x["port"]: "winlink.xara.port",
+            x["port"] + 1: "winlink.xara.port + 1 (its data port)"}
+    if len(mine) < 3:
+        raise HostError(f"{host}: winlink.xara.lane_port {x['lane_port']} overlaps its own command/data ports")
+    for p, what in mine.items():
+        if p in taken:
+            raise HostError(f"{host}: port {p} is both {taken[p]} and {what}")
 
 
 def listen_plan(h):
@@ -577,6 +624,10 @@ def server_args(h, r, pth):
             if plan:
                 a += plan.flags()
         a += ["--winlink-rigctl-port", str(r["lane"])]
+        x = (w or {}).get("xara")
+        if isinstance(x, dict) and not linux:       # VARA HF: xara's own lane and log
+            a += ["--winlink-vara-log", pth(x["log"]), "--winlink-vara-rigctl-port", str(x["lane_port"]),
+                  "--winlink-vara-port", str(x["port"])]
         if r.get("codec_db"):
             a += ["--winlink-codec-db", r["codec_db"]]
         if r.get("codec_mixer"):
@@ -855,6 +906,24 @@ def _macos(h, home):
                                  str(a["port"]), a["audio_in"], a["audio_out"]],
             "RunAtLoad": True, "StandardErrorPath": f"{logs}/console.log",
             "StandardOutPath": f"{logs}/console.log"}))
+
+    x = w.get("xara")
+    if isinstance(x, dict):
+        # xara keys the radio through its own lane on the radio's server (it
+        # may key only while a VARA session is armed there). KeepAlive: xara
+        # exits on a refused key or a keyer fault and must come back;
+        # ThrottleInterval bounds a crash loop to one start per 10 s.
+        console = pth("~/Library/Logs/ranch-radio-xara-console.log")
+        arts.append(Artifact("vara", f"{AGENTS}/{x['label']}.plist", "plist", {
+            "KeepAlive": True, "Label": x["label"], "ProcessType": "Interactive", "RunAtLoad": True,
+            "ThrottleInterval": 10,
+            "ProgramArguments": [pth(x["bin"]), "--call", x["call"], "--hf", str(x["hf"]),
+                                 "--audio", "coreaudio", "--capture", x["audio_in"], "--playback", x["audio_out"],
+                                 "--radio", "--ptt", f"rigctld:127.0.0.1:{x['lane_port']}",
+                                 "--addr", "127.0.0.1", "--port", str(x["port"]), "--kiss-port", "off",
+                                 "--drive-db", f"{x['drive_db']:g}", "--log", pth(x["log"]), "--quiet",
+                                 "--state-dir", pth(x["state"])],
+            "StandardErrorPath": console, "StandardOutPath": console}))
 
     wd = (h.get("integrations") or {}).get("macos-widget")
     if wd:

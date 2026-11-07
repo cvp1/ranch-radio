@@ -64,7 +64,13 @@ from pat_config import pat_config_path, preflight  # noqa: F401 - re-exported fo
 log = logging.getLogger("winlink")
 
 BOXES = ("in", "out", "sent", "archive")
-RADIO_TRANSPORTS = ("ardop", "ax25", "ax25+agwpe", "ax25+linux", "ax25+serial-tnc")
+# HF modem schemes the code knows (VARA HF through xara, plan winlink-vara);
+# which of them a host has is its own list (PatEngine.hf_modems, published as
+# `modems`). VARA FM ("varafm") and a bare "vara" stay refused.
+HF_MODEMS = ("ardop", "varahf")
+DEFAULT_HF_MODEMS = ("ardop",)   # a host that passes nothing: ARDOP only, as before
+MODEM_NAMES = {"ardop": "ARDOP", "varahf": "VARA HF"}
+RADIO_TRANSPORTS = HF_MODEMS + ("ax25", "ax25+agwpe", "ax25+linux", "ax25+serial-tnc")
 # Where a packet (ax25*) URL may put us: the VHF/UHF data sub-bands of 47 CFR
 # 97.305(c), never the APRS channel; the table lives in listen_plan.py, which
 # the listen window's validator (and render.py) share. Only for packet URLs:
@@ -88,7 +94,6 @@ ID_GRACE_S = 25.0            # never armed longer than this after Pat returns
 TAIL_QUIET_S = 3.0           # not tracked: armed until the lane is this quiet
 BOX_READ_S = 3.0             # reading a mailbox listing for the session's sent count
 OUTBOX_BUSY = "A Winlink session is running; the outbox can't be changed until it ends."
-HF_MODEMS = ("ardop",)       # HF modem schemes a peer (P2P) session may name; the page reads `modems`
 LIFE_WAIT_S = 15.0           # restart_pat: how long a new Pat has to run and send its first Status
 PREFLIGHT_RETRY_S = 30.0     # Pat's config refused: look at it again this often (or on restart_pat)
 STOP_WAIT_S = 5.0            # stop(): how long Pat has to exit on SIGTERM before SIGKILL
@@ -197,6 +202,18 @@ def check_peer(url, mycall):
     return None
 
 
+def msg_bytes(m):
+    """A message's size from Pat's mailbox listing: its body plus its files'
+    sizes, or None when the listing doesn't carry them."""
+    body, files = m.get("Body"), m.get("Files")
+    if not isinstance(body, str) and not files:
+        return None
+    try:
+        return len((body or "").encode()) + sum(int(f.get("Size") or 0) for f in (files or []))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def redact(url):
     """The URL with any password in it (telnet://CALL:PASS@...) masked, for logs and pages."""
     try:
@@ -225,13 +242,20 @@ def url_freq_hz(url):
         return None
 
 
-async def id_tail(station, started, closing=lambda: False, notify=None):
-    """Stay armed until ardopcf's end-of-session ID is out (bounded).
+async def id_tail(station, started, closing=lambda: False, notify=None, scheme="ardop"):
+    """Stay armed until the modem's end-of-session ID is out (bounded):
+    ardopcf's (ARDOP) or xara's CW ID (VARA HF), by the session's scheme.
 
     Only for a session that transmitted, and only while still armed: the
     page closing disarms at once, an operator's Disarm too. Runs in the
-    process that owns the radio (its lane, ledger and PTT), whoever runs Pat."""
+    process that owns the radio (its lane, ledger and PTT), whoever runs Pat.
+    Untracked (no log for this modem): armed until the lane is quiet for
+    TAIL_QUIET_S. xara's blanks before its call are inside the keyed burst
+    (crates/xara-phy/src/cwid.rs synth), so no quiet gap opens mid-ID; and a
+    VARA lane exists only with xara's log, so VARA is always tracked."""
+    import station_id
     st, led = station, station.id_ledger
+    source = station_id.SOURCE_OF.get(scheme, "ardopcf")
     if not led.last_tx or led.last_tx < started:
         return                          # never keyed: nothing to identify
     t0 = time.monotonic()
@@ -242,19 +266,19 @@ async def id_tail(station, started, closing=lambda: False, notify=None):
             log.warning("winlink: no end of station ID after %gs; disarming", ID_GRACE_S)
             break
         if not st._winlink_keying():
-            if led.tracked:
-                if not led.in_progress():
+            if led.tracked_for(scheme):
+                if not led.in_progress(source):
                     if not led.owed():
                         break
                     if el >= ID_START_S:
-                        log.warning("winlink: session transmitted but ardopcf sent no "
-                                    "station ID at its end; an ID is owed")
+                        log.warning("winlink: session transmitted but %s sent no "
+                                    "station ID at its end; an ID is owed", source)
                         break
             elif time.time() - (led.last_ptt() or 0) >= TAIL_QUIET_S:
                 break
         if not waited:
             waited = True
-            log.info("winlink: holding the session armed for ardopcf's station ID")
+            log.info("winlink: holding the session armed for %s's station ID", source)
             if notify:
                 notify({"id": dict(led.snapshot(), waiting=True)})
         await asyncio.sleep(0.1)
@@ -279,16 +303,19 @@ class LocalLane:
                 "id": st.id_ledger.snapshot()}
 
     async def arm(self, ws, url):
-        """True once armed for this session; False if refused (the page was told why)."""
+        """True once armed for this session; False if refused (the page was told why).
+        The URL's scheme (ardop, varahf) is the only modem whose lane may key."""
         st = self.station
-        await st.winlink_arm(ws, True, url_freq_hz(url))
+        scheme = urlsplit(url).scheme
+        self.scheme = scheme if scheme in HF_MODEMS else "ardop"
+        await st.winlink_arm(ws, True, url_freq_hz(url), scheme=self.scheme)
         if not st.winlink_armed:
             return False
         st.winlink_qsy_hz = url_hz(url)
         return True
 
     async def end(self, started, ok, reason, closing, notify):
-        await id_tail(self.station, started, closing, notify)
+        await id_tail(self.station, started, closing, notify, scheme=getattr(self, "scheme", "ardop"))
         await self.station.winlink_disarm(None if ok else reason)
 
 
@@ -371,10 +398,13 @@ class TunedLane(NoLane):
 
 
 class PatEngine:
-    def __init__(self, station, args, lane_for=None):
+    def __init__(self, station, args, lane_for=None, hf_modems=None):
         """station: what pages are reached through (notice, _send,
         _broadcast, band_of). lane_for(url, via) -> (lane, None) or (None,
-        why): which radio a session keys. Default: this process's radio."""
+        why): which radio a session keys. Default: this process's radio.
+        hf_modems: the HF modems this host has (published as `modems`);
+        default ARDOP only, so no caller advertises VARA unless its host
+        passes it."""
         self.station = station
         self.args = args
         local = LocalLane(station) if hasattr(station, "winlink_arm") else None
@@ -385,7 +415,7 @@ class PatEngine:
         self.base = f"http://127.0.0.1:{self.port}"
         self.pat_cmd = shlex.split(args.winlink_pat)
         self.config_path = pat_config_path(args, self.pat_cmd)
-        self.hf_modems = HF_MODEMS
+        self.hf_modems = tuple(m for m in (hf_modems or DEFAULT_HF_MODEMS) if m in HF_MODEMS)
         self.session_max = args.winlink_session_max
         # The lifecycle owner (A5). want: what Pat should be, read when a
         # child is spawned; gen counts restarts. proc_gen is the running
@@ -836,6 +866,7 @@ class PatEngine:
             st.notice(self._busy_why(), "warn", ws)
             return
         queued = await self._outbox()      # read before arming: what this session may send
+        self._inbox_before = await self._sizes("in")   # for the session record's bytes received
         if self.session and not self.session.done():
             st.notice("A Winlink session is already running.", "warn", ws)
             return
@@ -968,9 +999,54 @@ class PatEngine:
         return None if msgs is None else {m["MID"] for m in msgs}
 
     async def _outbox(self):
-        """{MID: P2P only?} for the outbox now, or None if it can't be read."""
+        """{MID: P2P only?} for the outbox now, or None if it can't be read.
+        Each message's size is kept for the session record (_queued_sizes)."""
         msgs = await self._listing("out")
+        self._queued_sizes = {} if msgs is None else {m["MID"]: msg_bytes(m) for m in msgs}
         return None if msgs is None else {m["MID"]: bool(m.get("P2POnly")) for m in msgs}
+
+    async def _sizes(self, box):
+        """{MID: bytes or None} for a mailbox now, or None if it can't be read."""
+        msgs = await self._listing(box)
+        return None if msgs is None else {m["MID"]: msg_bytes(m) for m in msgs}
+
+    async def _record(self, url, started, ok, reason, queued, sent_mids, received, peer):
+        """The session's one structured line (plan winlink-vara A8): the trial's
+        keep-or-drop data, appended to the server log. No password: the
+        gateway is the URL's path, never its netloc."""
+        u = urlsplit(url)
+        q = parse_qs(u.query)
+        end = time.time()
+        sizes = getattr(self, "_queued_sizes", {}) or {}
+        bytes_sent = None
+        if sent_mids is not None:
+            got = [sizes.get(m) for m in sent_mids]
+            bytes_sent = None if any(b is None for b in got) else sum(got)
+        bytes_received = None
+        before = getattr(self, "_inbox_before", None)
+        if before is not None:
+            after = await self._sizes("in")
+            if after is not None:
+                new = [b for m, b in after.items() if m not in before]
+                bytes_received = None if any(b is None for b in new) else sum(new)
+        tail = getattr(self.station, "vara_tail", None)
+        level = tail.max_level(started, end) if tail is not None and u.scheme == "varahf" else None
+        if ok:
+            outcome = "ok"
+        elif reason and str(reason).startswith("stopped after the"):
+            outcome = "capped"
+        elif self._stop_asked:
+            outcome = "stopped"
+        else:
+            outcome = "failed"
+        rec = {"scheme": u.scheme, "bw": (q.get("bw") or [None])[0], "gateway": u.path.strip("/") or None,
+               "freq_khz": (url_hz(url) or 0) / 1000 or None, "peer": bool(peer),
+               "start": round(started, 3), "end": round(end, 3), "seconds": round(end - started, 1),
+               "outcome": outcome, "reason": None if ok else (str(reason) if reason else None),
+               "sent": None if sent_mids is None else len(sent_mids), "received": received,
+               "bytes_sent": bytes_sent, "bytes_received": bytes_received, "max_level": level}
+        log.info("winlink session: %s", json.dumps(rec, sort_keys=True))
+        return rec
 
     async def _sent_count(self, queued):
         """(sent, left, unsent) for a session: of the messages in the outbox
@@ -981,13 +1057,16 @@ class PatEngine:
         only). Pat's /api/connect reports only NumReceived, so this is read
         from the mailboxes. None where a listing could not be read (unknown,
         not 0)."""
+        self._sent_mids = None
         if queued is None:
             return None, None, None
         if not queued:
+            self._sent_mids = set()
             return 0, 0, 0
         if not isinstance(queued, dict):
             queued = dict.fromkeys(queued, False)
         sent, out = await self._mids("sent"), await self._mids("out")
+        self._sent_mids = None if sent is None else set(queued) & sent
         left = None if out is None else {m for m in queued if m in out}
         return (None if sent is None else len(set(queued) & sent),
                 None if left is None else len(left),
@@ -1045,6 +1124,13 @@ class PatEngine:
             self.session_peer = False
             log.info("winlink: session ended ok=%s sent=%s received=%s left=%s%s", ok, sent, received, left,
                      f" ({reason})" if reason else "")
+            try:
+                await self._record(url, started, ok, reason, queued, getattr(self, "_sent_mids", None),
+                                   received, peer)
+            except asyncio.CancelledError:
+                pass
+            except Exception:              # the record is for the trial; never breaks a session
+                log.exception("winlink: session record")
             # A gateway takes everything but P2P-only messages; a peer only
             # what is addressed to it (its forwarder list isn't visible
             # here), so "left in the outbox" is a warning for gateways only.

@@ -17,6 +17,9 @@ const winlink = (() => {
   // host file sets none up (the row stays hidden).
   let listen = null, listenTimer = null;
   let modems = ["ardop"];   // HF modem schemes a peer session may use (the server's `modems`)
+  const MODEM_LABEL = { ardop: "ARDOP", varahf: "VARA HF" };
+  const isHF = (kind) => kind in MODEM_LABEL;
+  const PLACEHOLDER = { ardop: "ardop:///CALL?bw=2000MAX&freq=kHz", varahf: "varahf:///CALL?bw=500&freq=kHz" };
   let mode = store.get("wl.mode", "gateway");   // "gateway" | "peer" (P2P)
   // The message in the read pane: {box, mid, m}. Every action reads it from
   // here, never from the DOM. readGen drops a read() answer that comes back
@@ -311,7 +314,7 @@ const winlink = (() => {
   // ---------- gateways
 
   // Via: which radio a session goes out on. Its kind picks the gateway list:
-  // ARDOP on an HF radio, packet on the packet hub's radio, or none for
+  // ARDOP (or VARA HF, one via per modem) on an HF radio, packet on the packet hub's radio, or none for
   // telnet. The station page builds the list (station.js: every HF radio, its
   // packet hub, telnet). A radio's own page builds it here: that radio for
   // ARDOP, the packet hub while the Packet add-on reports it up (packet.js
@@ -322,9 +325,14 @@ const winlink = (() => {
   const viaSel = () => $("#wl-via");
   const viaKind = () => (vias.find((v) => v.id === viaSel()?.value) || { kind: "ardop" }).kind;
 
+  // A server with more than one HF modem (`modems`): one via per modem, and
+  // the via decides the scheme, in peer mode too (no separate modem picker).
+  const perModem = () => vias.some((v) => v.kind === "varahf");
+
   function ownVias() {
     if (own == null) return;         // the station page keeps its own list
     const list = [{ id: "radio", name: own, kind: "ardop", label: `HF · ${own} (ARDOP)` }];
+    if (modems.includes("varahf")) list.push({ id: "radio-vara", name: own, kind: "varahf", label: `HF · ${own} (VARA HF)` });
     const hub = packet?.hub_name || "UV-PRO";
     if (packet) list.push({ id: "packet", name: hub, kind: "packet", label: `VHF · ${hub} (packet)` });
     list.push({ id: "telnet", name: "internet", kind: "telnet", label: "Telnet (internet, no radio)" });
@@ -366,9 +374,9 @@ const winlink = (() => {
       $("#wl-peer-freq").hidden = kind === "telnet";
       $("#wl-peer-host").hidden = $("#wl-peer-pass").hidden = kind !== "telnet";
       const ms = $("#wl-peer-modem");
-      ms.hidden = kind !== "ardop" || modems.length < 2;
+      ms.hidden = !isHF(kind) || modems.length < 2 || perModem();
       if (ms.dataset.list !== modems.join()) {
-        ms.innerHTML = modems.map((m) => `<option value="${esc(m)}">${esc(m.toUpperCase())}</option>`).join("");
+        ms.innerHTML = modems.map((m) => `<option value="${esc(m)}">${esc(MODEM_LABEL[m] || m.toUpperCase())}</option>`).join("");
         ms.dataset.list = modems.join();
       }
       peerChanged();
@@ -381,6 +389,12 @@ const winlink = (() => {
       return;
     }
     if ($("#wl-url").value.startsWith("telnet://")) { $("#wl-url").value = ""; resetConfirm(); }
+    if (isHF(kind)) {
+      $("#wl-url").placeholder = PLACEHOLDER[kind];
+      // A gateway URL of the other modem is no longer what this via sends.
+      const sch = $("#wl-url").value.split(":")[0];
+      if (save && isHF(sch) && sch !== kind) { $("#wl-url").value = ""; resetConfirm(); }
+    }
     fillBands();
     if (save) loadGateways();
   }
@@ -403,7 +417,8 @@ const winlink = (() => {
       const host = $("#wl-peer-host").value.trim();
       return `telnet://${me}${pass ? `:${show ? "***" : encodeURIComponent(pass)}` : ""}@${host}/${call}`;
     }
-    const scheme = kind === "packet" ? "ax25+agwpe" : ($("#wl-peer-modem").value || modems[0] || "ardop");
+    const scheme = kind === "packet" ? "ax25+agwpe"
+      : perModem() ? kind : ($("#wl-peer-modem").value || modems[0] || "ardop");
     const khz = $("#wl-peer-freq").value.trim();
     return `${scheme}:///${call}${khz ? `?freq=${encodeURIComponent(khz)}` : ""}`;
   }
@@ -447,7 +462,7 @@ const winlink = (() => {
     store.set(kind === "packet" ? "wl.band.vhf" : "wl.band", band);
     el.innerHTML = `<div class="wl-empty">Loading gateways…</div>`;
     try {
-      const q = new URLSearchParams({ mode: kind === "packet" ? "packet" : "ardop" });
+      const q = new URLSearchParams({ mode: kind === "packet" ? "packet" : isHF(kind) ? kind : "ardop" });
       if (band) q.set("band", band);
       const gws = await (await api(`${BASE}winlink/api/rmslist?${q}`)).json();
       el.innerHTML = gws.length ? "" : `<div class="wl-empty">No gateways for that band</div>`;
@@ -494,8 +509,11 @@ const winlink = (() => {
       const b = $("#wl-connect");
       const via = vias.find((v) => v.id === viaSel()?.value);
       const to = peer ? ` · peer ${peerCall()}` : "";
+      // With more than one HF modem, the confirm names the one this URL keys.
+      const sch = url.split(":")[0];
+      const modem = perModem() && isHF(sch) ? ` (${MODEM_LABEL[sch]})` : "";
       b.textContent = (via?.kind === "telnet" ? "Confirm: connect over the internet"
-        : `Confirm: transmit${via ? ` on the ${via.name}` : ""} ${freqOf(url) || "now"}`) + to;
+        : `Confirm: transmit${via ? ` on the ${via.name}${modem}` : ""} ${freqOf(url) || "now"}`) + to;
       b.classList.add("wl-confirm");
       confirmTimer = setTimeout(resetConfirm, CONFIRM_MS);
       return;
@@ -606,27 +624,31 @@ const winlink = (() => {
     $("#wl-codec").textContent = db === null || db === undefined ? "" : `Codec ${Math.round(db * 10) / 10} dB`;
   }
 
-  // Station ID (47 CFR 97.119): what the server's ledger says about ardopcf's
-  // IDs. "sent" only when an ID was seen going out through the lane.
+  // Station ID (47 CFR 97.119): what the server's ledger says about the
+  // modems' IDs (ardopcf's, or xara's CW ID for VARA HF: id.last.source).
+  // "sent" only when an ID was seen going out through the lane.
+  const ID_FLAG = { ardop: "--winlink-ardop-log", varahf: "--winlink-vara-log" };
   function idState(i) {
     const el = $("#wl-id");
     if (!i) return;
     let text = "", warn = false, title = "";
     const at = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (!i.tracked) {
+    const kind = viaKind();
+    const who = i.last?.source || "ardopcf";
+    if (!i.tracked || (isHF(kind) && Array.isArray(i.tracked_modems) && !i.tracked_modems.includes(kind))) {
       text = "ID not tracked";
-      title = "Station ID is not checked: start the server with --winlink-ardop-log";
+      title = `Station ID is not checked: start the server with ${ID_FLAG[isHF(kind) ? kind : "ardop"]}`;
     } else if (i.waiting || i.in_progress) {
       text = "Sending station ID…";
     } else if (i.owed) {
       text = "ID owed";
       warn = true;
       title = i.last && i.last.on_air === false
-        ? `ardopcf's ID (${i.last.reason}) did not go on air: no session was armed`
+        ? `${who}'s ID (${i.last.reason}) did not go on air${who === "ardopcf" ? ": no session was armed" : ""}`
         : "Transmitted since the last station ID that went on air";
     } else if (i.last && i.last.on_air) {
       text = `ID sent ${at(i.last.end || i.last.start)}`;
-      title = i.last.reason;
+      title = who === "ardopcf" ? i.last.reason : `${who}: ${i.last.reason}`;
     }
     el.textContent = text;
     el.title = title;
@@ -660,7 +682,10 @@ const winlink = (() => {
     blocked = snap.blocked || null;
     inbound = snap.inbound || null;
     listen = snap.listen || null;
-    if (Array.isArray(snap.modems) && snap.modems.length) modems = snap.modems;
+    if (Array.isArray(snap.modems) && snap.modems.length && snap.modems.join() !== modems.join()) {
+      modems = snap.modems;
+      ownVias();                       // a VARA HF via when the server has it
+    }
     $("#wl-mycall").textContent = snap.mycall || "";
     $("#wl-log").textContent = (snap.log || []).join("\n");
     codec(snap.codec_db);
