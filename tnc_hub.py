@@ -26,12 +26,30 @@ Transmit safety (every frame, from every client, goes through one gate):
   of --mycall), any SSID. Nothing goes out under someone else's call.
 - Frames must decode as AX.25 and stay under 400 bytes; KISS parameter
   commands (TXDELAY, etc.) from clients are dropped, never sent to the radio.
-- Rate caps: --max-frames-per-min overall (a runaway guard, default 300,
-  above what 1200 baud can carry), --max-ui-per-min for UI/APRS (default 6).
+- Rate caps by class (set by the hub from where a frame came from: app for
+  KISS/AGWPE, msg and ack for messaging, digi, connected for a link's
+  frames): --max-frames-per-min overall (a runaway guard, default 300, its
+  last --ack-reserve kept for acks); UI frames (app + msg + ack)
+  --max-ui-total-per-min 12 with --ack-reserve 4 for acks, apps
+  --max-ui-per-min 6, messages 2, acks 6; UI airtime 15 s/min with 3 s for
+  acks. Digipeated and connected-mode frames count only toward the overall
+  cap. Every refusal names its cap.
 - Every transmitted and refused frame is logged (packet-logs/tx.jsonl).
+- The operator's Off is persisted (<log-dir>/tx-state.json, fsynced) before
+  transmit clears and before the page is told; a hub restarted with --tx
+  stays off until On. An unreadable or corrupt file starts it off.
+- Off-channel holds (POST /api/hold from this machine; /api/hold/release
+  from the add-on or a page): while any is set, no APRS message or ack goes.
+  The UV-PRO add-on sets one before it retunes the radio for Winlink.
 
-iGate (optional, --igate-login): heard packets go to APRS-IS (igate.py).
+APRS messaging (aprs_msg.py, --aprs-messaging send|full): compose from the
+page (POST /api/aprs/message), retries, acks; see that module.
+
+iGate (optional, --igate-login): heard packets go to APRS-IS (igate.py),
+marked qAO (a receive-only iGate); our own calls' frames are never gated.
 Receive only: nothing from APRS-IS reaches the transmit gate or the radio.
+With --igate-observe it also reads APRS-IS for our own calls (stored as
+port 'is', shown "via internet"; never acked, matched or sent).
 With --igate-beacon-min and --lat/--lon it beacons its own position to
 APRS-IS (never RF) as a receive-only iGate.
 

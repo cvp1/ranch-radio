@@ -5,7 +5,50 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **APRS messaging in the packet hub** (`aprs_msg.py`; host file
+  `packet.aprs.messaging`, off by default). `send`: compose from the
+  packet page's Messages tab (behind TX ARMED in that browser), send with
+  retries at t0 + 0, 30, 90, 210, 450 and 930 s (one per slot, passed slots
+  skipped, deadline t0 + 1,410 s), and match acks, rejs and reply-acks to
+  our messages; the hub acknowledges nothing it hears and puts no reply-ack
+  id on its messages. `full` also acks messages to `owned_calls` heard live
+  on RF, and needs `firmware_acks: false` (otherwise it runs as `send` and
+  says why). Messages pause while a KISS client, a monitoring AGWPE client,
+  a link, an inbound window, a lend, a hold or the 60 s start cooldown is in
+  the way; the reason is on the page. `POST api/aprs/message`,
+  `GET api/aprs/thread`.
+- **The operator's stop survives a restart.** Off writes `tx_inhibit` to
+  `<log-dir>/tx-state.json` (atomic, fsynced) before transmit clears and
+  before the page is told; a failed write still stops and says "not
+  persisted". A hub started with `--tx` stays off while the inhibit is set;
+  an unreadable or corrupt file starts it off with a notice.
+- **Off-channel holds.** The UV-PRO add-on asks the hub to hold APRS
+  (`POST /api/hold`, this machine only) before it retunes the radio for
+  Winlink, refuses to retune without it, and releases it only after the
+  radio is put back and read back; a restore given up keeps it. Holds
+  persist across restarts and show on the packet page with a confirmed
+  Release.
+- **The iGate's APRS-IS observer** (`packet.igate.observe`, on by default
+  with messaging): the login carries `filter b/<call>* g/<call>*`, and
+  what comes back is stored as port `is` and shown "via internet". Nothing
+  from APRS-IS is acked, matched or transmitted.
+
 ### Changed
+
+- **The transmit gate has classes.** `app` (KISS/AGWPE), `msg`, `ack`,
+  `digi`, `connected`, set by the hub. Of the overall 300/min, the last 4
+  are for acks; UI frames (app, msg, ack) share 12/min with 4 for acks
+  (apps 6, messages 2, acks 6) and 15 s of airtime a minute with 3 s for
+  acks, by a conservative formula (flags, 1.2x bit stuffing, the radio's
+  TX delay). Connected-mode (Winlink) frames count only toward the overall
+  cap. Every refusal names its cap.
+- **The iGate says `qAO`** (receive-only, per aprs-is.net q.aspx) instead
+  of `qAR`, and never gates our own calls' frames heard back (outer or
+  inner source).
+- The UV-PRO add-on reads `"packet_status": null` as "no link check"; its
+  hold goes to `"hub"`, else the base of `packet_status`.
 
 - **The packet hub answers inbound connects only inside an inbound window.**
   A station calling a call an AGWPE client registered (Pat's MyCall, held
