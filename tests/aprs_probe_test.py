@@ -352,9 +352,9 @@ async def t_schema_and_restart():
               con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='probes'").fetchone()[0]), (1, 0))
         con.close()
         db = aprs_store.Db(path)
-        check("opened by this code: version 2, probes added, its messages kept",
+        check("opened by this code: the current version, probes added, its messages kept",
               (db.db.execute("PRAGMA user_version").fetchone()[0], db.probes(),
-               [m["text"] for m in db.messages()]), (2, [], ["old"]))
+               [m["text"] for m in db.messages()]), (aprs_store.SCHEMA_VERSION, [], ["old"]))
         db.close()
     shutil.rmtree(d, ignore_errors=True)
     logdir = tempfile.mkdtemp(prefix="probe-")

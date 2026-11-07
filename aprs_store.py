@@ -27,7 +27,7 @@ import aprs
 
 log = logging.getLogger("aprs_store")
 
-SCHEMA_VERSION = 2                # 2: probes (the APRS round-trip probe, aprs_probe.py)
+SCHEMA_VERSION = 3                # 2: probes (the APRS round-trip probe, aprs_probe.py); 3: igate_days
 DUP_WINDOW_S = 30
 IS_KEEPS_RF_S = 600               # an untimestamped IS fix never replaces an RF fix this fresh
 RETENTION = {"packets": 30 * 86400, "positions": 7 * 86400, "stations": 90 * 86400,
@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS probes (
   id INTEGER PRIMARY KEY, t REAL, target TEXT, text TEXT, token TEXT, msg_id INTEGER, msgno TEXT,
   t_first REAL, window_end REAL, state TEXT, legs TEXT, coverage TEXT, notes TEXT, last_seen REAL);
 """
+# Per local day: every RF copy of an APRS-IS packet an iGate sent onto the air
+# (call = that iGate), and every RF frame heard (call = ''). Every copy counts,
+# not just the first: the packets table keeps one row for a packet two iGates
+# both delivered, and the iGate watch (igate_watch.py) needs both of them.
+IGATE_DAYS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS igate_days (day TEXT, call TEXT, n INTEGER, PRIMARY KEY (day, call));
+"""
+IGATE_DAYS_KEEP_S = 30 * 86400
+
 PROBE_COLS = ("t", "target", "text", "token", "msg_id", "msgno", "t_first", "window_end", "state", "legs",
               "coverage", "notes", "last_seen")
 
@@ -148,6 +157,13 @@ class Db:
         # table (new; nothing in a version 1 file changes).
         if v < 2:
             self.db.executescript(PROBES_SCHEMA)
+        # 2 -> 3: the igate_days tally. A new file is filled from the start (the
+        # backfill replays every log line); an existing one starts counting now,
+        # so the watch never judges a day it only saw part of.
+        if v < 3:
+            self.db.executescript(IGATE_DAYS_SCHEMA)
+            self.db.execute("INSERT OR IGNORE INTO meta VALUES ('igate_days_since', ?)",
+                            (str(0 if v == 0 else self.clock()),))
         self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.db.execute("INSERT OR IGNORE INTO meta VALUES ('rev', '0')")
 
@@ -211,6 +227,10 @@ class Db:
             "SELECT id, path FROM packets WHERE dup_port=? AND dupkey=? AND t>=? ORDER BY t DESC LIMIT 1",
             (dup_port, dupkey, t - DUP_WINDOW_S)).fetchone()
         outer = d["src"]
+        if port == "rf":
+            self._tally(t, "")
+            if inner and d.get("inner_tcpip"):
+                self._tally(t, outer)      # an iGate put an APRS-IS packet on the air
         # The outer transmitter was heard either way (a digipeated copy, or the
         # same IS packet through a second iGate, is still that station on the air).
         self._heard(outer, t, port, line, used, path_s, d, count=dup is None)
@@ -232,6 +252,11 @@ class Db:
             self._apply(inner, t, subject_port)
         else:
             self._apply(d, t, port)
+
+    def _tally(self, t, call):
+        day = time.strftime("%Y-%m-%d", time.localtime(t))
+        self.db.execute("INSERT INTO igate_days VALUES (?, ?, 1) ON CONFLICT (day, call) DO UPDATE SET n = n + 1",
+                        (day, call))
 
     def _station(self, call, t):
         r = self.db.execute("SELECT * FROM stations WHERE call=?", (call,)).fetchone()
@@ -510,6 +535,9 @@ class Db:
             if gone:
                 self.db.execute("DELETE FROM tombstones WHERE rev <= ?", (gone,))
                 self.set_meta("tomb_floor", gone)
+            r["igate_days"] = self.db.execute(
+                "DELETE FROM igate_days WHERE day < ?",
+                (time.strftime("%Y-%m-%d", time.localtime(now - IGATE_DAYS_KEEP_S)),)).rowcount
             self.set_meta("retained", now)
             self.db.execute("COMMIT")
         except BaseException:
@@ -565,6 +593,14 @@ class Db:
 
     def rev(self):
         return int(self.meta("rev", 0))
+
+    def igate_day(self, day):
+        """One local day's tally (YYYY-MM-DD): RF frames heard, and the APRS-IS
+        packets each iGate sent onto the air, every copy counted."""
+        rows = self.db.execute("SELECT call, n FROM igate_days WHERE day=?", (day,)).fetchall()
+        return {"day": day, "rf_frames": sum(n for c, n in rows if c == ""),
+                "igates": {c: n for c, n in rows if c != ""},
+                "since": float(self.meta("igate_days_since", 0) or 0)}
 
     def heard(self, n=100):
         """The page's heard list, as the hub kept it in memory."""
