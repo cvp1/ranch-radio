@@ -31,13 +31,24 @@ four keys only (listen, schedule, ax25.beacon.every, agwpe.addr; the file
 holds the Winlink password, nothing else is read or logged): a config that
 would make Pat listen, beacon or run scheduled connects on its own keeps Pat
 from being launched at all, with the reason on the page (preflight()).
+
+Listen windows (plan winlink-listen, listen_start/_end_listen): with a
+host-file plan (listen_plan.ListenPlan, VHF/UHF packet only), the page can
+open a bounded window in which Pat answers stations that call this one:
+the radio tuned (TunedLane), Pat relaunched with --listen, the hub's
+inbound window opened, all read back; ended in the order hub window,
+session, Pat, radio. A record beside --addons-state lets the next start
+undo a window a crash left, before any Pat runs.
 """
 
 import asyncio
 import json
 import logging
+import os
 import re
 import shlex
+import signal
+import subprocess
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -46,29 +57,20 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlspli
 import aiohttp
 from aiohttp import web
 
+from listen_plan import (APRS_GUARD_HZ, APRS_HZ, MIN_HOURS, PACKET_BANDS, ListenError,  # noqa: F401
+                         ListenPlan, packet_band_of)
 from pat_config import pat_config_path, preflight  # noqa: F401 - re-exported for callers
 
 log = logging.getLogger("winlink")
 
 BOXES = ("in", "out", "sent", "archive")
 RADIO_TRANSPORTS = ("ardop", "ax25", "ax25+agwpe", "ax25+linux", "ax25+serial-tnc")
-# Where a packet (ax25*) URL may put us: the VHF/UHF segments where US
-# amateurs may send data, 47 CFR 97.305(c) (eCFR, current as of 2026-11-06;
-# the same table at law.cornell.edu/cfr/text/47/97.305):
-#   2 m     144.1-148.0 MHz   MCW, phone, image, RTTY, data, test
-#   1.25 m  222-225 MHz       RTTY, data, test, MCW, phone, SS, image
-#           (219-220 MHz is data too, but 97.303(l)(1) restricts it to fixed
-#           point-to-point digital message forwarding: not offered)
-#   70 cm   entire band       MCW, phone, image, RTTY, data, SS, test
-#           (US band 420-450 MHz, 97.301(a))
-# Below 144.1 MHz on 2 m is CW only: a packet URL at 144.050 is refused.
-# Only for packet URLs: the HF band list in server.py also drives auto-tune
-# and codec levels, and an HF rig never tunes these. (Without the VHF list
-# every packet gateway was refused as off-band, linux-station 2026-10-17,
-# N7RCC-10 on 145.010.) Plan winlink-listen's validator uses the same table.
-PACKET_BANDS = [("2 m", 144.1e6, 148e6), ("1.25 m", 222e6, 225e6), ("70 cm", 420e6, 450e6)]
-# The national APRS channel, never a Winlink packet frequency (+-10 kHz).
-APRS_HZ, APRS_GUARD_HZ = 144.390e6, 10e3
+# Where a packet (ax25*) URL may put us: the VHF/UHF data sub-bands of 47 CFR
+# 97.305(c), never the APRS channel; the table lives in listen_plan.py, which
+# the listen window's validator (and render.py) share. Only for packet URLs:
+# the HF band list in server.py also drives auto-tune and codec levels, and an
+# HF rig never tunes these. (Without the VHF list every packet gateway was
+# refused as off-band, linux-station 2026-10-17, N7RCC-10 on 145.010.)
 VHF_HZ = 100e6               # at and above this, a packet URL is checked against PACKET_BANDS
 TRANSPORTS = RADIO_TRANSPORTS + ("telnet",)
 LOG_KEEP = 300               # log lines kept for a page that opens later
@@ -92,6 +94,14 @@ PREFLIGHT_RETRY_S = 30.0     # Pat's config refused: look at it again this often
 STOP_WAIT_S = 5.0            # stop(): how long Pat has to exit on SIGTERM before SIGKILL
 CONNECT_LINE_S = 10.0        # a "Got connect" log line names the caller of an edge this recent
 GOT_CONNECT = re.compile(r"Got connect \(([^:()]+):([^()]+)\)")
+# Listen windows (plan winlink-listen B2-B5).
+LISTEN_FILE = "winlink-listen.json"   # the window's record, beside --addons-state
+READBACK_S = 5.0             # a listen start's read-back: Pat's listener, the hub's registration and window
+HUB_UNTIL_SLACK_S = 5.0      # the hub's window must end within this of ours
+LISTEN_POLL_S = 1.0          # the window's watcher looks this often (until, the hub, the add-ons)
+HUB_POLL_S = 5.0             # ...and asks the hub this often
+HUB_MISSES = 3               # the hub not answering this many times in a row ends the window
+LINK_WAIT_S = 600.0          # a hub link that outlives a window's end: the radio waits this long for it
 
 
 def remote_call(remote_addr):
@@ -160,11 +170,6 @@ def check_url(url, band_of):
         elif band_of(hz) is None:
             return f"{float(freq[0]):g} kHz is outside the amateur bands; not transmitting there."
     return None
-
-
-def packet_band_of(hz):
-    """The packet data sub-band (PACKET_BANDS) name hz is in, or None."""
-    return next((n for n, lo, hi in PACKET_BANDS if lo <= hz <= hi), None)
 
 
 def check_peer(url, mycall):
@@ -323,10 +328,11 @@ class TunedLane(NoLane):
     channel the radio is on would put a Winlink call out on the wrong
     frequency (the APRS channel, as like as not)."""
 
-    def __init__(self, name, tuner, notice):
+    def __init__(self, name, tuner, notice, listening=False):
         super().__init__(name, notice)
         self.tuner = tuner
         self.tuned = None               # the tuner's result while the radio is off its channel
+        self.listening = listening      # a listen window's lane (B2), not a session's
 
     async def arm(self, ws, url):
         hz = url_hz(url)
@@ -336,14 +342,18 @@ class TunedLane(NoLane):
         if not r.ok:
             log.warning("winlink: packet via %s: not tuned to %.4f MHz (%s); not connecting",
                         self.name, hz / 1e6, r.why)
-            self.notice(f"Not connecting: the {self.name} could not be tuned to {hz / 1e6:.3f} MHz "
-                        f"({r.why}). Tune it by hand and connect without freq=, or fix the cause.", "warn", ws)
+            if self.listening:
+                self.notice(f"Not listening: the {self.name} could not be tuned to {hz / 1e6:.3f} MHz "
+                            f"({r.why}).", "warn", ws)
+            else:
+                self.notice(f"Not connecting: the {self.name} could not be tuned to {hz / 1e6:.3f} MHz "
+                            f"({r.why}). Tune it by hand and connect without freq=, or fix the cause.", "warn", ws)
             return False
         self.tuned = r
         self.extra_grace_s = getattr(self.tuner, "restore_closing_s", 0.0)
         log.info("winlink: packet via %s: tuned to %.4f MHz (%s)", self.name, hz / 1e6, r.how)
-        self.notice(f"{self.name} tuned to {hz / 1e6:.3f} MHz ({r.how}); back to {r.back} after the session.",
-                    "info", ws)
+        self.notice(f"{self.name} tuned to {hz / 1e6:.3f} MHz ({r.how}); back to {r.back} after the "
+                    f"{'window' if self.listening else 'session'}.", "info", ws)
         return True
 
     async def end(self, started, ok, reason, closing, notify):
@@ -389,6 +399,7 @@ class PatEngine:
         self.blocked = None             # preflight's refusal: Pat is not launched
         self._blocked_gen = None
         self.proc = None
+        self.proc_argv = None           # the running child's argv (built from `want` at its spawn)
         self.proc_gen = None
         self.status_gen = None
         # Pat's occupancy (A4), whoever started its exchange. _status_live:
@@ -419,6 +430,26 @@ class PatEngine:
         self._outbox_lock = asyncio.Lock()
         self._tasks = []
         self.running = False         # between start() and stop(): the Winlink add-on's switch
+        # Listen windows (B2-B5). listen_plan: the host's winlink.listen (None:
+        # not offered, hidden). listening: the open window. _listen_busy:
+        # "starting"/"ending" while one is being opened or closed (it excludes
+        # connects and outbox changes like a window does). The record on disk
+        # (listen_path) lets the next start undo a window a crash left.
+        try:
+            self.listen_plan = ListenPlan.from_args(args)
+        except ListenError as e:
+            log.error("winlink: listening not offered: %s", e)
+            self.listen_plan = None
+        state = getattr(args, "addons_state", None)
+        self.listen_path = (os.path.join(os.path.dirname(os.path.expanduser(state)), LISTEN_FILE)
+                            if state else None)
+        self.listening = None
+        self._listen_busy = None
+        self._listen_lane = None
+        self._listen_task = None
+        self._listen_end_task = None
+        self._listen_restore = None
+        self._listen_abort = False      # Stop listening (or stop()) while a window is still starting
 
     # --- lifecycle ---
 
@@ -440,6 +471,9 @@ class PatEngine:
             self._wake.clear()
             self._expect_exit = self.blocked = None
             self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            # A window a crash left: closed, and no listening Pat left, before
+            # any Pat is launched (B5). Never resumed.
+            await self._recover_listen()
             self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._events()),
                            asyncio.create_task(self._inbound_watch())]
             self.running = True
@@ -448,6 +482,21 @@ class PatEngine:
         self.running = False
         self._closing = True
         self._wake.set()                   # a supervisor napping (crashed Pat, refused config) returns
+        self._listen_abort = True          # a window still starting undoes itself (it sees _closing too)
+        if self._listen_busy == "starting":
+            end = time.monotonic() + LIFE_WAIT_S + ABORT_GRACE_S
+            while self._listen_busy == "starting" and time.monotonic() < end:
+                await asyncio.sleep(0.05)
+        if self._listen_end_task and not self._listen_end_task.done():
+            await asyncio.wait({self._listen_end_task}, timeout=3 * ABORT_GRACE_S + 2 * STOP_WAIT_S)
+        if self.listening or self._listen_busy or self._listen_lane:
+            # B4 from stop(): the hub window, Pat and the radio, in that order.
+            try:
+                await asyncio.wait_for(self._end_listen("the server is stopping", stopping=True),
+                                       3 * ABORT_GRACE_S + 2 * STOP_WAIT_S)
+            except (TimeoutError, asyncio.CancelledError):
+                log.warning("winlink: ending the listen window was cut short (stopping); the next start "
+                            "finishes it from its record")
         end = time.monotonic() + ABORT_GRACE_S
         while self._admitting and time.monotonic() < end:
             await asyncio.sleep(0.05)      # a connect arming its lane: it sees _closing and undoes it
@@ -523,6 +572,9 @@ class PatEngine:
                 await self._nap(30)
                 continue
             self.proc, self.proc_gen, self._spawn_req = proc, gen, covers
+            self.proc_argv = argv
+            if "--listen" in argv:
+                self._note_listen_child(proc.pid, argv)
             if self._closing:              # stopped while it was being started
                 await self._end_child(proc)
                 return
@@ -685,6 +737,15 @@ class PatEngine:
         if await self._wait_gone(ib, self.proc, ABORT_GRACE_S):
             log.info("winlink: the session with %s ended on a disconnect", call)
             return
+        await self._escalate(ib)
+
+    async def _escalate(self, ib, gone=None):
+        """A graceful disconnect did not end the exchange: SIGTERM Pat (its
+        first one aborts the exchange and keeps running, F9), then SIGKILL;
+        the hub drops a dead client's links (F12). The owner respawns Pat
+        from `want`. gone(proc, seconds): the end test (default: _wait_gone)."""
+        call = ib["call"]
+        gone = gone or (lambda proc, seconds: self._wait_gone(ib, proc, seconds))
         async with self._life:             # the owner signals Pat, and respawns it
             proc = self.proc
             if self._closing or proc is None or proc.returncode is not None:
@@ -695,7 +756,7 @@ class PatEngine:
             gen = self.want["gen"]
             self._expect_exit = proc
             proc.terminate()
-            if not await self._wait_gone(ib, proc, ABORT_GRACE_S):
+            if not await gone(proc, ABORT_GRACE_S):
                 log.warning("winlink: %s still connected after SIGTERM; killing Pat (SIGKILL)", call)
                 proc.kill()
             try:
@@ -729,7 +790,7 @@ class PatEngine:
         return {**self.lane_state(), "session": self.session_url, "peer": self.session_peer,
                 "via": self.lane.name if self.lane else None,
                 "modems": list(self.hf_modems), "blocked": self.blocked,
-                "inbound": self.inbound, "pat_busy": self.pat_busy,
+                "inbound": self.inbound, "pat_busy": self.pat_busy, "listen": self.listen_state(),
                 "mycall": self.mycall, "status": self.status, "log": list(self.lines)[-100:]}
 
     # --- sessions ---
@@ -738,6 +799,9 @@ class PatEngine:
         st = self.station
         if self._admitting or (self.session and not self.session.done()):
             st.notice("A Winlink session is already running.", "warn", ws)
+            return
+        if self.listening or self._listen_busy:
+            st.notice(self._listen_busy_text() + "; stop listening to connect.", "warn", ws)
             return
         # Reserved from here until the session task exists (or the connect is
         # refused): arming may take seconds (a tuner writing the radio), and a
@@ -1029,18 +1093,536 @@ class PatEngine:
             await self.pat_ws.send_str(json.dumps(
                 {"prompt_response": {"id": str(pid), "value": str(value), "error": None}}))
 
+    # --- listen windows (plan winlink-listen B2-B5) ---
+    #
+    # A window answers stations that call this one, on the plan's VHF/UHF
+    # packet frequency, for a bounded time: unattended, so automatic control
+    # of a data emission (47 CFR 97.221(b): 6 m and shorter, here only in the
+    # 97.305(c) data sub-bands). Three things are changed and each is undone:
+    # the radio's channel (the UV-PRO tuner, which keeps its own record), Pat
+    # (relaunched with --listen) and the hub's inbound window (A0, which runs
+    # out by itself at `until`, whatever happens here). A page closing does
+    # not end a window: the hub's expiry is the independent bound.
+
+    def listen_state(self):
+        """What a page needs: None when listening is not set up (hidden)."""
+        if self.listen_plan is None:
+            return None
+        w = self.listening
+        return {"plan": self.listen_plan.describe(), "busy": self._listen_busy,
+                "window": None if w is None else {k: w[k] for k in ("method", "hz", "since", "until", "call", "name")}}
+
+    def _listen_busy_text(self):
+        plan = self.listen_plan
+        on = f" on {plan.mhz_text()} MHz" if plan else ""
+        if self._listen_busy == "starting":
+            return f"A listen window is starting{on}"
+        if self._listen_busy == "ending":
+            return "A listen window is ending"
+        return f"Listening for calls{on}"
+
+    def _send_listen(self):
+        self._send({"listen": self.listen_state()})
+
+    # the record (B5)
+
+    def _read_listen(self):
+        if not self.listen_path:
+            return None
+        try:
+            with open(self.listen_path) as f:
+                rec = json.load(f)
+            return rec if isinstance(rec, dict) else None
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as e:
+            log.warning("winlink: listen record %s not readable (%s); treating it as a window to end",
+                        self.listen_path, e)
+            return {"stage": "unreadable"}
+
+    def _save_listen(self, rec):
+        os.makedirs(os.path.dirname(self.listen_path), exist_ok=True)
+        tmp = self.listen_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.listen_path)
+
+    def _set_listen_stage(self, rec, stage):
+        """The record on disk at a new stage (keeping the pid the supervisor noted)."""
+        rec["stage"] = stage
+        self._save_listen({**rec, **{k: v for k, v in (self._read_listen() or {}).items()
+                                     if k in ("pid", "argv")}})
+
+    def _drop_listen(self):
+        if self.listen_path and os.path.exists(self.listen_path):
+            try:
+                os.remove(self.listen_path)
+            except OSError as e:
+                log.warning("winlink: listen record %s not removed: %s", self.listen_path, e)
+
+    def _note_listen_child(self, pid, argv):
+        """The supervisor started a listening Pat: its pid goes in the record
+        (a crash recovery ends it, and only it)."""
+        if not self.listen_path:
+            return                      # no state kept here (and no window can be opened)
+        rec = self._read_listen()
+        if rec is None:
+            log.warning("winlink: a listening Pat (pid %d) started with no window record", pid)
+            rec = {"stage": "orphan"}
+        rec.update(pid=pid, argv=list(argv), pat_port=self.port)
+        try:
+            self._save_listen(rec)
+        except OSError as e:
+            log.warning("winlink: listen record not written: %s", e)
+
+    # the hub
+
+    async def _hub_status(self, hub):
+        try:
+            async with self.http.get(f"{hub}/api/status", timeout=aiohttp.ClientTimeout(total=5)) as r:
+                d = await r.json(content_type=None)
+            return d if isinstance(d, dict) else None
+        except (TimeoutError, aiohttp.ClientError, OSError, ValueError, AttributeError):
+            return None
+
+    async def _hub_post(self, hub, path, body):
+        """(HTTP status, JSON body) or (None, why)."""
+        try:
+            async with self.http.post(f"{hub}{path}", json=body, headers={"X-Ranch-Radio": "1"},
+                                      timeout=aiohttp.ClientTimeout(total=5)) as r:
+                return r.status, await r.json(content_type=None)
+        except (TimeoutError, aiohttp.ClientError, OSError, ValueError, AttributeError) as e:
+            return None, str(e) or type(e).__name__
+
+    async def _hub_close(self, hub):
+        """Close the hub's inbound window (a few tries). True once it says so."""
+        if not hub:
+            return False
+        for i in range(3):
+            code, body = await self._hub_post(hub, "/api/inbound/close", {})
+            if code == 200:
+                log.info("winlink: the hub's inbound window is closed")
+                return True
+            log.warning("winlink: closing the hub's inbound window: %s %s", code, body)
+            await asyncio.sleep(0.5 * (i + 1))
+        log.warning("winlink: the hub's inbound window could not be closed; it runs out by itself at its end")
+        return False
+
+    async def _hub_links(self, hub, call):
+        """The hub's links whose local end is `call`, or None (hub not answering)."""
+        st = await self._hub_status(hub)
+        if st is None or not isinstance(st.get("links"), list):
+            return None
+        return [l for l in st["links"] if str(l.get("local", "")).upper() == call.upper()]
+
+    async def _links_clear(self, hub, call, seconds):
+        end = time.monotonic() + seconds
+        while True:
+            links = await self._hub_links(hub, call)
+            if links == []:
+                return True
+            if time.monotonic() >= end:
+                return False
+            await asyncio.sleep(0.2)
+
+    # start (B2)
+
+    async def listen_start(self, ws, hours=None):
+        st, plan = self.station, self.listen_plan
+
+        def refuse(why):
+            log.info("winlink: not listening: %s", why)
+            st.notice(f"Not listening: {why}.", "warn", ws)
+
+        if plan is None:
+            return refuse("listening is not set up on this station (the host file's winlink.listen)")
+        if not self.running:
+            return refuse("Winlink is switched off")
+        try:
+            hours = plan.max_hours if hours is None else float(hours)
+        except (TypeError, ValueError):
+            return refuse(f"{hours!r} is not a number of hours")
+        if not MIN_HOURS <= hours <= plan.max_hours:
+            return refuse(f"a window is {MIN_HOURS:g} to {plan.max_hours:g} hours")
+        if self.listening or self._listen_busy:
+            return refuse("a listen window is already open" if self.listening and not self._listen_busy
+                          else self._listen_busy_text()[:1].lower() + self._listen_busy_text()[1:])
+        if self._admitting or self._our_session():
+            return refuse("a Winlink session is running")
+        if self.inbound:
+            return refuse(f"Pat is in a session with {self.inbound['call']}")
+        if self.pat_busy:
+            return refuse("Pat is busy (connected or dialing)" if self._status_live
+                          else "Pat's state is not known (no status from it)")
+        if self.blocked:
+            return refuse(self.blocked)
+        if not self.listen_path:
+            return refuse("this server keeps no state (--addons-state), so a window could not be undone "
+                          "after a crash")
+        # Reserved from here (no await above): a connect or a second window waits.
+        self._listen_busy = "starting"
+        self._listen_abort = False
+        self._send_listen()
+        handed = False
+        try:
+            target_for = getattr(st, "winlink_listen_target", None)
+            target, why = target_for() if target_for else (None, "no packet hub on this station")
+            if why:
+                return refuse(why[:1].lower() + why[1:].rstrip("."))
+            name, hub, tuner = target["name"], target["hub"], target["tuner"]
+            if tuner is None:
+                return refuse(f"the UV-PRO add-on is off, so nothing can put the {name} on "
+                              f"{plan.mhz_text()} MHz and back")
+            hs = await self._hub_status(hub)
+            if self._closing or self._listen_abort:
+                return refuse("stopped before it started")
+            if hs is None:
+                return refuse(f"the {name} packet hub is not answering")
+            if not (hs.get("tx") or {}).get("enabled"):
+                return refuse(f"the {name} hub's transmit is off, so every call would be ignored; "
+                              "turn it on first")
+            call = (self.mycall or "").upper()
+            if not call:
+                return refuse("Pat has not said this station's call yet")
+            why = self.preflight()
+            if why:
+                return refuse(why)
+            now = time.time()
+            rec = {"method": plan.method, "hz": plan.hz, "since": now, "until": now + hours * 3600,
+                   "stage": "tuning", "hub": hub, "name": name, "call": call, "pat_port": self.port}
+            try:
+                self._save_listen(rec)    # before the radio is touched: a crash from here is undone
+            except OSError as e:
+                return refuse(f"the window's record could not be written ({e})")
+            lane = TunedLane(name, tuner, st.notice, listening=True)
+            try:
+                tuned = await lane.arm(ws, f"{plan.method}:///{call}?freq={plan.hz / 1000:g}")
+            except Exception as e:         # noqa: BLE001 - refused, nothing left changed
+                log.exception("winlink: tuning %s for listening", name)
+                tuned, lane.tuned = False, None
+                st.notice(f"Not listening: tuning the {name} failed ({type(e).__name__}: {e}).", "warn", ws)
+            if not tuned:
+                self._drop_listen()       # the tuner put back whatever it had changed
+                log.info("winlink: not listening: the %s was not tuned", name)
+                return
+            self._listen_lane = lane
+            self.listening = {**rec, "stage": "starting"}
+            handed = True
+            await self._listen_open(ws, rec, hours)
+        finally:
+            if not handed:
+                self._listen_busy = None
+                self._send_listen()
+
+    async def _listen_open(self, ws, rec, hours):
+        """Tuned: Pat with --listen, the hub's window, then read it all back.
+        Anything missing runs the end path (B4)."""
+        st = self.station
+
+        def still_wanted():
+            if self._closing:
+                raise PatRestartError("the server is stopping")
+            if self._listen_abort:
+                raise PatRestartError("stopped from the page")
+        try:
+            still_wanted()
+            busy = (self._closing and "the server is stopping") or (
+                self.inbound and f"Pat is in a session with {self.inbound['call']}") or (
+                self._our_session() and "a Winlink session started")
+            if busy:
+                raise PatRestartError(busy)
+            self._set_listen_stage(rec, "starting")
+            self.want["listen"] = rec["method"]
+            await self.restart_pat("a listen window")
+            still_wanted()
+            code, body = await self._hub_post(rec["hub"], "/api/inbound",
+                                              {"calls": [rec["call"]], "seconds": max(1, rec["until"] - time.time())})
+            if code != 200:
+                raise PatRestartError(f"the hub did not open its inbound window ({code}: {body})")
+            why = await self._listen_readback(rec)
+            still_wanted()
+            if why:
+                raise PatRestartError(why)
+        except (PatRestartError, OSError) as e:
+            log.warning("winlink: listen window not opened: %s; undoing it", e)
+            st.notice(f"Not listening: {e}. Everything is being put back.", "warn", ws)
+            await self._end_listen(f"not opened: {e}")
+            return
+        self._set_listen_stage(rec, "listening")
+        self.listening = dict(rec)
+        self._listen_busy = None
+        log.warning("winlink: listening for calls to %s on %.4f MHz (%s) until %s", rec["call"], rec["hz"] / 1e6,
+                    rec["method"], time.strftime("%H:%M", time.localtime(rec["until"])))
+        st.notice(f"Listening for calls to {rec['call']} on {rec['hz'] / 1e6:.3f} MHz for {hours:g} h. APRS and "
+                  "the iGate are off-frequency meanwhile.", "info")
+        self._send_listen()
+        self._listen_task = asyncio.create_task(self._listen_watch())
+
+    async def _listen_readback(self, rec):
+        """Why the window isn't really open (None = it is): Pat's Status lists
+        exactly the method, the hub has MyCall registered and its inbound
+        window for MyCall ends within HUB_UNTIL_SLACK_S of ours."""
+        end = time.monotonic() + READBACK_S
+        why = "no read-back yet"
+        while True:
+            listeners = self.status.get("active_listeners") if self._status_live else None
+            hs = await self._hub_status(rec["hub"])
+            if listeners != [rec["method"]]:
+                why = f"Pat is listening on {listeners!r}, not [{rec['method']!r}]"
+            elif hs is None:
+                why = "the hub is not answering"
+            elif not any(rec["call"] in [str(c).upper() for c in a.get("calls", [])]
+                         for a in (hs.get("clients") or {}).get("agw", [])):
+                why = f"Pat has not registered {rec['call']} with the hub"
+            elif not (hs.get("inbound") and rec["call"] in hs["inbound"].get("calls", [])
+                      and abs(hs["inbound"].get("until", 0) - rec["until"]) <= HUB_UNTIL_SLACK_S):
+                why = f"the hub's inbound window is {hs.get('inbound')!r}"
+            else:
+                return None
+            if time.monotonic() >= end:
+                return why
+            await asyncio.sleep(0.2)
+
+    async def _listen_watch(self):
+        """End the window at `until`, or when what it stands on goes away."""
+        misses, asked = 0, 0.0
+        while True:
+            await asyncio.sleep(LISTEN_POLL_S)
+            w = self.listening
+            if w is None or self._listen_busy:
+                return
+            reason = None
+            if time.time() >= w["until"]:
+                reason = "the window ran out"
+            else:
+                target_for = getattr(self.station, "winlink_listen_target", None)
+                # The add-ons switched off end it at once; the hub itself is
+                # asked here, and must fail HUB_MISSES times in a row (a radio
+                # link that drops for a moment comes back by itself).
+                target, why = target_for(need_up=False) if target_for else (None, "no packet hub")
+                if why:
+                    reason = why.rstrip(".")
+                elif target["tuner"] is None:
+                    reason = "the UV-PRO add-on was switched off"
+                elif time.monotonic() - asked >= HUB_POLL_S:
+                    asked = time.monotonic()
+                    hs = await self._hub_status(w["hub"])
+                    if hs is None or not (hs.get("radio") or {}).get("up"):
+                        misses += 1
+                        if misses >= HUB_MISSES:
+                            reason = ("the packet hub stopped answering" if hs is None
+                                      else "the packet hub's radio is down")
+                    else:
+                        misses = 0
+                        if not (hs.get("inbound") and w["call"] in hs["inbound"].get("calls", [])):
+                            reason = "the hub's inbound window is gone (the hub restarted?)"
+            if reason:
+                asyncio.ensure_future(self._end_listen(reason))
+                return
+
+    # end (B4)
+
+    async def listen_stop(self, ws=None):
+        if self._listen_busy == "starting":
+            # Still being set up: it is undone at its next step (one end path).
+            self._listen_abort = True
+            self.station.notice("Stopping: the window is undone as soon as its current step is done.", "info", ws)
+            return
+        if not self.listening:
+            if self._listen_busy != "ending":
+                self.station.notice("Not listening.", "info", ws)
+            return
+        await self._end_listen("stopped from the page")
+
+    async def _end_listen(self, reason, stopping=False):
+        """One end at a time; a second caller waits for the first."""
+        t = self._listen_end_task
+        if t is None or t.done():
+            t = self._listen_end_task = asyncio.ensure_future(self._do_end_listen(reason, stopping))
+        await asyncio.shield(t)
+
+    async def _do_end_listen(self, reason, stopping):
+        st = self.station
+        rec = {**(self._read_listen() or {}), **(self.listening or {})}
+        hub, call = rec.get("hub"), (rec.get("call") or self.mycall or "").upper()
+        lane, started = self._listen_lane, rec.get("since") or time.time()
+        self._listen_busy = "ending"
+        self._send_listen()
+        log.warning("winlink: listen window ending: %s", reason)
+        t = self._listen_task
+        if t and not t.done() and t is not asyncio.current_task():
+            t.cancel()
+        # 1. Revoke first: nothing new may start answering.
+        self.want["listen"] = None
+        if self.listen_path and rec:
+            try:
+                self._save_listen({**rec, "stage": "ending"})
+            except OSError as e:
+                log.warning("winlink: listen record not written: %s", e)
+        await self._hub_close(hub)
+        # 2. An exchange still up: graceful, then the owner's signals (A4).
+        if hub and call:
+            links = await self._hub_links(hub, call)
+            if self.inbound or links:
+                who = self.inbound["call"] if self.inbound else links[0].get("remote", "?")
+                log.info("winlink: %s is still connected; disconnecting", who)
+                await self._disconnect(dirty=False)
+                if not await self._links_clear(hub, call, ABORT_GRACE_S) and not stopping:
+                    ib = self.inbound or {"call": who, "remote": f"AX.25:{who}"}
+                    await self._escalate(ib, gone=lambda proc, s: self._links_clear(hub, call, s))
+        # 3. Pat without the flag, read back.
+        proc = self.proc
+        if stopping:
+            async with self._life:
+                await self._end_child(self.proc)
+        elif proc is not None and proc.returncode is None and "--listen" in (self.proc_argv or ["--listen"]):
+            try:
+                await self.restart_pat("the listen window ended")
+            except PatRestartError as e:
+                log.warning("winlink: Pat not restarted after the window (%s); it is not running", e)
+        listeners = await self._listeners_cleared()
+        if listeners:
+            log.error("winlink: Pat still lists listeners %r after the window ended", listeners)
+        # 4. The radio back, only once no link is left on it.
+        clear = (not hub or not call
+                 or await self._links_clear(hub, call, ABORT_GRACE_S if not stopping else STOP_WAIT_S))
+        self.listening = None
+        if lane is not None and clear:
+            await self._listen_restore_radio(lane, started, reason, stopping)
+        elif lane is not None:
+            log.warning("winlink: a packet link on the %s outlived the window; the radio goes back once it "
+                        "drops", lane.name)
+            st.notice(f"A packet link on the {lane.name} is still up; the radio goes back once it drops.", "warn")
+            if not stopping:
+                self._listen_restore = asyncio.ensure_future(self._restore_when_clear(lane, hub, call, started, reason))
+                self._listen_lane = None
+                self._listen_busy = None
+                self._send_listen()
+                return
+        self._listen_lane = None
+        self._drop_listen()
+        self._listen_busy = None
+        self._send_listen()
+        st.notice(f"Listening ended: {reason}.", "info")
+        log.warning("winlink: listen window ended (%s)", reason)
+
+    async def _listeners_cleared(self):
+        """Pat's listeners after the window: [] (or Pat not running) is clear."""
+        end = time.monotonic() + READBACK_S
+        while True:
+            p = self.proc
+            if p is None or p.returncode is not None or self.blocked:
+                return []
+            got = self.status.get("active_listeners") if self._status_live else None
+            if got == []:
+                return []
+            if time.monotonic() >= end:
+                return got
+            await asyncio.sleep(0.1)
+
+    async def _listen_restore_radio(self, lane, started, reason, stopping):
+        try:
+            await lane.end(started, True, reason, (lambda: True) if stopping else (lambda: self._closing), self._send)
+        except Exception:                  # noqa: BLE001 - the tuner keeps its own record and retries
+            log.exception("winlink: putting the %s back after listening", lane.name)
+
+    async def _restore_when_clear(self, lane, hub, call, started, reason):
+        if await self._links_clear(hub, call, LINK_WAIT_S):
+            await self._listen_restore_radio(lane, started, reason, False)
+            self._drop_listen()
+            return
+        log.error("winlink: a packet link outlived the listen window by %gs; the %s was NOT put back",
+                  LINK_WAIT_S, lane.name)
+        self.station.notice(f"The {lane.name} was NOT put back after listening: a packet link stayed up. "
+                            "Check the radio.", "warn")
+
+    # crash recovery (B5)
+
+    async def _recover_listen(self):
+        """A record left by a server that stopped mid-window: close the hub's
+        window, end a listening Pat that outlived it, put the radio back. Never
+        resumed. Runs at start, before any Pat is launched."""
+        rec = self._read_listen()
+        if rec is None:
+            return
+        log.warning("winlink: a listen window (stage %s) was left by a server that did not end it; ending it",
+                    rec.get("stage"))
+        await self._hub_close(rec.get("hub"))
+        pid = rec.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            await self._end_stale_pat(pid, rec)
+        target_for = getattr(self.station, "winlink_listen_target", None)
+        target, _ = target_for(need_hub=False) if target_for else (None, None)
+        tuner = (target or {}).get("tuner")
+        if tuner is None:
+            log.warning("winlink: no UV-PRO add-on to put the radio back after the old window; its own record "
+                        "does that when it starts")
+            self._drop_listen()
+            return
+        self._listen_restore = asyncio.ensure_future(self._recover_radio(tuner, rec))
+
+    async def _recover_radio(self, tuner, rec):
+        done, why = await tuner.restore()
+        if done:
+            log.info("winlink: the radio is back after the old listen window")
+            self.station.notice("Winlink: a listen window a restart interrupted is ended; the radio is back on "
+                                "its channel.", "info")
+        else:
+            log.warning("winlink: the radio is not back after the old listen window yet (%s); the UV-PRO "
+                        "add-on keeps trying", why)
+        self._drop_listen()
+
+    @staticmethod
+    def _command_of(pid):
+        try:
+            r = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
+                               timeout=5)
+            return r.stdout.strip() if r.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    async def _end_stale_pat(self, pid, rec):
+        """SIGTERM, then SIGKILL, the recorded pid, but only if it still runs
+        a listening Pat on our port (a pid can be reused)."""
+        cmd = self._command_of(pid)
+        port = rec.get("pat_port") or self.port
+        if not cmd:
+            log.info("winlink: the old listening Pat (pid %d) is gone", pid)
+            return
+        if "--listen" not in cmd.split() or f"127.0.0.1:{port}" not in cmd or " http" not in f" {cmd}":
+            log.warning("winlink: pid %d is not the old listening Pat (%r); left alone", pid, cmd[:200])
+            return
+        log.warning("winlink: the old listening Pat (pid %d) outlived its server; stopping it", pid)
+        for sig, wait in ((signal.SIGTERM, STOP_WAIT_S), (signal.SIGKILL, STOP_WAIT_S)):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                return
+            end = time.monotonic() + wait
+            while time.monotonic() < end:
+                await asyncio.sleep(0.1)
+                if self._command_of(pid) != cmd:
+                    return
+        log.error("winlink: the old listening Pat (pid %d) did not exit", pid)
+
     # --- HTTP: the allow-list of Pat's API ---
 
     def outbox_busy(self):
         """The outbox is Pat's: a session of ours arming (admission) or
         running, or Pat in any exchange (one we did not start too) or its
         state unknown."""
-        return self._admitting or self._our_session() or self.pat_busy or self.inbound is not None
+        return (self._admitting or self._our_session() or self.pat_busy or self.inbound is not None
+                or self.listening is not None or bool(self._listen_busy))
 
     async def _outbox_change(self, call):
         async with self._outbox_lock:
             if self.outbox_busy():
-                if self.inbound and not self._our_session():
+                if (self.listening or self._listen_busy) and not self.inbound:
+                    text = (self._listen_busy_text() + " (a station that calls may take the outbox); "
+                            "it can't be changed until listening ends.")
+                elif self.inbound and not self._our_session():
                     text = (f"Pat is in a session with {self.inbound['call']}; the outbox can't be "
                             "changed until it ends.")
                 elif not (self._admitting or self._our_session()) and not self._status_live:

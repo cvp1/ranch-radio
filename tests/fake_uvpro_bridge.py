@@ -25,11 +25,17 @@ both VFO records reading 0.000000 MHz. FAKE_UVPRO_FAIL_NEXT=<cmd> ("settings"
 or "channel") answers the next command of that kind done ok:false; a channel
 write is applied (and sent back) first, as the real bridge's write-then-read-
 back may leave the radio changed when it reports a failure. FAKE_UVPRO_SETTINGS
-(JSON) is merged into the settings the radio starts with.
+(JSON) is merged into the settings the radio starts with. $FAKE_UVPRO_STATE
+names a file the "radio" keeps its settings, channels and VFOs in across
+bridge restarts, as a real radio keeps its channel when the server dies
+(read at start if it exists, written after every change). With
+$FAKE_UVPRO_LOG_T set each logged command gets "t", the time it arrived;
+with $FAKE_UVPRO_PROBE (a path), "probe": whether that file existed then.
 """
 import json
 import os
 import sys
+import time
 
 if len(sys.argv) > 1 and sys.argv[1] == "absent":
     print(json.dumps({"ev": "status", "connected": False, "error": "BleakDeviceNotFoundError: not found"}), flush=True)
@@ -80,6 +86,21 @@ REGIONS = ["HOME", "TRAVEL", "AIR"]
 EXTRAS = {"volume": 8, "regions": REGIONS, "region": 0, "fm": {"on": False, "seeking": False, "freq": 91.5},
           "aprs_path": "WIDE1-1,WIDE2-1", "power_control": True}
 POWER = {"on": True}
+STATE_FILE = os.environ.get("FAKE_UVPRO_STATE")
+if STATE_FILE and os.path.exists(STATE_FILE):
+    with open(STATE_FILE) as _f:
+        _saved = json.load(_f)
+    SETTINGS.clear()
+    SETTINGS.update(_saved["settings"])
+    CHANNELS[:] = _saved["channels"]
+    VFOS[:] = _saved["vfos"]
+
+
+def save():
+    if STATE_FILE:
+        with open(STATE_FILE + ".tmp", "w") as f:
+            json.dump({"settings": SETTINGS, "channels": CHANNELS, "vfos": VFOS}, f)
+        os.replace(STATE_FILE + ".tmp", STATE_FILE)
 
 
 def state():
@@ -115,7 +136,11 @@ for line in sys.stdin:
     m = json.loads(line)
     if os.environ.get("FAKE_UVPRO_LOG"):
         with open(os.environ["FAKE_UVPRO_LOG"], "a") as f:
-            f.write(json.dumps(m) + "\n")
+            probe = os.environ.get("FAKE_UVPRO_PROBE")
+            extra = {"t": time.time()} if os.environ.get("FAKE_UVPRO_LOG_T") else {}
+            if probe:
+                extra["probe"] = os.path.exists(probe)
+            f.write(json.dumps({**m, **extra}) + "\n")
     cmd, ref, values = m.get("cmd"), m.get("ref"), m.get("values") or {}
     if cmd == "refresh":
         everything()
@@ -129,6 +154,7 @@ for line in sys.stdin:
         vfo = m["id"] in (251, 252)
         c = next(x for x in (VFOS if vfo else CHANNELS) if x["id"] == m["id"])
         c.update(values)
+        save()
         if "channel" in FAIL_NEXT:
             FAIL_NEXT.discard("channel")
             if vfo:
@@ -152,6 +178,7 @@ for line in sys.stdin:
             emit(ev="done", ref=ref, ok=False, error="MessageReplyError: FAILURE (FAKE_UVPRO_FAIL_NEXT)")
             continue
         SETTINGS.update(values)
+        save()
         emit(ev="settings", values=SETTINGS)
         emit(ev="state", status=state())
         emit(ev="done", ref=ref, ok=True, error=None)

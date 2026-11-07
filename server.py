@@ -487,6 +487,25 @@ class Station(TxAudio):
             return None, f"{scheme} is not set up on this station."
         return winlink.LocalLane(self), None
 
+    def winlink_listen_target(self, need_hub=True, need_up=True):
+        """What a Winlink listen window uses here: ({"hub": its URL, "name",
+        "tuner": the UV-PRO add-on or None}, None), or (None, why not).
+        need_hub=False (crash recovery): just the tuner, whatever the hub;
+        need_up=False (a window's watcher, which asks the hub itself): not
+        the Packet add-on's last poll of the hub."""
+        packet = self.addons.get("packet") if self.addons else None
+        uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
+        if not need_hub:
+            return {"hub": packet.url if packet else None, "name": packet.hub_name if packet else "radio",
+                    "tuner": uv}, None
+        if packet is None:
+            return None, "No packet radio is set up on this station."
+        if not self.addons.is_on("packet"):
+            return None, "The Packet add-on is switched off."
+        if need_up and not packet.state.get("up"):
+            return None, f"The {packet.hub_name} packet hub is not running."
+        return {"hub": packet.url, "name": packet.hub_name, "tuner": uv}, None
+
     async def winlink_hub_links(self):
         """The packet hub's links, or None (no hub here, or it can't be asked):
         how Winlink tells a packet session it did not start has really ended."""
@@ -1277,6 +1296,13 @@ def main():
                    help="port for Pat's API on 127.0.0.1 (never exposed; default 8095)")
     p.add_argument("--winlink-session-max", type=float, default=900,
                    help="seconds a Winlink session may run before it is cut (default 900)")
+    p.add_argument("--winlink-listen", metavar="METHOD=MHZ",
+                   help="offer a listen window on the page: Pat answers stations that call this one "
+                        "on this frequency, through the packet hub, for a bounded time. Only "
+                        "ax25+agwpe, in a VHF/UHF packet data sub-band, never 144.390 "
+                        "(e.g. ax25+agwpe=145.090). Unset = no listening (the host file's winlink.listen)")
+    p.add_argument("--winlink-listen-max-h", type=float, default=4.0, metavar="HOURS",
+                   help="the longest listen window, 0.25 to 12 hours (default 4)")
     p.add_argument("--winlink-ardop-log", metavar="DIR",
                    help="ardopcf's log directory (its --logdir), read only: tells which station "
                         "IDs went on air through the lane and whether one is owed; a session "
@@ -1358,6 +1384,12 @@ def main():
     if args.winlink_pat:
         if not args.winlink_rigctl_port:
             p.error("--winlink-pat needs --winlink-rigctl-port (Pat keys only through that lane)")
+    if args.winlink_listen:
+        from listen_plan import ListenError, ListenPlan
+        try:
+            ListenPlan.from_args(args)
+        except ListenError as e:
+            p.error(str(e))
     saver = None
     if args.codec_save:
         host, _, rid = args.codec_save.partition(":")

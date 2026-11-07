@@ -284,6 +284,12 @@
           <button class="chip wl-connect" id="wl-connect">Connect</button>
           <button class="chip" id="wl-stop" disabled>Stop</button>
         </div>
+        <div class="wl-row wl-listen" id="wl-listen" hidden
+             title="Answer stations that call this one on the listen frequency, for a bounded time (VHF/UHF packet through the hub)">
+          <select id="wl-listen-hours" title="How long to answer calls"></select>
+          <button class="chip wl-connect" id="wl-listen-btn">Listen</button>
+          <button class="chip" id="wl-listen-stop" hidden>Stop listening</button>
+        </div>
         <div class="wl-prompt" id="wl-prompt" hidden>
           <span id="wl-prompt-msg"></span>
           <button class="chip" data-v="continue">Send anyway</button>

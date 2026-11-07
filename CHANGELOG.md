@@ -15,7 +15,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
   unless `POST /api/inbound {"calls", "seconds"}` (this machine only, with
   `X-Ranch-Radio: 1`) opened a window for it; it ends on
   `/api/inbound/close` or by itself, and a restarted hub starts closed.
-  Nothing uses inbound connects yet; a listen window will.
+  Only a listen window (below) opens one.
 - **Pat has one lifecycle owner, and a config check before every start.**
   Start, stop, `restart_pat` and the inbound-session cap go through one
   lock; Pat's command line is built from the wanted state when it is
@@ -55,6 +55,35 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Winlink listen windows: let stations that call this one leave mail.**
+  Off unless the host file sets one up:
+  `"winlink": {"listen": {"ax25+agwpe": {"mhz": 145.090, "max_hours": 4}}}`
+  (VHF/UHF packet through the hub only, inside a 47 CFR 97.305(c) data
+  sub-band, never 144.390; `max_hours` 0.25 to 12, default 4; checked by
+  `render`, passed to a Mac's server as `--winlink-listen` /
+  `--winlink-listen-max-h`, kept in station.json for the station). The
+  Winlink panel then shows **Listen** with a choice of hours; the confirm
+  names the frequency, the hours, and that APRS and the iGate are
+  off-frequency meanwhile. Opening a window writes its record, tunes the
+  UV-PRO to the frequency, relaunches Pat with `--listen ax25+agwpe` and
+  opens the hub's inbound window for MyCall until the window's end, then
+  reads all of it back (anything missing is undone). While it is open,
+  connect and outbox changes are refused (compose still works). It ends
+  on **Stop listening**, at its end, when the hub or an add-on goes away,
+  or when the server stops: the hub's window is closed first, a session
+  still up is disconnected (then Pat signalled), Pat is relaunched without
+  `--listen`, and only once no packet link is left is the radio put back.
+  Closing the page does not end it; the hub's own window expiry is the
+  bound. After a crash, the next start ends it before Pat runs (closes the
+  hub's window, stops a listening Pat that outlived its server, only if it
+  is one, and puts the radio back); a window is never resumed. Not offered:
+  HF listening, always-on listening, the APRS channel, auto-reply, VARA FM.
+- **The UV-PRO's Winlink QSY record survives a restart.** It is written
+  beside the add-on state file (`uvpro-qsy.json`) before the radio is first
+  changed and removed once it is back; a server that died mid packet
+  session leaves it, and the add-on's next start puts the radio back on
+  its channel. (It was kept in memory only: a crash left the radio off
+  its APRS channel.)
 - **Winlink peer-to-peer (P2P).** The session panel's Gateway | Peer switch
   calls another station directly: packet through the hub
   (`ax25+agwpe:///CALL?freq=`), an HF modem the server lists, or telnet

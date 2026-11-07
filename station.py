@@ -403,6 +403,20 @@ class Station:
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError, AttributeError):
             return None
 
+    def winlink_listen_target(self, need_hub=True, need_up=True):
+        """As server.Station.winlink_listen_target: the hub and the tuner a
+        listen window uses, or (None, why not)."""
+        name = self.packet_cfg.get("name") or "UV-PRO"
+        uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
+        hub = self.packet_url.rstrip("/") if self.packet_url else None
+        if not need_hub:
+            return {"hub": hub, "name": name, "tuner": uv}, None
+        if not (self.packet_agwpe and hub):
+            return None, "No packet radio is set up on this station."
+        if need_up and not self.packet_up:
+            return None, f"The {name} packet hub is not running."
+        return {"hub": hub, "name": name, "tuner": uv}, None
+
     def lane_for(self, url, via):
         scheme = urlsplit(url).scheme
         if scheme == "telnet":
@@ -730,11 +744,15 @@ def main():
 
     addon_cfg = dict(cfg.get("addons") or {})
     wl = cfg.get("winlink") or {}
+    from listen_plan import ListenPlan
     if wl.get("pat"):             # Winlink (Pat) is an add-on (addons/winlink.py); the lanes are not
         addon_cfg.setdefault("winlink", {"lane_for": station.lane_for, "engine_args": SimpleNamespace(
             winlink_pat=" ".join(shlex.quote(_expand(w)) for w in shlex.split(wl["pat"])), winlink_pat_port=int(wl.get("pat_port", 8095)),
             winlink_pat_config=_expand(wl["pat_config"]) if wl.get("pat_config") else None,
-            winlink_session_max=float(wl.get("session_max", 900)))})
+            winlink_session_max=float(wl.get("session_max", 900)),
+            # The listen window (winlink.listen), parsed as render.py checked it.
+            winlink_listen=ListenPlan.from_block(wl["listen"]) if "listen" in wl else None,
+            addons_state=cfg.get("addons_state", "~/.local/state/radio-remote/addons.json"))})
     m = cfg.get("mesh") or {}
     if m.get("port"):             # Mesh is an add-on (addons/mesh.py); "mesh" configures it
         addon_cfg.setdefault("mesh", dict(m))

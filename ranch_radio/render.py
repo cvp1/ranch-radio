@@ -331,6 +331,21 @@ def validate(h):
     for name, opts in (h.get("addons") or {}).items():
         if not isinstance(opts, dict):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
+    listen_plan(h)
+
+
+def listen_plan(h):
+    """The host's Winlink listen window (winlink.listen), checked: VHF/UHF
+    packet (ax25+agwpe) only, in a data sub-band, never 144.390, max_hours
+    0.25 to 12. None when the block is absent (the feature stays hidden)."""
+    w = h.get("winlink") or {}
+    if "listen" not in w:
+        return None
+    from listen_plan import ListenError, ListenPlan   # the repo root (as doctor imports pat_config)
+    try:
+        return ListenPlan.from_block(w["listen"])
+    except ListenError as e:
+        raise HostError(f"{h['host']}: {e}") from None
 
 
 # ---------------------------------------------------------------- paths
@@ -471,6 +486,9 @@ def server_args(h, r, pth):
             a += ["--winlink-pat", w["pat"]]
             if w.get("pat_config"):
                 a += ["--winlink-pat-config", pth(w["pat_config"])]
+            plan = listen_plan(h)
+            if plan:
+                a += plan.flags()
         a += ["--winlink-rigctl-port", str(r["lane"])]
         if r.get("codec_db"):
             a += ["--winlink-codec-db", r["codec_db"]]

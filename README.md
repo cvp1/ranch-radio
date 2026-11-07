@@ -234,6 +234,28 @@ the APRS channel, 144.390 MHz. Another station calling yours is shown as
 "Answering CALL"; the outbox is Pat's until it ends, and it is capped like
 your own sessions.
 
+**Listening for calls (a listen window).** So that others can leave mail
+at your station when the internet or the gateways are down, the Winlink
+panel can answer stations that call yours, on one VHF/UHF packet
+frequency, for a bounded time. It is offered only when the host file names
+the frequency, a programmed FM simplex channel on the hub's radio inside
+the 2 m (from 144.1 MHz), 1.25 m or 70 cm data sub-band, never 144.390:
+
+```json
+"winlink": {"pat": "pat", "listen": {"ax25+agwpe": {"mhz": 145.090, "max_hours": 4}}}
+```
+
+**Listen** (two clicks) tunes the radio there, relaunches Pat listening on
+the packet hub and opens the hub's inbound window; APRS and the iGate are
+off-frequency until it ends. **Stop listening**, the window's end (at most
+`max_hours`, 0.25 to 12), the hub or an add-on going away, or the server
+stopping close it in a fixed order: the hub's window, any session still up,
+Pat, and only then the radio. Unattended VHF data under automatic control
+is allowed in these sub-bands (47 CFR 97.221(b)), so closing the page does
+not end it; the hub ends its own window at the same time whatever happens to
+the server, and a server that crashed undoes the window when it starts
+again. HF listening is not offered.
+
 ## Safety
 
 - **Receive-only until you give a callsign** (`init --call`).
@@ -247,8 +269,10 @@ your own sessions.
   all while its config would make it listen, beacon or run scheduled
   connects on its own (`listen`, `schedule`, `ax25.beacon.every`); the panel
   and `doctor` say what to clear. The packet hub answers another station's
-  connect only inside an inbound window a listen opens (none yet), so Pat's
-  registration alone never makes the radio answer.
+  connect only inside an inbound window a listen window opens, so Pat's
+  registration alone never makes the radio answer; a listen window is VHF/UHF
+  packet only, in a data sub-band, bounded in time, and undone even after a
+  crash.
 - **LAN only.** The servers refuse requests from web pages on other sites
   (Host and Origin checks), so a page from the internet, open in a browser on
   your LAN, can't reach the radio. There is no login: run it on a network you

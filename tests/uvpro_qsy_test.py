@@ -379,5 +379,83 @@ check("a failed restore: retried until it works; stop() cancels it, warning",
       run(retry()), (False, True, True, None, True))
 
 
+# --- B-10: the record outlives the process (plan winlink-listen, F16) -------------
+
+async def record_on_disk_first():
+    import tempfile
+    a, radio = addon(qsy_channel=4)
+    a.state_dir = tempfile.mkdtemp(prefix="uvqsy-")
+    path = os.path.join(a.state_dir, "uvpro-qsy.json")
+    seen = []
+    send = radio.send
+
+    async def spy(d):
+        if d.get("cmd") in ("channel", "settings") and not seen:
+            seen.append(os.path.exists(path))
+        await send(d)
+    a._send_bridge = spy
+    r = await a.qsy(145_050_000)
+    on_disk = os.path.exists(path)
+    done = await a.restore()
+    return r.ok, seen, on_disk, done, os.path.exists(path)
+check("B-10 the record is on disk before the first write, gone once back", run(record_on_disk_first()),
+      (True, [True], True, (True, None), False))
+
+
+async def new_instance_restores():
+    """A server that dies mid-QSY (no restore, its bridge gone with it); a new
+    add-on instance, reading the record, puts the radio back (fake bridge
+    with a radio that keeps its state)."""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="uvqsy-")
+    radio_file = os.path.join(d, "radio.json")
+    os.environ.update(FAKE_UVPRO_STATE=radio_file, FAKE_UVPRO_CH3="145.09")
+    opts = {"address": "00:11:22:33:44:55", "control": "tcp:127.0.0.1:1", "python": sys.executable,
+            "bridge": os.path.join(ROOT, "tests", "fake_uvpro_bridge.py"), "restore_wait_s": 5}
+
+    def make():
+        a = uvpro.UvproAddon(Host(), opts)
+        a.state_dir = d
+        return a
+
+    def radio():
+        try:
+            with open(radio_file) as f:
+                st = json.load(f)["settings"]
+            return st["channel_a"], st["double_channel"]
+        except (OSError, ValueError, KeyError):
+            return None
+
+    async def until(pred, t=20):
+        for _ in range(int(t / 0.05)):
+            if pred():
+                return True
+            await asyncio.sleep(0.05)
+        return pred()
+    out = {}
+    a1 = make()
+    await a1.start()
+    await until(lambda: a1._bridge_up() and a1.settings is not None and a1.channels)
+    r = await a1.qsy(145_090_000)
+    out["tuned"] = (r.ok, radio())
+    # The crash: the supervisor and bridge die with the process, no restore().
+    a1._closing = True
+    a1._task.cancel()
+    a1.proc.kill()
+    await a1.proc.wait()
+    a2 = make()
+    await a2.start()
+    out["restored"] = await until(lambda: radio() == (0, 1)) and radio()
+    out["record gone"] = await until(lambda: not os.path.exists(os.path.join(d, "uvpro-qsy.json")), 5)
+    await a2.stop()
+    for k in ("FAKE_UVPRO_STATE", "FAKE_UVPRO_CH3"):
+        os.environ.pop(k, None)
+    return out
+r = run(new_instance_restores())
+check("B-10 precondition: tuned to channel 3, dual watch off", r.get("tuned"), (True, (2, 0)))
+check("B-10 a new add-on instance puts the radio back (channel 1, dual watch A)", r.get("restored"), (0, 1))
+check("B-10   and its record is gone", r.get("record gone"), True)
+
+
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)
