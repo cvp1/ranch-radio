@@ -359,6 +359,37 @@ check("select fails after the scratch write: written back, refused, no record",
       run(partial_failure()), (False, [("channel", 3), ("settings", None), ("channel", 3)], None, True))
 
 
+async def rx_only_split_back():
+    """PR #19 loose end: an RX-only scratch channel with a split TX has no
+    CHIRP form (an "off" row drops its TX frequency); it must come back exactly."""
+    chans = BASE[:3] + [ch(3, "WX RPT", 162.55, 162.40, tx_disable=True)]
+    a, radio = addon(chans, qsy_channel=4)
+    before = copy.deepcopy(next(c for c in a.channels if c["id"] == 3))
+    r = await a.qsy(145_050_000)
+    tuned = copy.deepcopy(next(c for c in a.channels if c["id"] == 3))
+    done = await a.restore()
+    after = next(c for c in a.channels if c["id"] == 3)
+    back = [v for c, i, v in radio.writes() if c == "channel"][-1]
+    return ((r.ok, tuned["tx_disable"], tuned["tx_freq"]), done, after == before,
+            (back.get("tx_freq"), back.get("tx_disable")))
+got = run(rx_only_split_back())
+check("RX-only scratch channel with a split TX: tuned (TX on, simplex)", got[0], (True, False, 145.05))
+check("  put back exactly: its own TX frequency and RX only", got[1:], ((True, None), True, (162.4, True)))
+
+
+async def legacy_record_back():
+    """A record an earlier version left holds a CHIRP memory: still put back."""
+    a, radio = addon(qsy_channel=4)
+    await a.qsy(145_050_000)
+    cid, _ = a._qsy["written"]
+    a._qsy["written"] = (cid, {"Frequency": "162.550000", "Duplex": "off", "Offset": "0.000000", "Name": "NOAA"})
+    done = await a.restore()
+    after = next(c for c in a.channels if c["id"] == 3)
+    return done, after["name"], after["rx_freq"], after["tx_disable"], a._qsy
+check("a CHIRP-shaped record from an earlier version still goes back",
+      run(legacy_record_back()), ((True, None), "NOAA", 162.55, True, None))
+
+
 # --- the deferred retry -----------------------------------------------------------
 
 class Grab(logging.Handler):
