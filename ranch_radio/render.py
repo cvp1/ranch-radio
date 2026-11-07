@@ -506,6 +506,11 @@ def hub_argv(h, py, repo, pth):
             argv += ["--aprs-firmware-acks", {True: "true", False: "false", None: "null"}[ap["firmware_acks"]]]
         if ap.get("path"):
             argv += ["--aprs-path", ",".join(ap["path"])]
+        pr = ap.get("probe") or {}
+        if pr.get("target"):             # the round-trip probe (aprs_probe.py), from the page only
+            argv += ["--aprs-probe-target", pr["target"]]
+            if pr.get("text"):
+                argv += ["--aprs-probe-text", pr["text"]]
     for k, (flag, _, _, _) in APRS_CAPS.items():
         if k in ap:
             argv += [flag, str(ap[k])]

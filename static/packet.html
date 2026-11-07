@@ -86,6 +86,12 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
 .msg-hold { border: 1px solid var(--warm); color: var(--warm); border-radius: 10px; padding: 8px 12px; margin: 0 0 10px;
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .st-acked { color: var(--accent); } .st-failed, .st-rejected { color: var(--tx); } .st-pending, .st-queued { color: var(--warm); }
+.leg { display: inline-block; min-width: 54px; padding: 1px 6px; border-radius: 7px; font-size: 11.5px; text-align: center;
+  border: 1px solid var(--line); }
+.leg.v-yes { color: var(--accent); border-color: var(--accent); }
+.leg.v-not-seen { color: var(--muted); }
+.leg.v-unknown { color: var(--warm); border-style: dashed; border-color: var(--warm); }
+.leg.v-waiting { color: var(--dim); }
 .badge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 5px; border-radius: 9px; background: var(--warm);
   color: #0b0f14; font: 700 11px/16px var(--sans); }
 #aprs-detail h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
@@ -137,6 +143,13 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
       <table id="msg-thread"></table>
     </section>
   </div>
+  <section style="margin-top:14px"><h2>Round-trip probe</h2>
+    <div class="aprs-bar"><button id="probe-btn">Probe</button>
+      <span class="muted" id="probe-target"></span><span class="msg-why" id="probe-why"></span></div>
+    <p class="muted" style="margin:0 0 6px;font-size:12px">One message to the target: was it digipeated (L2), did it reach
+      APRS-IS through someone else's iGate (L3), did a reply come back over RF (L4), was it acked (L5)?
+      <b>unknown</b> means this station couldn't see (off channel, observer down), not "no".</p>
+    <table id="probe-table"></table></section>
   <h2 style="margin-top:14px">Heard messages</h2>
   <div class="aprs-bar"><input id="msg-with" type="search" placeholder="With a station (call)"></div>
   <section><table id="msg-table"></table></section>
@@ -208,6 +221,6 @@ async function refresh() {
 refresh(); setInterval(refresh, 2000);
 </script>
 <script src="static/meshmap.js?v=m2-3"></script>
-<script src="static/aprs.js?v=m3-1"></script>
+<script src="static/aprs.js?v=m3-probe-1"></script>
 </body>
 </html>

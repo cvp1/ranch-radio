@@ -30,6 +30,16 @@ All notable changes to Ranch Radio are recorded here. The format follows
   radio is put back and read back; a restore given up keeps it. Holds
   persist across restarts and show on the packet page with a confirmed
   Release.
+- **The round-trip probe** (`aprs_probe.py`; host file
+  `packet.aprs.probe {target, text}`): from the Messages tab's Probe
+  button (TX ARMED), one message to the target with a 3-character token,
+  then five legs judged over t_first + 1,470 s, each yes (with evidence),
+  not seen, or unknown (the station couldn't see: off channel, radio down,
+  observer down, hub down): sent, digipeated (an H-bit from a digi that
+  isn't ours), reached APRS-IS via RF (qAR/qAO/qAr/qAo from someone else's
+  iGate), a correlated reply on RF, acked. Refused before the previous
+  probe's deadline. The last 20 are kept (`GET api/aprs/probes`; store
+  schema 2 adds the `probes` table).
 - **The iGate's APRS-IS observer** (`packet.igate.observe`, on by default
   with messaging): the login carries `filter b/<call>* g/<call>*`, and
   what comes back is stored as port `is` and shown "via internet". Nothing
