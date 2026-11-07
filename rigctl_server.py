@@ -43,6 +43,26 @@ LANE_QSY_SLOP_HZ = 10
 # Pat sends nothing while an ARDOP frame plays, so its lane may stay silent
 # longer; --tx-timeout still bounds every transmission.
 WINLINK_KEEPALIVE_S = 12.0
+# xara (VARA HF) sends one T 1 per key and nothing until its T 0, so its lane
+# must outlast xara's longest key (derived from xara v0.1.3 source, not built):
+#   a steady link sends two data frames in one key (hf/session.rs nframes(),
+#   stays > 5); the longest frame is level 1, FSK 125 symbols at 128/3000 s
+#   (hf/level.rs; airtime = (2 lead-in + 124) x 42.67 ms = 5.376 s), so 2 x
+#   5.376 = 10.752 s (the modulator shares one lead-in: 10.67 s, rounded up);
+#   when Pat's link drops mid-burst (Pat gone, or LISTEN while linked),
+#   drop_link() queues the CW ID behind that burst in the same key
+#   (on_tx_done -> close(0); scheduler.rs release() keeps PTT on while a
+#   burst is queued): 1 + 154 units of 2048 samples at 48 kHz for a 7-character
+#   call of zeros (cwid.rs), 6.613 s;
+#   PTT held after the audio for the TX path (latency - lag; --tx-buffer-ms
+#   default 40 ms plus the device), bounded here at 0.5 s; --ptt-tail-ms
+#   default 100 ms; --ptt-lead-ms default 0 (the agent passes neither).
+#   10.752 + 6.613 + 0.5 + 0.1 = 17.97 s; + 3 s margin = 21 s.
+# Their QRT's CW ID (12 blank words + the call) is 10.16 s; ours rides the
+# QRT frame's key (~1.4 s + 6.6 s). xara's own --ptt-max-s (30) and its
+# 500 ms stall guard stay below this as xara's limits; --tx-timeout bounds all.
+WINLINK_VARA_KEEPALIVE_S = 21.0
+MODEM_NAMES = {"ardop": "ARDOP", "varahf": "VARA HF"}
 
 
 class RigctlOwner:
@@ -53,9 +73,9 @@ class RigctlOwner:
     def __init__(self, peer, lane=None, modem=None):
         self.peer = peer
         self.lane = lane
-        self.modem = modem       # a Winlink lane's modem ("ardop"): whose bursts the ID ledger keeps
+        self.modem = modem       # a Winlink lane's modem ("ardop", "varahf"): whose bursts the ID ledger keeps
         if lane == "winlink":
-            self.keepalive_s = WINLINK_KEEPALIVE_S
+            self.keepalive_s = WINLINK_VARA_KEEPALIVE_S if modem == "varahf" else WINLINK_KEEPALIVE_S
         self.lost_msg = f"rigctl client {peer} went quiet"
 
     async def send_str(self, _msg):   # Station.notice() targets the owner
@@ -211,8 +231,11 @@ class RigctlSession:
     def __init__(self, station, peer="?", lane=None, modem=None):
         self.station = station
         self.radio, self.caps = station.radio, station.radio.caps
-        self.lane = lane         # "winlink": Pat's own listener, keys only while armed
-        self.modem = modem if lane == "winlink" else None
+        # "winlink": a Winlink modem's own listener (Pat's hamlib rig for
+        # ARDOP, xara's --ptt for VARA HF); keys only while a session of that
+        # lane's modem is armed.
+        self.lane = lane
+        self.modem = (modem or "ardop") if lane == "winlink" else None
         self.owner = RigctlOwner(peer, lane, self.modem)
         self.vfo = None          # VFO named on the command being handled
         # VFO this client selected with "V" (None = the radio's own). Virtual:
@@ -443,9 +466,13 @@ class RigctlSession:
                     await self.station.unkey(own=True)
                 return ok, False
             st = self.station
-            if self.lane == "winlink" and not st.winlink_armed:
-                st.winlink_lane_refused(self.owner.peer)
-                return f"RPRT {RIG_ENAVAIL}\n", False
+            if self.lane == "winlink":
+                # Armed, and for this lane's modem: ardopcf (through Pat) can't
+                # key during a VARA session nor xara during an ARDOP one.
+                why = st.winlink_lane_gate(self.modem)
+                if why:
+                    st.winlink_lane_refused(self.owner.peer, self.modem, why)
+                    return f"RPRT {RIG_ENAVAIL}\n", False
             why = await st.can_key(self.owner)
             if why:
                 # Refused before the split hop: the dial never moves.
