@@ -154,6 +154,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | Module | What it adds | Needs |
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
+| `vara` | Winlink over VARA HF beside ARDOP, picked per session (macOS; xara, unregistered) | `winlink`; xara (built with cargo, below) |
 | `mesh` | A Meshtastic node on the page: channels, DMs, nodes, map | a node over USB or Bluetooth; the `meshtastic` package |
 | `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO / UV-50PRO over Bluetooth (BlueZ on Linux, IOBluetooth on macOS); optional receive-only iGate | Direwolf, a network TNC, or Bluetooth |
 | `uvpro` | UV-PRO / UV-50PRO control: channels, settings, beacon | `benlink`; the packet hub on the same radio |
@@ -255,6 +256,56 @@ is allowed in these sub-bands (47 CFR 97.221(b)), so closing the page does
 not end it; the hub ends its own window at the same time whatever happens to
 the server, and a server that crashed undoes the window when it starts
 again. HF listening is not offered.
+
+**Winlink over VARA HF (xara), on a Mac.** VARA HF is the HF mode most
+Winlink gateways run; the `vara` module adds it beside ARDOP, picked per
+session. The modem is [xara](https://github.com/x0rro/xara), an open VARA HF
+modem, in its default (unregistered) build: its speed is capped at level 4,
+so on a good path it can be slower than ARDOP 2000. That is expected and is
+not by itself a reason to buy a licence. xara keys the radio itself, through
+its own Winlink lane on the radio's server (port 4534 by default), and only
+while a VARA session is armed from the page; during an ARDOP session the
+VARA lane can't key, and the ARDOP lane can't during a VARA one. xara sends
+its own CW ID at the end of every session for a US call; the page shows it
+as "ID sent" (by xara) only when the lane saw that key end normally.
+
+1. Build xara (no macOS release binary; the Rust toolchain is about 1 GB):
+   `brew install rust && cargo install --locked --git https://github.com/x0rro/xara --tag v0.1.3 --root ~/.local xara`.
+   `xara --list-devices` names the radio's sound card ("USB Audio CODEC").
+2. In Pat's config (ranch-radio never writes it), by hand:
+   `"varahf": {"addr": "localhost:8300", "rig": "ic7300", "ptt_ctrl": false, ...}`,
+   where `hamlib_rigs.ic7300.address` is this radio's Winlink lane
+   (`localhost:<lane>`): Pat moves the dial through it, and never keys for
+   VARA. The server refuses a VARA session, naming the field, until all
+   three are so; `ranch-radio doctor` says the same.
+3. `ranch-radio add vara --set audio_in="USB Audio CODEC" --set audio_out="USB Audio CODEC" --set call=N0CALL`,
+   then `ranch-radio doctor` and `ranch-radio update --apply`. macOS asks
+   for the microphone once for xara (and again after each reinstall):
+   allow it.
+4. Set the transmit level with `drive_db` (xara's own, 0 or below), not the
+   codec table: the codec table is ARDOP's.
+
+Every session, ARDOP or VARA, leaves one `winlink session: {...}` line in the
+server log (scheme, bandwidth, gateway, frequency, seconds, outcome, messages
+and bytes, and xara's highest speed level). After a week of the trial, keep
+VARA if it connects where ARDOP does not, or fails less often to the same
+gateways; consider the licence only if sessions sit at level 4 with a good
+signal; otherwise drop it.
+
+A VARA connect while nothing is armed (Pat dialing on its own) is refused at
+xara's first key; xara exits on a refused key, and launchd starts it again
+after 10 s. Until Pat stops, that repeats; the server logs the refusal once
+per 10 s.
+
+**Drop VARA.** Install does not stop what it no longer renders, so:
+`ranch-radio remove vara --apply`, then `ranch-radio update --apply`; then
+`launchctl bootout gui/$(id -u)/ranch-radio.xara` and
+`mv ~/Library/LaunchAgents/ranch-radio.xara.plist ~/.Trash/`. Check that no
+`xara` process runs (`pgrep -x xara`), nothing listens on 8300, 8301 or the
+VARA lane port (`lsof -nP -iTCP -sTCP:LISTEN`), and the Winlink panel's
+modems are ARDOP only. With VARA off the server does not open the VARA lane,
+so a xara left running can't key; `ranch-radio doctor` warns while one is
+still there.
 
 ## Safety
 

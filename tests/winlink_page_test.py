@@ -288,6 +288,9 @@ try:
         check("first Connect click does not connect",
               any(r["route"] == "connect" for r in fake_log(flog)), False)
         check("Connect asks to confirm", "confirm" in b.js(f"({TEXT})('#wl-connect')").lower(), True)
+        check("one HF modem: the confirm and placeholder are as before (no modem named)",
+              (b.js(f"({TEXT})('#wl-connect')").endswith(" 3588.5 kHz") and "(ARDOP)" not in b.js(f"({TEXT})('#wl-connect')"),
+               b.js("document.querySelector('#wl-url').placeholder")), (True, "ardop:///CALL?bw=2000MAX&freq=kHz"))
         b.js("document.querySelector('#wl-connect').click()")
         got = b.wait(f"({TEXT})('#wl-log').includes('Connecting to')")
         check("session log shows Pat's lines", bool(got), True)
@@ -651,6 +654,72 @@ try:
         check("no JS errors in the P2P cases", b.js("window.__errs"), [])
     finally:
         stop(server)
+
+    # --- VARA HF (plan winlink-vara): one via per modem, its gateways, its URL, its ID ---
+    xport, vlane = testkit.free_port(), testkit.free_port()
+    xlog = tempfile.NamedTemporaryFile(prefix="xara-", suffix=".log", delete=False).name
+    cfg = testkit.pat_config(tempfile.NamedTemporaryFile(prefix="patcfg-", suffix=".json", delete=False).name,
+                             varahf={"addr": f"localhost:{xport}", "rig": "ic7300", "ptt_ctrl": False},
+                             hamlib_rigs={"ic7300": {"address": f"localhost:{LANE}"}})
+    server, flog = start({}, "--winlink-pat", f"{sys.executable} tests/fake_pat.py --config {cfg}",
+                         "--winlink-pat-config", cfg, "--winlink-vara-log", xlog,
+                         "--winlink-vara-rigctl-port", str(vlane), "--winlink-vara-port", str(xport))
+    xara = subprocess.Popen([sys.executable, "tests/fake_xara.py", "--call", "N0CALL", "--hf", "500",
+                             "--ptt", f"rigctld:127.0.0.1:{vlane}", "--addr", "127.0.0.1", "--port", str(xport),
+                             "--log", xlog], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        def up(port):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                return True
+            except OSError:
+                return False
+        wait_for(lambda: up(xport) and up(xport + 1), 5)
+        b.goto(f"http://127.0.0.1:{WEB}/?v=vara#/winlink")
+        b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
+        b.js("window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(e.message))")
+        b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")
+        vias = b.wait("(() => { const v = [...document.querySelectorAll('#wl-via option')].map((o) => o.textContent);"
+                      " return v.length === 3 ? v : null; })()")
+        check("VARA: Via lists the radio twice, ARDOP and VARA HF, then telnet",
+              isinstance(vias, list) and [v.split(" (")[-1] for v in vias],
+              ["ARDOP)", "VARA HF)", "internet, no radio)"])
+        b.js("document.querySelector('#wl-mode [data-v=gateway]').click()")   # the P2P cases left peer mode stored
+        set_via("radio-vara")
+        check("VARA: the URL's placeholder follows the via",
+              b.js("document.querySelector('#wl-url').placeholder"), "varahf:///CALL?bw=500&freq=kHz")
+        got = b.wait(f"({TEXT})('#wl-gateways').includes('N0CALL')")
+        check("VARA: the gateway list is VARA HF's", bool(got), True)
+        q = [r["query"] for r in fake_log(flog) if r["route"] == "rmslist"]
+        check("VARA: rmslist asked with mode=varahf", bool(q) and q[-1].get("mode"), "varahf")
+        b.js("document.querySelector('#wl-gateways .wl-gw').click()")
+        check("VARA: picking it fills the URL", b.js("document.querySelector('#wl-url').value"),
+              "varahf:///N0CALL?bw=500&freq=3588.5")
+        b.js("document.querySelector('#wl-connect').click()")
+        check("VARA: confirm names the modem",
+              bool(b.wait(f"({TEXT})('#wl-connect').includes('(VARA HF) 3588.5 kHz')", 3)), True)
+        b.js("document.querySelector('#wl-connect').click()")
+        got = b.wait(f"({TEXT})('#wl-state').includes('Session ended')", 30)
+        check("VARA: the session ends ok", bool(got) and "received 1" in b.js(f"({TEXT})('#wl-state')"), True)
+        check("VARA: the ID line says sent, by xara",
+              (bool(b.wait(f"({TEXT})('#wl-id').startsWith('ID sent')", 5)),
+               b.js("document.querySelector('#wl-id').title")), (True, "xara: CW ID (Closing)"))
+        b.js("document.querySelector('#wl-mode [data-v=peer]').click()")
+        set_via("radio-vara")
+        type_in("#wl-peer-call", "n0xyz")
+        type_in("#wl-peer-freq", "3588.5")
+        check("VARA peer from the VARA via: varahf:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
+              "varahf:///N0XYZ?freq=3588.5")
+        check("VARA peer: no separate modem picker (the via decides)", b.js(f"({VISIBLE})('#wl-peer-modem')"), False)
+        set_via("radio")
+        check("VARA peer from the ARDOP via: ardop:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
+              "ardop:///N0XYZ?freq=3588.5")
+        b.js("document.querySelector('#wl-mode [data-v=gateway]').click()")
+        check("no JS errors in the VARA cases", b.js("window.__errs"), [])
+    finally:
+        stop(server)
+        xara.kill()
+        xara.wait(5)
 
     # --- A-11 on the page: Pat's config would listen, so Pat is not launched ---
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
