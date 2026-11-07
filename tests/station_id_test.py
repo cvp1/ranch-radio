@@ -120,6 +120,199 @@ U = station_id.IdLedger(False)
 U.ptt(True)
 check("ledger: not tracked -> owed is None (never 'sent')", (U.owed(), U.snapshot()["tracked"]), (None, False))
 
+# --- unit: xara's CW ID, matched to the VARA lane's burst (plan winlink-vara A3) ---
+# Each falsifier fails on the ARDOP rule ("a lane PTT accepted between the
+# ID's start and end, none refused") or on "the first lane release after
+# the log line".
+LEAD = station_id.XARA_CW_LEAD_S
+
+
+def vara(clock_at=0.0):
+    clock[0] = 2000.0 + clock_at
+    return station_id.IdLedger({"ardop", "varahf"}, clock=lambda: clock[0])
+
+
+def at(s):
+    return 2000.0 + s
+
+
+def xid(L):
+    return L.last("xara")
+
+
+# (i) our QRT: the CW rides the QRT frame's key; T 1 is ~1.4 s before "tx cw"
+L = vara()
+L.ptt(True, at(0), "varahf")
+clock[0] = at(1.4)
+L.id_started("CW ID (Closing)", at(1.4), "xara")
+check("A3 (i) CW inside the key: in progress until the key ends", (L.in_progress("xara"), xid(L)["on_air"]),
+      (True, None))
+clock[0] = at(3.0)
+L.ptt_released(at(3.0), "varahf", "normal")
+check("A3 (i) own T 0 ends it: on air, source xara",
+      (xid(L)["on_air"], xid(L)["source"], xid(L)["end"]), (True, "xara", at(3.0)))
+check("A3 (i) nothing owed", L.owed(), False)
+
+# (ii) their QRT: "tx cw", then a fresh T 1 within the lead window, then T 0
+L = vara()
+L.ptt(True, at(-20), "varahf")
+L.ptt_released(at(-15), "varahf", "normal")           # an earlier, unrelated burst
+L.id_started("CW ID (Closing)", at(0), "xara")
+check("A3 (ii) line first, no key yet: in progress", L.in_progress("xara"), True)
+L.ptt(True, at(LEAD - 0.2), "varahf")
+check("A3 (ii) key after the line: matched, still keyed", xid(L)["on_air"], None)
+L.ptt_released(at(LEAD + 7), "varahf", "normal")
+check("A3 (ii) its T 0: on air", (xid(L)["on_air"], xid(L)["end"]), (True, at(LEAD + 7)))
+
+# (iii) "tx cw", T 1, the socket drops mid-CW (a forced release): owed
+L = vara()
+L.ptt(True, at(-5), "varahf")
+L.ptt_released(at(-4), "varahf", "normal")
+L.id_started("CW ID (Closing)", at(0), "xara")
+L.ptt(True, at(0.05), "varahf")
+L.ptt_released(at(2.0), "varahf", "forced")
+check("A3 (iii) disconnect mid-CW: not on air", xid(L)["on_air"], False)
+check("A3 (iii) ... and an ID is owed", L.owed(), True)
+
+# (iv) an open xara ID while an ARDOP-lane burst releases: still open
+L = vara()
+L.ptt(True, at(-1), "varahf")
+L.id_started("CW ID (Closing)", at(0), "xara")
+L.ptt(True, at(0.5), "ardop")
+L.ptt_released(at(1.0), "ardop", "normal")
+check("A3 (iv) ARDOP lane's release does not end xara's ID", (L.in_progress("xara"), xid(L)["end"]),
+      (True, None))
+L.ptt_released(at(6.0), "varahf", "normal")
+check("A3 (iv) the VARA lane's own release does", xid(L)["on_air"], True)
+
+# (v) the log line arrives after its burst was released (the tail polls every 250 ms)
+L = vara()
+L.ptt(True, at(0), "varahf")
+L.ptt_released(at(3.0), "varahf", "normal")
+clock[0] = at(3.3)
+L.id_started("CW ID (Closing)", at(1.4), "xara")
+check("A3 (v) late log line: matched to its released burst, on air", (xid(L)["on_air"], xid(L)["end"]),
+      (True, at(3.0)))
+
+# refused: the CW's T 1 refused (no VARA session armed): not on air at once
+L = vara()
+L.ptt(True, at(-30), "varahf")
+L.ptt_released(at(-25), "varahf", "normal")
+L.id_started("CW ID (Closing)", at(0), "xara")
+L.ptt(False, at(0.05), "varahf")
+check("xara: refused key -> not on air, owed", (xid(L)["on_air"], L.owed()), (False, True))
+
+# a refused T 1 on the VARA lane inside the CW's burst: not on air
+L = vara()
+L.ptt(True, at(0), "varahf")
+L.id_started("CW ID (Closing)", at(0.02), "xara")
+L.ptt(False, at(1.0), "varahf")
+L.ptt_released(at(4.0), "varahf", "normal")
+check("xara: a refused T 1 during the CW -> not on air", xid(L)["on_air"], False)
+
+# no key at all: stale after STALE_ID_S
+L = vara()
+L.ptt(True, at(-60), "varahf")
+L.ptt_released(at(-55), "varahf", "normal")
+L.id_started("CW ID (Closing)", at(0), "xara")
+clock[0] = at(station_id.STALE_ID_S + 1)
+L.tick()
+check("xara: never keyed -> stale, not on air, owed", (xid(L)["on_air"], L.owed()), (False, True))
+
+# a key well after the lead window is not the CW's
+L = vara()
+L.id_started("CW ID (Closing)", at(0), "xara")
+L.ptt(True, at(LEAD + 2), "varahf")
+L.ptt_released(at(LEAD + 5), "varahf", "normal")
+check("xara: a key past the lead window is not its burst", xid(L)["on_air"], None)
+
+# cross-source: an open ardopcf ID is not completed by a xara end, nor the reverse
+L = vara()
+L.id_started("10 minute ID", at(0), "ardopcf")
+L.ptt(True, at(0.1), "varahf")
+L.id_started("CW ID (Closing)", at(0.2), "xara")
+L.ptt_released(at(4.0), "varahf", "normal")
+check("cross-source: xara's ID done, ardopcf's still open",
+      (xid(L)["on_air"], L.last("ardopcf")["end"]), (True, None))
+L.id_ended(at(5.0), "ardopcf")
+check("cross-source: ardopcf's ID judged by the ARDOP lane only (no ARDOP key: not on air)",
+      L.last("ardopcf")["on_air"], False)
+L = vara()
+L.id_started("CW ID (Closing)", at(0), "xara")
+check("cross-source: an ardopcf end does not touch xara's open ID",
+      (L.id_ended(at(1.0), "ardopcf"), xid(L)["end"]), (None, None))
+
+# 4.2 negative control: a transmitting session whose log has no "tx cw" line
+L = vara()
+L.ptt(True, at(0), "varahf")
+L.ptt_released(at(5.0), "varahf", "normal")
+check("no tx cw line: an ID is owed after transmitting", L.owed(), True)
+
+# --- unit: VaraLogTail (real-shaped xara v0.1.3 --log lines) ---
+import shutil  # noqa: E402
+
+d = tempfile.mkdtemp(prefix="xaralog-")
+xlog = os.path.join(d, "xara.log")
+
+
+def xline(wall, text):
+    """A line as xara's log.rs + tnc.rs echo write it: stamp, station seconds (10.3), text."""
+    ms = int(round((wall % 1) * 1000))
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(wall))) + f".{ms:03d}Z {123.456:10.3f} {text}\n"
+
+
+def append(text):
+    with open(xlog, "a") as f:
+        f.write(text)
+
+
+W0 = 1792083039.0
+append(xline(W0 - 100, "  tx cw Closing"))                 # history: not replayed
+append(xline(W0 - 99, "< BITRATE (2)  138 bps TX"))
+L = vara()
+T = station_id.VaraLogTail(xlog, L)
+T.poll(first=True)
+check("tail: starts at the end (history not replayed)", (L.last("xara"), T.max_level(W0 - 200)), (None, None))
+append(xline(W0, "< BITRATE (3)  273 bps TX") + xline(W0 + 1, "  tx c4 f0 Sending") +
+       xline(W0 + 2, "< BITRATE (4)  537 bps RX") + xline(W0 + 3, "  tx cw Closing"))
+T.poll()
+check("tail: tx cw -> a xara ID started at the line's UTC time",
+      (xid(L)["source"], xid(L)["reason"], xid(L)["start"]), ("xara", "CW ID (Closing)", W0 + 3))
+check("tail: the highest speed level reported", T.max_level(W0 - 1, W0 + 10), 4)
+before = sum(1 for i in L.ids if i["source"] == "xara")
+append(xline(W0 + 4, "  tx cw Closing")[:-6])              # half a line: waits for its end
+T.poll()
+check("tail: half a line is not read yet", sum(1 for i in L.ids if i["source"] == "xara"), before)
+append("osing\n")
+T.poll()
+check("tail: ... and is once it ends", sum(1 for i in L.ids if i["source"] == "xara"), before + 1)
+with open(xlog, "w") as f:                                  # truncated
+    f.write(xline(W0 + 10, "  tx cw Closing"))
+T.poll()
+check("tail: truncation -> read from the start", xid(L)["start"], W0 + 10)
+os.rename(xlog, xlog + ".1")                               # rotated: a new file under the name
+with open(xlog, "w") as f:
+    f.write(xline(W0 + 20, "  tx cw Closing") + "x" * 400 + "\n")
+T.poll()
+check("tail: a new file under the name (inode) -> read from its start", xid(L)["start"], W0 + 20)
+shutil.rmtree(d, ignore_errors=True)
+
+# ArdopLogTail: the same name on a new file (inode change, size not smaller) is read from its start
+d = tempfile.mkdtemp(prefix="ardoplog-")
+af = os.path.join(d, f"ARDOPDebug8515_{DATE}.log")
+with open(af, "w") as f:
+    f.write("16:00:00.000 D [Main.KeyPTT]  PTT-TRUE\n")
+L = station_id.IdLedger({"ardop"})
+A = station_id.ArdopLogTail(d, L)
+A.poll(first=True)
+os.rename(af, af + ".old")
+with open(af, "w") as f:
+    f.write("16:50:39.974 D SendID  N0CALL:[FN31]  10 minute ID\n" + "x" * 200 + "\n")
+A.poll()
+check("ardop tail: a new file under the same name is followed (inode)",
+      (L.last() or {}).get("reason"), "10 minute ID")
+shutil.rmtree(d, ignore_errors=True)
+
 # --- server ---------------------------------------------------------------
 
 import winlink_test_lib as lib  # noqa: E402

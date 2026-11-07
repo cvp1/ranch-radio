@@ -145,10 +145,11 @@ class Station(TxAudio):
         self.codec = None                # codec_level.CodecProfile when --winlink-codec-db is set
         self.addons = None               # addons.Addons: --addons and/or --mesh-port (UV-PRO, Mesh, ...)
         self.modules = None              # ranch_radio.pageapi.ModulesService with --host-file
-        # Station ID (47 CFR 97.119): which of ardopcf's IDs went on air, and
-        # whether one is owed. Tracked only with --winlink-ardop-log.
-        self.id_ledger = station_id.IdLedger(bool(getattr(args, "winlink_ardop_log", None)),
-                                             on_change=self._id_changed)
+        # Station ID (47 CFR 97.119): which of the modems' IDs went on air,
+        # and whether one is owed. Tracked per modem from its log:
+        # --winlink-ardop-log (ardopcf).
+        self.id_ledger = station_id.IdLedger(
+            {"ardop"} if getattr(args, "winlink_ardop_log", None) else set(), on_change=self._id_changed)
         self._lane_refused_warned = 0.0  # monotonic time of the last refusal WARNING
         radio.on_state(self._on_state)
         radio.on_scope(self._on_scope)
