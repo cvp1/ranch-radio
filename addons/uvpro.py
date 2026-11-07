@@ -116,6 +116,12 @@ QSY_RESTORE_CLOSING_S = 5.0   # the same wait while the server is stopping
 QSY_RETRY_EVERY_S = 5.0       # a restore that failed is tried again this often...
 QSY_RETRY_MAX_S = 600.0       # ...for this long, then the page and the log are told
 QSY_POLL_S = 1.0              # how often the restore wait looks again
+# What restore() writes back to a memory qsy() wrote: the radio's own values
+# as the bridge read them, so the channel comes back exactly. (Its CHIRP form
+# does not: an RX-only channel is an "off" row, which has no TX frequency, so
+# one with a split TX came back TX = RX, 2026-11-05.)
+CHANNEL_BACK = ("name", "rx_freq", "tx_freq", "tx_disable", "rx_mod", "tx_mod", "rx_sub_audio",
+                "tx_sub_audio", "power", "bandwidth", "scan", "talk_around", "mute")
 QSY_NAME = "WL QSY"           # the scratch channel's name while a session uses it
 # The QSY recovery record, kept in the host's state directory (beside
 # --addons-state) from before the first write until the radio is back: a
@@ -1218,8 +1224,7 @@ class UvproAddon(Addon):
         if ((self.device or {}).get("supports_vfo") and vfo is not None and 251 in exact
                 and vfo.get("rx_freq", 0) > 0 and not (vfo.get("name") or "").strip()
                 and vfo.get("rx_mod") == "FM" and vfo.get("tx_mod") == "FM"):
-            mem = chirp.to_memory(vfo)
-            old = {k: mem[k] for k in ("Frequency", "Duplex", "Offset")}
+            old = {k: vfo[k] for k in ("rx_freq", "tx_freq", "tx_disable") if k in vfo}
             return None, 251, "VFO A", (251, old), {"Frequency": fmt, "Duplex": "", "Offset": "0.000000"}
         # 3. The scratch channel the host file names.
         mhz = f"{hz / 1e6:.3f}"
@@ -1233,10 +1238,7 @@ class UvproAddon(Addon):
         if why:
             return (f"no FM simplex channel on {mhz} MHz, and qsy_channel {self.qsy_channel} can't be used: {why}",
                     None, None, None, None)
-        mem = chirp.to_memory(ch)
-        names = {f["name"] for f in MEMORY_FIELDS} - {"Location", "talk_around", "mute"}
-        old = {k: mem[k] for k in names if k in mem}
-        old.update(mem["extra"])          # talk_around, mute
+        old = {k: ch[k] for k in CHANNEL_BACK if k in ch}
         edits = {"Frequency": fmt, "Duplex": "", "Offset": "0.000000", "Tone": "", "Mode": "FM", "Name": QSY_NAME}
         return None, cid, f"channel {cid + 1} written", (cid, old), edits
 
@@ -1329,7 +1331,7 @@ class UvproAddon(Addon):
                 return False, f"settings not put back: {res.get('error')}"
         if rec["written"]:
             cid, old = rec["written"]
-            why, values, _ = self.check_memory(cid, old, confirm=True)
+            why, values = self._check_back(cid, old)
             if why and why != "No change.":
                 self._schedule_retry()
                 return False, f"{_where(cid)} not written back: {why}"
@@ -1346,6 +1348,33 @@ class UvproAddon(Addon):
         if t and not t.done() and t is not asyncio.current_task():
             t.cancel()
         return True, None
+
+    def _check_back(self, cid, old):
+        """Why memory CID can't be put back to OLD (the radio's own values qsy()
+        recorded), or None and the values that differ now. A record an earlier
+        version left holds a CHIRP memory instead: that one goes the CHIRP way."""
+        if "Frequency" in old or "Duplex" in old:
+            why, values, _ = self.check_memory(cid, old, confirm=True)
+            return why, values
+        ch = next((c for c in (self.vfos if cid in VFO_IDS else self.channels) if c["id"] == cid), None)
+        if ch is None:
+            return f"{_where(cid)} was not read from the radio.", None
+        if self.exact is not None and cid not in ((self.exact or {}).get("channels") or []):
+            return f"{_where(cid)} is not read back byte for byte, so a write could change more than asked.", None
+        values = {}
+        for k in CHANNEL_BACK:
+            if k not in old:
+                continue
+            v, cur = old[k], ch.get(k)
+            if k in ("rx_freq", "tx_freq"):
+                if abs(float(v) - float(cur or 0)) > 5e-7:
+                    values[k] = v
+            elif k in ("tx_disable", "scan", "talk_around", "mute"):
+                if bool(v) != bool(cur):
+                    values[k] = bool(v)
+            elif v != cur:
+                values[k] = v
+        return (None, values) if values else ("No change.", None)
 
     def _schedule_retry(self):
         if self._closing or (self._restore_task and not self._restore_task.done()):
