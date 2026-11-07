@@ -11,6 +11,10 @@ const winlink = (() => {
   const CONFIRM_MS = 6000;
   let box = "in", armed = false, session = null, confirmTimer = null;
   let off = false;          // the Winlink add-on is switched off: Pat isn't running
+  let blocked = null;       // Pat not launched: its config would listen/beacon/schedule (the server says why)
+  let inbound = null;       // {call, since}: Pat is in a session another station started
+  let modems = ["ardop"];   // HF modem schemes a peer session may use (the server's `modems`)
+  let mode = store.get("wl.mode", "gateway");   // "gateway" | "peer" (P2P)
   // The message in the read pane: {box, mid, m}. Every action reads it from
   // here, never from the DOM. readGen drops a read() answer that comes back
   // after the operator moved on; fwdGen does the same for Forward's fetches.
@@ -56,7 +60,7 @@ const winlink = (() => {
         row.className = "wl-msg" + (m.Unread ? " unread" : "");
         row.dataset.mid = m.MID;
         const who = box === "in" ? m.From?.Addr : addrs(m.To);
-        row.innerHTML = `<span class="wl-who">${esc(who)}</span><span class="wl-subj">${esc(m.Subject)}</span>` +
+        row.innerHTML = `<span class="wl-who">${esc(who)}</span><span class="wl-subj">${p2pBadge(m)}${esc(m.Subject)}</span>` +
           `<span class="wl-date">${esc(when(m.Date))}</span>`;
         row.onclick = () => read(m.MID, row);
         list.append(row);
@@ -76,7 +80,7 @@ const winlink = (() => {
       current = { box: b, mid, m };
       resetDelete();
       $("#wl-read-head").innerHTML =
-        `<b>${esc(m.Subject)}</b><span>From ${esc(m.From?.Addr)} · To ${esc(addrs(m.To))}` +
+        `<b>${p2pBadge(m)}${esc(m.Subject)}</b><span>From ${esc(m.From?.Addr)} · To ${esc(addrs(m.To))}` +
         `${m.Cc?.length ? ` · Cc ${esc(addrs(m.Cc))}` : ""} · ${esc(when(m.Date))}</span>` +
         (m.Files?.length ? `<span>Attachments: ${m.Files.map((f) =>
           `<a href="${msgUrl(b, mid)}/${encodeURIComponent(f.Name)}${token ? `?token=${encodeURIComponent(token)}` : ""}" target="_blank">${esc(f.Name)}</a>`).join(", ")}</span>` : "");
@@ -116,6 +120,10 @@ const winlink = (() => {
     n.hidden = !text;
   }
 
+  // Pat's listing says P2POnly (its X-P2POnly header): such a message goes only
+  // in a peer session with the station it is addressed to, never to a gateway.
+  const p2pBadge = (m) => (m?.P2POnly ? `<span class="wl-badge" title="P2P only: never via the Winlink servers">P2P</span>` : "");
+
   // ---------- reply, reply all, forward (Pat's conventions: its composer and viewer)
 
   // Pat's _quoteMsg: the raw Date, '>' before every line. CRLF normalised
@@ -125,8 +133,9 @@ const winlink = (() => {
     return `--- ${m.Date || ""} ${m.From?.Addr || ""} wrote: ---\n` + lines.map((l) => `>${l}`).join("\n") + "\n";
   }
 
-  function prefill({ to = "", cc = "", subject = "", body = "", files = [], note = "" }) {
+  function prefill({ to = "", cc = "", subject = "", body = "", files = [], note = "", p2ponly = false }) {
     $("#wl-compose").reset();
+    $("#wl-p2ponly").checked = !!p2ponly;
     $("#wl-to").value = to;
     $("#wl-cc").value = cc;
     $("#wl-subject").value = subject;
@@ -164,7 +173,7 @@ const winlink = (() => {
         return true;
       }).join(" ");
     }
-    prefill({ to: from, cc, subject: reSubject(m.Subject || ""), body: "\n\n" + quote(m) });
+    prefill({ to: from, cc, subject: reSubject(m.Subject || ""), body: "\n\n" + quote(m), p2ponly: m.P2POnly });
   }
 
   // Forward re-attaches the original's files, fetched through the API (token
@@ -194,7 +203,7 @@ const winlink = (() => {
     if (g !== fwdGen || off || !isCurrent(b, mid)) return;
     const note = failed.length ? `Forward: ${failed.join(", ")} could not be read; not attached` : "";
     if (note) toast(note, "warn");
-    prefill({ subject: `Fw: ${m.Subject || ""}`, body: quote(m), files, note });
+    prefill({ subject: `Fw: ${m.Subject || ""}`, body: quote(m), files, note, p2ponly: m.P2POnly });
   }
 
   // ---------- archive, delete
@@ -261,12 +270,13 @@ const winlink = (() => {
   // is Pat's: Delete there is disabled (the server refuses it too).
   function renderActions() {
     const b = current?.box;
-    const locked = b === "out" && (armed || !!session);
+    const locked = b === "out" && (armed || !!session || !!inbound);
     for (const s of ACTIONS) $(s).disabled = off || busy || !current;
     $("#wl-archive").hidden = b === "archive" || b === "out";
     for (const s of ["#wl-delete", "#wl-archive"]) {
       if (locked) $(s).disabled = true;
-      $(s).title = locked ? "The outbox is Pat's while a session runs" : "";
+      $(s).title = locked ? (inbound && !session ? `The outbox is Pat's while it is in a session with ${inbound.call}`
+                                                 : "The outbox is Pat's while a session runs") : "";
     }
     if (locked && pending) resetDelete();
   }
@@ -279,6 +289,7 @@ const winlink = (() => {
     if (cc) form.append("cc", cc);
     form.append("subject", $("#wl-subject").value.trim());
     form.append("body", $("#wl-text").value.replace(/\r?\n/g, "\r\n"));
+    if ($("#wl-p2ponly").checked) form.append("p2ponly", "true");   // Pat: X-P2POnly, never to a gateway
     for (const f of $("#wl-files").files) form.append("files", f, f.name);
     try {
       await api(`${BASE}winlink/api/mailbox/out`, { method: "POST", body: form });
@@ -341,7 +352,24 @@ const winlink = (() => {
   function viaChanged(save = true) {
     if (save && viaSel()?.value) store.set("wl.via", viaSel().value);
     const kind = viaKind();
-    $("#wl-band").hidden = $("#wl-gw-refresh").hidden = $("#wl-gateways").hidden = kind === "telnet";
+    const peer = mode === "peer";
+    for (const c of $("#wl-mode").children) on(c, c.dataset.v === mode);
+    $("#wl-peer").hidden = !peer;
+    $("#wl-url").readOnly = peer;
+    $("#wl-band").hidden = $("#wl-gw-refresh").hidden = $("#wl-gateways").hidden = kind === "telnet" || peer;
+    if (peer) {
+      $("#wl-peer-freq").hidden = kind === "telnet";
+      $("#wl-peer-host").hidden = $("#wl-peer-pass").hidden = kind !== "telnet";
+      const ms = $("#wl-peer-modem");
+      ms.hidden = kind !== "ardop" || modems.length < 2;
+      if (ms.dataset.list !== modems.join()) {
+        ms.innerHTML = modems.map((m) => `<option value="${esc(m)}">${esc(m.toUpperCase())}</option>`).join("");
+        ms.dataset.list = modems.join();
+      }
+      peerChanged();
+      return;
+    }
+    if ($("#wl-url").readOnly === false && $("#wl-url").dataset.peer) { $("#wl-url").value = ""; delete $("#wl-url").dataset.peer; }
     if (kind === "telnet") {
       $("#wl-url").value = `telnet://${$("#wl-mycall").textContent || "MYCALL"}:CMSTelnet@cms.winlink.org:8772/wl2k`;
       resetConfirm();
@@ -350,6 +378,50 @@ const winlink = (() => {
     if ($("#wl-url").value.startsWith("telnet://")) { $("#wl-url").value = ""; resetConfirm(); }
     fillBands();
     if (save) loadGateways();
+  }
+
+  // ---------- peer (P2P): a station, not a gateway
+
+  const peerCall = () => $("#wl-peer-call").value.trim().toUpperCase();
+
+  // The connect URL for a peer, from the via's kind (Pat's URL forms):
+  //   packet  ax25+agwpe:///CALL?freq=kHz   (the hub's radio is tuned to it)
+  //   HF      <modem>:///CALL?freq=kHz       (a modem the server lists in `modems`)
+  //   telnet  telnet://MYCALL:PASS@host:port/CALL   (no freq; Pat dials host:port)
+  // show: the password masked, for the page; the real one only in what is sent.
+  function peerUrl(show = false) {
+    const call = encodeURIComponent(peerCall());
+    const kind = viaKind();
+    if (kind === "telnet") {
+      const me = encodeURIComponent($("#wl-mycall").textContent.trim() || "MYCALL");
+      const pass = $("#wl-peer-pass").value;
+      const host = $("#wl-peer-host").value.trim();
+      return `telnet://${me}${pass ? `:${show ? "***" : encodeURIComponent(pass)}` : ""}@${host}/${call}`;
+    }
+    const scheme = kind === "packet" ? "ax25+agwpe" : ($("#wl-peer-modem").value || modems[0] || "ardop");
+    const khz = $("#wl-peer-freq").value.trim();
+    return `${scheme}:///${call}${khz ? `?freq=${encodeURIComponent(khz)}` : ""}`;
+  }
+
+  // What is missing before a peer can be called (null = ready).
+  function peerMissing() {
+    if (!peerCall()) return "Type the peer's callsign.";
+    if (viaKind() === "telnet") return $("#wl-peer-host").value.trim() ? null : "Type the peer's host:port.";
+    return /^\d+(\.\d+)?$/.test($("#wl-peer-freq").value.trim()) ? null : "Type the frequency in kHz (e.g. 145010).";
+  }
+
+  function peerChanged() {
+    $("#wl-url").value = peerUrl(true);
+    $("#wl-url").dataset.peer = "1";
+    resetConfirm();
+  }
+
+  function setMode(v) {
+    mode = v === "peer" ? "peer" : "gateway";
+    store.set("wl.mode", mode);
+    if (mode === "gateway" && $("#wl-url").dataset.peer) { $("#wl-url").value = ""; delete $("#wl-url").dataset.peer; }
+    viaChanged(false);
+    if (mode === "gateway" && viaKind() !== "telnet") loadGateways();
   }
 
   function fillBands() {
@@ -407,20 +479,24 @@ const winlink = (() => {
   }
 
   function connectClick() {
-    const url = $("#wl-url").value.trim();
+    const peer = mode === "peer";
+    const missing = peer ? peerMissing() : null;
+    if (missing) { toast(missing, "warn"); return; }
+    const url = peer ? peerUrl() : $("#wl-url").value.trim();
     if (!url) { toast("Pick a gateway or type a connect URL first.", "warn"); return; }
     if (!confirmTimer) {
       // The operator confirms every transmission: second click within a few seconds.
       const b = $("#wl-connect");
       const via = vias.find((v) => v.id === viaSel()?.value);
-      b.textContent = via?.kind === "telnet" ? "Confirm: connect over the internet"
-        : `Confirm: transmit${via ? ` on the ${via.name}` : ""} ${freqOf(url) || "now"}`;
+      const to = peer ? ` · peer ${peerCall()}` : "";
+      b.textContent = (via?.kind === "telnet" ? "Confirm: connect over the internet"
+        : `Confirm: transmit${via ? ` on the ${via.name}` : ""} ${freqOf(url) || "now"}`) + to;
       b.classList.add("wl-confirm");
       confirmTimer = setTimeout(resetConfirm, CONFIRM_MS);
       return;
     }
     resetConfirm();
-    send({ t: "winlink_connect", url, via: viaSel()?.value || null });
+    send({ t: "winlink_connect", url, via: viaSel()?.value || null, ...(peer ? { peer: true } : {}) });
   }
 
   function setState(text, cls = "") {
@@ -429,9 +505,18 @@ const winlink = (() => {
     el.className = `wl-state ${cls}`;
   }
 
+  // The idle line: switched off, Pat refused (its config), answering a
+  // station that called us, or armed/idle.
+  function idleState() {
+    if (off) setState("Switched off · Pat isn't running", "warn");
+    else if (blocked) setState(`Off · ${blocked}`, "warn");
+    else if (inbound && !session) setState(`Answering ${inbound.call} · a station called this one`, "on");
+    else setState(session ? `Armed · session to ${session}` : armed ? "Armed" : "Idle", armed ? "on" : "");
+  }
+
   function renderSession() {
     $("#wl-stop").disabled = !session;
-    $("#wl-connect").disabled = !!session || off;
+    $("#wl-connect").disabled = !!session || off || !!blocked || !!inbound;
     $("#wl-compose-btn").disabled = off;
     $("#winlink").classList.toggle("wl-armed", armed);
     $("#winlink").classList.toggle("wl-off", off);
@@ -511,13 +596,16 @@ const winlink = (() => {
     armed = !!snap.armed;
     session = snap.session || null;
     off = !!snap.off;
+    blocked = snap.blocked || null;
+    inbound = snap.inbound || null;
+    if (Array.isArray(snap.modems) && snap.modems.length) modems = snap.modems;
     $("#wl-mycall").textContent = snap.mycall || "";
     $("#wl-log").textContent = (snap.log || []).join("\n");
     codec(snap.codec_db);
     idState(snap.id);
-    if (off) setState("Switched off · Pat isn't running", "warn");
-    else setState(session ? `Armed · session to ${session}` : armed ? "Armed" : "Idle", armed ? "on" : "");
+    idleState();
     renderSession();
+    if (mode === "peer") viaChanged(false);   // the modems may have changed
     if (!off) loadBox(box);
   }
 
@@ -538,6 +626,20 @@ const winlink = (() => {
       renderSession();
     }
     if (m.id) idState(m.id);
+    if ("blocked" in m && (m.blocked || null) !== blocked) {
+      blocked = m.blocked || null;
+      idleState();
+      renderSession();
+    }
+    if ("inbound" in m) {
+      const was = inbound;
+      inbound = m.inbound || null;
+      if (!session) idleState();
+      renderSession();
+      // What the peer left is in the inbox now (and its share of the outbox
+      // gone): refresh the list, unless a message is open (keep the reader).
+      if (was && !inbound && !current) loadBox(box);
+    }
     if (m.log) log(m.log);
     if (m.status && "mycall" in m.status) $("#wl-mycall").textContent = m.status.mycall;
     if (m.session === "started") {
@@ -548,10 +650,14 @@ const winlink = (() => {
       session = null;
       // sent is null when Pat's mailbox could not be read: say unknown, never 0.
       const sent = m.sent == null ? "sent ?" : `sent ${m.sent}`;
-      const left = m.ok && m.unsent ? ` · ${m.unsent} still in the outbox` : "";
+      // A gateway takes all but P2P-only messages: one it left is a warning.
+      // A peer takes only what is addressed to it: what stays is just counted.
+      const warnLeft = !m.peer && m.ok && m.unsent;
+      const left = warnLeft ? ` · ${m.unsent} still in the outbox`
+        : m.left ? ` · ${m.left} left in the outbox${m.peer ? "" : " (P2P only)"}` : "";
       setState(m.ok ? `Session ended · ${sent}, received ${m.received}${left}`
                     : `Session ended · ${m.reason || "failed"}${m.sent ? ` · sent ${m.sent}` : ""}`,
-        m.ok && !m.unsent ? "" : "warn");
+        m.ok && !warnLeft ? "" : "warn");
       $("#wl-prompt").hidden = true;
       renderSession();
       loadBox(box);
@@ -575,6 +681,9 @@ const winlink = (() => {
   $("#wl-gw-refresh").onclick = loadGateways;
   $("#wl-band").onchange = loadGateways;
   $("#wl-url").oninput = resetConfirm;
+  for (const c of $("#wl-mode").children) c.onclick = () => setMode(c.dataset.v);
+  for (const id of ["#wl-peer-call", "#wl-peer-freq", "#wl-peer-host", "#wl-peer-pass"]) $(id).oninput = peerChanged;
+  $("#wl-peer-modem").onchange = peerChanged;
   $("#wl-connect").onclick = connectClick;
   $("#wl-stop").onclick = () => send({ t: "winlink_stop" });
   if (viaSel()) viaSel().onchange = () => viaChanged();

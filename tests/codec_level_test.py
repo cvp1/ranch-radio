@@ -39,6 +39,7 @@ os.environ["CODEC_LEVEL_BACKEND"] = "alsa"   # before codec_level is imported
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import codec_level  # noqa: E402
+import testkit  # noqa: E402
 
 APPS = 15000 + random.randrange(1000)
 LANE = 16000 + random.randrange(1000)
@@ -165,7 +166,7 @@ def start(env_extra=None, *extra):
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
          "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
-         "--winlink-pat", f"{sys.executable} tests/fake_pat.py", "--winlink-pat-port", str(PATP),
+         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(PATP),
          *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):

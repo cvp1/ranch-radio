@@ -390,6 +390,19 @@ class Station:
 
     # --- Winlink session routing
 
+    async def winlink_hub_links(self):
+        """The packet hub's links (its /api/status), or None if there is no
+        hub or it can't be asked: as server.Station.winlink_hub_links."""
+        if not self.packet_url:
+            return None
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s, \
+                    s.get(self.packet_url.rstrip("/") + "/api/status") as r:
+                links = (await r.json(content_type=None)).get("links")
+            return links if isinstance(links, list) else None
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError, AttributeError):
+            return None
+
     def lane_for(self, url, via):
         scheme = urlsplit(url).scheme
         if scheme == "telnet":
@@ -720,6 +733,7 @@ def main():
     if wl.get("pat"):             # Winlink (Pat) is an add-on (addons/winlink.py); the lanes are not
         addon_cfg.setdefault("winlink", {"lane_for": station.lane_for, "engine_args": SimpleNamespace(
             winlink_pat=" ".join(shlex.quote(_expand(w)) for w in shlex.split(wl["pat"])), winlink_pat_port=int(wl.get("pat_port", 8095)),
+            winlink_pat_config=_expand(wl["pat_config"]) if wl.get("pat_config") else None,
             winlink_session_max=float(wl.get("session_max", 900)))})
     m = cfg.get("mesh") or {}
     if m.get("port"):             # Mesh is an add-on (addons/mesh.py); "mesh" configures it

@@ -254,6 +254,7 @@
           <textarea id="wl-text" rows="7" placeholder="Message"></textarea>
           <input type="file" id="wl-files" multiple>
           <div class="wl-note" id="wl-compose-note" hidden></div>
+          <label class="wl-check" title="Sent only in a peer-to-peer session with the station it is addressed to"><input type="checkbox" id="wl-p2ponly"> P2P only (never via the Winlink servers)</label>
           <div class="wl-row">
             <button type="submit" class="chip on">Queue in outbox</button>
             <button type="button" class="chip" id="wl-compose-cancel">Cancel</button>
@@ -262,11 +263,22 @@
       </div>
       <div class="wl-session">
         <div class="wl-bar">
+          <div class="seg" id="wl-mode" title="Gateway: a Winlink gateway (to the servers); Peer: another station directly (P2P)">
+            <button class="chip on" data-v="gateway">Gateway</button>
+            <button class="chip" data-v="peer">Peer</button>
+          </div>
           <select id="wl-via" title="Which radio the session goes out on"></select>
           <select id="wl-band" title="Band"></select>
           <button class="chip chip-mini" id="wl-gw-refresh">Gateways</button>
         </div>
         <div class="wl-gateways" id="wl-gateways"></div>
+        <div class="wl-row wl-peer" id="wl-peer" hidden>
+          <input id="wl-peer-call" class="wl-url" placeholder="Peer callsign" autocomplete="off" spellcheck="false">
+          <select id="wl-peer-modem" title="HF modem" hidden></select>
+          <input id="wl-peer-freq" class="wl-url" placeholder="Frequency, kHz" inputmode="decimal" autocomplete="off">
+          <input id="wl-peer-host" class="wl-url" placeholder="host:port (its telnet P2P listener)" autocomplete="off" spellcheck="false">
+          <input id="wl-peer-pass" class="wl-url" type="password" placeholder="Its telnet P2P password" autocomplete="off">
+        </div>
         <input id="wl-url" class="wl-url" placeholder="ardop:///CALL?bw=2000MAX&amp;freq=kHz" autocomplete="off" spellcheck="false">
         <div class="wl-row">
           <button class="chip wl-connect" id="wl-connect">Connect</button>

@@ -220,6 +220,20 @@ dialing on whatever channel the radio is on. With the add-on off, or
 borrowing the radio instead of using `"control"`, nothing is tuned: the
 panel tells you which frequency the radio must already be on.
 
+**Winlink peer-to-peer (P2P).** Mail between two stations with no gateway
+and no internet. Switch the session panel from Gateway to Peer, pick the via
+and type the other station's callsign: the frequency (kHz) for a radio via,
+or its host:port and telnet password for telnet. Pat sends a peer only the
+messages addressed to that station alone (or to an auxiliary address it
+advertises); the session ends with "N sent, M left in the outbox", which is
+not a warning. Tick **P2P only** in Compose for a message that must never go
+via the Winlink servers: a gateway session leaves it in the outbox ("1 left
+(P2P only)"), and its rows show a P2P badge. Packet URLs stay inside the
+VHF/UHF data sub-bands (47 CFR 97.305(c): 2 m from 144.1 MHz) and never on
+the APRS channel, 144.390 MHz. Another station calling yours is shown as
+"Answering CALL"; the outbox is Pat's until it ends, and it is capped like
+your own sessions.
+
 ## Safety
 
 - **Receive-only until you give a callsign** (`init --call`).
@@ -229,7 +243,12 @@ panel tells you which frequency the radio must already be on.
 - **Winlink.** The modem's rigctl lane keys only during an armed session, and
   sessions end with a station ID. A packet session through a UV-PRO is tuned
   only after you confirm Connect, never while a packet link is up, and is
-  refused rather than sent out on the wrong channel.
+  refused rather than sent out on the wrong channel. Pat is not started at
+  all while its config would make it listen, beacon or run scheduled
+  connects on its own (`listen`, `schedule`, `ax25.beacon.every`); the panel
+  and `doctor` say what to clear. The packet hub answers another station's
+  connect only inside an inbound window a listen opens (none yet), so Pat's
+  registration alone never makes the radio answer.
 - **LAN only.** The servers refuse requests from web pages on other sites
   (Host and Origin checks), so a page from the internet, open in a browser on
   your LAN, can't reach the radio. There is no login: run it on a network you

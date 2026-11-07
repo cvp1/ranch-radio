@@ -257,7 +257,27 @@ def machine(h, budget_s=None, include_available=False):
                 continue                    # nothing to look for until the operator names them
             if not late(name, n.get("bin") or n.get("pymod") or n.get("file") or n.get("files")):
                 out += _need(name, n, block, py, sp, h["os"])
+    if "winlink" in present and h["os"] in MANIFESTS["winlink"]["os"] and not late("winlink", "Pat's config"):
+        out.append(pat_config_check(block_of(h, "winlink") or {}))
     return out
+
+
+def pat_config_check(w):
+    """The Winlink add-on's preflight (pat_config.preflight, the one reader
+    of Pat's password-bearing config): would Pat listen, beacon or run
+    scheduled connects on its own? Then Radio Remote won't launch it. A warn,
+    not missing: a host whose Pat has never run has no config yet."""
+    import shlex
+    from types import SimpleNamespace
+
+    from pat_config import pat_config_path, preflight
+    cmd = [_expand(x) for x in shlex.split(str(w.get("pat") or "pat"))]
+    path = pat_config_path(SimpleNamespace(winlink_pat_config=w.get("pat_config")), cmd)
+    why = preflight(path, cmd)
+    if why:
+        return Check("winlink", WARN, f"Pat will not be started: {why}",
+                     "clear it; Radio Remote starts any listening itself")
+    return Check("winlink", OK, f"Pat's config {path}: no listen, schedule or beacon of its own")
 
 
 def module_checks(h, name, local):

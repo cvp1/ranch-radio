@@ -33,6 +33,35 @@ Environment:
   FAKE_PAT_BROKEN_READ    "1": the mark-read route answers 500
   FAKE_PAT_SLOW_MID  a MID whose message GET answers only after 2 s (a stale
                     read the page must drop)
+  FAKE_PAT_LISTEN_FAIL  "1": listeners asked for (--listen or config) never
+                    start; active_listeners stays []
+  FAKE_PAT_P2P      comma list of peer calls this fake treats as P2P stations,
+                    each optionally CALL=FW1+FW2 (the forwarder addresses the
+                    peer advertises; default just CALL). A session to one
+                    sends only outbox messages whose ONLY receiver is one of
+                    them (wl2k-go mailbox GetOutbound, F6); any other target
+                    is a CMS gateway: everything except P2POnly
+  (All read once at start: a test that needs one starts its own server.)
+
+Command line, as Pat's: global flags BEFORE the command, then `http --addr`.
+  --config FILE     read like Pat reads it: "listen" applies when --listen
+                    is absent (Pat's fallback, app/app.go), so a test can
+                    show a config that would listen on its own
+  --listen/-l M,..  the methods listed in Status active_listeners (only
+                    before `http`: after it Pat's http command ignores it)
+
+Inbound sessions (another station calling us), announced the way Pat does:
+the log line "Got connect (<method>:<call>)", then a Status push with
+connected=true and Pat's remote_addr ("AX.25:N0XYZ", "tcp:127.0.0.1:5555").
+  POST /fake/inbound {"remote", "method", "receive": n, "mode"}
+       mode "cooperative": ends on a graceful /api/disconnect (dirty does
+            nothing and answers 400: Pat's dirty has no AX.25 branch, F9)
+       mode "stubborn": ignores both, and every SIGTERM while it is up
+            (logged, as Pat's first SIGTERM aborts and keeps running); only
+            SIGKILL ends it. Without an exchange SIGTERM exits as Pat does.
+  POST /fake/inbound/end   the remote hangs up (n messages into in/)
+  POST /fake/ws/drop {"refuse_s": s}  close every WebSocket and refuse new
+       ones for s seconds (Pat's Status is then unknown to the server)
   (All read once at start: a test that needs one starts its own server.)
 
 Routes (shapes as in Pat v1.0.0 api/api.go, api/mailbox.go):
@@ -62,6 +91,7 @@ read, Cc K7ABC, subject "Re: Already a reply", note.txt attached) and GHI789
 """
 import asyncio
 import hashlib
+import signal
 import itertools
 import json
 import os
@@ -72,6 +102,34 @@ from urllib.parse import unquote
 from aiohttp import web
 
 ADDR = sys.argv[sys.argv.index("--addr") + 1]
+GLOBAL = sys.argv[1:sys.argv.index("http")] if "http" in sys.argv else []
+
+
+def _flag(names):
+    for i, a in enumerate(GLOBAL):
+        for n in names:
+            if a == n and i + 1 < len(GLOBAL):
+                return GLOBAL[i + 1]
+            if a.startswith(n + "="):
+                return a[len(n) + 1:]
+    return None
+
+
+CONFIG = {}
+if _flag(["--config"]):
+    try:
+        with open(_flag(["--config"])) as _f:
+            CONFIG = json.load(_f)
+    except (OSError, ValueError):
+        CONFIG = {}
+_listen = _flag(["--listen", "-l"])
+LISTEN = [m for m in (_listen.split(",") if _listen else (CONFIG.get("listen") or [])) if m]
+if os.environ.get("FAKE_PAT_LISTEN_FAIL") == "1":
+    LISTEN = []
+P2P = {}
+for _e in filter(None, os.environ.get("FAKE_PAT_P2P", "").split(",")):
+    _c, _, _fw = _e.partition("=")
+    P2P[_c.upper()] = [x.upper() for x in (_fw.split("+") if _fw else [_c])]
 HOST, PORT = ADDR.rsplit(":", 1)
 RIGCTL = int(os.environ.get("FAKE_PAT_RIGCTL", "0"))
 LOG = os.environ.get("FAKE_PAT_LOG")
@@ -113,7 +171,7 @@ ATTACH = {("DEF456", "note.txt"): b"hello"}
 _out_ids = itertools.count()
 
 clients = set()
-status = {"active_listeners": [], "connected": False, "dialing": False, "remote_addr": "",
+status = {"active_listeners": list(LISTEN), "connected": False, "dialing": False, "remote_addr": "",
           "http_clients": [], "config_hash": "x"}
 abort = asyncio.Event()
 prompt_answers = {}
@@ -189,6 +247,7 @@ async def compose(request):
                          "To": [_addr(a) for a in split(form.get("to", ""))],
                          "Cc": [_addr(a) for a in split(form.get("cc", ""))] or None,
                          "Body": form.get("body", ""), "Unread": False,
+                         "P2POnly": bool(form.get("p2ponly")),
                          "Files": [{"Name": v.filename, "Size": len(data)} for v, data in blobs]})
     for v, data in blobs:
         ATTACH[(mid, v.filename)] = data
@@ -370,11 +429,10 @@ async def connect(request):
                 except asyncio.TimeoutError:
                     received = 1
                     # The gateway accepted the outbox: Pat moves each to sent/.
-                    n = len(BOXES["out"]) if SEND_N is None else int(SEND_N)
-                    for m in BOXES["out"][:n]:
+                    for m in outbound(url):
+                        BOXES["out"].remove(m)
                         BOXES["sent"].append(m)
                         await logline(f">FC EM {m['MID']} accepted")
-                    del BOXES["out"][:n]
                     await push({"Notification": {"title": "New message from N0DAJ",
                                                  "body": "Test"}})
                 if keys:
@@ -401,15 +459,106 @@ async def connect(request):
     return web.Response(text=body, content_type="text/plain")
 
 
+def receivers(m):
+    return [a["Addr"].upper() for a in (m.get("To") or []) + (m.get("Cc") or [])]
+
+
+def outbound(url):
+    """What Pat sends this session (wl2k-go GetOutbound): to a P2P peer,
+    messages whose only receiver is one of its forwarders; to a CMS,
+    everything but P2POnly. FAKE_PAT_SEND_N caps it (a gateway that took
+    only some)."""
+    from urllib.parse import urlsplit
+    target = urlsplit(url).path.strip("/").split("/")[-1].upper()
+    fws = P2P.get(target)
+    if fws is not None:
+        out = [m for m in BOXES["out"] if len(receivers(m)) == 1 and receivers(m)[0] in fws]
+    else:
+        out = [m for m in BOXES["out"] if not m.get("P2POnly")]
+    return out if SEND_N is None else out[:int(SEND_N)]
+
+
+inbound = {"task": None, "mode": None, "end": None}
+
+
 async def disconnect(request):
-    record(route="disconnect", dirty=request.query.get("dirty", "false"))
+    dirty = request.query.get("dirty", "false")
+    record(route="disconnect", dirty=dirty)
+    if inbound["task"] and not inbound["task"].done():
+        # Pat: graceful closes the exchange conn (true); dirty has no AX.25
+        # or telnet branch (false, 400). Stubborn: the close never completes.
+        if dirty == "true":
+            return web.Response(status=400, text="{}")
+        if inbound["mode"] == "cooperative":
+            inbound["end"].set()
+        return web.Response(text="{}", content_type="text/plain")
     if not (status["connected"] or status["dialing"]):
         return web.Response(status=400, text="Nothing to abort")
     abort.set()
     return web.Response(text="{}", content_type="text/plain")
 
 
+async def run_inbound(remote, method, receive):
+    call = remote.split(":", 1)[-1].split(" via ")[0]
+    if remote.startswith("tcp:"):
+        call = inbound.get("call") or "N0XYZ"
+    await logline(f"Got connect ({method}:{call})")
+    status.update(connected=True, remote_addr=remote)
+    await push({"Status": status})
+    record(route="inbound", remote=remote, mode=inbound["mode"])
+    try:
+        await inbound["end"].wait()
+        for i in range(receive):
+            mid = f"P2P{i}{os.getpid() % 1000}"
+            BOXES["in"].append({"MID": mid, "Date": "2026-11-05T20:00:00Z", "From": _addr(call),
+                                "To": [_addr(MYCALL)], "Cc": None, "Subject": f"p2p {i}", "Body": "",
+                                "BodyHTML": "", "Files": [], "P2POnly": False, "Unread": True})
+        await logline("Disconnected.")
+    finally:
+        status.update(connected=False, remote_addr="")
+        await push({"Status": status})
+        record(route="inbound_end", remote=remote)
+
+
+async def fake_inbound(request):
+    b = await request.json()
+    inbound.update(mode=b.get("mode", "cooperative"), end=asyncio.Event(), call=b.get("call"))
+    inbound["task"] = asyncio.ensure_future(run_inbound(b.get("remote", "AX.25:N0XYZ"),
+                                                        b.get("method", "ax25+agwpe"), int(b.get("receive", 0))))
+    return web.json_response({"ok": True})
+
+
+async def fake_inbound_end(request):
+    if inbound["end"]:
+        inbound["end"].set()
+    return web.json_response({"ok": True})
+
+
+ws_refuse_until = [0.0]
+
+
+async def fake_ws_drop(request):
+    import time
+    b = await request.json()
+    ws_refuse_until[0] = time.monotonic() + float(b.get("refuse_s", 0))
+    for ws in list(clients):
+        await ws.close()
+    return web.json_response({"ok": True})
+
+
+def on_sigterm():
+    if inbound["task"] and not inbound["task"].done() and inbound["mode"] == "stubborn":
+        record(route="sigterm", kept_running=True)
+        asyncio.ensure_future(logline("Got abort signal, disconnecting..."))
+        return
+    record(route="sigterm", kept_running=False)
+    os._exit(0)                        # as quick as Pat with nothing to abort
+
+
 async def ws_handler(request):
+    import time
+    if time.monotonic() < ws_refuse_until[0]:
+        return web.Response(status=503, text="not now")
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     clients.add(ws)
@@ -439,5 +588,14 @@ app.router.add_get("/api/rmslist", rmslist)
 app.router.add_route("*", "/api/connect", connect)
 app.router.add_route("*", "/api/disconnect", disconnect)
 app.router.add_get("/ws", ws_handler)
-record(route="start", pid=os.getpid())
-web.run_app(app, host=HOST, port=int(PORT), print=None)
+app.router.add_post("/fake/inbound", fake_inbound)
+app.router.add_post("/fake/inbound/end", fake_inbound_end)
+app.router.add_post("/fake/ws/drop", fake_ws_drop)
+
+
+async def _signals(app_):
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, on_sigterm)
+app.on_startup.append(_signals)
+record(route="start", pid=os.getpid(), argv=sys.argv[1:], listen=list(LISTEN))
+web.run_app(app, host=HOST, port=int(PORT), print=None, handle_signals=False)

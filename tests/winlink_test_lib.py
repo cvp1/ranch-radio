@@ -12,6 +12,7 @@ import threading
 import time
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APPS = 15000 + random.randrange(1000)
@@ -103,7 +104,7 @@ def start(env_extra=None, *extra):
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
          "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
-         "--winlink-pat", f"{sys.executable} tests/fake_pat.py", "--winlink-pat-port", str(PATP),
+         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(PATP),
          *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
@@ -126,3 +127,59 @@ def stop(p):
     except subprocess.TimeoutExpired:
         p.kill()
         return p.communicate()[0]
+
+
+class WebPage:
+    """A page's control WebSocket to a server on port `web` (any port), with
+    its HTTP routes: winlink and notice events kept in .events."""
+
+    def __init__(self, web):
+        self.web = web
+        self.loop = asyncio.new_event_loop()
+        self.events = []
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        self.run(self._open())
+
+    def run(self, coro, timeout=20):
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    async def _open(self):
+        self.sess = aiohttp.ClientSession()
+        self.ws = await self.sess.ws_connect(f"http://127.0.0.1:{self.web}/ws")
+        self.hello = json.loads((await self.ws.receive()).data)
+        self.reader = asyncio.ensure_future(self._read())
+
+    async def _read(self):
+        async for msg in self.ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                m = json.loads(msg.data)
+                if m.get("t") in ("winlink", "notice"):
+                    self.events.append(m)
+
+    def send(self, m):
+        self.run(self.ws.send_str(json.dumps(m)))
+
+    def wait(self, pred, timeout=15):
+        end = time.time() + timeout
+        while time.time() < end:
+            for e in list(self.events):
+                if pred(e):
+                    return e
+            time.sleep(0.05)
+        return None
+
+    def http(self, method, path, **kw):
+        async def go():
+            async with self.sess.request(method, f"http://127.0.0.1:{self.web}{path}", **kw) as r:
+                return r.status, await r.text()
+        return self.run(go())
+
+    def snapshot(self):
+        st, body = self.http("GET", "/winlink/api/status")
+        return json.loads(body) if st == 200 else {"http": st}
+
+    def close(self):
+        async def _c():
+            await self.ws.close()
+            await self.sess.close()
+        self.run(_c())

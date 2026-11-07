@@ -55,6 +55,7 @@ from aiohttp import web
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import winlink_test_lib as L  # noqa: E402
+import testkit  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="wlqsy-")
 fails = 0
@@ -139,7 +140,7 @@ class Run:
         with open(path, "w") as f:
             json.dump(cfg, f)
         HUB["links"] = []
-        self.srv, self.flog = L.start({"FAKE_UVPRO_LOG": self.blog, **(env or {})},
+        self.srv, self.flog = L.start({"FAKE_UVPRO_LOG": self.blog, "FAKE_UVPRO_CH3": "145.09", **(env or {})},
                                       "--addons", path, "--addons-state", "")
         ok = wait_for(self.ready, 20, 0.3)
         if not ok:
@@ -276,12 +277,16 @@ async def admission():
         return True
 
     async def none_queued(box):
-        return set()
+        return []
 
-    async def session(url, queued, pat_url):
+    async def session(url, queued, pat_url, peer=False):
         started.append(pat_url)
-    eng._ready, eng._mids, eng._session = yes, none_queued, session
-    url = "ax25:///N0DAJ?freq=144390"
+    eng._ready, eng._listing, eng._session = yes, none_queued, session
+    # Pat has said it is idle (a Status on its WebSocket): without one its
+    # state is unknown, which counts as busy and refuses every connect (A4).
+    eng.pat_ws, eng._status_live = object(), True
+    eng.status = {"connected": False, "dialing": False, "active_listeners": [], "remote_addr": ""}
+    url = "ax25:///N0DAJ?freq=145090"
     out = {}
 
     async def bounded(coro):                 # never hang the test, whatever the engine does
@@ -337,11 +342,11 @@ TX_FLAG = os.path.join(TMP, "tx")
 r = Run({"FAKE_UVPRO_TX": TX_FLAG})
 try:
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("1 existing channel: the session runs via the hub", armed and armed.get("via"), "Direwolf")
     check("  Pat got the URL without freq= (Pat does not QSY)", r.pat_urls(p0), ["ax25:///N0DAJ"])
     check("  the page is told the radio was tuned (channel 3)",
-          has(r.notices("info"), "tuned to 144.390 MHz", "channel 3"), True)
+          has(r.notices("info"), "tuned to 145.090 MHz", "channel 3"), True)
     check("  this radio's own lane refused Pat's PTT", r.ptt(p0), ["RPRT -11"])
     check("  one select, one restore: no channel written",
           r.writes(b0), [("settings", None, {"channel_a": 2, "double_channel": 0}),
@@ -367,7 +372,7 @@ try:
     r.addon("refresh")
     check("6 the radio reports transmitting", wait_for(radio_tx(r, True), 10), True)
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("6 transmitting: refused, saying why", (armed, has(r.notices("warn"), "Not connecting", "transmitting")),
           (None, True))
     check("  nothing written, Pat not asked", (r.writes(b0), r.pat_urls(p0)), ([], []))
@@ -406,9 +411,9 @@ finally:
 r = Run({"FAKE_UVPRO_SETTINGS": json.dumps({"channel_a": 2, "double_channel": 0})})
 try:
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("2 already there: the session runs", armed and armed.get("via"), "Direwolf")
-    check("  the page is told (channel 3)", has(r.notices("info"), "tuned to 144.390 MHz", "channel 3"), True)
+    check("  the page is told (channel 3)", has(r.notices("info"), "tuned to 145.090 MHz", "channel 3"), True)
     check("  nothing written, before or after", r.writes(b0), [])
     check("  and back on channel 3", any("channel 3" in t for t in r.notify_titles()), True)
 finally:
@@ -456,7 +461,7 @@ finally:
 r = Run({"FAKE_PAT_NO_PTT": "1", "FAKE_PAT_TX_S": "3"}, restore_wait_s=6)
 try:
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     e = r.ended()
     check("13 a good session: ended ok, one message received",
           (e or {}).get("ok") is True and (e or {}).get("received") == 1, True)
@@ -466,7 +471,7 @@ try:
 
     # 7: a packet link still up when Pat returns: the radio waits for it to drop
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390", wait_end=False)
+    armed = r.connect("ax25:///N0DAJ?freq=145090", wait_end=False)
     check("7 link held: the session runs", armed and armed.get("via"), "Direwolf")
     wait_for(pat_called(r, p0), 10, 0.05)
     HUB["links"] = [LINK]
@@ -499,7 +504,7 @@ try:
 
     # 8: the link held past restore_wait_s: warned, the record kept, restored first next time
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390", wait_end=False)
+    armed = r.connect("ax25:///N0DAJ?freq=145090", wait_end=False)
     wait_for(pat_called(r, p0), 10, 0.05)
     HUB["links"] = [LINK]
     check("8 link held too long: the session ends", r.page.wait(L.ended, 30) is not None, True)
@@ -507,12 +512,12 @@ try:
     check("  nothing put back", r.writes(b0), [("settings", None, {"channel_a": 2, "double_channel": 0})])
     check("  the record is kept", (r.uvpro().get("qsy") or {}).get("back"), "channel 1")
     b1, p1 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390", wait_end=False)
+    armed = r.connect("ax25:///N0DAJ?freq=145090", wait_end=False)
     check("  a new connect with the link still up: refused", armed, None)
     check("  nothing written", r.writes(b1), [])
     HUB["links"] = []
     b1, p1 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("  the link gone: the next session runs", armed and armed.get("via"), "Direwolf")
     check("  the radio went back before it was tuned again",
           r.writes(b1), [("settings", None, {"channel_a": 0, "double_channel": 1}),
@@ -536,13 +541,14 @@ class StationRun(Run):
               "restore_wait_s": 3, **uvpro}
         cfg = {"name": "Test Station", "radios": [],
                "packet": {"url": f"http://127.0.0.1:{HUB_PORT}", "agwpe": "127.0.0.1:8000", "name": "UV-50PRO"},
-               "winlink": {"pat": f"{sys.executable} tests/fake_pat.py", "pat_port": L.PATP, "lane_port": L.LANE},
+               "winlink": {"pat": testkit.fake_pat_cmd(), "pat_port": L.PATP, "lane_port": L.LANE},
                "addons": {"uvpro": uv}, "addons_state": os.path.join(TMP, f"state-{Run.n}.json")}
         path = os.path.join(TMP, f"station-{Run.n}.json")
         with open(path, "w") as f:
             json.dump(cfg, f)
         HUB["links"] = []
-        env = dict(os.environ, FAKE_PAT_RIGCTL=str(L.LANE), FAKE_PAT_LOG=self.flog, FAKE_UVPRO_LOG=self.blog)
+        env = dict(os.environ, FAKE_PAT_RIGCTL=str(L.LANE), FAKE_PAT_LOG=self.flog, FAKE_UVPRO_LOG=self.blog,
+                   FAKE_UVPRO_CH3="145.09")
         self.srv = subprocess.Popen([sys.executable, "station.py", "--config", path, "--listen", str(L.WEB),
                                      "--rigctl-host", "127.0.0.1", "--rigctl-port", str(L.APPS)],
                                     cwd=L.ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -573,9 +579,9 @@ r = StationRun(control=f"tcp:127.0.0.1:{CONTROL}")
 try:
     check("station: the UV-PRO add-on read the radio", wait_for(r.ready, 20, 0.3), True)
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("station: the session runs via the hub, by its name", armed and armed.get("via"), "UV-50PRO")
-    check("  tuned (channel 3), told", has(r.notices("info"), "UV-50PRO tuned to 144.390 MHz", "channel 3"), True)
+    check("  tuned (channel 3), told", has(r.notices("info"), "UV-50PRO tuned to 145.090 MHz", "channel 3"), True)
     check("  Pat got the URL without freq=", r.pat_urls(p0), ["ax25:///N0DAJ"])
     check("  selected, then put back",
           r.writes(b0), [("settings", None, {"channel_a": 2, "double_channel": 0}),
@@ -586,7 +592,7 @@ finally:
 r = StationRun(hub=f"http://127.0.0.1:{HUB_PORT}")       # borrow mode: no "control"
 try:
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390")
+    armed = r.connect("ax25:///N0DAJ?freq=145090")
     check("station, borrow mode: refused, saying why",
           (armed, has(r.notices("warn"), "Not connecting", "borrows the radio", "\"control\"")), (None, True))
     check("  nothing written, Pat not asked", (r.writes(b0), r.pat_urls(p0)), ([], []))
@@ -597,7 +603,7 @@ finally:
 r = Run({"FAKE_PAT_NO_PTT": "1", "FAKE_PAT_TX_S": "2"}, restore_wait_s=60)
 try:
     b0, p0 = r.mark()
-    armed = r.connect("ax25:///N0DAJ?freq=144390", wait_end=False)
+    armed = r.connect("ax25:///N0DAJ?freq=145090", wait_end=False)
     wait_for(pat_called(r, p0), 10, 0.05)
     HUB["links"] = [LINK]
     check("14 Pat returned with the link held", wait_for(pat_returned(r), 15), True)

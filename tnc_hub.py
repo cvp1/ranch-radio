@@ -56,6 +56,19 @@ seconds; asking again extends it; POST /api/return takes it back at once.
 The hub refuses while a packet link is up or just after it transmitted, and
 takes the radio back by itself when the time runs out, so a borrower that
 dies can't keep packet off.
+
+Answering inbound connects: an inbound SABM (another station calling one of
+the calls an AGWPE client registered, Pat's MyCall) is IGNORED, with no UA and
+no DM (a DM would be a transmission), unless an inbound window is open for
+that call. POST /api/inbound {"calls": ["N9ABC"], "seconds": n} from this
+machine opens one (asking again extends it), POST /api/inbound/close ends it,
+and it runs out by itself; the hub starts with none. Status shows
+"inbound": {"calls", "until"} or null; ignored calls are counted
+(inbound_ignored) and logged. The hub, the process that owns the transmitter,
+is so the independent expiry for a listen window: a server that crashed or a
+Pat that survived can't keep the station answering past "until". Before this,
+Pat holding its registration after any packet session was enough for the hub
+to answer a caller with a UA (and a DISC when Pat closed it), unattended.
 """
 
 import argparse
@@ -92,6 +105,7 @@ AGW_MAX_DATA = 4096
 RECONNECT_MIN_S, RECONNECT_MAX_S = 2.0, 30.0
 LEND_MAX_S = 300              # one request; the borrower asks again to keep it
 LEND_AFTER_TX_S = 5.0         # a frame handed to the radio may still be on the air
+INBOUND_MAX_S = 12 * 3600     # one inbound window request (a listen window's cap, plan D2)
 
 # The radio's command protocol on the KISS channel: Gaia frames, FF 01 flags
 # length, then 4 command bytes (group, command; bit 15 = reply), length bytes
@@ -575,6 +589,8 @@ class Hub:
         self.started = now()
         self.lent = None                # {"to", "since", "until"} while the radio is lent
         self._lend_end = None
+        self.inbound = None             # {"calls": [...], "until"} while inbound connects are answered
+        self._inbound_end = None
         self.last_tx = None
         logdir = pathlib.Path(args.log_dir)
         self.rxlog = JsonLog(logdir / "rx.jsonl")
@@ -673,6 +689,12 @@ class Hub:
                 if str(f.dest) in c.registered:
                     if not self.gate.enabled:
                         log.info("inbound connect from %s to %s ignored: transmit is off",
+                                 f.src, f.dest)
+                        return
+                    if not self.inbound_open(str(f.dest)):
+                        # No UA and no DM: answering at all is a transmission.
+                        self.counts["inbound_ignored"] += 1
+                        log.info("inbound connect from %s to %s ignored: no inbound window open",
                                  f.src, f.dest)
                         return
                     link = self._new_link(str(f.dest), str(f.src), c,
@@ -776,6 +798,37 @@ class Hub:
         self.lent = None
         self.radio.release()
 
+    # -- answering inbound connects (a listen window) --
+
+    def inbound_open(self, call):
+        w = self.inbound
+        return bool(w and now() < w["until"] and call.upper() in w["calls"])
+
+    def open_inbound(self, calls, seconds):
+        """Answer inbound connects to CALLS for SECONDS (asking again
+        replaces the calls and extends it)."""
+        calls = sorted({ax25.call_str(*ax25.parse_call(c)) for c in calls})
+        self.inbound = {"calls": calls, "since": (self.inbound or {}).get("since", now()),
+                        "until": now() + seconds}
+        log.warning("inbound window open for %s for %gs", ", ".join(calls), seconds)
+        if self._inbound_end:
+            self._inbound_end.cancel()
+        self._inbound_end = asyncio.create_task(self._inbound_runs_out(seconds))
+
+    async def _inbound_runs_out(self, seconds):
+        await asyncio.sleep(seconds)
+        self._inbound_end = None
+        log.warning("inbound window for %s ran out", ", ".join((self.inbound or {}).get("calls", [])))
+        self.inbound = None
+
+    def close_inbound(self):
+        if self._inbound_end and self._inbound_end is not asyncio.current_task():
+            self._inbound_end.cancel()
+        self._inbound_end = None
+        if self.inbound is not None:
+            log.warning("inbound window for %s closed", ", ".join(self.inbound["calls"]))
+        self.inbound = None
+
     # -- links --
 
     def _new_link(self, local, remote, client, digis=()):
@@ -799,6 +852,7 @@ class Hub:
         return {
             "radio": {"spec": self.args.tnc, "up": r.up, "since": r.opened_at,
                       "last_rx": r.last_rx, "error": r.error, "lent": self.lent},
+            "inbound": (dict(self.inbound) if self.inbound and now() < self.inbound["until"] else None),
             "tx": {"enabled": self.gate.enabled, "allowed_by_start": self.gate.allowed_by_start,
                    "allow_calls": sorted(self.gate.allow),
                    "max_per_min": self.gate.max_per_min, "ui_per_min": self.gate.ui_per_min},
@@ -1230,8 +1284,40 @@ def make_web(hub):
         hub.take_back()
         return web.json_response({"lent": None})
 
+    async def inbound(req):
+        if not local(req):
+            return web.json_response({"error": "inbound windows are only opened from this machine"},
+                                     status=403)
+        try:
+            body = await req.json()
+            calls, seconds = body.get("calls"), body.get("seconds")
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected JSON {\"calls\": [CALL], \"seconds\": n}"},
+                                     status=400)
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) \
+                or not 1 <= seconds <= INBOUND_MAX_S:
+            return web.json_response({"error": f"seconds: 1 to {INBOUND_MAX_S}"}, status=400)
+        if not isinstance(calls, list) or not 1 <= len(calls) <= 4 \
+                or not all(isinstance(c, str) for c in calls):
+            return web.json_response({"error": "calls: a list of 1 to 4 callsigns"}, status=400)
+        try:
+            for c in calls:
+                ax25.parse_call(c)
+        except FrameError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        hub.open_inbound(calls, float(seconds))
+        return web.json_response({"inbound": hub.status()["inbound"]})
+
+    async def inbound_close(req):
+        if not local(req):
+            return web.json_response({"error": "only allowed from this machine"}, status=403)
+        hub.close_inbound()
+        return web.json_response({"inbound": None})
+
     app.router.add_get("/", index)
     app.router.add_get("/api/status", status)
+    app.router.add_post("/api/inbound", inbound)
+    app.router.add_post("/api/inbound/close", inbound_close)
     app.router.add_post("/api/tx", set_tx)
     app.router.add_post("/api/lend", lend)
     app.router.add_post("/api/return", give_back)

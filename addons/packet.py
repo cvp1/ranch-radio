@@ -85,6 +85,20 @@ class Packet(Addon):
                 self.emit({"state": self.snapshot()})
             await asyncio.sleep(POLL_S)
 
+    async def links(self):
+        """The hub's connected-mode links now ([{"local", "remote", "state", ...}]),
+        or None if the hub can't be asked: Winlink's proof that a packet
+        session really ended (the hub, not Pat, holds the AX.25 link)."""
+        if not self._session:
+            return None
+        try:
+            async with self._session.get(f"{self.url}/api/status") as r:
+                d = await r.json(content_type=None)
+            links = d.get("links")
+            return links if isinstance(links, list) else None
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, AttributeError):
+            return None
+
     def snapshot(self):
         age = round(time.time() - self.state["last_rx"]) if self.state.get("last_rx") else None
         return {"up": self.state["up"], "tx": self.state["tx"], "last_rx_age": age,

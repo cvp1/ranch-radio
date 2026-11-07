@@ -36,6 +36,7 @@ import time
 import urllib.request
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APPS = 15000 + random.randrange(1000)
@@ -90,7 +91,7 @@ def start(env_extra=None, *extra, winlink=True):
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
     env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, FAKE_PAT_TX_S="2")
     env.update(env_extra or {})
-    wl = ["--winlink-rigctl-port", str(LANE), "--winlink-pat", f"{sys.executable} tests/fake_pat.py",
+    wl = ["--winlink-rigctl-port", str(LANE), "--winlink-pat", testkit.fake_pat_cmd(),
           "--winlink-pat-port", str(PATP)] if winlink else []
     # Its own add-on state: P13 switches Winlink off, which must never land in
     # (or depend on) the user's ~/.local/state one.
@@ -541,6 +542,132 @@ try:
         check("Abort answers Pat", ans and ans[-1]["value"], "abort")
         check("prompt hidden after answer", b.js(f"({VISIBLE})('#wl-prompt')"), False)
         check("never keyed", any(r["route"] == "ptt_on" for r in fake_log(flog)), False)
+    finally:
+        stop(server)
+
+    # --- P2P (plan winlink-p2p): P2P-only compose, its badge, peer URLs, answering ---
+    def compose_page(to, subject, p2p):
+        b.js("document.querySelector('#wl-compose-btn').click()")
+        b.wait(f"({VISIBLE})('#wl-compose')")
+        b.js(f"""(() => {{ document.querySelector('#wl-to').value = {json.dumps(to)};
+                 document.querySelector('#wl-subject').value = {json.dumps(subject)};
+                 document.querySelector('#wl-text').value = 'b';
+                 const box = document.querySelector('#wl-p2ponly'); if (box) box.checked = {json.dumps(p2p)};
+                 document.querySelector('#wl-compose').requestSubmit(); }})()""")
+        return wait_for(lambda: [r for r in recs(flog, "compose") if r["fields"].get("subject") == subject], 10)
+
+    def set_via(v):
+        b.js(f"(() => {{ const s = document.querySelector('#wl-via'); s.value = {json.dumps(v)};"
+             " s.dispatchEvent(new Event('change')); })()")
+
+    def type_in(sel, text):
+        b.js(f"(() => {{ const e = document.querySelector({json.dumps(sel)}); e.value = {json.dumps(text)};"
+             " e.dispatchEvent(new Event('input')); })()")
+
+    server, flog = start({"FAKE_PAT_TX_S": "0.5", "FAKE_PAT_P2P": "N0XYZ", "FAKE_PAT_NO_PTT": "1"})
+    try:
+        b.goto(f"http://127.0.0.1:{WEB}/?v=p2p#/winlink")
+        b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
+        b.js("window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(e.message))")
+        b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")
+        # A-1: the box ticked sends p2ponly=true; unticked, no field
+        got = compose_page("N0XYZ", "P2P from the page", True)
+        check("A-1 ticked: Pat got p2ponly=true", got and got[-1]["fields"].get("p2ponly"), "true")
+        got = compose_page("N0DAJ", "Gateway from the page", False)
+        check("A-1 unticked: no p2ponly field", bool(got) and "p2ponly" in got[-1]["fields"], False)
+        # A-2: the P2P badge on P2POnly rows only, and in the reader
+        b.js("document.querySelector('#wl-boxes [data-v=out]').click()")
+        b.wait(f"({TEXT})('#wl-list').includes('Gateway from the page')")
+        rows = b.js("[...document.querySelectorAll('#wl-list .wl-msg')].map((r) => "
+                    "[r.querySelector('.wl-subj').textContent.replace(/^P2P/, ''), !!r.querySelector('.wl-badge')])"
+                    ".sort()")
+        check("A-2 P2P badge only on the P2P-only message", rows,
+              [["Gateway from the page", False], ["P2P from the page", True]])
+        b.js("[...document.querySelectorAll('#wl-list .wl-msg')].find((r) => r.textContent.includes('P2P from')).click()")
+        check("A-2 the reader shows it P2P", bool(b.wait("!!document.querySelector('#wl-read-head .wl-badge')")), True)
+        b.js("document.querySelector('#wl-reply').click()")
+        check("A-1 reply to a P2P-only message preselects P2P only",
+              b.wait("document.querySelector('#wl-p2ponly')?.checked === true", 5), True)
+        b.js("document.querySelector('#wl-compose-cancel').click()")
+        b.js("document.querySelector('#wl-boxes [data-v=in]').click()")
+        b.wait(f"({TEXT})('#wl-list').includes('Test message')")
+        b.js("document.querySelector('#wl-list .wl-msg[data-mid=\"ABC123\"]').click()")
+        b.wait(f"({TEXT})('#wl-body').includes('Hello from the test.')")
+        b.js("document.querySelector('#wl-reply').click()")
+        check("A-1 reply to an ordinary message: not P2P only",
+              b.wait("document.querySelector('#wl-p2ponly')?.checked === false", 5), True)
+        b.js("document.querySelector('#wl-compose-cancel').click()")
+        # A-3: peer URLs per via
+        b.js("document.querySelector('#wl-mode [data-v=peer]').click()")
+        check("A-3 peer mode: the callsign field shows, the gateway list doesn't",
+              (b.js(f"({VISIBLE})('#wl-peer-call')"), b.js(f"({VISIBLE})('#wl-gateways')")), (True, False))
+        set_via("radio")
+        type_in("#wl-peer-call", "n0xyz")
+        type_in("#wl-peer-freq", "7101.5")
+        check("A-3 HF (ARDOP): ardop:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
+              "ardop:///N0XYZ?freq=7101.5")
+        check("A-3   one modem: no modem picker", b.js(f"({VISIBLE})('#wl-peer-modem')"), False)
+        b.js("winlink.setPacket({hub_name: 'UV-PRO', up: true})")      # as addons/packet.js does
+        set_via("packet")
+        type_in("#wl-peer-freq", "145010")
+        check("A-3 packet hub: ax25+agwpe:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
+              "ax25+agwpe:///N0XYZ?freq=145010")
+        set_via("telnet")
+        check("A-3 telnet: host and password fields, no frequency",
+              (b.js(f"({VISIBLE})('#wl-peer-host')"), b.js(f"({VISIBLE})('#wl-peer-freq')")), (True, False))
+        type_in("#wl-peer-host", "127.0.0.1:8774")
+        type_in("#wl-peer-pass", "pw")
+        check("A-3 telnet: telnet://MYCALL:***@host:port/CALL shown, no freq",
+              b.js("document.querySelector('#wl-url').value"), "telnet://N9ABC:***@127.0.0.1:8774/N0XYZ")
+        b.js("document.querySelector('#wl-connect').click()")
+        check("A-3 confirm names the peer", bool(b.wait(f"({TEXT})('#wl-connect').includes('peer N0XYZ')", 3)), True)
+        b.js("document.querySelector('#wl-connect').click()")
+        got = wait_for(lambda: recs(flog, "connect"), 10)
+        check("A-3 telnet: Pat dials telnet://N9ABC:pw@127.0.0.1:8774/N0XYZ",
+              got and got[-1]["url"], "telnet://N9ABC:pw@127.0.0.1:8774/N0XYZ")
+        got = b.wait(f"({TEXT})('#wl-state').includes('Session ended')", 15)
+        check("A-6 peer session ends: N sent, M left in the outbox, no warning",
+              (b.js(f"({TEXT})('#wl-state')"), b.js("document.querySelector('#wl-state').classList.contains('warn')")),
+              ("Session ended · sent 1, received 1 · 1 left in the outbox", False))
+        # A-7: a station calls in
+        b.js("document.querySelector('#wl-boxes [data-v=out]').click()")
+        b.wait(f"({TEXT})('#wl-list').includes('Gateway from the page')")
+        b.js("[...document.querySelectorAll('#wl-list .wl-msg')][0].click()")
+        b.wait(f"({VISIBLE})('#wl-read')")
+        urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{PATP}/fake/inbound", data=b'{"remote": "AX.25:N0XYZ"}', method="POST",
+            headers={"Content-Type": "application/json"}), timeout=5).read()
+        check("A-7 the page shows Answering N0XYZ", bool(b.wait(f"({TEXT})('#wl-state').includes('Answering N0XYZ')")),
+              True)
+        check("A-7   Connect and outbox Delete disabled",
+              (b.js("document.querySelector('#wl-connect').disabled"), b.js("document.querySelector('#wl-delete').disabled")),
+              (True, True))
+        urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{PATP}/fake/inbound/end", data=b"{}", method="POST",
+            headers={"Content-Type": "application/json"}), timeout=5).read()
+        check("A-7 after: Idle, Delete enabled again",
+              (bool(b.wait(f"({TEXT})('#wl-state') === 'Idle'")), b.wait("!document.querySelector('#wl-delete').disabled")),
+              (True, True))
+        check("no JS errors in the P2P cases", b.js("window.__errs"), [])
+    finally:
+        stop(server)
+
+    # --- A-11 on the page: Pat's config would listen, so Pat is not launched ---
+    logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
+    state = os.path.join(tempfile.mkdtemp(prefix="wlpage-"), "addons.json")
+    server = subprocess.Popen(
+        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB), "--rigctl-port", str(APPS),
+         "--addons-state", state, "--winlink-rigctl-port", str(LANE),
+         "--winlink-pat", testkit.fake_pat_cmd(listen=["telnet"]), "--winlink-pat-port", str(PATP)],
+        cwd=ROOT, env=dict(os.environ, FAKE_PAT_LOG=logf), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        wait_for(lambda: not isinstance(api_get("/winlink/api/status"), str), 20)
+        b.goto(f"http://127.0.0.1:{WEB}/?v=blocked#/winlink")
+        b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
+        check("A-11 the page says Winlink is off and why",
+              bool(b.wait(f"({TEXT})('#wl-state').startsWith('Off') && ({TEXT})('#wl-state').includes('listen')")), True)
+        check("A-11   Connect disabled", b.js("document.querySelector('#wl-connect').disabled"), True)
+        check("A-11   Pat never started", recs(logf, "start"), [])
     finally:
         stop(server)
 finally:

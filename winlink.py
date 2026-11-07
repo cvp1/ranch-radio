@@ -21,11 +21,22 @@ Radio Remote owns everything around it:
 
 Pat keys the radio only through the lane (--winlink-rigctl-port); point Pat's
 hamlib rig at it (config hamlib_rigs.<name>.address = localhost:<port>).
+
+One owner for Pat's life (PatEngine._life): start, stop, restart_pat and
+the inbound-session cap all go through it. The argv is built from `want` at
+spawn time, each child is stamped with a generation, and restart_pat returns
+only once a child of the new generation runs and its first Status is in (or
+raises PatRestartError). Before every spawn, Pat's config file is read for
+four keys only (listen, schedule, ax25.beacon.every, agwpe.addr; the file
+holds the Winlink password, nothing else is read or logged): a config that
+would make Pat listen, beacon or run scheduled connects on its own keeps Pat
+from being launched at all, with the reason on the page (preflight()).
 """
 
 import asyncio
 import json
 import logging
+import re
 import shlex
 import time
 from collections import deque
@@ -35,16 +46,30 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlspli
 import aiohttp
 from aiohttp import web
 
+from pat_config import pat_config_path, preflight  # noqa: F401 - re-exported for callers
+
 log = logging.getLogger("winlink")
 
 BOXES = ("in", "out", "sent", "archive")
 RADIO_TRANSPORTS = ("ardop", "ax25", "ax25+agwpe", "ax25+linux", "ax25+serial-tnc")
-# VHF/UHF amateur bands (US) where packet gateways live (Pat's rmslist: 2 m
-# and 70 cm around here). Only for packet (ax25*) URLs: the HF band list in
-# server.py also drives auto-tune and codec levels, and an HF rig never tunes
-# these. Without them every VHF packet gateway was refused as off-band
-# (linux-station, 2026-10-17, N7RCC-10 on 145.010).
-PACKET_BANDS = [("2 m", 144e6, 148e6), ("1.25 m", 222e6, 225e6), ("70 cm", 420e6, 450e6)]
+# Where a packet (ax25*) URL may put us: the VHF/UHF segments where US
+# amateurs may send data, 47 CFR 97.305(c) (eCFR, current as of 2026-11-06;
+# the same table at law.cornell.edu/cfr/text/47/97.305):
+#   2 m     144.1-148.0 MHz   MCW, phone, image, RTTY, data, test
+#   1.25 m  222-225 MHz       RTTY, data, test, MCW, phone, SS, image
+#           (219-220 MHz is data too, but 97.303(l)(1) restricts it to fixed
+#           point-to-point digital message forwarding: not offered)
+#   70 cm   entire band       MCW, phone, image, RTTY, data, SS, test
+#           (US band 420-450 MHz, 97.301(a))
+# Below 144.1 MHz on 2 m is CW only: a packet URL at 144.050 is refused.
+# Only for packet URLs: the HF band list in server.py also drives auto-tune
+# and codec levels, and an HF rig never tunes these. (Without the VHF list
+# every packet gateway was refused as off-band, linux-station 2026-10-17,
+# N7RCC-10 on 145.010.) Plan winlink-listen's validator uses the same table.
+PACKET_BANDS = [("2 m", 144.1e6, 148e6), ("1.25 m", 222e6, 225e6), ("70 cm", 420e6, 450e6)]
+# The national APRS channel, never a Winlink packet frequency (+-10 kHz).
+APRS_HZ, APRS_GUARD_HZ = 144.390e6, 10e3
+VHF_HZ = 100e6               # at and above this, a packet URL is checked against PACKET_BANDS
 TRANSPORTS = RADIO_TRANSPORTS + ("telnet",)
 LOG_KEEP = 300               # log lines kept for a page that opens later
 REPLAY_S = 1.0               # Pat replays its log on every WebSocket connect
@@ -61,6 +86,27 @@ ID_GRACE_S = 25.0            # never armed longer than this after Pat returns
 TAIL_QUIET_S = 3.0           # not tracked: armed until the lane is this quiet
 BOX_READ_S = 3.0             # reading a mailbox listing for the session's sent count
 OUTBOX_BUSY = "A Winlink session is running; the outbox can't be changed until it ends."
+HF_MODEMS = ("ardop",)       # HF modem schemes a peer (P2P) session may name; the page reads `modems`
+LIFE_WAIT_S = 15.0           # restart_pat: how long a new Pat has to run and send its first Status
+PREFLIGHT_RETRY_S = 30.0     # Pat's config refused: look at it again this often (or on restart_pat)
+STOP_WAIT_S = 5.0            # stop(): how long Pat has to exit on SIGTERM before SIGKILL
+CONNECT_LINE_S = 10.0        # a "Got connect" log line names the caller of an edge this recent
+GOT_CONNECT = re.compile(r"Got connect \(([^:()]+):([^()]+)\)")
+
+
+def remote_call(remote_addr):
+    """The caller in Pat's Status remote_addr ("AX.25:N0XYZ via DIGI" ->
+    "N0XYZ"), else the address as Pat gave it (telnet's "tcp:ip:port")."""
+    r = (remote_addr or "").strip()
+    if r.upper().startswith("AX.25:"):
+        return r[6:].split(" via ")[0].strip().upper() or r
+    return r or "?"
+
+
+class PatRestartError(RuntimeError):
+    """restart_pat could not get a new Pat running (the reason is the message)."""
+
+
 
 
 def mid_ok(mid, bad=web.HTTPNotFound):
@@ -101,10 +147,60 @@ def check_url(url, band_of):
             hz = float(freq[0]) * 1000
         except ValueError:
             return "The frequency is not a number (kHz)."
-        packet_band = u.scheme.startswith("ax25") and any(lo <= hz <= hi for _, lo, hi in PACKET_BANDS)
-        if band_of(hz) is None and not packet_band:
+        if u.scheme.startswith("ax25") and hz >= VHF_HZ:
+            # VHF/UHF packet: only the data sub-bands, never the APRS channel.
+            # (HF packet keeps the HF band check below, as before.)
+            if abs(hz - APRS_HZ) <= APRS_GUARD_HZ:
+                return (f"{float(freq[0]):g} kHz is the APRS channel (144.390 MHz); "
+                        "Winlink packet never goes out there.")
+            if not packet_band_of(hz) and band_of(hz) is None:
+                return (f"{float(freq[0]):g} kHz is outside the packet data sub-bands "
+                        "(2 m 144.1-148, 1.25 m 222-225, 70 cm 420-450 MHz; 47 CFR 97.305(c)); "
+                        "not transmitting there.")
+        elif band_of(hz) is None:
             return f"{float(freq[0]):g} kHz is outside the amateur bands; not transmitting there."
     return None
+
+
+def packet_band_of(hz):
+    """The packet data sub-band (PACKET_BANDS) name hz is in, or None."""
+    return next((n for n, lo, hi in PACKET_BANDS if lo <= hz <= hi), None)
+
+
+def check_peer(url, mycall):
+    """Why this URL can't be a peer-to-peer (P2P) session (None = fine):
+    it names exactly one valid callsign, not this station's own call (an
+    SSID of ours is another station: N9ABC-5 is fine for N9ABC), and a radio
+    transport says its frequency, so the radio is on a known channel."""
+    import ax25
+    u = urlsplit(url)
+    path = u.path.strip("/")
+    if not path or "/" in path:
+        return "A peer session names one callsign (no digipeaters)."
+    try:
+        call = ax25.call_str(*ax25.parse_call(path))
+    except ax25.FrameError as e:
+        return f"Not a callsign: {e}."
+    if path.upper().endswith("*") or path.upper() != call and path.upper() != call + "-0":
+        return f"Not a callsign: {path!r}."
+    if mycall and call == ax25.call_str(*ax25.parse_call(mycall)):
+        return f"{call} is this station's own call; a peer is another station."
+    if not mycall:
+        return "Pat has not said this station's call yet; try again in a moment."
+    if u.scheme in RADIO_TRANSPORTS and url_hz(url) is None:
+        return "A peer session on the radio needs its frequency (freq=, kHz)."
+    return None
+
+
+def redact(url):
+    """The URL with any password in it (telnet://CALL:PASS@...) masked, for logs and pages."""
+    try:
+        u = urlsplit(url)
+    except ValueError:
+        return url
+    if u.password is None:
+        return url
+    return url.replace(f":{u.password}@", ":***@", 1)
 
 
 def without_freq(url):
@@ -277,9 +373,32 @@ class PatEngine:
         self.lane = None                # the running session's lane
         self.port = args.winlink_pat_port
         self.base = f"http://127.0.0.1:{self.port}"
-        self.cmd = shlex.split(args.winlink_pat) + ["http", "--addr", f"127.0.0.1:{self.port}"]
+        self.pat_cmd = shlex.split(args.winlink_pat)
+        self.config_path = pat_config_path(args, self.pat_cmd)
+        self.hf_modems = HF_MODEMS
         self.session_max = args.winlink_session_max
+        # The lifecycle owner (A5). want: what Pat should be, read when a
+        # child is spawned; gen counts restarts. proc_gen is the running
+        # child's generation, status_gen the one whose first Status is in.
+        self.want = {"listen": None, "gen": 0}
+        self._life = asyncio.Lock()
+        self._wake = asyncio.Event()
+        self._expect_exit = None        # the child restart_pat asked to exit (not a crash)
+        self._restart_req = 0           # restart_pat calls so far
+        self._spawn_req = 0             # of those, how many the running child's argv covers
+        self.blocked = None             # preflight's refusal: Pat is not launched
+        self._blocked_gen = None
         self.proc = None
+        self.proc_gen = None
+        self.status_gen = None
+        # Pat's occupancy (A4), whoever started its exchange. _status_live:
+        # a Status has come on the current WebSocket (else Pat's state is
+        # unknown, which counts as busy). inbound: an exchange we did not
+        # start, {"call", "since", "remote"}.
+        self._status_live = False
+        self.inbound = None
+        self._connect_line = (None, 0.0)   # (call, monotonic) from Pat's "Got connect" line
+        self._capping = None
         self.http = None
         self.pat_ws = None
         self.live_at = None          # monotonic time Pat's replayed log is behind us
@@ -288,10 +407,10 @@ class PatEngine:
         self.lines = deque(maxlen=LOG_KEEP)
         self.session = None          # running session task
         self.session_url = None
+        self.session_peer = False
         self.session_owner = None       # the page that started the running session
         self._stop_asked = False
         self._closing = False
-        self._restarting = False
         self._admitting = False          # a connect is arming its lane (no session task yet)
         self._admit_stop = False         # Stop pressed meanwhile: don't start it
         # The outbox is Pat's from admission (its outbox snapshot) to the
@@ -303,16 +422,32 @@ class PatEngine:
 
     # --- lifecycle ---
 
+    @property
+    def cmd(self):
+        """The argv the next Pat gets, from `want` (never a stale copy)."""
+        a = list(self.pat_cmd)
+        if self.want["listen"]:
+            a += ["--listen", self.want["listen"]]       # a global flag: before the command
+        return a + ["http", "--addr", f"127.0.0.1:{self.port}"]
+
+    def preflight(self):
+        return preflight(self.config_path, self.pat_cmd)
+
     async def start(self):
         # Startable again after stop() (the add-on's off/on): a new run.
-        self._closing = self._restarting = self._stop_asked = False
-        self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
-        self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._events())]
-        self.running = True
+        async with self._life:
+            self._closing = self._stop_asked = False
+            self._wake.clear()
+            self._expect_exit = self.blocked = None
+            self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+            self._tasks = [asyncio.create_task(self._supervise()), asyncio.create_task(self._events()),
+                           asyncio.create_task(self._inbound_watch())]
+            self.running = True
 
     async def stop(self):
         self.running = False
         self._closing = True
+        self._wake.set()                   # a supervisor napping (crashed Pat, refused config) returns
         end = time.monotonic() + ABORT_GRACE_S
         while self._admitting and time.monotonic() < end:
             await asyncio.sleep(0.05)      # a connect arming its lane: it sees _closing and undoes it
@@ -325,46 +460,95 @@ class PatEngine:
                 await asyncio.wait_for(asyncio.shield(self.session), grace)
             except (TimeoutError, asyncio.CancelledError):
                 self.session.cancel()
-        for t in self._tasks:
-            t.cancel()
-        if self.proc and self.proc.returncode is None:
-            self.proc.terminate()
-            try:
-                await asyncio.wait_for(self.proc.wait(), 5)
-            except TimeoutError:
-                self.proc.kill()
+        async with self._life:             # a restart_pat in flight sees _closing and gives up
+            await self._end_child(self.proc)
+            sup = self._tasks[0] if self._tasks else None
+            if sup is not None:
+                # The supervisor ends its own child: one it was spawning
+                # when stop came is terminated there, never orphaned.
+                try:
+                    await asyncio.wait_for(asyncio.shield(sup), STOP_WAIT_S + 1)
+                except (TimeoutError, asyncio.CancelledError):
+                    pass
+            for t in self._tasks:
+                t.cancel()
+            await self._end_child(self.proc)
         if self.http:
             await self.http.close()
 
+    async def _end_child(self, proc):
+        if proc is None or proc.returncode is not None:
+            return
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), STOP_WAIT_S)
+        except TimeoutError:
+            log.warning("winlink: Pat (pid %d) did not exit on SIGTERM; killing it", proc.pid)
+            proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), STOP_WAIT_S)
+            except TimeoutError:
+                log.error("winlink: Pat (pid %d) did not exit on SIGKILL", proc.pid)
+
+    async def _nap(self, seconds):
+        """Sleep, or less if restart_pat or stop wakes the supervisor."""
+        try:
+            await asyncio.wait_for(self._wake.wait(), seconds)
+        except TimeoutError:
+            pass
+        self._wake.clear()
+
     async def _supervise(self):
         while not self._closing:
-            try:
-                self.proc = await asyncio.create_subprocess_exec(
-                    *self.cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            except OSError as e:
-                log.error("cannot start Pat (%s): %s", " ".join(self.cmd), e)
-                await asyncio.sleep(30)
+            gen = self.want["gen"]
+            why = self.preflight()
+            if why:
+                if why != self.blocked:
+                    log.warning("winlink: not starting Pat: %s", why)
+                    self.station.notice(f"Winlink is off: {why}.", "warn")
+                self.blocked, self._blocked_gen = why, gen
+                self._send({"blocked": why})
+                await self._nap(PREFLIGHT_RETRY_S)
                 continue
-            log.info("Pat started (pid %d) on 127.0.0.1:%d", self.proc.pid, self.port)
-            async for raw in self.proc.stdout:
+            if self.blocked:
+                log.info("winlink: Pat's config is clear again; starting Pat")
+                self.blocked = self._blocked_gen = None
+                self._send({"blocked": None})
+            argv, covers = self.cmd, self._restart_req
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            except OSError as e:
+                log.error("cannot start Pat (%s): %s", " ".join(argv), e)
+                await self._nap(30)
+                continue
+            self.proc, self.proc_gen, self._spawn_req = proc, gen, covers
+            if self._closing:              # stopped while it was being started
+                await self._end_child(proc)
+                return
+            log.info("Pat started (pid %d, generation %d) on 127.0.0.1:%d%s", proc.pid, gen, self.port,
+                     f" listening on {self.want['listen']}" if "--listen" in argv else "")
+            async for raw in proc.stdout:
                 log.debug("pat: %s", raw.decode(errors="replace").rstrip())
-            code = await self.proc.wait()
+            code = await proc.wait()
             if self._closing:
                 return
-            if self._restarting:
-                self._restarting = False
+            if self._expect_exit is proc:
+                self._expect_exit = None
                 continue                   # restart_pat(): asked for, start it again now
             log.warning("Pat exited (code %s); starting it again in %gs", code, RESTART_S)
             self.station.notice("Winlink engine (Pat) stopped; restarting it.", "warn")
-            await asyncio.sleep(RESTART_S)
+            await self._nap(RESTART_S)
 
     async def _events(self):
         """Follow Pat's WebSocket and relay it to the pages."""
         while not self._closing:
             try:
+                gen, proc = self.proc_gen, self.proc
                 async with self.http.ws_connect(f"{self.base}/ws", heartbeat=None,
                                                 timeout=aiohttp.ClientWSTimeout(ws_close=5)) as ws:
                     self.pat_ws = ws
+                    self._ws_child = (gen, proc)
                     self.lines.clear()
                     joined = time.monotonic()
                     self.live_at = joined + REPLAY_S
@@ -376,6 +560,7 @@ class PatEngine:
                     finally:
                         pinger.cancel()
                         self.pat_ws = self.live_at = None
+                        self._status_live = False   # unknown now: busy until a new Status says not
             except (aiohttp.ClientError, OSError, ValueError):
                 pass
             await asyncio.sleep(0.2)
@@ -395,8 +580,20 @@ class PatEngine:
             self.lines.append(line)
             if not replay:
                 self._send({"log": line})
+                got = GOT_CONNECT.search(line)
+                if got:
+                    call = got.group(2).strip().upper()
+                    self._connect_line = (call, time.monotonic())
+                    if self.inbound and self.inbound.get("from") == "remote_addr":
+                        self.inbound.update(call=call, **{"from": "log"})
+                        self._send({"inbound": self.inbound})
         elif "Status" in m:
             self.status = m["Status"]
+            self._status_live = True
+            gen, proc = getattr(self, "_ws_child", (None, None))
+            if proc is not None and proc is self.proc and proc.returncode is None:
+                self.status_gen = gen      # this child's Status is in (restart_pat waits for it)
+            await self._track_inbound()
             self._send({"status": self.status})
         elif "Progress" in m:
             self._send({"progress": m["Progress"]})
@@ -408,6 +605,114 @@ class PatEngine:
             self._send({"prompt": m["Prompt"]})
         elif "PromptAbort" in m:
             self._send({"prompt_abort": m["PromptAbort"]})
+
+    # --- Pat's occupancy (A4) ---
+
+    @property
+    def pat_busy(self):
+        """Pat is in an exchange or dialing, or we can't tell (no Status on
+        the current WebSocket): only a newer Status saying otherwise clears it."""
+        if self.pat_ws is None or not self._status_live:
+            return True
+        return bool(self.status.get("connected") or self.status.get("dialing"))
+
+    def _our_session(self):
+        return bool(self.session and not self.session.done())
+
+    async def _track_inbound(self):
+        up = bool(self.status.get("connected"))
+        if up and self.inbound is None and not self._our_session():
+            call, at = self._connect_line
+            how = "log"
+            if not call or time.monotonic() - at > CONNECT_LINE_S:
+                call, how = remote_call(self.status.get("remote_addr")), "remote_addr"
+            # As connect() does: a mailbox change already past its check
+            # finishes first; any later one sees inbound and gets a 409.
+            async with self._outbox_lock:
+                self.inbound = {"call": call, "since": time.time(),
+                                "remote": self.status.get("remote_addr") or "", "from": how}
+            log.info("winlink: Pat is in a session with %s that was not started here (%s)",
+                     call, self.inbound["remote"])
+            self._send({"inbound": self.inbound})
+        elif not up and self.inbound is not None:
+            log.info("winlink: the session with %s ended", self.inbound["call"])
+            self.inbound = None
+            self._send({"inbound": None})
+
+    def _busy_why(self):
+        """Why a connect must not dial now (None = Pat is free)."""
+        if self.inbound:
+            return f"Pat is in a session with {self.inbound['call']}; not connecting."
+        if self.pat_busy:
+            return ("Pat is busy (connected or dialing)" if self._status_live
+                    else "Pat's state is not known (no status from it)") + "; not connecting."
+        return None
+
+    async def _inbound_watch(self):
+        """The session cap for exchanges we did not start."""
+        while not self._closing:
+            await asyncio.sleep(0.25)
+            ib = self.inbound
+            if (ib and self.session_max and not ib.get("capped")
+                    and time.time() - ib["since"] > self.session_max):
+                ib["capped"] = True
+                self._capping = asyncio.create_task(self._cap_inbound(ib))
+
+    async def _exchange_gone(self, ib, proc):
+        """Is the capped exchange really over? On packet, only the hub's link
+        leaving its list says so (Pat's dirty disconnect does nothing on
+        AX.25, F9); elsewhere Pat's Status, or Pat being dead."""
+        if ib.get("remote", "").upper().startswith("AX.25:"):
+            probe = getattr(self.station, "winlink_hub_links", None)
+            links = await probe() if probe else None
+            if links is not None:
+                return not any(str(l.get("remote", "")).upper() == ib["call"].upper() for l in links)
+        return self.inbound is not ib or (proc is not None and proc.returncode is not None)
+
+    async def _wait_gone(self, ib, proc, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and not self._closing:
+            if await self._exchange_gone(ib, proc):
+                return True
+            await asyncio.sleep(0.2)
+        return await self._exchange_gone(ib, proc)
+
+    async def _cap_inbound(self, ib):
+        call = ib["call"]
+        log.warning("winlink: the session with %s ran past the %gs limit; disconnecting it", call, self.session_max)
+        self.station.notice(f"Winlink: the session with {call} ran past {self.session_max:g}s; ending it.", "warn")
+        await self._disconnect(dirty=False)
+        if await self._wait_gone(ib, self.proc, ABORT_GRACE_S):
+            log.info("winlink: the session with %s ended on a disconnect", call)
+            return
+        async with self._life:             # the owner signals Pat, and respawns it
+            proc = self.proc
+            if self._closing or proc is None or proc.returncode is not None:
+                return
+            log.warning("winlink: %s still connected %gs after a disconnect; stopping Pat (SIGTERM)",
+                        call, ABORT_GRACE_S)
+            self.want["gen"] += 1
+            gen = self.want["gen"]
+            self._expect_exit = proc
+            proc.terminate()
+            if not await self._wait_gone(ib, proc, ABORT_GRACE_S):
+                log.warning("winlink: %s still connected after SIGTERM; killing Pat (SIGKILL)", call)
+                proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), STOP_WAIT_S)
+            except TimeoutError:
+                # Pat survived SIGTERM but the exchange is gone: it runs on.
+                self._expect_exit = None
+                log.info("winlink: the session with %s ended; Pat kept running", call)
+                return
+            self._wake.set()
+            end = time.monotonic() + LIFE_WAIT_S
+            while time.monotonic() < end and not self._closing:
+                if self.proc_gen == gen and self.status_gen == gen:
+                    log.info("winlink: Pat started again after ending the session with %s", call)
+                    return
+                await asyncio.sleep(0.05)
+            log.error("winlink: Pat did not come back after ending the session with %s", call)
 
     def _send(self, d, ws=None):
         payload = json.dumps({"t": "winlink", **d})
@@ -421,13 +726,15 @@ class PatEngine:
         return lane.state() if lane else {"armed": False, "codec_db": None, "id": None}
 
     def snapshot(self):
-        return {**self.lane_state(), "session": self.session_url,
+        return {**self.lane_state(), "session": self.session_url, "peer": self.session_peer,
                 "via": self.lane.name if self.lane else None,
+                "modems": list(self.hf_modems), "blocked": self.blocked,
+                "inbound": self.inbound, "pat_busy": self.pat_busy,
                 "mycall": self.mycall, "status": self.status, "log": list(self.lines)[-100:]}
 
     # --- sessions ---
 
-    async def connect(self, ws, url, via=None):
+    async def connect(self, ws, url, via=None, peer=False):
         st = self.station
         if self._admitting or (self.session and not self.session.done()):
             st.notice("A Winlink session is already running.", "warn", ws)
@@ -441,25 +748,35 @@ class PatEngine:
             # outbox snapshot; any later one sees _admitting and gets a 409.
             async with self._outbox_lock:
                 pass
-            await self._admit(ws, url, via)
+            await self._admit(ws, url, via, peer)
         finally:
             self._admitting = False
 
-    async def _admit(self, ws, url, via):
+    async def _admit(self, ws, url, via, peer=False):
         st = self.station
         why = check_url(url, st.band_of)
+        if not why and peer:
+            why = check_peer(url, self.mycall)
         lane = None
         if not why:
             lane, why = self.lane_for(url, via)
-        if why:
-            st.notice(why, "warn", ws)
+        if why or self.inbound:
+            st.notice(why or self._busy_why(), "warn", ws)
             return
         if not await self._ready():
             st.notice("The Winlink engine (Pat) is not answering; not connecting.", "warn", ws)
             return
-        queued = await self._mids("out")   # read before arming: what this session may send
+        # Pat may take an inbound call at any await below: re-checked after
+        # each one, and the lane is undone if it was already armed (A4).
+        if self._busy_why():
+            st.notice(self._busy_why(), "warn", ws)
+            return
+        queued = await self._outbox()      # read before arming: what this session may send
         if self.session and not self.session.done():
             st.notice("A Winlink session is already running.", "warn", ws)
+            return
+        if self._busy_why():
+            st.notice(self._busy_why(), "warn", ws)
             return
         try:
             armed = await lane.arm(ws, url)
@@ -474,12 +791,19 @@ class PatEngine:
             st.notice("Stopped before connecting.", "info", ws)
             await self._end_unstarted(lane, "stopped before it started")
             return
+        busy = self._busy_why()
+        if busy:                           # nothing is dialed: the lane is undone
+            log.info("winlink: connect undone after arming: %s", busy)
+            st.notice(busy, "warn", ws)
+            await self._end_unstarted(lane, busy)
+            return
         self.lane = lane
         if not isinstance(lane, LocalLane):  # a local radio's arming told the pages itself
             self._send({**lane.state(), "armed": True, "via": lane.name})
         self.session_owner = ws
         self._stop_asked = False
-        self.session_url = url
+        self.session_url = redact(url)
+        self.session_peer = bool(peer)
         pat_url = url
         hz = url_freq_hz(url)
         if isinstance(lane, NoLane) and urlsplit(url).scheme.startswith("ax25") and hz:
@@ -491,7 +815,7 @@ class PatEngine:
             pat_url = without_freq(url)
             log.info("winlink: packet via %s: freq dropped for Pat (no QSY); the radio must be on %.4f MHz",
                      lane.name, hz / 1e6)
-        self.session = asyncio.create_task(self._session(url, queued, pat_url))
+        self.session = asyncio.create_task(self._session(url, queued, pat_url, peer))
 
     async def _end_unstarted(self, lane, reason):
         """A lane armed (or half-armed) for a session that never started: undo it."""
@@ -501,22 +825,50 @@ class PatEngine:
             log.exception("winlink: undoing %s", lane.name)
 
     async def restart_pat(self, why):
-        """Start Pat again (e.g. its modem moved to another radio) and wait
-        until its events are live. Not while a session runs."""
-        if not (self.proc and self.proc.returncode is None):
+        """Start Pat again (its modem moved to another radio, a listen
+        window began or ended) with the argv `want` gives now, whether the
+        old Pat is alive or not. Returns once a child of the new generation
+        runs and its first Status (and the live log) are in; raises
+        PatRestartError otherwise. Concurrent calls share one respawn: a
+        child whose argv was built after a call asked (the supervisor
+        stamps each spawn with the calls it covers) satisfies that call. A
+        no-op while Winlink is switched off (its next start reads `want`)."""
+        if not self.running:
             return
-        log.info("winlink: restarting Pat (%s)", why)
-        old, self._restarting = self.proc, True
-        old.terminate()
-        try:
-            await asyncio.wait_for(old.wait(), 5)
-        except TimeoutError:
-            log.warning("winlink: Pat did not exit within 5 s; killing it")
-            old.kill()
-        end = time.monotonic() + 15
-        while time.monotonic() < end and (self.proc is old or self.pat_ws is not None):
+        self._restart_req += 1
+        mine = self._restart_req
+        async with self._life:
+            p = self.proc
+            if (self._spawn_req >= mine and p is not None and p.returncode is None
+                    and self.status_gen == self.proc_gen and self.pat_ws is not None):
+                log.info("winlink: restart (%s) already done by the Pat started for an earlier one", why)
+                return
+            await self._respawn(why)
+
+    async def _respawn(self, why):
+        if self._closing:
+            raise PatRestartError("Winlink is stopping")
+        self.want["gen"] += 1
+        gen = self.want["gen"]
+        log.info("winlink: restarting Pat (%s), generation %d", why, gen)
+        old = self.proc
+        if old is not None and old.returncode is None:
+            self._expect_exit = old
+            await self._end_child(old)
+        self._wake.set()                   # a supervisor napping after a crash starts it now
+        end = time.monotonic() + LIFE_WAIT_S
+        while time.monotonic() < end:
+            if self._closing:
+                raise PatRestartError("Winlink is stopping")
+            if self.blocked and self._blocked_gen == gen:
+                raise PatRestartError(self.blocked)
+            p = self.proc
+            if (self.proc_gen == gen and p is not None and p.returncode is None
+                    and self.status_gen == gen and self.pat_ws is not None):
+                if await self._ready():
+                    return
             await asyncio.sleep(0.05)
-        await self._ready()
+        raise PatRestartError(f"Pat did not come back within {LIFE_WAIT_S:g}s")
 
     async def _ready(self):
         """Wait until Pat's events reach the pages live (not its log replay),
@@ -533,38 +885,57 @@ class PatEngine:
                                  timeout=aiohttp.ClientTimeout(total=None)) as r:
             return r.status, await r.text()
 
-    async def _mids(self, box):
-        """The MIDs in one of Pat's mailboxes, or None if it can't be read."""
+    async def _listing(self, box):
+        """One of Pat's mailbox listings, or None if it can't be read."""
         try:
             async with self.http.get(f"{self.base}/api/mailbox/{box}",
                                      timeout=aiohttp.ClientTimeout(total=BOX_READ_S)) as r:
                 if r.status != 200:
                     log.warning("winlink: mailbox %s answered %s", box, r.status)
                     return None
-                return {m["MID"] for m in json.loads(await r.text()) if m.get("MID")}
+                return [m for m in json.loads(await r.text()) if m.get("MID")]
         except (TimeoutError, aiohttp.ClientError, OSError, ValueError, TypeError, KeyError, AttributeError) as e:
             log.warning("winlink: could not read mailbox %s: %s", box, e)
             return None
 
-    async def _sent_count(self, queued):
-        """(sent, unsent) for a session: of the messages in the outbox when it
-        started, how many Pat has moved to sent/ and how many are still out.
-        Pat's /api/connect reports only NumReceived, so this is read from the
-        mailboxes. None where a listing could not be read (unknown, not 0)."""
-        if queued is None:
-            return None, None
-        if not queued:
-            return 0, 0
-        sent, out = await self._mids("sent"), await self._mids("out")
-        return (None if sent is None else len(queued & sent),
-                None if out is None else len(queued & out))
+    async def _mids(self, box):
+        """The MIDs in one of Pat's mailboxes, or None if it can't be read."""
+        msgs = await self._listing(box)
+        return None if msgs is None else {m["MID"] for m in msgs}
 
-    async def _session(self, url, queued=None, pat_url=None):
+    async def _outbox(self):
+        """{MID: P2P only?} for the outbox now, or None if it can't be read."""
+        msgs = await self._listing("out")
+        return None if msgs is None else {m["MID"]: bool(m.get("P2POnly")) for m in msgs}
+
+    async def _sent_count(self, queued):
+        """(sent, left, unsent) for a session: of the messages in the outbox
+        when it started (queued, {MID: P2P only?}), how many Pat moved to
+        sent/ (measured, whatever the remote took: a peer takes what is
+        addressed to the forwarders it advertised, F6), how many are still
+        out, and of those how many a gateway should have taken (not P2P
+        only). Pat's /api/connect reports only NumReceived, so this is read
+        from the mailboxes. None where a listing could not be read (unknown,
+        not 0)."""
+        if queued is None:
+            return None, None, None
+        if not queued:
+            return 0, 0, 0
+        if not isinstance(queued, dict):
+            queued = dict.fromkeys(queued, False)
+        sent, out = await self._mids("sent"), await self._mids("out")
+        left = None if out is None else {m for m in queued if m in out}
+        return (None if sent is None else len(set(queued) & sent),
+                None if left is None else len(left),
+                None if left is None else sum(1 for m in left if not queued[m]))
+
+    async def _session(self, url, queued=None, pat_url=None, peer=False):
         ok, received, reason = False, 0, None
-        sent = unsent = None
+        sent = left = unsent = None
         started = time.time()
-        log.info("winlink: session to %s", url)
-        self._send({"session": "started", "url": url})
+        shown = redact(url)
+        log.info("winlink: %ssession to %s", "peer (P2P) " if peer else "", shown)
+        self._send({"session": "started", "url": shown, "peer": bool(peer)})
         # Pat's call runs as its own task, so that after a cap or an abort we
         # can still see when Pat returns (with ardopcf's ID sent by then).
         call = asyncio.ensure_future(self._call(pat_url or url))
@@ -604,16 +975,23 @@ class PatEngine:
             if not isinstance(lane, LocalLane):
                 self._send({"armed": False, "via": None})
             try:                            # after disarm: never holds the radio armed
-                sent, unsent = await self._sent_count(queued)
+                sent, left, unsent = await self._sent_count(queued)
             except asyncio.CancelledError:
                 pass
-            log.info("winlink: session ended ok=%s sent=%s received=%s%s", ok, sent, received,
+            self.session_peer = False
+            log.info("winlink: session ended ok=%s sent=%s received=%s left=%s%s", ok, sent, received, left,
                      f" ({reason})" if reason else "")
-            if ok and unsent:
+            # A gateway takes everything but P2P-only messages; a peer only
+            # what is addressed to it (its forwarder list isn't visible
+            # here), so "left in the outbox" is a warning for gateways only.
+            if peer:
+                unsent = None
+            elif ok and unsent:
                 log.warning("winlink: %d message(s) still in the outbox after a good session",
                             unsent)
-            self._send({"session": "ended", "ok": ok, "sent": sent, "unsent": unsent,
-                        "received": received, "reason": reason, "id": lane.state()["id"]})
+            self._send({"session": "ended", "ok": ok, "sent": sent, "left": left, "unsent": unsent,
+                        "peer": bool(peer), "received": received, "reason": reason,
+                        "id": lane.state()["id"]})
 
     def _last_failure(self):
         for line in reversed(self.lines):
@@ -654,13 +1032,22 @@ class PatEngine:
     # --- HTTP: the allow-list of Pat's API ---
 
     def outbox_busy(self):
-        """A session owns the outbox: arming (admission) or running."""
-        return self._admitting or bool(self.session and not self.session.done())
+        """The outbox is Pat's: a session of ours arming (admission) or
+        running, or Pat in any exchange (one we did not start too) or its
+        state unknown."""
+        return self._admitting or self._our_session() or self.pat_busy or self.inbound is not None
 
     async def _outbox_change(self, call):
         async with self._outbox_lock:
             if self.outbox_busy():
-                return web.Response(status=409, text=OUTBOX_BUSY)
+                if self.inbound and not self._our_session():
+                    text = (f"Pat is in a session with {self.inbound['call']}; the outbox can't be "
+                            "changed until it ends.")
+                elif not (self._admitting or self._our_session()) and not self._status_live:
+                    text = "Pat's state is not known (it isn't answering); the outbox can't be changed now."
+                else:
+                    text = OUTBOX_BUSY
+                return web.Response(status=409, text=text)
             return await call()
 
     def routes(self, app, authorised):

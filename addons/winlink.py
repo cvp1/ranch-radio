@@ -64,7 +64,9 @@ class WinlinkAddon(Addon):
     async def command(self, ws, verb, m):
         e = self.engine
         if verb == "winlink_connect":
-            if m.get("via"):
+            if m.get("peer"):               # P2P: a station, not a gateway (winlink.check_peer)
+                await e.connect(ws, str(m["url"]), m.get("via") or None, peer=True)
+            elif m.get("via"):
                 await e.connect(ws, str(m["url"]), m.get("via") or None)
             else:
                 await e.connect(ws, str(m["url"]))
