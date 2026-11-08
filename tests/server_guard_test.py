@@ -1,8 +1,5 @@
-"""The radio server's cross-site guard (modules plan M0, 2026-10-21).
-
-Before this, server.py checked only an optional token, which no host sets, so
-a page from the internet open in a LAN browser could open the radio's
-WebSocket (PTT, codec Save, add-ons). Now, as on the station:
+"""The radio server's cross-site guard: a page from the internet open in a LAN
+browser must not reach the radio's WebSocket (PTT, codec Save, add-ons).
   - a WebSocket upgrade with a foreign Origin is refused (403)
   - any request naming an unknown Host is refused (403), against DNS rebinding
   - the radio's own page (same Origin), and apps with no Origin, still connect
@@ -37,7 +34,7 @@ def start():
                           "--rigctl-port", "0", "--addons-state", "",
                           "--allow-host", "radio.example.org", "--tls-name", "shack.example.net"],
                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for _ in range(100):
+    for _ in range(600):                  # 60 s ceiling for a slow runner
         try:
             socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
             return p

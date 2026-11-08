@@ -1,19 +1,19 @@
-"""F10c: an app's rigctl connection survives a server restart.
+"""An app's rigctl connection survives a server restart.
 
 The test plays systemd: it owns the listening socket, runs a NOTIFY_SOCKET
 that keeps the fds the server stores (FDSTORE=1 / FDSTOREREMOVE=1), and hands
 listening socket + stored connections to the next server as LISTEN_FDS with
 LISTEN_FDNAMES, as systemd's fd store does for g90-remote.service.
 
-JTDX showed "IO error while getting correct VFO" on every restart that broke
-its session (linux-station 2026-10-14 11:02, 11:23, 11:58). Here a client keeps one
-connection through a SIGTERM restart and through a crash (SIGKILL), and its
-emulated split survives with it, so a key after the handover still hops to
-the split TX frequency.
+A client keeps one connection through a SIGTERM restart and a crash (SIGKILL),
+and its emulated split survives with it, so a key after the handover still
+hops to the split TX frequency. (Each broken session cost JTDX an "IO error
+while getting correct VFO", 2026-10-14.)
 
     .venv/bin/python tests/handover_test.py [rig]
 """
-import array
+import asyncio
+import json
 import os
 import random
 import signal
@@ -23,6 +23,10 @@ import sys
 import tempfile
 import threading
 import time
+
+import aiohttp
+
+import testkit
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "g90"
@@ -88,8 +92,6 @@ class FakeSystemd:
 
     def radio_state(self):
         """The radio's real state, from the browser socket's hello."""
-        import asyncio, json, aiohttp
-
         async def go():
             async with aiohttp.ClientSession() as s:
                 async with s.ws_connect(f"http://127.0.0.1:{self.web}/ws") as ws:
@@ -105,7 +107,7 @@ class FakeSystemd:
         n = len(srcs)
 
         def place():
-            # dup every source above the target range, then down to 3..3+n-1
+            # via fresh dups, so a source already in 3..3+n-1 isn't clobbered
             tmp = [os.dup(fd) for fd in srcs]
             for i, fd in enumerate(tmp):
                 os.dup2(fd, 3 + i)
@@ -166,14 +168,14 @@ def main():
     sd = FakeSystemd()
     outs = []
     try:
-        print(f"\n# F10c rigctl session survives restarts ({RIG})")
+        print(f"\n# rigctl session survives restarts ({RIG})")
         sd.start()
         c = Client(sd.port)
         check("first server answers", c.cmd("f")[0].isdigit(), True)
         c.cmd("F 14074000")
         c.cmd("S 1 VFOB")
         c.cmd("I 14076000")
-        time.sleep(0.3)
+        testkit.wait_for(lambda: len(sd.store) == 1)
         with sd.lock:
             check("connection stored in the fd store", len(sd.store), 1)
 
@@ -198,7 +200,7 @@ def main():
         c.cmd("T 0")
         c.cmd("S 0 VFOA")
         c.close()
-        time.sleep(0.5)
+        testkit.wait_for(lambda: len(sd.store) == 0)
         with sd.lock:
             check("a client that leaves is removed from the store", len(sd.store), 0)
 

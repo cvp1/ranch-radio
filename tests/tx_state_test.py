@@ -1,12 +1,9 @@
-"""The packet hub's transmit state at the wire (APRS messaging plan,
-2026-11-07, sections 3.1-3.3): the operator's stop survives a restart, the
-off-channel holds, and the gate's classes and reserves.
+"""The packet hub's transmit state at the wire: the operator's stop survives a
+restart, the off-channel holds, and the gate's classes and reserves.
 
 The real tnc_hub.py on tests/fake_kiss_radio.py, driven over KISS, AGWPE and
-its web API (tests/tnc_hub_test.py's harness). Every assertion is on what
-reached the fake radio, what the API answered, or what is in tx-state.json.
-Crashes are the hub's own os._exit at a named point (RANCH_RADIO_TEST_CRASH_AT).
-Nothing here opens real hardware or transmits.
+its web API (tests/tnc_hub_test.py's harness). Crashes are the hub's own
+os._exit at a named point (RANCH_RADIO_TEST_CRASH_AT). Never real hardware.
 
     .venv/bin/python tests/tx_state_test.py          (ONLY=<name part> to pick one)
 """

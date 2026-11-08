@@ -35,8 +35,7 @@ for rx in ("CURR", "A"):
 r = hl.rig_set_split_freq_mode(rig, VFO_CURR, ctypes.c_double(14075600), ctypes.c_uint64(0x800), ctypes.c_long(0))
 bad += r != 0
 print(f"{'ok  ' if r == 0 else 'FAIL'}  set_split_freq_mode(CURR, PKTUSB) -> {r}")
-# A client may set the TX frequency with rig_set_freq(VFO_B). It must reach the
-# split TX side and leave VFO A alone (in non-VFO mode it landed on A).
+# rig_set_freq(VFO_B) must reach the split TX side and leave VFO A alone.
 hl.rig_set_cache_timeout_ms.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
 hl.rig_set_cache_timeout_ms(rig, 0, 0)          # HAMLIB_CACHE_ALL: read the server
 hl.rig_set_freq.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_double]

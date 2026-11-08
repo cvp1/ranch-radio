@@ -2,17 +2,14 @@
 (opengd77.py) and the add-on's apply / refresh / clock / restore, against
 tests/fake_opengd77.py (a radio with RAM and flash kept apart, as the real one).
 
-  - memory: mac-shack's real settings bytes decode to what its screen showed;
-    every setting is range-checked against the radio's own menus; VFOs,
-    tones and the last-used-channel table encode byte for byte
+  - memory: real settings bytes decode as the radio's screen showed; every
+    setting is range-checked; VFOs, tones and LUCZ encode byte for byte
   - the allowlist: only reads, save / restart / clock, and flash writes inside
-    the three records ever reach the port (never calibration, never C 6 0,
-    never a hotspot frame)
-  - a change saves first (so a keypad change since boot survives), backs
-    up, writes only what changed, restarts the radio and checks it came back
-    on what was written; the radio's screen then shows the new channel
-  - refused: a value the radio doesn't offer, an unpinned firmware build;
-    a radio that comes back holding something else is reported
+    the three records reach the port (never calibration, C 6 0 or hotspot)
+  - a change saves first (keypad changes survive), backs up, writes only what
+    changed, restarts and checks the radio came back on what was written
+  - refused: values the radio doesn't offer, an unpinned firmware build; a
+    radio that comes back holding something else is reported
   - Restore puts the memory from before the change back
 
     python3 tests/opengd77_control_test.py
@@ -322,7 +319,7 @@ try:
     check("Refresh: saves first, so the keypad's eco level shows", bool(c), True)
 
     n = page.do("clock_sync")
-    msg = page.notice(n)
+    page.notice(n)
     check("Set clock: C 6 7 with now (UTC)", bool(fake.clock and abs(fake.clock - time.time()) < 5), True)
 
     def reject(f):                                   # the radio resets VFO B on boot (sanity check)

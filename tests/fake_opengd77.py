@@ -26,7 +26,7 @@ import tty
 
 VFO_ADDR = 0x7590
 LUCZ_ADDR, SETTINGS_ADDR, SETTINGS_LEN = 0x6000, 0x604B, 116
-# mac-shack's MD-UV390 (R20260131), 2026-10-20: LUCZ, a pad byte, the settings
+# A real MD-UV390 (R20260131): LUCZ, a pad byte, the settings
 # (magic 0x4780, All Channels zone 4, master power level 6, squelch 10).
 REAL_MEMORY = bytes.fromhex(
     "4c55435a" + "00" * 70 + "ff"
@@ -73,8 +73,8 @@ def render_screen(texts, fg=0x0000, bg=0xFFFF):
 
 
 def channel_screen(name, zone_line, bar="DMR TS1 3W C1", contact="Local"):
-    """What the MD-UV390 shows in channel mode (mac-shack, 2026-10-17): the top
-    bar, the contact, the channel name (8x16) and "<zone> Ch:<n>"."""
+    """What the MD-UV390 shows in channel mode: the top bar, the contact, the
+    channel name (8x16) and "<zone> Ch:<n>"."""
     return render_screen([(2, 2, "font_6x8", bar), (2, 24, "font_8x16", contact),
                           (80 - 4 * len(name), 64, "font_8x16", name), (2, 114, "font_6x8", zone_line)])
 

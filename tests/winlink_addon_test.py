@@ -1,7 +1,6 @@
 """Winlink as an add-on (addons/winlink.py): the on/off switch, with tests/fake_pat.py as Pat.
 
-The Winlink panel's protocol and the transmit lane are winlink_test.py's and
-winlink_lane_test.py's (unchanged); this checks what the add-on system adds:
+The panel protocol and the lane are winlink_test.py's and winlink_lane_test.py's; here:
   - Winlink is on by default and has no add-on panel (its page is the panel)
   - switching off while a session runs is refused, and the session runs on
   - off stops Pat: its port closes, the mailbox answers 503, a connect is
@@ -15,6 +14,8 @@ winlink_lane_test.py's (unchanged); this checks what the add-on system adds:
 """
 import json
 import os
+import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -56,22 +57,12 @@ def pat_up():
         return False
 
 
-def wait_for(pred, timeout=10):
-    end = time.time() + timeout
-    while time.time() < end:
-        if pred():
-            return True
-        time.sleep(0.2)
-    return False
-
-
 def start(env=None, *extra):
     return L.start(env, "--addons-state", STATE, *extra)
 
 
 def start_off(env=None):
-    """L.start, for a server whose Winlink is switched off: L.start waits for
-    Pat's port too, which (rightly) never opens. Wait for the page and lane."""
+    """L.start for a server with Winlink off: waits for the page and lane, not Pat's port."""
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
     e = dict(os.environ, FAKE_PAT_RIGCTL=str(L.LANE), FAKE_PAT_LOG=logf, **(env or {}))
     p = subprocess.Popen(
@@ -92,32 +83,16 @@ def start_off(env=None):
     raise SystemExit("server did not start")
 
 
-class Page(L.Page):
-    """L.Page, also keeping the add-on registry's broadcasts ({"t": "addon"})."""
-
-    def __init__(self):
-        self.addon = []
-        super().__init__()
-
-    async def _read(self):
-        import aiohttp
-        async for msg in self.ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                m = json.loads(msg.data)
-                if m.get("t") in ("winlink", "notice"):
-                    self.events.append(m)
-                if m.get("t") == "addon":
-                    self.addon.append(m)
+Page = L.Page
 
 
 def wait_addon(page, on, since, timeout=15):
-    end = time.time() + timeout
-    while time.time() < end:
-        for m in page.addon[since:]:
-            if m.get("addon") == "winlink" and m.get("on") is on:
-                return m
-        time.sleep(0.1)
-    return None
+    """The first winlink add-on broadcast with this on/off from event index since, or None."""
+    def hit():
+        return next((m for m in page.events[since:] if m.get("t") == "addon"
+                     and m.get("addon") == "winlink" and m.get("on") is on), None)
+    testkit.wait_for(lambda: hit() is not None, timeout)
+    return hit()
 
 
 server, flog = start({"FAKE_PAT_TX_S": "3"})
@@ -129,10 +104,9 @@ try:
     check("not off in the snapshot", page.hello["winlink"].get("off"), None)
     check("the mailbox answers", http_status("/winlink/api/mailbox/in"), 200)
 
-    # A session running: switching off is refused, and it completes.
     page.send({"t": "winlink_connect", "url": L.URL})
     check("a session starts", page.wait(lambda e: e.get("session") == "started") is not None, True)
-    n_notice, n_addon = len(page.events), len(page.addon)
+    n_addon = len(page.events)
     page.send({"t": "addon", "addon": "winlink", "do": "power", "on": False})
     warn = page.wait(lambda e: e.get("t") == "notice" and "session is running" in e.get("msg", ""), timeout=5)
     check("switch off mid-session: refused, with the reason", warn is not None, True)
@@ -141,13 +115,12 @@ try:
     check("  the session completes", bool(done and done.get("ok")), True)
     check("  unkeyed after it", L.ptt(), "0")
 
-    # Off: Pat stops, the mailbox and connects are refused, the lane stays unkeyed.
-    n_addon = len(page.addon)
+    n_addon = len(page.events)
     page.send({"t": "addon", "addon": "winlink", "do": "power", "on": False})
     off = wait_addon(page, False, n_addon)
     check("switch off: the page is told", off is not None, True)
     check("  with the off snapshot", ((off or {}).get("snapshot") or {}).get("off"), True)
-    check("  Pat has stopped (its port is closed)", wait_for(lambda: not pat_up()), True)
+    check("  Pat has stopped (its port is closed)", testkit.wait_for(lambda: not pat_up(), 10), True)
     check("  the mailbox answers 503", http_status("/winlink/api/mailbox/in"), 503)
     n = len(page.events)
     page.send({"t": "winlink_connect", "url": L.URL})
@@ -169,12 +142,12 @@ try:
     time.sleep(1.5)
     check("  and Pat was not started", pat_up(), False)
 
-    n_addon = len(page.addon)
+    n_addon = len(page.events)
     page.send({"t": "addon", "addon": "winlink", "do": "power", "on": True})
     on = wait_addon(page, True, n_addon)
     check("switch on: the page gets a live snapshot", ((on or {}).get("snapshot") or {}).get("off"), None)
-    check("  Pat is up again", wait_for(pat_up), True)
-    check("  the mailbox answers", wait_for(lambda: http_status("/winlink/api/mailbox/in") == 200), True)
+    check("  Pat is up again", testkit.wait_for(pat_up, 10), True)
+    check("  the mailbox answers", testkit.wait_for(lambda: http_status("/winlink/api/mailbox/in") == 200, 10), True)
     time.sleep(1)                     # Radio Remote's websocket to the new Pat
     page.send({"t": "winlink_connect", "url": L.URL})
     done = page.wait(L.ended, timeout=20)
@@ -185,8 +158,6 @@ finally:
     L.stop(server)
 
 # --- the switch on the page (headless Chromium; skipped without one)
-import random  # noqa: E402
-import shutil  # noqa: E402
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 if CHROME:
     from cdp_browser import Browser  # noqa: E402
@@ -224,14 +195,13 @@ if CHROME:
 else:
     print("(no chromium: page checks skipped; set CHROME=)")
 
-# --- the falsifier: no addons/winlink.py. sitecustomize blocks the import, as
-# if the file were deleted; the radio server and its lane must run on.
+# --- the falsifier: sitecustomize blocks addons/winlink.py; the radio server and its lane run on
 blocker = os.path.join(TMP, "block")
 os.makedirs(blocker)
 with open(os.path.join(blocker, "sitecustomize.py"), "w") as f:
     f.write('import sys\nsys.modules["addons.winlink"] = None\n')
 os.environ["PYTHONPATH"] = blocker + os.pathsep + os.environ.get("PYTHONPATH", "")
-server, flog = start_off()                     # no add-on, so no Pat: don't wait for its port
+server, flog = start_off()
 try:
     page = Page()
     check("without addons/winlink.py: the page loads, no Winlink panel",

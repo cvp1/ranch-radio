@@ -1,6 +1,5 @@
-"""The Propagation tab in a real browser (headless Chromium), against a
-simulated radio and stand-ins for NOAA, InfluxDB and PSKReporter (the ones
-tools/readme_screenshots.py uses):
+"""The Propagation tab in headless Chromium, against a simulated radio and the
+NOAA, InfluxDB and PSKReporter stand-ins of tools/readme_screenshots.py:
 
   - Next openings: one line per band and region window, soonest first, the
     one open now marked "now to ...", each with its best chance; the

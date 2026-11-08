@@ -21,6 +21,7 @@ import random
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import aiohttp
@@ -71,18 +72,14 @@ class Page:
 
     def __init__(self):
         self.loop = asyncio.new_event_loop()
-        import threading
         self.notices = []
-        self.ready = threading.Event()
-        self.t = threading.Thread(target=self.loop.run_forever, daemon=True)
-        self.t.start()
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
         asyncio.run_coroutine_threadsafe(self._open(), self.loop).result(5)
 
     async def _open(self):
         self.sess = aiohttp.ClientSession()
         self.ws = await self.sess.ws_connect(f"http://127.0.0.1:{WEB}/ws")
-        hello = json.loads((await self.ws.receive()).data)
-        self.config = hello["config"]
+        await self.ws.receive()
         self.reader = asyncio.ensure_future(self._read())
 
     async def _read(self):
@@ -125,11 +122,17 @@ def start(*extra):
 def stop(p):
     p.terminate()
     try:
-        out = p.communicate(timeout=10)[0]
+        return p.communicate(timeout=10)[0]
     except subprocess.TimeoutExpired:
         p.kill()
-        out = p.communicate()[0]
-    return out
+        return p.communicate()[0]
+
+
+def freq():
+    c = Client(APPS)
+    v = int(c.cmd("f")[0])
+    c.close()
+    return v
 
 
 def lan_ip():
@@ -184,22 +187,16 @@ try:
 
     page.send({"t": "winlink_arm", "v": True})
     check("re-armed: T 1 keys", lane.cmd("T 1"), ["RPRT 0"])
-    page.close()                                   # the operator's page goes away
+    page.close()
     check("arming page closed: unkeyed", ptt(), "0")
     check("arming page closed: disarmed", lane.cmd("T 1"), ["RPRT -11"])
     lane.close()
 
-    # --- the lane never sets the hold; a JTDX hold never moves a Winlink session ---
-    def freq():
-        c = Client(APPS)
-        v = int(c.cmd("f")[0])
-        c.close()
-        return v
-
+    # --- the lane never sets the hold; an app's hold never moves a Winlink session ---
     page = Page()
     lane = Client(LANE)
     check("lane QSY", lane.cmd("F 3588500"), ["RPRT 0"])
-    page.send({"t": "sim_panel", "d": {"freq": 7100000}})   # the operator turns the dial
+    page.send({"t": "sim_panel", "d": {"freq": 7100000}})   # front-panel dial
     time.sleep(3)
     check("lane only: front-panel change is not undone", freq(), 7100000)
 
@@ -211,8 +208,7 @@ try:
     check("armed: the app's hold does not pull the radio back", freq(), 3588500)
     page.send({"t": "winlink_arm", "v": False})
     time.sleep(3.5)
-    # the operator 2026-10-15: pulling the radio back to the app's band after a
-    # session meant a band change and an ATU tune carrier every time.
+    # 2026-10-15: pulling back to the app's band after a session fired an ATU tune carrier
     check("disarmed: the radio stays where Winlink left it", freq(), 3588500)
     check("app's next setting takes the radio again", apps.cmd("F 14074000"), ["RPRT 0"])
     page.send({"t": "sim_panel", "d": {"freq": 14080000}})
@@ -227,18 +223,10 @@ finally:
         if "winlink" in line.lower() or "refused" in line or "unkeyed" in line:
             print("   log:", line)
 
-# --- the lane moves the radio only while a session is armed ---
-# Pat reverts the dial to its pre-session frequency after a session; unarmed,
-# that F must be answered (Pat would log an error) but not reach the radio,
-# or the band change fires an ATU tune carrier (live 2026-10-15).
+# --- the lane moves the radio only while armed; unarmed F is answered but ignored ---
+# (live 2026-10-15: Pat's post-session revert fired an ATU tune carrier)
 server = start("--auto-tune")
 try:
-    def freq():
-        c = Client(APPS)
-        v = int(c.cmd("f")[0])
-        c.close()
-        return v
-
     def tunes(page):
         return [n["msg"] for n in page.notices
                 if n.get("t") == "notice" and "ATU tuning" in n.get("msg", "")]
@@ -288,10 +276,7 @@ for ln in lane_logs:
     print("   log:", ln)
 
 # --- T 0 is the sender's own; every end of a lane key reaches the ID ledger once ---
-# (plan winlink-vara §2.1, A2.) Before, any lane client's T 0 dropped whoever
-# was transmitting (F2): a second Winlink modem's startup T 0 would cut Pat's
-# frame. And the ledger never heard how a key ended, so a CW ID cut off by a
-# disconnect could read as sent.
+# (plan winlink-vara A2: another client's T 0 used to cut Pat's frame, and a cut CW ID read as sent)
 def released(out):
     """The kinds of every "lane PTT released" line, in order."""
     return [ln.rsplit("(", 1)[-1].rstrip(")") for ln in out.splitlines() if "lane PTT released" in ln]

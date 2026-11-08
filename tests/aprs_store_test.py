@@ -1,17 +1,5 @@
-"""aprs_store.py (APRS plan M2): the rules, on a scratch database.
-
-  - schema create, reopen and refusing a newer schema
-  - dups per port (RF after IS, IS after RF); wrapped dups across two iGates
-  - shortest path kept, direct_last only when no digi has repeated it
-  - a wrapped packet never updates the inner station's RF times
-  - the IS-vs-RF position rules and newer-fix rules
-  - object ownership: a kill from another owner is shown, not applied
-  - retention writes tombstones; deltas carry them; a client older than the
-    pruned tombstones reloads in full
-  - backfill once, idempotent, across a rotation, with malformed lines and
-    non-UI lines, never calling transmit
-  - reload after reopen (heard list, our messages)
-  - the worker under load: 10,000 frames through the queue, then queries
+"""aprs_store.py: dedup, paths, positions, objects, retention, backfill and
+the worker queue, on a scratch database.
 
     python3 tests/aprs_store_test.py
 """
@@ -26,6 +14,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 import aprs_store  # noqa: E402
 from aprs_store import AprsStore, Db  # noqa: E402
@@ -138,7 +127,6 @@ def test_positions():
     check("  after 10 min: taken", (s["lat"], s["pos_port"]), (40.85, "is"))
     db.ingest(T0 + 800, "rf", "N0ABC>APRS:!4052.00N/10510.00W-rf")
     check("a newer RF fix replaces it", station(db, "N0ABC")["lat"], 40.866667)
-    # Timestamped: an older report arriving later doesn't move the station.
     t = time.gmtime(T0 + 800)
     old = f"{t.tm_mday:02d}{t.tm_hour:02d}{max(t.tm_min - 5, 0):02d}z"
     db.ingest(T0 + 900, "is", f"N0ABC>APRS,TCPIP*:/{old}4053.00N/10510.00W-old")
@@ -279,9 +267,6 @@ def test_queue_full_drops():
     check("a full queue drops and counts, never blocks", store.dropped, 3)
 
 
-sys.path.insert(0, os.path.join(ROOT, "tests"))
-
-
 def test_corpus():
     import corpus
     src = corpus.sample()
@@ -298,11 +283,11 @@ def test_corpus():
     check("  every line ingested", s["ingested"], r["lines"])
     check("  stations and positions found", (s["stations"] > 20, db.db.execute(
         "SELECT COUNT(*) FROM stations WHERE lat IS NOT NULL").fetchone()[0] > 10), (True, True))
-    sqlite3.connect(db.path).execute("PRAGMA integrity_check")
+    check("  integrity check", sqlite3.connect(db.path).execute("PRAGMA integrity_check").fetchone()[0], "ok")
 
 
 def test_review_round2():
-    """Code review 2026-10-19 (Codex, round 2)."""
+    """Regressions from code review 2026-10-19."""
     db = fresh("wrapped_then_rf")
     inner = "}N0ABC>APRS,TCPIP,K7IG*:!4049.00N/10510.00W-from IS"
     db.ingest(T0, "rf", "K7IG>APDW18,WIDE2-1:" + inner)

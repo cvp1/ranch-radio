@@ -1,13 +1,8 @@
 """OpenGD77 add-on: a job never shares the port with the watch's last call.
 
-Cancelling the watch stops the waiting, not the blocking radio call it had
-started in a thread. If that call was open(), it used to finish after the
-job had taken the port, reopen or drain it, and eat the job's replies
-(2026-10-23, found by de-flaking opengd77_control_test: a 19-byte reply
-vanished into the drain). The job must wait for that call to return.
-
-In-process and deterministic: a stub radio whose open() takes 1 s, a job
-started 0.1 s into it, and a log of every port action in order.
+Regression (2026-10-23): cancelling the watch didn't stop its blocking open()
+thread, which then drained the port and ate the job's reply. A stub radio's
+open() takes 1 s; a job starts 0.1 s into it; every port action is logged.
 """
 import asyncio
 import os

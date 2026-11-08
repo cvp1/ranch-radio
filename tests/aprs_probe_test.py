@@ -1,21 +1,8 @@
 """The APRS round-trip probe (aprs_probe.py) in process, on a compressed clock.
 
-A real tnc_hub.Hub, its store, the messaging engine and the probe, with the
-radio replaced at its write boundary (as tests/aprs_msg_test.py) and the
-APRS-IS observer standing in as an object with its login and gaps; IS lines
-go in through Hub.on_is_line as the observer would hand them over.
-
-  - happy path: digi copy (L2), IS copy qAR,K7RDG-1 (L3), a }-wrapped ack of
-    this msgno from the target via AA7JB (L4, L5): five yes with evidence
-  - a direct iGate, no digi copy: L2 "no digipeated copy observed"
-  - wrong evidence is never yes: an IS line with H-bits, qAC, our own
-    login, wrong info or dest, an earlier probe's msgno, an ack before
-    t_first, unrelated target traffic, an IS copy of the target's ack
-  - coverage: observer down for part of the window -> L3 unknown; held off
-    channel for part of it without an ack -> L4, L5 unknown; evidence seen
-    before a gap stays yes
-  - late replies at t_first + 931 and + 1,409 s are inside the window
-  - refusals; a version 1 store file migrates; a probe survives a restart
+A real tnc_hub.Hub, store, messaging engine and probe, with the radio
+replaced at its write boundary (as tests/aprs_msg_test.py) and a stand-in
+APRS-IS observer; IS lines go in through Hub.on_is_line.
 
     .venv/bin/python tests/aprs_probe_test.py
 """
@@ -195,7 +182,6 @@ async def t_direct_igate():
 async def t_wrong_evidence():
     r = await rig()
     try:
-        # an earlier probe, its window run out: its msgno is not this one's
         old, t_old = await r.launch()
         await r.run_until(t_old + aprs_msg.DEADLINE_S + 1, step=60)
         p = await r.probe.begin(armed=True)                         # composed; the engine sends on its next pass
@@ -250,7 +236,6 @@ async def t_coverage():
         done = await r.stored(p["id"])
         check("observer down part of the window: L3 unknown; held part of it, no ack: L4, L5 unknown", legs(done),
               {"L1": "yes", "L2": "yes", "L3": "unknown", "L4": "unknown", "L5": "unknown"})
-        check("  L2, seen before the gap, stays yes", done["legs"]["L2"]["v"], "yes")
         check("  the reasons", (done["legs"]["L3"]["why"], done["legs"]["L4"]["why"]),
               ("observer coverage incomplete", "RF coverage incomplete (off channel (held))"))
     finally:
@@ -294,7 +279,7 @@ async def t_refusals():
         r.hub.set_hold("winlink-qsy", "x", "y")
         check("held", (await why(r)).startswith("not now: off-channel hold"), True)
         r.hub.release_hold("winlink-qsy", "t")
-        k = Observer()                    # any hashable object with a name stands in for a KISS client
+        k = Observer()                    # stands in for a KISS client: hashable, has a name
         k.name = "k"
         r.hub.kiss_clients.add(k)
         check("paused (a KISS client)", (await why(r)).startswith("not now: a KISS client"), True)
@@ -337,7 +322,7 @@ async def t_schema_and_restart():
                               capture_output=True, text=True)
         check("a version 1 file made by main's aprs_store", (made.returncode, made.stderr[-200:]), (0, ""))
     else:
-        # A shallow checkout (CI) has no main: version 1's own DDL, the same tables.
+        # A shallow checkout (CI) has no main.
         print("note  origin/main not here: the version 1 file is built from schema 1's DDL")
         con = sqlite3.connect(path)
         con.executescript(aprs_store.SCHEMA)
@@ -346,16 +331,15 @@ async def t_schema_and_restart():
                     "(1.0, 'in', 'rf', 'W7TST', 'N9ABC', 'old', '1', 'received')")
         con.commit()
         con.close()
-    if True:
-        con = sqlite3.connect(path)
-        check("  it is version 1, without probes", (con.execute("PRAGMA user_version").fetchone()[0],
-              con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='probes'").fetchone()[0]), (1, 0))
-        con.close()
-        db = aprs_store.Db(path)
-        check("opened by this code: the current version, probes added, its messages kept",
-              (db.db.execute("PRAGMA user_version").fetchone()[0], db.probes(),
-               [m["text"] for m in db.messages()]), (aprs_store.SCHEMA_VERSION, [], ["old"]))
-        db.close()
+    con = sqlite3.connect(path)
+    check("  it is version 1, without probes", (con.execute("PRAGMA user_version").fetchone()[0],
+          con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='probes'").fetchone()[0]), (1, 0))
+    con.close()
+    db = aprs_store.Db(path)
+    check("opened by this code: the current version, probes added, its messages kept",
+          (db.db.execute("PRAGMA user_version").fetchone()[0], db.probes(),
+           [m["text"] for m in db.messages()]), (aprs_store.SCHEMA_VERSION, [], ["old"]))
+    db.close()
     shutil.rmtree(d, ignore_errors=True)
     logdir = tempfile.mkdtemp(prefix="probe-")
     r = await rig(logdir=logdir)

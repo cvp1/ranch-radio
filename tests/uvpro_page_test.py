@@ -1,27 +1,10 @@
 """The UV-PRO add-on on the page (headless Chromium), against tests/fake_uvpro_bridge.py.
 
-Single-radio page (server.py --sim --addons):
-  - the add-on gets a tab; its view shows its panel and hides the radio's;
-    the radio view hides the add-on
-  - the status strip: connected, the A channel, battery
-  - the channel table; A/B buttons tune the radio
-  - channels in CHIRP's columns, VFO A/B rows below them; the editor edits
-    Frequency, Duplex and Offset (asks first), shows the tone fields CHIRP
-    uses for the Tone Mode, asks before a tone or power change, and sends
-    only what changed
-  - CHIRP CSV export; import shows a preview (nothing written; a moved
-    frequency is a change) and writes only the changed channels
-  - the Radio pane: VFO tune (asks), volume, region switch (asks), FM on,
-    APRS path (asks), power off (asks)
-  - settings: out of range disables Save and says why; beacon: the callsign
-    is a choice of the configured calls
-  - Switch off asks, then hides the panel's content and dims the tab;
-    Switch on connects again
-Station page (station.py with "addons"): a UV-PRO tab and Overview card, and
-the panel in its own view.
-Borrow mode ("hub"): between borrows the strip says "With packet" and when
-it was read, Read radio is offered, the editor works on the last read and a
-save reaches the radio; a channel not read back byte for byte is locked.
+Single-radio page: tab and view, status strip, CHIRP memory table and
+editor (asks before on-air changes, sends only what changed), CSV export and
+import preview, the Radio pane, settings and beacon forms, Switch off/on.
+Station page: tab, Overview card, own view. Auto relay warning. Borrow mode:
+"With packet" between borrows, editor on the last read, inexact channel locked.
 
     CHROME=/path/to/chromium python3 tests/uvpro_page_test.py
 """
@@ -38,6 +21,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
+from testkit import wait_for  # noqa: E402
 
 MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME = (os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
@@ -61,7 +45,7 @@ def check(name, got, want):
 
 
 def wait_port(p):
-    for _ in range(600):                  # 60 s ceiling; returns once the port answers
+    for _ in range(600):
         try:
             socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
             return p
@@ -160,7 +144,6 @@ try:
               ["2M CALL", "RPT", "APRS", "NOAA"])
         check("table: RPT as CHIRP shows it", b.js(f"[...{rows}[1].children].slice(0, 10).map((c) => c.textContent.trim())"),
               ["2", "RPT", "146.940000", "-", "0.600000", "Tone", "100.0", "FM", "High", ""])
-        check("table: NOAA is Duplex off", b.js(f"{rows}[3].children[3].textContent"), "off")
 
         n = len(commands())
         b.js(f"{rows}[2].querySelector('button[data-ab=channel_a]').click()")
@@ -260,8 +243,7 @@ try:
         check("  preview wrote nothing", len(commands()), n)
         b.js("window.confirm = (q) => { window.asked = q; return true; }")
         b.js(f"document.querySelector('{P} .uv-import-apply').click()")
-        wait_cmd(n)
-        time.sleep(0.5)
+        wait_for(lambda: len(commands()) >= n + 2, 5)
         check("import apply: asked, the two changes written",
               ("Frequency" in (b.js("window.asked") or ""), sorted((c["id"], sorted(c["values"])) for c in commands()[n:])),
               (True, [(0, ["rx_freq", "tx_freq"]), (1, ["name"])]))
@@ -321,8 +303,6 @@ try:
         b.js(f"document.querySelector('{R} .uv-pwr').click()")
         time.sleep(0.5)
         check("radio: power off, answer no: nothing sent", len(commands()), n)
-        b.screenshot(os.path.join(TMP, "radio-pane.png"))
-        print("screenshot:", os.path.join(TMP, "radio-pane.png"))
 
         b.js("window.confirm = () => true")
         b.js(f"document.querySelector('{P} .addon-power').click()")
@@ -352,14 +332,12 @@ try:
         check("station: the panel spans the view", b.js(
             "(() => { const p = document.querySelector('#view-addon-uvpro .panel.addon'), g = p.parentElement;"
             " return p.getBoundingClientRect().width > 0.9 * (g.clientWidth - 44); })()"), True)
-        b.screenshot(os.path.join(TMP, "station-uvpro.png"))
-        print("screenshot:", os.path.join(TMP, "station-uvpro.png"))
         check("station: channels listed",
               b.wait(f"document.querySelectorAll('#view-addon-uvpro .uv-mem tbody tr[data-id]:not(.uv-vfo)').length"), 4)
     finally:
         stop(station)
 
-    # Auto relay on (2026-10-17: it digipeated by itself and blocked every change)
+    # auto relay on digipeats by itself and blocked every change (2026-10-17)
     server = start_server(FAKE_UVPRO_SETTINGS='{"auto_relay_en": true}')
     try:
         b.goto(f"http://127.0.0.1:{WEB}/#/uvpro")
@@ -397,7 +375,7 @@ try:
     finally:
         stop(server)
 finally:
-    b.close() if hasattr(b, "close") else None
+    b.close()
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

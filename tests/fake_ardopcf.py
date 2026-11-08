@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""A stand-in for ardopcf: listens on PORT and PORT+1 (127.0.0.1) and records
-how it was started, for station_test.py.
+"""A stand-in for ardopcf: listens on 127.0.0.1 PORT and PORT+1.
 
     fake_ardopcf.py PORT CAPTURE PLAYBACK --logdir DIR
 
-$FAKE_ARDOP_LOG: file this fake appends one JSON line per start to.
+$FAKE_ARDOP_LOG: file to append one JSON line (argv, t) per start to.
 """
 import json
 import os

@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 
+import aiohttp
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
 EOF_MAX_S = 1.0
@@ -83,11 +85,10 @@ class BrowserWatch:
         self.ready.wait(5)
 
     async def _run(self, web):
-        import aiohttp
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.ws_connect(f"http://127.0.0.1:{web}/ws", heartbeat=None) as ws:
-                    await ws.receive(timeout=3)          # hello
+                    await ws.receive(timeout=3)
                     self.ready.set()
                     while True:
                         m = await ws.receive()

@@ -21,6 +21,7 @@ import os
 import random
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -80,9 +81,7 @@ fake.slots, fake.names, fake.zones = [1, 2], {1: "2m Call", 2: "BM 3104"}, []   
 fake.records = {1: channel("2m Call", 146_520_000, 146_520_000, tx_tone=0x1000, wide=True),
                 2: channel("BM 3104", 439_400_000, 430_400_000, dmr=True, cc=1, ts2=True)}
 fake.layout_file = os.path.join(FD, "layout.json")
-# The radio in channel mode on "BM 3104" (slot 2, All Channels: zone 0 of none), and a known
-# pixel: (0,0) pure red in RGB565, big-endian.
-import struct  # noqa: E402
+# channel mode on "BM 3104" (slot 2, All Channels), and pixel (0,0) pure red (RGB565, big-endian)
 with fake.lock:
     st = bytearray(fake.ram["settings"]); struct.pack_into("<h", st, 58, 0); fake.ram["settings"] = bytes(st)
     lu = bytearray(fake.ram["lucz"]); struct.pack_into("<h", lu, 4 + 68, 1); fake.ram["lucz"] = bytes(lu)

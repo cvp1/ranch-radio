@@ -1,13 +1,9 @@
 """Mesh as an add-on (addons/mesh.py): the on/off switch, against tests/fake_mesh_bridge.py.
 
-The Mesh tab's own protocol is tests/mesh_test.py's (unchanged); this checks
-what the add-on system adds:
-  - Mesh is on by default and has no add-on panel (its page is the Mesh tab)
-  - "Switch off" stops the bridge, so the node's port is free; the page gets
-    the off state; a send while off is refused and never reaches the node
-  - off is kept across a restart (the state file), and the bridge isn't started
-  - "Switch on" starts a fresh bridge, and sending works again
-  - without addons/mesh.py the radio server runs on with no Mesh tab
+The Mesh tab's protocol is in tests/mesh_test.py; this checks what the add-on
+system adds: on by default with no add-on panel; Switch off stops the bridge
+(the port is free) and refuses sends; off survives a restart without starting
+the bridge; Switch on starts a fresh one; without addons/mesh.py there is no Mesh.
 
     python3 tests/mesh_addon_test.py
 """
@@ -26,6 +22,9 @@ import aiohttp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from testkit import wait_for  # noqa: E402
+
 WEB = 19000 + random.randrange(1000)
 TMP = tempfile.mkdtemp(prefix="meshaddon-")
 STATE = os.path.join(TMP, "addons.json")
@@ -110,8 +109,7 @@ def stop(p):
 
 
 def bridge_running():
-    # The bridge runs as "PY tests/fake_mesh_bridge.py MARK"; the server's own argv
-    # names MARK too (--mesh-port), so match the bridge's order, not MARK alone.
+    # the server's argv names MARK too (--mesh-port): match the bridge's argv order
     r = subprocess.run(["pgrep", "-f", f"fake_mesh_bridge.py {MARK}"], capture_output=True, text=True)
     return bool(r.stdout.strip())
 
@@ -152,8 +150,7 @@ try:
     off = page.wait(lambda e: e.get("t") == "addon" and e.get("addon") == "mesh" and e.get("on") is False, since=n)
     check("switch off: the page is told", off is not None, True)
     check("  with the off snapshot", ((off or {}).get("snapshot") or {}).get("off"), True)
-    time.sleep(1)
-    check("  the bridge is stopped (the port is free)", bridge_running(), False)
+    check("  the bridge is stopped (the port is free)", wait_for(lambda: not bridge_running(), 5), True)
     with open(STATE) as f:
         check("  the state file says off", json.load(f).get("mesh"), False)
 
@@ -180,15 +177,13 @@ try:
     check("  the node connects again", page.wait(connected, since=n) is not None, True)
     check("  a fresh bridge started", starts() - before, 1)
     page.send({"t": "mesh_send", "text": "back on", "ch": 1})
-    deadline = time.time() + 5
-    while time.time() < deadline and not sends("back on"):
-        time.sleep(0.1)
+    wait_for(lambda: sends("back on"), 5)
     check("  sending works again", len(sends("back on")), 1)
     page.close()
 finally:
     stop(server)
 
-# --- the falsifier: no addons/mesh.py, and the radio server runs on without Mesh
+# --- no addons/mesh.py: the registry runs on without Mesh
 import addons  # noqa: E402
 
 
@@ -202,7 +197,6 @@ sys.modules["addons.mesh"] = None                 # as if the file were deleted
 reg = addons.Addons(Host(), {"mesh": {"port": "/dev/null"}}, None)
 check("without addons/mesh.py: Mesh is not loaded", reg.get("mesh"), None)
 check("  the reason is kept", (reg.items["mesh"]["error"] or "").startswith("not loaded"), True)
-check("  so config.mesh is false (no Mesh tab)", bool(reg.get("mesh")), False)
 check("  and a Mesh message routes nowhere", reg.route("mesh_send"), None)
 
 print(f"\n{'PASS' if not fails else f'{fails} FAILED'}")

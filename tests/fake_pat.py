@@ -1,117 +1,90 @@
-"""A stand-in for `pat http`, enough of Pat v1.0.0's API for winlink_test.py.
+"""A stand-in for `pat http`: enough of Pat v1.0.0's API for the Winlink tests.
 
-    python3 tests/fake_pat.py http --addr 127.0.0.1:PORT
+    python3 tests/fake_pat.py [global flags] http --addr 127.0.0.1:PORT
 
-Environment:
+Environment (read once at start: a test that needs one starts its own server):
   FAKE_PAT_RIGCTL   port of Radio Remote's Winlink rigctl lane; a session keys
                     through it like Pat's hamlib rig does (T 1 ... T 0)
-  FAKE_PAT_LOG      file this fake appends one JSON line per request to, so the
-                    test can see what Radio Remote sent (compose fields, aborts)
+  FAKE_PAT_LOG      file: one JSON line per request/event, each with "t"
   FAKE_PAT_TX_S     seconds a session stays keyed (default 1)
   FAKE_PAT_BUSY     "1": raise a busy-channel prompt before keying
-  FAKE_PAT_QSY      "1": a URL with freq= moves the dial through the lane first
-                    ("QSY") and puts it back after the session ("QSX"), then
-                    answers /api/connect ~1 s later -- the order pat.log showed
-                    live on 2026-10-15 (QSX logged before Radio Remote disarmed)
+  FAKE_PAT_QSY      "1": a URL with freq= QSYs the dial through the lane first
+                    and QSXes it back after the session, then answers
+                    /api/connect ~1 s later (the order pat.log shows live)
   FAKE_PAT_ARDOP_LOG  directory: write ardopcf-style debug log lines there
-                    (ARDOPDebug8515_<UTC date>.log) for the station ID below
-  FAKE_PAT_ID       how ardopcf identifies, keying through the lane like Pat:
-                    "end"   ID (IDFrame + CW ID) before /api/connect returns,
-                            also after an abort (patched ardopcf)
-                    "after_abort"  as "end", but after an abort /api/connect
-                            returns at once and the ID follows 1 s later
-                    "none"  no ID at the end (stock ardopcf, failed connect)
+  FAKE_PAT_ID       how ardopcf identifies, keying through the lane:
+                    "end"          IDFrame + CW ID before /api/connect returns,
+                                   also after an abort (patched ardopcf)
+                    "after_abort"  as "end", but after an abort the ID
+                                   follows 1 s after /api/connect returns
+                    "none"         no ID at the end (stock ardopcf)
   FAKE_PAT_LATE_ID_S  seconds after a session returns: ardopcf's "10 minute ID"
-  FAKE_PAT_SEND_N   how many outbox messages a good session delivers (moves to
-                    sent/, as Pat does when the gateway accepts one); default all
+  FAKE_PAT_SEND_N   how many outbox messages a good session delivers (default all)
   FAKE_PAT_BROKEN_BOX  a mailbox name whose listing answers 500
-  FAKE_PAT_NO_PTT   "1": a session to a non-ARDOP URL (packet, telnet) keys
-                    nothing through the lane, as Pat's AX.25 over the hub's
-                    AGWPE doesn't; it "succeeds" after FAKE_PAT_TX_S. ARDOP
-                    keys through the lane as before
+  FAKE_PAT_NO_PTT   "1": a non-ARDOP session (packet, telnet) keys nothing, as
+                    Pat's AX.25 over AGWPE doesn't; ARDOP still keys
   FAKE_PAT_BROKEN_ATTACH  "1": every attachment GET answers 500
   FAKE_PAT_BROKEN_READ    "1": the mark-read route answers 500
-  FAKE_PAT_SLOW_MID  a MID whose message GET answers only after 2 s (a stale
-                    read the page must drop)
-  FAKE_PAT_LISTEN_FAIL  "1": listeners asked for (--listen or config) never
-                    start; active_listeners stays []
-  FAKE_PAT_P2P      comma list of peer calls this fake treats as P2P stations,
-                    each optionally CALL=FW1+FW2 (the forwarder addresses the
-                    peer advertises; default just CALL). A session to one
-                    sends only outbox messages whose ONLY receiver is one of
-                    them (wl2k-go mailbox GetOutbound, F6); any other target
-                    is a CMS gateway: everything except P2POnly
-  (All read once at start: a test that needs one starts its own server.)
+  FAKE_PAT_SLOW_MID  a MID whose message GET answers only after 2 s
+  FAKE_PAT_LISTEN_FAIL  "1": requested listeners never start
+  FAKE_PAT_P2P      comma list of P2P peer calls, each optionally CALL=FW1+FW2
+                    (its advertised forwarders; default CALL). A session to
+                    one sends only messages whose ONLY receiver is one of them
+                    (wl2k-go GetOutbound); any other target is a CMS gateway:
+                    everything except P2POnly
 
-VARA HF (varahf:// URLs, plan winlink-vara): as Pat with varahf.ptt_ctrl
-false, this fake never keys the lane for VARA; the modem (tests/fake_xara.py,
-at the config's varahf.addr) keys the radio itself. Like Pat-Vara it opens
-the modem's command port (and data, +1) on first use, sends VERSION, PUBLIC
-ON, CWID ON, COMPRESSION TEXT, MYCALL, LISTEN OFF and BW<n>, then CONNECT;
-/api/connect returns at the modem's DISCONNECTED. A dead modem connection is
-opened again on the next session (Pat's handle re-inits). /api/disconnect
-sends DISCONNECT (graceful) or ABORT (dirty). A varahf URL's freq= is QSY'd
-through the rig varahf.rig names (hamlib_rigs: the ARDOP lane).
+VARA HF (varahf:// URLs): as Pat with varahf.ptt_ctrl false, this fake never
+keys the lane; the modem (tests/fake_xara.py at varahf.addr) does. Like
+Pat-Vara it opens command and data ports on first use, sends the init lines,
+then CONNECT; /api/connect returns at DISCONNECTED. A dead modem connection is
+reopened on the next session. /api/disconnect sends DISCONNECT or (dirty)
+ABORT. freq= is QSY'd through the rig varahf.rig names.
 
-Command line, as Pat's: global flags BEFORE the command, then `http --addr`.
-  --config FILE     read like Pat reads it: "listen" applies when --listen
-                    is absent (Pat's fallback, app/app.go), so a test can
-                    show a config that would listen on its own
-  --listen/-l M,..  the methods listed in Status active_listeners (only
-                    before `http`: after it Pat's http command ignores it).
-                    Listening on ax25+agwpe opens the config's agwpe.addr and
-                    registers MyCall there (an AGWPE 'X' frame), as Pat's
-                    listener opens its AGWPE port (F10); held until exit
+Global flags, as Pat's (before `http`):
+  --config FILE     its "listen" applies when --listen is absent (Pat's fallback)
+  --listen/-l M,..  listed in Status active_listeners; ax25+agwpe also
+                    registers MyCall with the config's agwpe.addr, held to exit
 
-Inbound sessions (another station calling us), announced the way Pat does:
-the log line "Got connect (<method>:<call>)", then a Status push with
-connected=true and Pat's remote_addr ("AX.25:N0XYZ", "tcp:127.0.0.1:5555").
-  POST /fake/inbound {"remote", "method", "receive": n, "mode"}
-       mode "cooperative": ends on a graceful /api/disconnect (dirty does
-            nothing and answers 400: Pat's dirty has no AX.25 branch, F9)
-       mode "stubborn": ignores both, and every SIGTERM while it is up
-            (logged, as Pat's first SIGTERM aborts and keeps running); only
-            SIGKILL ends it. Without an exchange SIGTERM exits as Pat does.
+Inbound sessions, announced as Pat does: "Got connect (<method>:<call>)", then
+a Status push with connected=true and remote_addr ("AX.25:N0XYZ", "tcp:...").
+  POST /fake/inbound {"remote", "method", "receive": n, "mode", "call"}
+       "cooperative": ends on a graceful /api/disconnect (dirty answers 400:
+                      Pat's dirty has no AX.25 branch)
+       "stubborn":    ignores both and every SIGTERM; only SIGKILL ends it
   POST /fake/inbound/end   the remote hangs up (n messages into in/)
-  POST /fake/ws/drop {"refuse_s": s}  close every WebSocket and refuse new
-       ones for s seconds (Pat's Status is then unknown to the server)
-  (All read once at start: a test that needs one starts its own server.)
+  POST /fake/ws/drop {"refuse_s": s}  close every WebSocket, refuse new ones for s
 
 Routes (shapes as in Pat v1.0.0 api/api.go, api/mailbox.go):
   GET  /api/status, /api/mailbox/{box}, /api/mailbox/{box}/{mid}, /api/rmslist
   POST /api/mailbox/out (multipart; 400 without date)
-  POST /api/mailbox/{box}  move: X-Pat-SourcePath names the message, unescaped
-                    and cleaned like Pat does (501 without it, 400 when the
-                    source message is absent)
+  POST /api/mailbox/{box}  move the message X-Pat-SourcePath names (501 without
+                    it, 400 when absent)
   DELETE /api/mailbox/{box}/{mid}  (404 when absent)
-  POST /api/mailbox/{box}/{mid}/read  {"read": bool}; 400 for anything that is
-                    not an object with a boolean read/Read (stricter than Pat,
-                    which takes {} as false, so a bare `true` never earns a
-                    "read" record); 500 when the message is absent
-  GET  /api/mailbox/{box}/{mid}/{file}  an attachment, text/plain (404 when absent)
+  POST /api/mailbox/{box}/{mid}/read  {"read": bool}; 400 for anything else
+                    (stricter than Pat, which takes {} as false); 500 when absent
+  GET  /api/mailbox/{box}/{mid}/{file}  an attachment (404 when absent)
   GET  /api/connect?url=  blocks until the session ends; {"NumReceived": n}
   GET|POST /api/disconnect?dirty=
-  GET  /ws  MyCall, Status, LogLine, Prompt; reads prompt_response / Pong
+  GET  /ws  MyCall, Status, LogLine, Prompt; reads prompt_response
 
-Every FAKE_PAT_LOG line carries "t", the time it was written.
-FAKE_PAT_LOG gets a {"route": "req", "method", "path", "headers"} line for
-every request at entry, before any validation, so a test can prove that no
-request reached Pat; the per-route lines ("compose", "move", "delete",
-"read", ...) are the evidence that Pat accepted one.
+FAKE_PAT_LOG gets a {"route": "req"} line for every request before any
+validation, so a test can prove no request reached Pat; per-route lines
+("compose", "move", ...) prove Pat accepted one.
 
-Mailbox: in/ holds ABC123 (N0DAJ, unread, Cc null, no files), DEF456 (N0DAJ,
-read, Cc K7ABC, subject "Re: Already a reply", note.txt attached) and GHI789
-(W1XYZ, unread, subject "RE: Upper case"). MyCall is N9ABC.
+Mailbox: in/ holds ABC123 (N0DAJ, unread), DEF456 (N0DAJ, read, Cc K7ABC,
+note.txt attached) and GHI789 (W1XYZ, unread). MyCall is N9ABC.
 """
 import asyncio
 import hashlib
-import signal
 import itertools
 import json
 import os
 import posixpath
+import signal
+import struct
 import sys
-from urllib.parse import unquote
+import time
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from aiohttp import web
 
@@ -194,7 +167,6 @@ prompt_answers = {}
 
 def record(**kw):
     if LOG:
-        import time
         with open(LOG, "a") as f:
             f.write(json.dumps({**kw, "t": time.time()}) + "\n")
 
@@ -229,7 +201,6 @@ def find(box, mid):
 
 @web.middleware
 async def log_requests(request, handler):
-    # Before any validation: "no request reached Pat" is then provable.
     record(route="req", method=request.method, path=request.raw_path,
            headers={k: request.headers[k] for k in ("X-Pat-SourcePath",) if k in request.headers})
     return await handler(request)
@@ -369,7 +340,6 @@ async def rig(cmd):
 def ardop_log(msg, level="D"):
     if not ARDOP_LOG:
         return
-    import time
     now = time.time()
     day = time.strftime("%Y%m%d", time.gmtime(now))
     stamp = time.strftime("%H:%M:%S", time.gmtime(now)) + f".{int(now * 1000) % 1000:03d}"
@@ -442,7 +412,6 @@ async def vara_open():
 
 async def vara_session(url):
     """(ok, received) for a varahf:// session: the modem keys, never us."""
-    from urllib.parse import parse_qs, urlsplit
     u = urlsplit(url)
     q = parse_qs(u.query)
     target = u.path.strip("/").upper()
@@ -528,7 +497,6 @@ async def connect(request):
     received = 0
     ok = True
     revert = None
-    from urllib.parse import parse_qs, urlsplit
     freq = parse_qs(urlsplit(url).query).get("freq")
     if QSY and freq:
         old = await rig("f")
@@ -551,7 +519,6 @@ async def connect(request):
                 await logline("Unable to establish connection to remote: Connect cancelled")
                 ok = False
         if ok:
-            # Keyed through Radio Remote's lane, as Pat's hamlib PTT would be.
             keys = not (NO_PTT and not url.startswith("ardop"))
             got = await rig("T 1") if keys else "RPRT 0"
             if keys:
@@ -569,7 +536,6 @@ async def connect(request):
                     ok = False
                 except asyncio.TimeoutError:
                     received = 1
-                    # The gateway accepted the outbox: Pat moves each to sent/.
                     for m in outbound(url):
                         BOXES["out"].remove(m)
                         BOXES["sent"].append(m)
@@ -609,7 +575,6 @@ def outbound(url):
     messages whose only receiver is one of its forwarders; to a CMS,
     everything but P2POnly. FAKE_PAT_SEND_N caps it (a gateway that took
     only some)."""
-    from urllib.parse import urlsplit
     target = urlsplit(url).path.strip("/").split("/")[-1].upper()
     fws = P2P.get(target)
     if fws is not None:
@@ -680,7 +645,6 @@ ws_refuse_until = [0.0]
 
 
 async def fake_ws_drop(request):
-    import time
     b = await request.json()
     ws_refuse_until[0] = time.monotonic() + float(b.get("refuse_s", 0))
     for ws in list(clients):
@@ -698,7 +662,6 @@ def on_sigterm():
 
 
 async def ws_handler(request):
-    import time
     if time.monotonic() < ws_refuse_until[0]:
         return web.Response(status=503, text="not now")
     ws = web.WebSocketResponse()
@@ -745,7 +708,6 @@ _agw = {}
 
 async def _agw_register(app_):
     """Listening on ax25+agwpe: register MyCall with the AGWPE TNC (the hub)."""
-    import struct
     addr = (CONFIG.get("agwpe") or {}).get("addr")
     if "ax25+agwpe" not in LISTEN or not addr:
         return

@@ -6,9 +6,8 @@
   - its host file validates, renders, and is receive-only (--no-tx) until a
     callsign is given
   - start (Linux) enables the radio units, so a radio plugged in later gets
-    its server (linux-station's QMX, 2026-10-21), and enables + starts the station;
-    start (macOS) falls back to launchctl load when bootstrap fails
-    (mac-shack's IC-7300, 2026-10-21)
+    its server, and enables + starts the station; start (macOS) falls back to
+    launchctl load when bootstrap fails
   - restart never touches a radio in use or a manual_restart unit
   - doctor --fix runs a recipe, never one with sudo
   - install.sh, end to end, in a scratch home with stand-in service managers:
@@ -17,27 +16,29 @@
 
     python3 tests/installer_test.py            (INSTALLER_E2E=0 skips install.sh)
 """
+import contextlib
+import io
 import json
-import os as _os  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
-# doctor's Winlink check reads Pat's config: point its default at an empty
-# directory, so the suite never reads this machine's own Pat config.
-_os.environ["XDG_CONFIG_HOME"] = _tempfile.mkdtemp(prefix="rr-xdg-")
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+# Never read this machine's own Pat config (doctor's Winlink check) or host files.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rr-xdg-")
 os.environ["RANCH_RADIO_HOSTS"] = ""
 
-from ranch_radio import doctor, init, render, service  # noqa: E402
-from ranch_radio import cli as _cli  # noqa: E402
-_cli.HOSTS = ROOT / "examples/hosts"            # the examples stand in for a host's files
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+
+import testkit  # noqa: E402
+from ranch_radio import cli, doctor, init, render, service  # noqa: E402
+cli.HOSTS = ROOT / "examples/hosts"
 
 fails = 0
 TMP = Path(tempfile.mkdtemp(prefix="installer-"))
@@ -158,13 +159,12 @@ out = service.start(mac)
 c = calls()
 check("mac start: bootstrap fails, then launchctl load starts it",
       [x.split()[1] for x in c if "org.ranch-radio.ic7300-remote" in x and "print" not in x], ["bootstrap", "load"])
-# mac-shack, 2026-10-21: bootout returned, load ran while the old instance was
-# still going, did nothing and exited 0; the radio stayed down.
+# A load while the old instance is still going exits 0 and does nothing (2026-10-21).
 for f in STATE_DIR.iterdir():
     f.unlink()
 os.environ["LOAD_NOOP_ONCE"] = "1"
 radio_arts = [a for a in render.artifacts(mac) if a.module == "ic7300"]
-(STATE_DIR / "org.ranch-radio.ic7300-remote").touch()          # running: a restart is for a running agent
+(STATE_DIR / "org.ranch-radio.ic7300-remote").touch()          # running
 done, deferred = service.restart(mac, radio_arts, check_idle=lambda h, r: (True, "idle"))
 c = calls()
 check("mac restart: a load that silently does nothing is caught and retried",
@@ -183,8 +183,6 @@ check("mac restart: an agent that never comes up is reported, not passed off as 
       any("NOT RUNNING" in line and rc for line, rc, _ in done), True)
 del os.environ["NEVER_LOAD"]
 del os.environ["FAIL_BOOTSTRAP"]
-# Switched off from the widget: a restart writes it and leaves it off. A
-# newly installed agent (the update check) is loaded.
 for f in STATE_DIR.iterdir():
     f.unlink()
 upd = [a for a in render.artifacts(mac) if a.module == "updates"]
@@ -208,6 +206,7 @@ check("restart: a transmitting radio is not restarted", any("g90-remote.service"
 check("  and says so", any("G90 is transmitting" in d for d in deferred), True)
 check("restart: an idle radio is", any("try-restart qmx-remote.service" in x for x in c), True)
 check("restart: manual_restart units never", any("uvpro-hub.service" in x for x in c), False)
+check("  with the reason", any("uvpro-hub.service" in d and "power-cycled" in d for d in deferred), True)
 held = []
 service.restart(lin, changed, check_idle=lambda h, r: busy.get(r["id"] if r else "-", (True, "idle")), held=held)
 calls()
@@ -222,26 +221,26 @@ check("  its oneshot service is never started by a restart",
 service.start(lin)
 check("linux start: the update service is not enabled (its timer starts it)",
       any("ranch-radio-update.service" in x for x in calls()), False)
-check("  with the reason", any("uvpro-hub.service" in d and "power-cycled" in d for d in deferred), True)
 done, deferred = service.restart(mac, [a for a in render.artifacts(mac) if a.module == "ic7300"],
                                  check_idle=lambda h, r: (False, "IC-7300 is in a Winlink session"))
 check("mac restart: a radio in a Winlink session is left alone", (calls(), len(deferred)), ([], 1))
 
-# ---------------------------------------------------------------- idle, against a real (simulated) radio server
-import random  # noqa: E402
-import socket  # noqa: E402
-import time  # noqa: E402
+# ---------------------------------------------------------------- idle, against a simulated radio server
 
-port = 19000 + random.randrange(900)
+
+def answers(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+        return True
+    except OSError:
+        return False
+
+
+port = testkit.free_port()
 srv = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(port), "--rigctl-port", "0",
                         "--addons-state", ""], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
-    for _ in range(100):
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            break
-        except OSError:
-            time.sleep(0.1)
+    testkit.wait_for(lambda: answers(port), 60)
     hh, rr = {"os": "linux", "python": sys.executable}, {"name": "Sim", "web": port}
     check("idle: a quiet radio is idle", service.idle(hh, rr), (True, "idle"))
     key = subprocess.Popen([sys.executable, "-c", (
@@ -254,7 +253,7 @@ try:
         "            print('keyed', flush=True); await asyncio.sleep(8)\n"
         "asyncio.run(m())")], stdout=subprocess.PIPE, text=True)
     key.stdout.readline()
-    time.sleep(0.5)
+    testkit.wait_for(lambda: not service.idle(hh, rr)[0], 5)
     check("idle: a keyed radio is not (restart refused)", service.idle(hh, rr), (False, "Sim is transmitting"))
     key.kill()
 finally:
@@ -265,8 +264,6 @@ check("idle: a server that isn't running is idle (nothing to cut off)",
       service.idle(hh, {"name": "Gone", "web": port})[0], True)
 
 # ---------------------------------------------------------------- update after a code change
-from ranch_radio import cli  # noqa: E402
-
 restarted = []
 h1 = TMP / "h1"
 hmac = render.load(ROOT / "examples/hosts/mac-shack.json")
@@ -281,7 +278,6 @@ real_restart, real_hosts = service.restart, cli.HOSTS
 cli.HOSTS = TMP / "uhosts"
 service.restart = lambda h, changed, check_idle=None, **kw: (restarted.extend(a.path for a in changed), ([], []))[1]
 try:
-    import contextlib, io  # noqa: E401,E402
     with contextlib.redirect_stdout(io.StringIO()):
         cli.cmd_update(SimpleNamespace(host="mac-shack", no_pull=True, code_changed=True, apply=True, home=str(TMP / "h1")))
 finally:
@@ -315,8 +311,7 @@ if os.environ.get("INSTALLER_E2E", "1") != "0":
     home.mkdir()
     env = dict(os.environ, HOME=str(home), PATH=f"{TMP}:{os.environ['PATH']}",
                RANCH_RADIO_HOSTS=str(home / ".config/ranch-radio/hosts"))
-    for k in ("RANCH_RADIO_IOREG_FILE",):
-        env.pop(k, None)
+    env.pop("RANCH_RADIO_IOREG_FILE", None)
     args = ["--port", "/dev/null", "--rig", "ic7300" if MAC else "qmx", "--call", "N0CALL"]
     r = subprocess.run(["bash", str(co / "install.sh"), *args], env=env, capture_output=True, text=True, timeout=900)
     out = r.stdout + r.stderr

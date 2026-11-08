@@ -7,6 +7,7 @@ over rigctl the way JTDX does, and asserts on the CAT commands the fake got.
     .venv/bin/python tests/qmx_test.py          (ONLY=<name part> to pick one)
 """
 import asyncio
+import json
 import os
 import signal
 import socket
@@ -14,6 +15,8 @@ import subprocess
 import sys
 import threading
 import time
+
+import aiohttp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -43,8 +46,7 @@ def check_true(name, cond, detail=""):
 
 
 def expect(label, get, want, timeout=8.0):
-    """check() that waits (up to timeout) for get() to equal want: for a
-    state the server reaches on its own time. Never a sleep-then-look."""
+    """check() after waiting up to timeout for get() == want."""
     wait_for(lambda: get() == want, timeout)
     return check(label, get(), want)
 
@@ -78,14 +80,11 @@ class Rig:
              "--rigctl-port", str(self.rport),
              "--tx-timeout", str(TX_TIMEOUT), "-v", *extra],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        self.lines = []                    # the server's log, read as it is written
+        self.lines = []
         self._log_reader = threading.Thread(target=self._read_log, daemon=True)
         self._log_reader.start()
-        # Ready = listening, the hello done (QB1 written: the radio's CAT
-        # timeout armed), and the poll loop has handled an IF, FA and FB
-        # reply since (the server knows mode, TX and both VFOs):
-        # waited for, not slept on (Python + aiohttp start slowly on a
-        # 2-CPU runner).
+        # Ready: the hello done (QB1: the radio's CAT timeout armed), then an
+        # IF, FA and FB reply handled (mode, TX and both VFOs known).
         up = (self.wait_log("rigctl listener on", timeout=30)
               and (not lane or self.wait_log("rigctl winlink listener on", timeout=30))
               and wait_for(lambda: "QB1" in self.fake.sent(), 30)
@@ -102,16 +101,12 @@ class Rig:
         return len(self.lines)
 
     def wait_log(self, text, since=0, timeout=10.0):
-        """Wait for a server log line containing text, after line `since`."""
         return wait_for(lambda: any(text in l for l in self.lines[since:]), timeout)
 
     def told(self, since, cmd, n=2, timeout=15.0):
-        """Wait until the fake has answered n reads of one kind (IF, SW, ...)
-        after `since`, a mark taken right after a change, and the server has
-        handled them. Answered isn't handled: the reply may still be in the
-        pty. The server's pump writes its next command once a reply is
-        handled (or after 100 ms), so three more commands from it after the
-        n-th answer mean the reply was taken in."""
+        """The server has handled n replies to one read (IF, SW, ...) since
+        `since`. Answered isn't handled: three more commands from the pump
+        after the n-th answer mean the reply was read."""
         if not wait_for(lambda: self.fake.count(cmd, since) >= n, timeout):
             return False
         k = self.fake.count()
@@ -129,9 +124,7 @@ class Rig:
             self.proc.wait()
         self._log_reader.join(timeout=5)
         self.out = "".join(self.lines)
-        # The server's last writes (unkey, CAT timeout restore) may still be
-        # in the pty: let the fake read them all before anything looks.
-        self.fake.quiesce()
+        self.fake.quiesce()                # the last writes may still be in the pty
         return self.out
 
     def close(self):
@@ -139,15 +132,12 @@ class Rig:
             self.end()
         self.fake.stop()
         out = self.out
-        if "Traceback" in out:
-            check_true("no Traceback in server log", False, out[-800:])
-        else:
-            check_true("no Traceback in server log", True)
+        check_true("no Traceback in server log", "Traceback" not in out, out[-800:] if "Traceback" in out else "")
         raw = bytes(self.fake.raw)
         check("no CR/LF ever written (terminal-mode trigger)", b"\r" in raw or b"\n" in raw, False)
         bad = [c for c in self.fake.sent() if c.startswith(("MD8", "PS0", "SS1"))]
         check("never MD8 (SWR tune), PS0 (power off) or SS1 (two-tone test)", bad, [])
-        if fails > self.fails_at_start:    # the context a failing check needs, in CI's log too
+        if fails > self.fails_at_start:
             lines = [l.rstrip() for l in out.splitlines() if "aiohttp.access" not in l]
             print("      server log (last 40 lines):\n" + "\n".join("      | " + l for l in lines[-40:]))
             print(f"      fake: last 30 commands: {self.fake.sent()[-30:]}")
@@ -199,7 +189,6 @@ def test_front_panel_change_seen():
     r = Rig()
     try:
         m = r.fake.inject(fa=10_136_000, md="3")
-        # The server has read FA and IF (the mode) since, before any app connects.
         check("server read the radio since the change", r.told(m, "FA") and r.told(m, "IF"), True)
         c = r.client()
         check("freq from the radio", c.cmd("f"), ["10136000"])
@@ -244,9 +233,7 @@ def test_ptt_and_meters():
         m = r.fake.mark()
         check("T 1", c.cmd("T 1"), ["RPRT 0"])
         expect("radio transmitting", lambda: r.fake.state["tx"], 1)
-        # The meters are cached from TX polls: wait until the server has read
-        # both (answered while keyed) and handled them.
-        k = r.fake.mark()
+        k = r.fake.mark()                # meters are cached from TX polls
         check("server read SW and PC while keyed", r.told(k, "SW", 1) and r.told(k, "PC", 1), True)
         check("rigctl t", c.cmd("t"), ["1"])
         swr = float(c.cmd("l SWR")[0])
@@ -343,8 +330,6 @@ def test_server_killed_radio_unkeys_itself():
         c.cmd("T 1")
         expect("transmitting", lambda: r.fake.state["tx"], 1)
         r.end(signal.SIGKILL)
-        # The fake unkeys CAT_TIMEOUT_S after the last command: wait for that,
-        # with room for a slow runner, rather than sleeping a guess past it.
         expect("radio back on receive by itself", lambda: (r.fake.state["tx"], r.fake.timeout_unkeys), (0, 1),
                timeout=CAT_TIMEOUT_S + 10)
     finally:
@@ -352,7 +337,6 @@ def test_server_killed_radio_unkeys_itself():
 
 
 def ws_send(w, **m):
-    import json
     return w.send_str(json.dumps(m))
 
 
@@ -363,7 +347,6 @@ async def until(pred, timeout=10.0):
 
 def test_winlink_ssb_source():
     print("\n# Winlink session (--winlink-mode USB): USB mode, SSB audio from USB, then back")
-    import aiohttp
     lane = free_port()
     r = Rig("--winlink-rigctl-port", str(lane), "--winlink-mode", "USB", lane=True)
     try:
@@ -376,8 +359,7 @@ def test_winlink_ssb_source():
                     await w.receive()
                     n = r.log_mark()
                     await ws_send(w, t="winlink_arm", v=True)
-                    # Armed when the server says so; SS0 is queued just before
-                    # that line, so the radio may still be getting it.
+                    # SS0 is queued just before the armed line: it may still be on its way.
                     armed = await asyncio.to_thread(r.wait_log, "winlink: session armed", n, 15)
                     await until(lambda: mode_ss() == ("2", "0"))
                     during = (armed, mode_ss())
@@ -401,16 +383,13 @@ def test_winlink_ssb_source():
 
 def test_page_voice_ssb_source():
     print("\n# page voice in plain USB: SSB audio from USB (SS0) while keyed, then back")
-    # Review 2026-10-18 (Sol, verified): page voice keyed with SS still 2 (the
-    # external mic): 0 W from the page. Winlink already switched it; voice now does.
-    import aiohttp
+    # Regression: page voice keyed with SS2 (the mic jack) sent 0 W.
     r = Rig()
     try:
         tx_ss = lambda: (r.fake.state["tx"], r.fake.state["ss"])  # noqa: E731
 
         async def hold(w, pred, mic, timeout=12.0):
-            """Hold the page's PTT (key-down re-sent every 0.5 s, the page's
-            keep-alive) until pred() holds or timeout; True if it held."""
+            """Hold page PTT (key-down every 0.5 s, the keep-alive) until pred() or timeout."""
             end = time.monotonic() + timeout
             while time.monotonic() < end:
                 await ws_send(w, t="set", k="tx", v=True, mic=mic)
@@ -456,7 +435,7 @@ TESTS = [test_connect_and_hello, test_freq_and_modes, test_front_panel_change_se
 if __name__ == "__main__":
     only = os.environ.get("ONLY")
     picked = [t for t in TESTS if not only or only in t.__name__]
-    if not picked:   # a filter that runs nothing must not read as a pass
+    if not picked:
         print(f"FAIL  ONLY={only!r} matches no scenario in {[t.__name__ for t in TESTS]}")
         sys.exit(2)
     for t in picked:

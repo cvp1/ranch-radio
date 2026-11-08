@@ -1,16 +1,6 @@
-"""The packet hub's fill-in digipeater (digi.py, "packet": {"digi": {...}}).
-
-  - what it repeats: a first-hop WIDE1-1, or its own call as the next hop;
-    never WIDE2-n, RELAY/WIDE/TRACE, an already-repeated WIDE1-1, its own
-    packets, internet traffic or connected-mode frames
-  - how the path reads after: callsign substitution, marked used
-  - viscous: a held WIDE1-1 is dropped when a digipeated copy is heard, sent
-    when none is; a request by name goes at once
-  - duplicates: one send per packet per DUPE_S
-  - the host file renders "digi" onto the hub's command line; bad blocks refused
-
-The hub at the wire, against a fake radio, is tests/tnc_hub_test.py's
-scenario_digi.
+"""The fill-in digipeater (digi.py): what it repeats and never repeats, path
+substitution, the viscous hold, duplicates, and the host file's "digi" block.
+At the wire: tests/tnc_hub_test.py's scenario_digi.
 
     python3 tests/digi_test.py
 """
@@ -64,13 +54,11 @@ def run(frames, me="N9ABC-1", viscous=5.0, until=60.0):
 me = Address.from_text("N9ABC-1")
 
 # ---------------------------------------------------------------- the rules
-check("WIDE1-1 first hop: substituted by our call, used; WIDE2-1 left for the wide digis",
-      path(Frame(None, None, digi.plan(heard("KF7XYZ-9", digis=["WIDE1-1", "WIDE2-1"]), me)[0])),
-      "N9ABC-1*,WIDE2-1")
-check("WIDE1-1 waits (viscous)", digi.plan(heard("KF7XYZ-9", digis=["WIDE1-1", "WIDE2-1"]), me)[1], False)
-check("our call as the next hop: marked used, at once",
-      [path(Frame(None, None, digi.plan(heard("KF7XYZ-9", digis=["N9ABC-1", "WIDE2-1"]), me)[0])),
-       digi.plan(heard("KF7XYZ-9", digis=["N9ABC-1", "WIDE2-1"]), me)[1]],
+digis, now = digi.plan(heard("KF7XYZ-9", digis=["WIDE1-1", "WIDE2-1"]), me)
+check("WIDE1-1 first hop: our call substituted, used; WIDE2-1 left; waits (viscous)",
+      [path(Frame(None, None, digis)), now], ["N9ABC-1*,WIDE2-1", False])
+digis, now = digi.plan(heard("KF7XYZ-9", digis=["N9ABC-1", "WIDE2-1"]), me)
+check("our call as the next hop: marked used, at once", [path(Frame(None, None, digis)), now],
       ["N9ABC-1*,WIDE2-1", True])
 check("our call after a used hop", path(Frame(None, None, digi.plan(
     heard("KF7XYZ-9", digis=["K7RDG-1", "N9ABC-1"], used=1), me)[0])), "K7RDG-1*,N9ABC-1*")

@@ -1,6 +1,4 @@
-"""The Modules tab's server side, end to end (modules plan M1/M2).
-
-A simulated radio server with --host-file, Mesh on a fake bridge, and a host
+"""The Modules tab's server side, end to end. A simulated radio server with --host-file, Mesh on a fake bridge, and a host
 file whose python takes 3 s per call (a slow venv):
   - the hello says the Modules tab is on
   - {"t":"modules"} answers at once, Mesh "on" from the live registry
@@ -14,23 +12,18 @@ and a station serves Modules from its config's "host_file".
 """
 import asyncio
 import json
-import os as _os  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
-# doctor's Winlink check reads Pat's config: point its default at an empty
-# directory, so the suite never reads this machine's own Pat config.
-_os.environ["XDG_CONFIG_HOME"] = _tempfile.mkdtemp(prefix="rr-xdg-")
 import os
 import random
 import socket
 import stat
 import subprocess
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
 import tempfile
 import time
+
+# Never read this machine's own Pat config (doctor's Winlink check) or host files.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rr-xdg-")
+os.environ["RANCH_RADIO_HOSTS"] = ""
 
 import aiohttp
 

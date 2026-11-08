@@ -1,28 +1,12 @@
-"""W4: the Winlink panel on the page, driven in headless Chromium.
-
-Runs server.py --sim with tests/fake_pat.py as Pat, opens the page in
-Chromium (DevTools protocol, no extra packages) and checks:
-  - the panel shows only on a server with Winlink
-  - the inbox lists Pat's message; clicking it shows the body
-  - compose posts to Pat (and the outbox then lists it)
-  - mailbox actions (own servers, rows picked by MID): opening an unread
-    message marks it read at Pat (the bold goes only after Pat's 200; a
-    failure keeps it and says so); Reply / Reply all / Forward fill the form
-    Pat's way (quote, Re:/Fw:, Cc, the attachment re-attached, a note when
-    it can't be read); Archive moves it; Delete needs a second click bound
-    to the same message, and the ask expires; a stale open is dropped; while
-    a session runs the outbox can't be changed (page and server)
-  - Via lists this radio (ARDOP) and telnet; telnet fills the URL
-  - the gateway list fills from Pat and picking a gateway fills the URL
-  - Connect needs a second click to confirm; then the session log runs,
-    the panel shows the session armed, and it ends with "sent 1, received 1"
-  - Stop ends a running session
-  - a busy-channel prompt shows on the panel and Abort answers it
-  - the codec level is shown when the server sets one
+"""W4: the Winlink panel on the page, driven in headless Chromium, with
+tests/fake_pat.py as Pat: tabs, mailbox (read, compose, reply, forward,
+archive, two-click delete), via and gateway pickers, two-click Connect, the
+session log and state, Stop, the busy-channel prompt, the codec level, P2P,
+VARA HF, and Winlink refused when Pat's config would listen.
 
     .venv/bin/python tests/winlink_page_test.py
 """
-import asyncio
+import hashlib
 import json
 import os
 import random
@@ -31,12 +15,13 @@ import socket
 import subprocess
 import sys
 import tempfile
-import hashlib
 import time
 import urllib.request
 
-import aiohttp
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cdp_browser  # noqa: E402
 import testkit  # noqa: E402
+from winlink_test_lib import fake_log, stop  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APPS = 15000 + random.randrange(1000)
@@ -53,14 +38,6 @@ def check(name, got, want):
     ok = got == want
     fails += not ok
     print(f"{'ok  ' if ok else 'FAIL'}  {name:56} got {got!r}" + ("" if ok else f" want {want!r}"))
-
-
-def fake_log(path):
-    try:
-        with open(path) as f:
-            return [json.loads(l) for l in f if l.strip()]
-    except OSError:
-        return []
 
 
 def recs(path, route, **match):
@@ -93,8 +70,7 @@ def start(env_extra=None, *extra, winlink=True):
     env.update(env_extra or {})
     wl = ["--winlink-rigctl-port", str(LANE), "--winlink-pat", testkit.fake_pat_cmd(),
           "--winlink-pat-port", str(PATP)] if winlink else []
-    # Its own add-on state: P13 switches Winlink off, which must never land in
-    # (or depend on) the user's ~/.local/state one.
+    # P13 switches Winlink off: never in the user's own add-on state
     state = os.path.join(tempfile.mkdtemp(prefix="wlpage-"), "addons.json")
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
@@ -114,88 +90,12 @@ def start(env_extra=None, *extra, winlink=True):
     raise SystemExit("server did not start")
 
 
-def stop(p):
-    p.terminate()
-    try:
-        return p.communicate(timeout=10)[0]
-    except subprocess.TimeoutExpired:
-        p.kill()
-        return p.communicate()[0]
-
-
-class Browser:
-    """Headless Chromium on one page, through the DevTools protocol."""
-
-    def __init__(self):
-        self.dir = tempfile.mkdtemp(prefix="wl-chrome-")
-        self.proc = subprocess.Popen(
-            [CHROME, "--headless=new", f"--remote-debugging-port={CDP}", f"--user-data-dir={self.dir}",
-             "--no-first-run", "--no-default-browser-check", "--window-size=1500,1400", "about:blank"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            try:
-                targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{CDP}/json"))
-                page = next(t for t in targets if t["type"] == "page")
-                break
-            except (OSError, StopIteration):
-                time.sleep(0.1)
-        else:
-            raise SystemExit("chromium did not start")
-        self.loop = asyncio.new_event_loop()
-        self.n = 0
-        self.ws = self.loop.run_until_complete(self._open(page["webSocketDebuggerUrl"]))
-        self.call("Runtime.enable")
-        self.call("Page.enable")
-
-    async def _open(self, url):
-        self.sess = aiohttp.ClientSession()
-        return await self.sess.ws_connect(url, max_msg_size=0)
-
-    async def _call(self, method, params):
-        self.n += 1
-        n = self.n
-        await self.ws.send_str(json.dumps({"id": n, "method": method, "params": params or {}}))
-        while True:
-            m = json.loads((await self.ws.receive(timeout=15)).data)
-            if m.get("id") == n:
-                return m
-
-    def call(self, method, **params):
-        return self.loop.run_until_complete(self._call(method, params))
-
-    def js(self, expr):
-        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
-        res = r.get("result", {})
-        if "exceptionDetails" in res:
-            return f"JS error: {res['exceptionDetails'].get('exception', {}).get('description')}"
-        return res.get("result", {}).get("value")
-
+class Browser(cdp_browser.Browser):
     def goto(self, url):
+        """Navigate and wait for the new document, not a fixed sleep."""
+        self.js("window.__old = 1")
         self.call("Page.navigate", url=url)
-        time.sleep(1.5)
-
-    def wait(self, expr, timeout=10):
-        end = time.time() + timeout
-        while time.time() < end:
-            v = self.js(expr)
-            if v and not (isinstance(v, str) and v.startswith("JS error")):
-                return v
-            time.sleep(0.15)
-        return self.js(expr)
-
-    def screenshot(self, path):
-        import base64
-        r = self.call("Page.captureScreenshot", format="png", captureBeyondViewport=True)
-        with open(path, "wb") as f:
-            f.write(base64.b64decode(r["result"]["data"]))
-
-    def close(self):
-        try:
-            self.loop.run_until_complete(self.sess.close())
-        finally:
-            self.proc.terminate()
-            self.proc.wait(5)
-            shutil.rmtree(self.dir, ignore_errors=True)
+        self.wait("!window.__old && document.readyState === 'complete'")
 
 
 if not CHROME:
@@ -204,7 +104,7 @@ if not CHROME:
 TEXT = "(s) => (document.querySelector(s)?.textContent || '')"
 VISIBLE = "(s) => { const e = document.querySelector(s); return !!e && !e.closest('[hidden]') && e.offsetParent !== null; }"
 
-b = Browser()
+b = Browser(CHROME, CDP)
 try:
     # --- no Winlink on this server: no panel ---
     server, _ = start(winlink=False)
@@ -236,30 +136,26 @@ try:
         check("my call shown", bool(b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")), True)
         check("codec level shown (idle 0 dB)", bool(b.wait(f"({TEXT})('#wl-codec').includes('0 dB')")), True)
 
-        # mailbox
         got = b.wait(f"({TEXT})('#wl-list').includes('Test message')")
         check("inbox lists Pat's message", bool(got), True)
         b.js("document.querySelector('#wl-list .wl-msg[data-mid=\"ABC123\"]').click()")
         got = b.wait(f"({TEXT})('#wl-body').includes('Hello from the test.')")
         check("clicking it shows the body", bool(got), True)
 
-        # compose
         b.js("document.querySelector('#wl-compose-btn').click()")
         check("compose form opens", bool(b.wait(f"({VISIBLE})('#wl-compose')")), True)
         b.js("""(() => { document.querySelector('#wl-to').value = 'N0DAJ';
                  document.querySelector('#wl-subject').value = 'From the page';
                  document.querySelector('#wl-text').value = 'Body typed on the page';
                  document.querySelector('#wl-compose').requestSubmit(); })()""")
-        time.sleep(1.5)
-        comp = [r for r in fake_log(flog) if r["route"] == "compose"]
+        comp = wait_for(lambda: recs(flog, "compose"))
         check("compose reached Pat", comp and (comp[-1]["fields"].get("to"), comp[-1]["fields"].get("subject"),
                                                comp[-1]["fields"].get("body")),
               ("N0DAJ", "From the page", "Body typed on the page"))
-        check("compose form closes", b.js(f"({VISIBLE})('#wl-compose')"), False)
+        check("compose form closes", bool(b.wait(f"!({VISIBLE})('#wl-compose')")), True)
         got = b.wait(f"({TEXT})('#wl-list').includes('From the page')")
         check("outbox shows the new message", bool(got), True)
 
-        # via: this radio for ARDOP and telnet (no Packet add-on on this server)
         vias = b.wait("[...document.querySelectorAll('#wl-via option')].map((o) => o.textContent).length === 2 && "
                       "[...document.querySelectorAll('#wl-via option')].map((o) => o.textContent)")
         check("Via lists this radio (ARDOP) and telnet",
@@ -272,7 +168,6 @@ try:
         b.js("(() => { const s = document.querySelector('#wl-via'); s.value = 'radio'; s.dispatchEvent(new Event('change')); })()")
         check("  back to the radio: gateways shown", b.js("document.querySelector('#wl-gateways').hidden"), False)
 
-        # gateways
         b.js("document.querySelector('#wl-gw-refresh').click()")
         got = b.wait(f"({TEXT})('#wl-gateways').includes('N0DAJ')")
         check("gateway list from Pat", bool(got), True)
@@ -282,7 +177,6 @@ try:
         check("picking a gateway fills the URL", b.js("document.querySelector('#wl-url').value"),
               "ardop:///N0DAJ?bw=2000MAX&freq=3588.5")
 
-        # connect: first click asks, second click connects
         b.js("document.querySelector('#wl-connect').click()")
         time.sleep(0.8)
         check("first Connect click does not connect",
@@ -304,7 +198,6 @@ try:
               bool(b.wait(f"({TEXT})('#wl-id').includes('ID sent')")), True)
         b.screenshot(os.path.join(tempfile.gettempdir(), "winlink-panel.png"))
 
-        # Stop
         before = len([r for r in fake_log(flog) if r["route"] == "disconnect"])
         b.js("document.querySelector('#wl-connect').click()")
         b.js("document.querySelector('#wl-connect').click()")
@@ -358,7 +251,6 @@ try:
     server, flog = start()
     try:
         open_panel("mail")
-        # P1: opening an unread message marks it read at Pat
         check("P1 open ABC123", open_msg("ABC123"), True)
         got = wait_for(lambda: recs(flog, "read", mid="ABC123"), 5)
         check("P1   Pat got {read: true} for ABC123", [r["read"] for r in got or []], [True])
@@ -366,13 +258,11 @@ try:
         inbox = api_get("/winlink/api/mailbox/in")
         check("P1   Pat's inbox says ABC123 is read",
               [m["Unread"] for m in inbox if m["MID"] == "ABC123"] if isinstance(inbox, list) else inbox, [False])
-        # P2: the action bar
         check("P2 the five action chips are shown",
               [b.js(f"({VISIBLE})('#{i}')") for i in ("wl-reply", "wl-reply-all", "wl-forward", "wl-archive", "wl-delete")],
               [True] * 5)
         check("P2   and enabled", b.js("[...document.querySelectorAll('#wl-actions button')].map((e) => e.disabled)"),
               [False] * 5)
-        # P3: Reply
         click("#wl-reply")
         check("P3 Reply opens the form", bool(b.wait(f"({VISIBLE})('#wl-compose')")), True)
         check("P3   To = the sender, Re: subject", (val("#wl-to"), val("#wl-subject")), ("N0DAJ", "Re: Test message"))
@@ -383,7 +273,6 @@ try:
         body = (comp or {}).get("fields", {}).get("body", "")
         check("P3   posted body carries the quote in CRLF, never \\r\\r",
               (">Hello from the test.\r\n" in body, "\r\r" in body), (True, False))
-        # P4: Reply all, Cc null and Cc set
         check("P4 open ABC123 again", open_msg("ABC123"), True)
         click("#wl-reply-all")
         b.wait(f"({VISIBLE})('#wl-compose')")
@@ -395,12 +284,10 @@ try:
               (val("#wl-cc"), val("#wl-to"), val("#wl-subject")), ("K7ABC", "N0DAJ", "Re: Already a reply"))
         comp = submit_and_wait(flog)
         check("P4   Pat got cc=K7ABC", (comp or {}).get("fields", {}).get("cc"), "K7ABC")
-        # P4b: RE: in upper case is a reply already
         check("P4b open GHI789", open_msg("GHI789"), True)
         click("#wl-reply")
         b.wait(f"({VISIBLE})('#wl-compose')")
         check("P4b   Reply keeps 'RE: Upper case'", val("#wl-subject"), "RE: Upper case")
-        # P5: Forward re-attaches the file
         check("P5 open DEF456", open_msg("DEF456"), True)
         click("#wl-forward")
         got = b.wait(f"({VISIBLE})('#wl-compose') && document.querySelector('#wl-files').files.length === 1 && "
@@ -413,13 +300,11 @@ try:
               (comp.get("files"), comp.get("fields", {}).get("to")),
               ([{"name": "note.txt", "size": 5, "type": "text/plain", "sha256": hashlib.sha256(b"hello").hexdigest()}],
                "N0DAJ"))
-        # P9: the Delete ask expires
         check("P9 open GHI789", open_msg("GHI789"), True)
         click("#wl-delete")
         check("P9   first click asks", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
         check("P9   the ask expires", bool(b.wait(f"({TEXT})('#wl-delete') === 'Delete'", 10)), True)
         check("P9   nothing deleted", recs(flog, "delete"), [])
-        # P9b: the ask is bound to the message
         click("#wl-delete")
         check("P9b first click on GHI789 asks", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
         check("P9b open DEF456", open_msg("DEF456"), True)
@@ -429,7 +314,7 @@ try:
         check("P9b   nothing deleted", recs(flog, "delete"), [])
         click("#wl-reply")                                # any other action resets the ask
         check("P9b   another action resets it", b.js(f"({TEXT})('#wl-delete')"), "Delete")
-        # P7: Archive (destructive from here on)
+        # destructive from here on
         check("P7 open DEF456", open_msg("DEF456"), True)
         click("#wl-archive")
         got = wait_for(lambda: recs(flog, "move"))
@@ -439,7 +324,6 @@ try:
               bool(b.wait(f"!({VISIBLE})('#wl-read') && !{row('DEF456')} && ({TEXT})('#wl-list').includes('Test message')")), True)
         check("P7   listed in the Archive box", open_msg("DEF456", box="archive"), True)
         check("P7   no Archive chip in the Archive box", b.js(f"({VISIBLE})('#wl-archive')"), False)
-        # P8: Delete, two clicks
         check("P8 open ABC123", open_msg("ABC123"), True)
         click("#wl-delete")
         check("P8   first click asks", "Confirm" in (b.js(f"({TEXT})('#wl-delete')") or ""), True)
@@ -573,12 +457,10 @@ try:
         b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
         b.js("window.__errs = []; window.addEventListener('error', (e) => window.__errs.push(e.message))")
         b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")
-        # A-1: the box ticked sends p2ponly=true; unticked, no field
         got = compose_page("N0XYZ", "P2P from the page", True)
         check("A-1 ticked: Pat got p2ponly=true", got and got[-1]["fields"].get("p2ponly"), "true")
         got = compose_page("N0DAJ", "Gateway from the page", False)
         check("A-1 unticked: no p2ponly field", bool(got) and "p2ponly" in got[-1]["fields"], False)
-        # A-2: the P2P badge on P2POnly rows only, and in the reader
         b.js("document.querySelector('#wl-boxes [data-v=out]').click()")
         b.wait(f"({TEXT})('#wl-list').includes('Gateway from the page')")
         rows = b.js("[...document.querySelectorAll('#wl-list .wl-msg')].map((r) => "
@@ -600,7 +482,6 @@ try:
         check("A-1 reply to an ordinary message: not P2P only",
               b.wait("document.querySelector('#wl-p2ponly')?.checked === false", 5), True)
         b.js("document.querySelector('#wl-compose-cancel').click()")
-        # A-3: peer URLs per via
         b.js("document.querySelector('#wl-mode [data-v=peer]').click()")
         check("A-3 peer mode: the callsign field shows, the gateway list doesn't",
               (b.js(f"({VISIBLE})('#wl-peer-call')"), b.js(f"({VISIBLE})('#wl-gateways')")), (True, False))
@@ -632,7 +513,6 @@ try:
         check("A-6 peer session ends: N sent, M left in the outbox, no warning",
               (b.js(f"({TEXT})('#wl-state')"), b.js("document.querySelector('#wl-state').classList.contains('warn')")),
               ("Session ended · sent 1, received 1 · 1 left in the outbox", False))
-        # A-7: a station calls in
         b.js("document.querySelector('#wl-boxes [data-v=out]').click()")
         b.wait(f"({TEXT})('#wl-list').includes('Gateway from the page')")
         b.js("[...document.querySelectorAll('#wl-list .wl-msg')][0].click()")

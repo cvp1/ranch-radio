@@ -1,33 +1,12 @@
 """addons/uvpro_bridge.py against a fake UV-PRO at benlink's protocol level.
 
-The radio here keeps each channel, the settings and the beacon as raw bytes,
-answers benlink's real request messages with real reply messages (through
-benlink's own encoder and decoder), and records every write. So this runs the
-bridge as it runs on the radio, minus the Bluetooth socket, and checks:
-  - connect reads device, channels, settings, beacon and status; everything
-    it read is reported exact (encodes back byte for byte)
-  - a channel write changes only what was asked: the stored bytes differ
-    from before only in the edited fields; frequencies, RX-only and
-    modulation are read back unchanged unless asked; a frequency write
-    lands; a TX the radio rewrites is reported as a failed write
-  - the VFO records (251, 252) are read and written like channels, never
-    named; benlink's own state doesn't break on their events
-  - volume, region (channels and settings read again, also when switched on
-    the radio), FM radio, APRS path and power go out as the raw bodies
-    HTCommander uses and are read back; raw() sends nothing outside its list
-  - a channel whose bytes benlink's model can't reproduce is not exact and
-    is never written (nothing sent to the radio)
-  - a radio that changes the TX side on a write (it shouldn't) is caught by
-    the read-back and reported as a failed write
-  - a radio that doesn't take the new value is reported too
-  - settings and beacon writes: only with an exact read; a beacon that
-    doesn't round-trip is refused
-  - fields outside the bridge's lists are refused before anything is sent
-  - connect tries again while the radio still refuses (the hub just let go)
-  - over the hub's control port, connect tries again at once when the hub
-    closes it mid-handshake (its own radio link still coming up)
-  - no request the bridge sends is TNC data (HT_SEND_DATA), a programmable
-    function (DO_PROG_FUNC) or FREQ_MODE_SET_PAR
+The fake radio keeps channels, settings and beacon as raw bytes and answers
+benlink's real request messages through benlink's own encoder and decoder, so
+the bridge runs as on the radio minus the Bluetooth socket. Covers read
+exactness, write-only-what-was-asked with read-back, VFO records, the raw
+extras (volume, region, FM, APRS path, power), refusal of lossy records and
+unknown fields, connect retries (direct and over the hub's control port), and
+that nothing is ever sent as TNC data or a programmable function.
 
     ~/.local/share/venvs/benlink/bin/python tests/uvpro_bridge_test.py
 """
@@ -69,7 +48,7 @@ def ch(i, name, rx, tx, tx_tone=None, rx_tone=None, tx_disable=False):
 
 
 def settings_bytes():
-    # Today's linux-station read, through benlink's own model.
+    # a real radio's settings, through benlink's own model
     return Settings(channel_a=1, channel_b=2, scan=False, aghfp_call_mode=0, double_channel=2, squelch_level=1,
                     tail_elim=False, auto_relay_en=True, auto_power_on=True, keep_aghfp_link=False, mic_gain=3,
                     tx_hold_time=0, tx_time_limit=6, local_speaker=0, bt_mic_gain=3, adaptive_response=False,
@@ -123,7 +102,6 @@ class FakeRadio:
 
     def reply(self, cmd, body):
         m = p.Message(command_group=p.CommandGroup.BASIC, is_reply=True, command=cmd, body=body)
-        # through the bytes and benlink's decoder, as from the air
         asyncio.get_running_loop().call_soon(self.cb, p.Message.from_bytes(m.to_bytes()))
 
     def raw_reply(self, cmd, body):
@@ -334,7 +312,7 @@ async def main():
     d = await write(b, "channel", id=3, values={"tx_disable": False})
     check("RX-only off: ok, on the radio", (d["ok"], rf(radio.ch[3]).tx_disable), (True, False))
     radio.on_write_rf = lambda raw: Channel.from_protocol(p.RfCh.from_bytes(raw)).model_copy(
-        update={"tx_freq": 0.0}).to_protocol().to_bytes()          # as linux-station's radio did with airband
+        update={"tx_freq": 0.0}).to_protocol().to_bytes()          # as a real radio did with airband
     d = await write(b, "channel", id=0, values={"tx_freq": 118.0})
     check("a TX the radio rewrites: reported as failed",
           (d["ok"], "tx_freq" in (d["error"] or ""), "rewrote" in (d["error"] or "")), (False, True, True))
@@ -437,8 +415,7 @@ async def main():
             lossy = raw
             break
     if lossy is None:
-        # benlink reproduces every one-bit change of a channel: make one it can't, by
-        # having the model drop a bit (as 0.1.1 dropped settings bits).
+        # no one-bit flip is lossy: make the model drop a bit (as benlink 0.1.1 did with settings)
         real = Channel.to_protocol
         Channel.to_protocol = lambda self: p.RfCh.from_bytes(flip(real(self).to_bytes(), 7))
         try:
@@ -531,10 +508,8 @@ async def main():
     await r2.disconnect()
     srv.close()
 
-    # --- the hub closes the control port while its own link to the radio comes up
-    # (accepts, then closes: unread, a reset; after a read, a clean EOF): connect
-    # tries again at once, not after CONNECT_TIMEOUT_S (240 s), and connects when
-    # the hub serves
+    # --- the hub closes the control port while its own radio link comes up (unread:
+    # a reset; after a read: a clean EOF): connect retries at once, not after CONNECT_TIMEOUT_S
     dials = []
 
     async def on_hub(reader, writer):

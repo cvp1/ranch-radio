@@ -1,21 +1,10 @@
-"""APRS messaging on the packet page (plan 2026-11-07, 3.5), in headless
-Chromium, against the real hub (messaging full, no cooldown) on
-tests/fake_kiss_radio.py.
-
-  - compose is disabled until TX ARMED in this browser, and while a hold is
-    on or messaging is paused (a KISS client); the page names the reason
-  - a hold shows its holder and "back" channel; Release (confirmed) clears it
-  - the 67-character counter, and a "{" refuses the send button
-  - a message sent from the page reaches the radio with exactly its text;
-    the thread shows pending, then acked once a fake ack is heard
-  - an inbound message makes an unread badge
-
-A foreign Origin through the station is tests/station_test.py's.
+"""APRS messaging on the packet page, in headless Chromium, against the real
+hub (messaging full, no cooldown) on tests/fake_kiss_radio.py: compose gating
+(TX ARMED, holds, pauses), Release, the text checks, send to ack, unread badge.
 
     CHROME=... python3 tests/packet_messages_page_test.py [screenshot.png]
 """
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -27,8 +16,9 @@ os.environ.pop("CC_OBS_TOKENS_FILE", None)
 from cdp_browser import Browser  # noqa: E402
 from ax25 import Frame  # noqa: E402
 import tnc_hub_test as T  # noqa: E402
+from testkit import free_port  # noqa: E402
 
-CDP = 19000 + random.randrange(1000)
+CDP = free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 SHOT = sys.argv[1] if len(sys.argv) > 1 else None
 fails = 0

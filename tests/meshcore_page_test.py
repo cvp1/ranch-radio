@@ -30,7 +30,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
-from testkit import free_port  # noqa: E402
+from testkit import free_port, wait_for  # noqa: E402
 
 MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME = (os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
@@ -68,16 +68,6 @@ def sets():
         return []
 
 
-def wait_for(pred, timeout=10):
-    end = time.time() + timeout
-    while time.time() < end:
-        r = pred()
-        if r:
-            return r
-        time.sleep(0.1)
-    return pred()
-
-
 web = free_port()
 server = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(web),
                            "--rigctl-port", "0", "--addons", CFG, "--addons-state", os.path.join(TMP, "state.json")],
@@ -110,7 +100,8 @@ try:
     check("  and enables Save", b.js(f"{P}.querySelector('[data-save]').disabled"), False)
     b.js("window.confirm = () => true")          # the risky-change question
     b.js(f"{P}.querySelector('[data-save]').click()")
-    check("  Save writes the preset to the node", (wait_for(sets) or [{}])[-1].get("values"),
+    wait_for(sets, 10)
+    check("  Save writes the preset to the node", (sets() or [{}])[-1].get("values"),
           {"freq": 908.205, "sf": 9, "cr": 8})
     check("  the form shows the read-back",
           b.wait(f"{P}.querySelector('[data-f=sf]')?.value === '9' && {P}.querySelector('[data-save]').disabled && 'yes'"),
@@ -124,7 +115,7 @@ try:
              i.dispatchEvent(new Event('input', {{bubbles: true}})); }})()""")
     b.js(f"{P}.querySelector('[data-save]').click()")
     check("  a typed password reaches the node",
-          wait_for(lambda: any((c.get("values") or {}).get("password") == PWD for c in sets())), True)
+          wait_for(lambda: any((c.get("values") or {}).get("password") == PWD for c in sets()), 10), True)
     b.wait(f"{P}.querySelector('[data-save]')?.disabled && 'yes'")
     check("  and after the save no input holds it",
           b.js(f"[...document.querySelectorAll('input')].some(i => i.value === {json.dumps(PWD)})"), False)
@@ -143,7 +134,7 @@ try:
     check("  with Log in (saved) and Status", b.js(f"!!{P}.querySelector('[data-act=login]') && !!{P}.querySelector('[data-act=status]') && !{P}.querySelector('.mc-pwd')"), True)
     b.js(f"{P}.querySelector('[data-act=status]').click()")
     check("Status fills its numbers", b.wait(f"({P}.querySelector('.mc-status')?.textContent || '').includes('-117 dBm') && 'yes'"), "yes")
-    time.sleep(2.2)
+    time.sleep(2.2)                                           # the add-on allows one request every 2 s
     b.js(f"{P}.querySelector('[data-act=neighbours]').click()")
     check("Neighbours lists them", b.wait(f"({P}.querySelector('.mc-neighbours')?.textContent || '').includes('Alpha') && 'yes'"), "yes")
     check("  and draws the link on the map", b.wait(f"{P}.querySelectorAll('.mc-map .mm-link').length === 1 && 'yes'"), "yes")

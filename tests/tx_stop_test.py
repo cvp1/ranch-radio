@@ -1,21 +1,15 @@
-"""STOP TX and the auto-tune loop (2026-11-07), against a simulated rig.
+"""STOP TX and the auto-tune loop, against a simulated rig (--sim, never hardware).
 
-On 2026-11-07 the IC-7300 re-tuned 20 m 15 times in 34 s: each tune was
-followed by a frequency report that read as a band change, which started the
-next tune. The page had no control that stopped it; the operator switched the
-radio off. Here, with server.py --sim --auto-tune (never hardware):
-
-  1  loop: the radio's frequency reads off-band and back during every tune,
-     and the tune ends fast (an ATU that already matches), as the incident's
-     timing looked. Main: a tune every settle period. Now: one tune; the band
-     is looked at once the tune is over.
-  2  repeat cap: the same flap AFTER each tune is over. Now: two tunes of the
-     band, then auto-tune stops for the run, saying so; never a loop.
-  3  STOP TX: a rigctl app's key is released, and from then on every way to
-     transmit is refused: rigctl T 1 and G TUNE, the page's PTT and tune,
-     auto-tune on a band change. A second page (a reload) sees it latched.
-     Resume lets keying back in; nothing is re-armed.
-  4  STOP TX during an ATU tune: the tune ends at once.
+Regression: an IC-7300 re-tuned 20 m 15 times in 34 s, each tune's frequency
+report reading as a band change, and nothing on the page could stop it.
+  1  loop: the frequency flaps off-band and back during every (fast) tune:
+     one tune only
+  2  repeat cap: the same flap after each tune: at most two tunes, then
+     auto-tune stops for the run, saying so
+  3  STOP TX: releases an app's key and refuses every way to transmit
+     (rigctl T 1 / G TUNE, page PTT and tune, auto-tune); latched across a
+     reload; Resume lets keying back in, re-arming nothing
+  4  STOP TX during an ATU tune ends the tune at once
 
     .venv/bin/python tests/tx_stop_test.py
 """
@@ -151,9 +145,7 @@ async def main():
                 seen = n
                 await asyncio.sleep(0.2)
                 await flap(page)
-                # A re-tune where the ATU already matches ends fast (the
-                # IC-7300, 2026-11-07): done well before the next settle.
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.3)              # an ATU that already matches ends fast
                 await page.send({"t": "sim_panel", "d": {"tuner": 1}})
             await asyncio.sleep(0.05)
         msgs = [m for _, m in page.tunes()]

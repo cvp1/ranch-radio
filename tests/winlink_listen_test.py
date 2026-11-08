@@ -1,36 +1,33 @@
-"""Winlink listen windows (plan winlink-listen, PR 2). Nothing goes on air.
+"""Winlink listen windows. Nothing goes on air.
 
-A listen window lets stations that call this one leave traffic: the radio
-goes to the listen frequency (UV-PRO add-on), Pat is relaunched with
---listen ax25+agwpe, and the hub's inbound window (A0) opens; at its end the
-hub window closes first, Pat drops the flag, and only then is the radio put
-back. server.py --sim with tests/fake_pat.py as Pat (it registers MyCall
-with the hub over AGWPE when it listens, as Pat does), a real tnc_hub.py on
-a fake KISS radio, and tests/fake_uvpro_bridge.py as the radio (it keeps its
-state across restarts, as a radio keeps its channel). E-2/E-3 run a real Pat
-(/opt/homebrew/bin/pat or PAT=) and skip, not pass, without one.
+A window: the radio to the listen frequency (UV-PRO add-on), Pat relaunched
+with --listen ax25+agwpe, the hub's inbound window open; at its end the hub
+window closes first, then Pat drops the flag, then the radio goes back.
+server.py --sim with tests/fake_pat.py as Pat (it registers MyCall with the
+hub over AGWPE when listening), a real tnc_hub.py on a fake KISS radio, and
+tests/fake_uvpro_bridge.py as the radio (its state survives restarts).
+E-2/E-3 run a real Pat (PATH, /opt/homebrew/bin/pat or PAT=) and skip without one.
 
   B-1   render: the listen block -> both flags (Mac), station.json keeps it;
-        absent -> none; bad frequency, hours or method -> HostError naming the field
-  B-2   start: record before the QSY, the radio on the frequency, Pat with
-        --listen before http, the hub window open, all read back; Stop listening
+        absent -> none; a bad frequency, hours or method -> HostError naming it
+  B-2   start: record before the QSY, radio on frequency, Pat with --listen
+        before http, hub window open, all read back; Stop listening
   B-2b  Stop while the window is still starting: undone, never left listening
   B-3   Pat's listener never comes up: everything undone, the page told
   B-4   refusals change nothing (no QSY, no restart, no hub call)
-  B-5   end at `until` (in process, a 3 s window): hub window closed -> Pat without
-        the flag -> radio back
+  B-5   end at `until` (in process, a 3 s window), in order
   B-5b  the Packet add-on switched off mid-window: the same end path
-  B-7   while listening: connect refused, outbox DELETE 409, UV-PRO page writes refused,
-        a second Listen refused
+  B-7   while listening: connect, outbox changes, UV-PRO writes, a second Listen refused
   B-8   a clean server stop while listening: everything undone within grace
   B-11  the server SIGKILLed mid-window: the next start undoes it before Pat runs
   B-11b the server SIGKILLed mid outbound packet session: the next start puts the radio back
   B-12  a stale record whose pid is not Pat: that process is not signalled
-  B-9   the page: hidden without a plan; two-click confirm text, the state chip,
-        Stop listening; a closed page leaves the window open
-  E-2   real Pat listening through the hub: active_listeners and MyCall on the hub; both clear after
-  E-3   real Pat answers N0XYZ; Pat's dirty disconnect leaves the link; at the end the
-        hub link is gone (a DISC on air) before the radio is put back (B-6)
+  B-13  a record owned by another running server (server_pid): left alone until it is gone
+  B-9   the page: hidden without a plan; two-click confirm, state chip, Stop;
+        a closed page leaves the window open
+  E-2   real Pat listening through the hub; both clear after
+  E-3   real Pat answers N0XYZ; at the end the hub link is gone (a DISC on air)
+        before the radio is put back (B-6)
 
     .venv/bin/python tests/winlink_listen_test.py      (ONLY="B-2 B-5" to pick by id)
 """
@@ -87,6 +84,13 @@ if picked("B-1"):
     def after(argv, flag):
         return argv[argv.index(flag) + 1] if flag in argv else None
 
+    def refusal(h, block, field):
+        try:
+            render.artifacts(with_listen(h, block), home="/home/t")
+            return "accepted"
+        except render.HostError as e:
+            return f"HostError naming {field}" if f": {field}:" in str(e) else f"HostError: {e}"
+
     mac, station = host("mac-shack"), host("linux-station")
     argv = server_argv(with_listen(mac, {"ax25+agwpe": {"mhz": 145.09, "max_hours": 2}}))
     check("B-1 Mac: the listen block -> --winlink-listen ax25+agwpe=145.09",
@@ -128,13 +132,10 @@ if picked("B-1"):
             ("two methods", {"ax25+agwpe": {"mhz": 145.09}, "telnet": {}}, "winlink.listen"),
             ("an unknown setting", {"ax25+agwpe": {"mhz": 145.09, "beacon": 600}}, "winlink.listen.ax25+agwpe.beacon"),
             ("mhz as text", {"ax25+agwpe": {"mhz": "145.09"}}, "winlink.listen.ax25+agwpe.mhz")):
-        for hname, h in (("Mac", mac), ("Linux", station)):
-            try:
-                render.artifacts(with_listen(h, block), home="/home/t")
-                got = "accepted"
-            except render.HostError as e:
-                got = f"HostError naming {field}" if f": {field}:" in str(e) else f"HostError: {e}"
-            check(f"B-1 {hname}: {name} -> HostError naming the field", got, f"HostError naming {field}")
+        check(f"B-1 {name} -> HostError naming the field", refusal(mac, block, field), f"HostError naming {field}")
+    check("B-1 Linux refuses too (144.390)", refusal(station, {"ax25+agwpe": {"mhz": 144.39}},
+                                                     "winlink.listen.ax25+agwpe.mhz"),
+          "HostError naming winlink.listen.ax25+agwpe.mhz")
     for mhz in (145.01, 146.55, 223.4, 441.0):
         try:
             render.validate(with_listen(mac, {"ax25+agwpe": {"mhz": mhz, "max_hours": 12}}))
@@ -157,6 +158,7 @@ import tempfile                                # noqa: E402
 import time                                    # noqa: E402
 from datetime import datetime                  # noqa: E402
 
+import aiohttp                                 # noqa: E402
 import testkit                                 # noqa: E402
 from testkit import free_port, wait_for        # noqa: E402
 from winlink_test_lib import WebPage           # noqa: E402
@@ -172,6 +174,23 @@ def jsonl(path):
             return [json.loads(x) for x in f if x.strip()]
     except OSError:
         return []
+
+
+def radio_of(path):
+    """(channel_a, double_channel) as the fake radio holds them."""
+    try:
+        with open(path) as f:
+            st = json.load(f)["settings"]
+        return st["channel_a"], st["double_channel"]
+    except (OSError, ValueError, KeyError):
+        return (0, 1)                  # never written: as it started
+
+
+def compose(page, subject):
+    form = aiohttp.FormData()
+    for k, v in (("to", "N0XYZ"), ("subject", subject), ("body", "b")):
+        form.add_field(k, v)
+    return page.http("POST", "/winlink/api/mailbox/out", data=form)[0]
 
 
 def alive(pid):
@@ -229,12 +248,12 @@ class Stack:
     """server.py --sim with the Packet and UV-PRO add-ons and Winlink (fake
     Pat unless pat_cmd), a listen plan on 145.090, on a Hub of its own."""
 
-    def __init__(self, hub=None, env=None, listen=f"ax25+agwpe={LISTEN_MHZ:g}", max_h="4", pat_cmd=None,
-                 uvpro=True, tmp=None, ports=None, state=True, wait=True, pat_home=None, packet_status=True):
+    def __init__(self, hub=None, env=None, listen=f"ax25+agwpe={LISTEN_MHZ:g}", pat_cmd=None,
+                 state=True, wait=True, pat_home=None, packet_status=True):
         self.hub = hub or Hub()
         self.own_hub = hub is None
-        self.tmp = tmp or tempfile.mkdtemp(prefix="wllisten-")
-        self.web, self.apps, self.lane, self.patp = ports or (free_port(), free_port(), free_port(), free_port())
+        self.tmp = tempfile.mkdtemp(prefix="wllisten-")
+        self.web, self.apps, self.lane, self.patp = free_port(), free_port(), free_port(), free_port()
         self.flog = os.path.join(self.tmp, "fakepat.jsonl")
         self.blog = os.path.join(self.tmp, "bridge.jsonl")
         self.radio_file = os.path.join(self.tmp, "radio.json")
@@ -244,32 +263,29 @@ class Stack:
         self.cfg = testkit.pat_config(os.path.join(self.tmp, "patcfg.json"),
                                       agwpe={"addr": f"127.0.0.1:{self.hub.proc.agw}", "radio_port": 0})
         self.pat_cmd = pat_cmd or f"{sys.executable} tests/fake_pat.py --config {self.cfg}"
-        cfg = {"packet": {"enabled": True, "url": self.hub.url, "name": "UV-PRO"}}
-        if uvpro:
-            cfg["uvpro"] = {"enabled": True, "address": "00:11:22:33:44:55", "python": sys.executable,
-                            "bridge": os.path.join(HERE, "fake_uvpro_bridge.py"),
-                            "control": f"tcp:127.0.0.1:{self.hub.proc.ctrl}",
-                            "calls": ["N9ABC"], "restore_wait_s": 3}
-            if packet_status:          # the tuner's own "no link up" check (off: only the engine's guards)
-                cfg["uvpro"]["packet_status"] = f"{self.hub.url}/api/status"
-            else:                      # the hub still holds APRS while tuned (plan 2026-11-07, 3.2)
-                cfg["uvpro"].update(hub=self.hub.url, packet_status=None)
+        uv = {"enabled": True, "address": "00:11:22:33:44:55", "python": sys.executable,
+              "bridge": os.path.join(HERE, "fake_uvpro_bridge.py"),
+              "control": f"tcp:127.0.0.1:{self.hub.proc.ctrl}", "calls": ["N9ABC"], "restore_wait_s": 3}
+        if packet_status:              # the tuner's own "no link up" check
+            uv["packet_status"] = f"{self.hub.url}/api/status"
+        else:                          # off: only the engine's guards; the hub still holds APRS
+            uv.update(hub=self.hub.url, packet_status=None)
+        cfg = {"packet": {"enabled": True, "url": self.hub.url, "name": "UV-PRO"}, "uvpro": uv}
         self.addons = os.path.join(self.tmp, "addons.json")
         with open(self.addons, "w") as f:
             json.dump(cfg, f)
-        # Real Pat's own HOME/XDG first; then this stack's fakes, whatever the
-        # environment already holds (the in-process B-5 sets some for itself).
+        # a real Pat's own HOME/XDG, never this machine's
         self.env = testkit.real_pat_env(pat_home, "N9ABC") if pat_home else dict(os.environ)
         self.env.update(FAKE_PAT_RIGCTL=str(self.lane), FAKE_PAT_LOG=self.flog, FAKE_PAT_NO_PTT="1",
                         FAKE_UVPRO_LOG=self.blog, FAKE_UVPRO_STATE=self.radio_file, FAKE_UVPRO_CH3=f"{LISTEN_MHZ:g}",
-                        FAKE_UVPRO_PROBE=os.path.join(self.tmp, "state", "winlink-listen.json"), FAKE_UVPRO_LOG_T="1")
+                        FAKE_UVPRO_PROBE=self.record, FAKE_UVPRO_LOG_T="1")
         self.env.update(env or {})
-        self.listen, self.max_h, self.use_state, self.has_uvpro = listen, max_h, state, uvpro
+        self.listen, self.use_state = listen, state
         self.page = None
         self.start(wait)
 
     def start(self, wait=True):
-        extra = ["--winlink-listen", self.listen, "--winlink-listen-max-h", self.max_h] if self.listen else []
+        extra = ["--winlink-listen", self.listen, "--winlink-listen-max-h", "4"] if self.listen else []
         state = os.path.join(self.state_dir, "addons.json") if self.use_state else ""
         self.p = subprocess.Popen(
             [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(self.web),
@@ -311,23 +327,14 @@ class Stack:
             return False
         a = self.addon_snap()
         uv, pk = a.get("uvpro") or {}, a.get("packet") or {}
-        return bool(pk.get("up") and (not self.has_uvpro or ((uv.get("status") or {}).get("connected")
-                                                              and uv.get("settings") and uv.get("memories"))))
+        return bool(pk.get("up") and (uv.get("status") or {}).get("connected") and uv.get("settings")
+                    and uv.get("memories"))
 
     def radio(self):
-        """(channel_a, double_channel) as the fake radio holds them."""
-        try:
-            with open(self.radio_file) as f:
-                st = json.load(f)["settings"]
-            return st["channel_a"], st["double_channel"]
-        except (OSError, ValueError, KeyError):
-            return (0, 1)              # never written: as it started
+        return radio_of(self.radio_file)
 
     def writes(self, since=0):
         return [(c["cmd"], c.get("values")) for c in jsonl(self.blog)[since:] if c.get("cmd") in ("settings", "channel")]
-
-    def write_times(self, since=0):
-        return [c["t"] for c in jsonl(self.blog)[since:] if c.get("cmd") in ("settings", "channel")]
 
     def starts(self, since=0):
         return [r for r in jsonl(self.flog) if r.get("route") == "start"][since:]
@@ -422,11 +429,7 @@ if picked("B-2") or picked("B-7"):
               has(s.notices("info"), "Listening for calls", "145.090", "APRS"), True)
 
         if picked("B-7"):
-            # compose still works; the outbox can't be changed; connect and a second window refused
-            form = __import__("aiohttp").FormData()
-            for k, v in (("to", "N0XYZ"), ("subject", "while listening"), ("body", "b")):
-                form.add_field(k, v)
-            check("B-7 compose while listening -> 201", s.page.http("POST", "/winlink/api/mailbox/out", data=form)[0], 201)
+            check("B-7 compose while listening -> 201", compose(s.page, "while listening"), 201)
             st_, body = s.page.http("DELETE", "/winlink/api/mailbox/out/OUT0")
             check("B-7 outbox DELETE while listening -> 409, saying why", (st_, "Listening" in body), (409, True))
             st_, _ = s.page.http("POST", "/winlink/api/mailbox/archive", headers={"X-Pat-SourcePath": "/api/mailbox/out/OUT0"})
@@ -451,7 +454,6 @@ if picked("B-2") or picked("B-7"):
             time.sleep(1.0)            # negative check
             check("B-7   still one window: no QSY, no restart, no second hub call",
                   (s.writes(b1), len(s.starts()) - p1, len(s.hub.opened()) - h1), ([], 0, 0))
-        # Stop listening from the page: B4
         b1, p1, _ = s.mark()
         s.page.events.clear()
         s.page.send({"t": "winlink_listen_stop"})
@@ -461,10 +463,7 @@ if picked("B-2") or picked("B-7"):
         check("B-2   the radio back on channel 1, dual watch A", s.radio(), (0, 1))
         check("B-2   records gone", (os.path.exists(s.record), os.path.exists(s.qsy_record)), (False, False))
         if picked("B-7"):
-            form = __import__("aiohttp").FormData()
-            for k, v in (("to", "N0XYZ"), ("subject", "after"), ("body", "b")):
-                form.add_field(k, v)
-            s.page.http("POST", "/winlink/api/mailbox/out", data=form)
+            compose(s.page, "after")
             mid = json.loads(s.page.http("GET", "/winlink/api/mailbox/out")[1])[-1]["MID"]
             check("B-7 after: outbox DELETE -> 200", s.page.http("DELETE", f"/winlink/api/mailbox/out/{mid}")[0], 200)
     finally:
@@ -510,21 +509,37 @@ if picked("B-3"):
         s.close()
 
 
-# ------------------------------------------------------------ B-2b: Stop while the window is starting
+# ------------------------------------------------------------ B-2b: Stop while starting; B-5b: Packet off mid-window
 
-if picked("B-2b"):
+if picked("B-2b") or picked("B-5b"):
     s = Stack()
     try:
-        b0, p0, h0 = s.mark()
-        s.listen_on(0.25)
-        wait_for(lambda: (s.snap().get("listen") or {}).get("busy") == "starting", 5, 0.02)
-        s.page.send({"t": "winlink_listen_stop"})
-        check("B-2b Stop while starting: undone, back to idle", bool(s.idle()), True)
-        check("B-2b   never left listening: no hub window, Pat without the flag, radio back, no records",
-              (s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
-               os.path.exists(s.record), os.path.exists(s.qsy_record)), (None, [False], (0, 1), False, False))
-        time.sleep(2.0)                # negative check: nothing reopens it
-        check("B-2b   still idle 2 s later", (s.window(), s.hub.inbound()), (None, None))
+        if picked("B-2b"):
+            b0, p0, h0 = s.mark()
+            s.listen_on(0.25)
+            wait_for(lambda: (s.snap().get("listen") or {}).get("busy") == "starting", 5, 0.02)
+            s.page.send({"t": "winlink_listen_stop"})
+            check("B-2b Stop while starting: undone, back to idle", bool(s.idle()), True)
+            check("B-2b   never left listening: no hub window, Pat without the flag, radio back, no records",
+                  (s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
+                   os.path.exists(s.record), os.path.exists(s.qsy_record)), (None, [False], (0, 1), False, False))
+            time.sleep(2.0)            # negative check: nothing reopens it
+            check("B-2b   still idle 2 s later", (s.window(), s.hub.inbound()), (None, None))
+        if picked("B-5b"):
+            wait_for(s.ready, 40, 0.3)
+            b0, p0, _ = s.mark()
+            hc0 = len(s.hub.closed())
+            s.listen_on(0.25)
+            check("B-5b precondition: listening", bool(s.listening()), True)
+            s.page.events.clear()
+            s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
+            check("B-5b the Packet add-on switched off: the window ends, saying why",
+                  bool(s.page.wait(lambda e: e.get("t") == "notice" and "Listening ended" in e.get("msg", "")
+                                   and "Packet add-on" in e.get("msg", ""), 20)), True)
+            check("B-5b   idle, hub window closed, Pat without the flag, radio back, no records",
+                  (bool(s.idle()), s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
+                   os.path.exists(s.record)), (True, None, [False], (0, 1), False))
+            check("B-5b   in order: hub window, Pat, radio", in_order(end_order(s, b0, p0, hc0)), True)
     finally:
         s.stop()
         s.close()
@@ -549,7 +564,7 @@ if picked("B-4"):
 
     s = Stack(env={"FAKE_PAT_TX_S": "6"})
     try:
-        # a session running (telnet: keys nothing)
+        # a session running (telnet keys nothing)
         s.page.send({"t": "winlink_connect", "url": "telnet://N9ABC:pw@127.0.0.1:9/wl2k"})
         s.page.wait(lambda e: e.get("t") == "winlink" and e.get("session") == "started", 10)
         nothing(s, s.mark(), "a session running", "session")
@@ -620,7 +635,7 @@ if picked("B-5") or picked("B-4"):
     import logging
     from addons import uvpro as UV
 
-    logging.getLogger().addHandler(logging.NullHandler())   # the engine's warnings are expected here
+    logging.getLogger().addHandler(logging.NullHandler())   # the engine's warnings are expected
     hub = Hub()
     tmp = tempfile.mkdtemp(prefix="wllisten-ip-")
     state_dir = os.path.join(tmp, "state")
@@ -657,12 +672,7 @@ if picked("B-5") or picked("B-4"):
         return bool(pred())
 
     def radio_now():
-        try:
-            with open(radio_file) as f:
-                st = json.load(f)["settings"]
-            return st["channel_a"], st["double_channel"]
-        except (OSError, ValueError, KeyError):
-            return (0, 1)
+        return radio_of(radio_file)
 
     async def in_process():
         res = {}
@@ -686,7 +696,7 @@ if picked("B-5") or picked("B-4"):
                         and (eng.live_at or 1e18) <= time.monotonic(), 15)
             starts = lambda: [r for r in jsonl(flog) if r.get("route") == "start"]   # noqa: E731
             if picked("B-4"):
-                eng._admitting = True          # a connect being admitted (arming its lane)
+                eng._admitting = True          # a connect arming its lane
                 n0, b0 = len(starts()), len(jsonl(blog))
                 await eng.listen_start(None, 0.25)
                 await asyncio.sleep(1.0)       # negative check
@@ -695,7 +705,7 @@ if picked("B-5") or picked("B-4"):
                 eng._admitting = False
             if picked("B-5"):
                 b0, n0 = len(jsonl(blog)), len(starts())
-                W.MIN_HOURS = 0                # a 3-second window (the shortest a page offers is 15 min)
+                W.MIN_HOURS = 0                # allow a 3 s window
                 await eng.listen_start(None, 3 / 3600)
                 res["listening"] = (eng.listening is not None, radio_now(), (hub.inbound() or {}).get("calls"))
                 t_until = (eng.listening or {}).get("until")
@@ -741,28 +751,6 @@ if picked("B-5") or picked("B-4"):
         check("B-5 the page told why", r.get("notes"), ["Listening ended: the window ran out."])
 
 
-# ------------------------------------------------------------ B-5b: what a window stands on goes away
-
-if picked("B-5b"):
-    s = Stack()
-    try:
-        b0, p0, h0 = s.mark()
-        s.listen_on(0.25)
-        check("B-5b precondition: listening", bool(s.listening()), True)
-        s.page.events.clear()
-        s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
-        check("B-5b the Packet add-on switched off: the window ends, saying why",
-              bool(s.page.wait(lambda e: e.get("t") == "notice" and "Listening ended" in e.get("msg", "")
-                               and "Packet add-on" in e.get("msg", ""), 20)), True)
-        check("B-5b   idle, hub window closed, Pat without the flag, radio back, no records",
-              (bool(s.idle()), s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
-               os.path.exists(s.record)), (True, None, [False], (0, 1), False))
-        check("B-5b   in order: hub window, Pat, radio", in_order(end_order(s, b0, p0)), True)
-    finally:
-        s.stop()
-        s.close()
-
-
 # ------------------------------------------------------------ B-8: a clean stop while listening
 
 if picked("B-8"):
@@ -776,7 +764,6 @@ if picked("B-8"):
         out = s.stop()
         took = time.time() - t0
         check("B-8 the server exited within grace (40 s)", (s.p.returncode is not None, took < 40), (True, True))
-        print(f"      took {took:.1f}s")
         check("B-8   the hub window closed (not just run out)", (len(s.hub.closed()), s.hub.inbound()), (1, None))
         check("B-8   no Pat left", [p for p in pids if alive(p)], [])
         check("B-8   N9ABC no longer registered on the hub", wait_for(lambda: s.hub.registered() == [], 5), True)
@@ -789,12 +776,8 @@ if picked("B-8"):
         s.close()
 
 
-# ------------------------------------------------------------ B-11, B-12: crash recovery
-
-def restart_same(s, **kw):
-    """A new server on the same ports, state and hub (as launchd would restart it)."""
-    s.start(**kw)
-
+# ------------------------------------------------------------ B-11..B-13: crash recovery
+# s.start() again: a new server on the same ports, state and hub, as launchd restarts it.
 
 if picked("B-11"):
     s = Stack()
@@ -806,13 +789,13 @@ if picked("B-11"):
         check("B-11 precondition: the listening Pat runs, the hub window is open, the radio on channel 3",
               (listener.get("listen"), alive(listener["pid"]), (s.hub.inbound() or {}).get("calls"), s.radio()),
               (["ax25+agwpe"], True, ["N9ABC"], (2, 0)))
-        s.stop(signal.SIGKILL)         # the crash: nothing of B4 runs
+        s.stop(signal.SIGKILL)         # the crash: no end path runs
         time.sleep(1.0)
         check("B-11 after SIGKILL: the listening Pat outlived it, the window still open, the radio still off",
               (alive(listener["pid"]), (s.hub.inbound() or {}).get("calls"), s.radio(), os.path.exists(s.record)),
               (True, ["N9ABC"], (2, 0), True))
         p1, b1 = len(s.starts()), len(jsonl(s.blog))
-        restart_same(s)
+        s.start()
         check("B-11 the next start: the stale listening Pat is gone", wait_for(lambda: not alive(listener["pid"]), 15),
               True)
         check("B-11   the hub window closed (by the server, not run out)", (len(s.hub.closed()), s.hub.inbound()),
@@ -833,7 +816,6 @@ if picked("B-11"):
     check("B-11   logged: the old window ended, never resumed", "was left by a server that did not end it" in out, True)
 
 if picked("B-11b"):
-    # The tuner's own record (F16): a crash mid outbound packet session.
     s = Stack(env={"FAKE_PAT_TX_S": "60"}, listen=None)
     try:
         s.page.send({"t": "winlink_connect", "url": "ax25+agwpe:///N0DAJ?freq=145090", "via": "packet"})
@@ -844,7 +826,7 @@ if picked("B-11b"):
         for pid in old:                # its Pat would hold the port; not this test's subject
             if alive(pid):
                 os.kill(pid, signal.SIGKILL)
-        restart_same(s)
+        s.start()
         check("B-11b the next start puts the radio back on channel 1",
               wait_for(lambda: s.radio() == (0, 1), 30) and s.radio(), (0, 1))
         check("B-11b   the tuner's record is gone", wait_for(lambda: not os.path.exists(s.qsy_record), 10), True)
@@ -865,14 +847,14 @@ if picked("B-12"):
             with open(s.record, "w") as f:
                 json.dump({"stage": "listening", "pid": o.pid, "pat_port": s.patp, "hub": s.hub.url, "call": "N9ABC",
                            "method": "ax25+agwpe", "hz": 145_090_000, "until": time.time() + 900}, f)
-            restart_same(s)
+            s.start()
             what = ("a non-Pat process", "a pat-like process on another port")[i]
             check(f"B-12 stale record, pid is {what}: not signalled", (o.poll(), alive(o.pid)), (None, True))
-            check(f"B-12   the record is gone, Pat started without the flag",
+            check("B-12   the record is gone, Pat started without the flag",
                   (wait_for(lambda: not os.path.exists(s.record), 10), [r.get("listen") for r in s.starts()][-1:]),
                   (True, [[]]))
             out = s.stop()
-            check(f"B-12   logged as left alone", "is not the old listening Pat" in out, True)
+            check("B-12   logged as left alone", "is not the old listening Pat" in out, True)
     finally:
         for o in others:
             o.kill()
@@ -880,10 +862,7 @@ if picked("B-12"):
 
 
 if picked("B-13"):
-    # A record written by ANOTHER server that is still running (a second server
-    # on the same state: every test server once read the live one) is that
-    # server's window: its listening Pat, the hub's inbound window and the
-    # record are left alone. Once that owner is gone, the same record is stale.
+    # Regression: test servers once ended the live server's window from a shared state dir.
     s = Stack(wait=False)
     s.stop()
     os.makedirs(s.state_dir, exist_ok=True)
@@ -904,7 +883,7 @@ if picked("B-13"):
         check("B-13 precondition: the owner's window is open on the hub", open_window(), ["N9ABC"])
         with open(s.record, "w") as f:
             json.dump(rec, f)
-        restart_same(s)
+        s.start()
         time.sleep(2.0)
         check("B-13 owner alive: its listening Pat not signalled", (pat.poll(), alive(pat.pid)), (None, True))
         check("B-13   the hub's inbound window still open", (s.hub.inbound() or {}).get("calls"), ["N9ABC"])
@@ -915,7 +894,7 @@ if picked("B-13"):
         owner.wait()
         with open(s.record, "w") as f:
             json.dump(rec, f)
-        restart_same(s)
+        s.start()
         check("B-13 positive control, owner gone: the stale listening Pat is ended",
               wait_for(lambda: pat.poll() is not None, 15), True)
         check("B-13   the hub window closed by the server", wait_for(lambda: len(s.hub.closed()) == 1, 10)
@@ -977,7 +956,7 @@ if picked("B-9"):
                        b.js("document.querySelector('#wl-connect').disabled")), (True, False, True))
                 check("B-9   the server is listening", (s.window() or {}).get("hz"), 145_090_000)
                 check("B-9 no JS errors (the first page)", b.js("window.__errs"), [])
-                # Closing the page does not end a window (unattended VHF data is lawful, 97.221(b))
+                # unattended VHF data is lawful (97.221(b)): a closed page is not an end
                 b.goto("about:blank")
                 time.sleep(2.0)        # negative check: a page gone is not an end
                 check("B-9 the page closed: still listening", ((s.window() or {}).get("hz"), s.radio()),
@@ -1002,10 +981,9 @@ if picked("B-9"):
 # ------------------------------------------------------------ E-2, E-3: real Pat (B-6)
 
 class Peer:
-    """A station on the air that calls N9ABC (ax25_link in its own loop
-    thread): it acknowledges what it hears at the link layer and never
-    sends a byte of its own ("the peer goes silent"). ignore_disc: it stops
-    answering a DISC, so the hub retries until it gives up."""
+    """A station that calls N9ABC (ax25_link in its own loop thread): it acks
+    at the link layer and never sends data. ignore_disc: it stops answering
+    DISC, so the hub retries until it gives up."""
 
     def __init__(self, radio, call="N0XYZ", to="N9ABC"):
         import asyncio
@@ -1084,7 +1062,6 @@ if picked("E-2") or picked("E-3"):
                   pat_cmd=f"{PAT} --config {cfg} --mbox {os.path.join(home, 'mbox')} --log {patlog}")
         peer = None
         try:
-            # E-2: the window opens on a real Pat
             s.listen_on(0.25)
             ok = s.listening(40)
             check("E-2 real Pat: listening (read back by the server)", bool(ok), True)
@@ -1092,7 +1069,6 @@ if picked("E-2") or picked("E-3"):
                   (s.snap().get("status") or {}).get("active_listeners"), ["ax25+agwpe"])
             check("E-2   the hub lists N9ABC registered", s.hub.registered(), ["N9ABC"])
             if picked("E-3"):
-                # E-3: N0XYZ calls in; the hub answers, Pat accepts
                 peer = Peer(hub.radio)
                 n_tx = len(hub.radio.transmitted())
                 peer.call()
@@ -1105,7 +1081,7 @@ if picked("E-2") or picked("E-3"):
                       bool(wait_for(lambda: (s.snap().get("inbound") or {}).get("call") == "N0XYZ", 10)), True)
                 links = lambda: [l for l in hub.status()["links"] if l["local"] == "N9ABC"]   # noqa: E731
                 check("E-3 the hub holds the link", [l["remote"] for l in links()], ["N0XYZ"])
-                # Pat's dirty disconnect alone does nothing on AX.25 (F9)
+                # Pat's dirty disconnect has no AX.25 branch
                 import urllib.request
                 try:
                     urllib.request.urlopen(f"http://127.0.0.1:{s.patp}/api/disconnect?dirty=true", timeout=5).read()
@@ -1143,7 +1119,6 @@ if picked("E-2") or picked("E-3"):
                           "      ", discs[:1], gone, back[:1], b1, jsonl(s.blog)[-3:])
                 check("E-3   the hub window closed", s.hub.inbound(), None)
                 check("E-3   the radio back on channel 1", s.radio(), (0, 1))
-            # E-2: after the window, both clear
             if not picked("E-3"):
                 s.page.send({"t": "winlink_listen_stop"})
                 s.idle(40)

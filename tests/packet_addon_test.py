@@ -1,22 +1,16 @@
-"""The Packet add-on: the packet hub as a tab on a Mac's radio page.
-
-  - a Mac host file with a packet block (and a radio) renders the add-on,
-    on, pointed at the hub; a hub-only Mac (no radio server) doesn't; a host
-    file that lists "packet" itself keeps its own entry
-  - against a stand-in hub and a simulated radio server: the hub's page and
-    API come through /packet/; dot segments, encoded "?" and websockets are
-    refused; a cross-site POST (the transmit switch) never reaches the hub;
-    the hub gets the X-Ranch-Radio header; switched off, the proxy answers 503
+"""The Packet add-on: the packet hub as a tab on a Mac's radio page. Host file
+rendering, then the /packet/ proxy against a stand-in hub and a simulated
+radio server (path and cross-site guards, the X-Ranch-Radio header, off = 503).
 
     python3 tests/packet_addon_test.py
 """
 import asyncio
 import json
-import random
-import socket
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +21,7 @@ from aiohttp import web
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from ranch_radio import render  # noqa: E402
+from testkit import free_port  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="packet-addon-"))
 fails = 0
@@ -58,14 +53,6 @@ check("a host file's own packet entry is kept", render.mac_addons(own)["packet"]
 
 
 # ---------------------------------------------------------------- against a stand-in hub
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
-
-
 seen = []                                         # (method, path, X-Ranch-Radio) the hub was sent
 
 
@@ -88,7 +75,6 @@ async def hub_main(port, ready):
 
 hub_port, web_port = free_port(), free_port()
 loop = asyncio.new_event_loop()
-import threading  # noqa: E402
 ready = threading.Event()
 threading.Thread(target=lambda: loop.run_until_complete(hub_main(hub_port, ready)), daemon=True).start()
 ready.wait(10)
@@ -115,7 +101,7 @@ async def client():
             out["page"] = (r.status, "hub page" in await r.text())
         async with s.get(base + "/packet", allow_redirects=False) as r:
             out["slash"] = (r.status, r.headers.get("Location"))
-        # encoded=True: send the path as written (the client would tidy x/../ away itself)
+        # encoded=True: send the path as written, not normalised by the client
         async with s.get(yarl.URL(base + "/packet/x/../api/lend", encoded=True), allow_redirects=False) as r:
             out["dots"] = r.status
         async with s.get(base + "/packet/api/lend%3fx") as r:
@@ -132,9 +118,12 @@ async def client():
         out["header"] = [h for m, p, h in seen if p == "/api/tx"]
         async with s.ws_connect(base + "/ws") as ws:
             await ws.send_str(json.dumps({"t": "addon", "addon": "packet", "do": "power", "on": False}))
-            await asyncio.sleep(0.5)
-        async with s.get(base + "/packet/api/status") as r:
-            out["off"] = r.status
+            for _ in range(50):
+                async with s.get(base + "/packet/api/status") as r:
+                    out["off"] = r.status
+                if out["off"] == 503:
+                    break
+                await asyncio.sleep(0.1)
     return out
 
 
@@ -154,6 +143,6 @@ check("a cross-site POST never reaches the hub", (o["xsite"][0] >= 400, o["xsite
 check("a same-site POST does, with the hub's X-Ranch-Radio header", (o["same_site"], o["header"]), (200, ["1"]))
 check("switched off: the proxy answers 503", o["off"], 503)
 
-subprocess.run(["rm", "-rf", str(TMP)])
+shutil.rmtree(TMP, ignore_errors=True)
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

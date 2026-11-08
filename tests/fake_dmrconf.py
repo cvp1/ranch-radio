@@ -2,16 +2,20 @@
 """A fake qdmr dmrconf for tests: the radio's codeplug is a file.
 
 FAKE_DMRCONF_DIR holds radio.yaml (what the radio holds) and calls.log (one
-line per call: start and end time, then the arguments). Flag files in it:
-A write also leaves layout.json: the radio's memory after it, channels in
-slots 1..N and the zones by those numbers, as dmrconf's encode does (a fake
-radio follows it). "reboot" holds a number: after a write, that many reads fail the way they
-do while the radio restarts. "old" plays dmrconf 0.11.3 (no openuv380 driver); "drop" makes a write lose
-its last channel, so the read-back differs; "warn" makes read print qdmr's
-zone-linking warning. encode writes the file's meaning as its "binary" (so two
-files that say the same encode the same). verify and encode refuse a file containing
-"BAD" (so does write); a "crash" flag file makes verify die on SIGSEGV
-like dmrconf 0.15.1 with openuv380. Each read and write takes FAKE_DMRCONF_SLOW seconds (default 0.5)."""
+line per call: start and end time, then the arguments). A write also leaves
+layout.json (channels in slots 1..N, zones by those numbers, as dmrconf's
+encode does) for the fake radio to follow. encode writes the file's meaning as
+its "binary", so two files that say the same encode the same. verify, encode
+and write refuse a file containing "BAD". Reads and writes take
+FAKE_DMRCONF_SLOW seconds (default 0.5).
+
+Flag files in FAKE_DMRCONF_DIR:
+  reboot  a number: after a write, that many reads fail as while the radio restarts
+  old     dmrconf 0.11.3 (no openuv380 driver)
+  drop    a write loses its last channel, so the read-back differs
+  warn    read prints qdmr's zone-linking warning
+  crash   verify dies on SIGSEGV, like dmrconf 0.15.1 with openuv380
+"""
 import atexit
 import os
 import signal
@@ -59,9 +63,8 @@ elif args and args[0] == "read":
 elif args and args[0] == "verify":
     if os.path.exists(os.path.join(d, "crash")):           # qdmr 0.15.1 with openuv380
         _log()
-        # A deliberate crash: leave no core, so systemd-coredump (and Omarchy's
-        # crash watcher on top of it) never sees it. PR_SET_DUMPABLE=0 stops even
-        # a piped core_pattern, which ignores RLIMIT_CORE; the rlimit covers macOS.
+        # leave no core: PR_SET_DUMPABLE=0 stops even a piped core_pattern (which ignores
+        # RLIMIT_CORE) so systemd-coredump never sees it; the rlimit covers macOS
         import resource
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         if sys.platform.startswith("linux"):

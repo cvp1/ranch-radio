@@ -18,6 +18,7 @@ old code until restarted), and is "transmitting" while BUSY exists.
 
     python3 tests/update_test.py
 """
+import fcntl
 import json
 import os
 import shutil
@@ -226,9 +227,7 @@ rc, out = rr("update", host, "--apply")
 check("  the next update restarts it", (rc, restarted(), state().get("pending")), (0, True, []))
 
 # ---------------------------------------------------------------- JTDX connected over rigctl
-# A restart drops a rigctl client's rig control (JTDX then waits on an error
-# dialog), so a connected client defers the restart like transmitting does,
-# unless the operator says --drop-rigctl.
+# A restart drops a rigctl client's rig control, so it defers like transmitting.
 (TMP / "RIGCTL").touch()
 jtdx_rev = push("while JTDX is connected")
 rc, out = rr("update", host, "--apply")
@@ -241,9 +240,8 @@ check("  --drop-rigctl restarts it anyway", (rc, restarted(), state().get("pendi
 (TMP / "RIGCTL").unlink()
 
 # ---------------------------------------------------------------- the first update, pulled by an older one
-# The deployed update pulls, then runs `update HOST --no-pull --code-changed
-# --apply` under the new code, with no --from: the new code finds where the
-# pull came from (ORIG_HEAD) so it can still roll back.
+# The old update pulls, then runs `update --no-pull --code-changed --apply` with
+# no --from: the new code must find ORIG_HEAD to roll back.
 base = head()
 old_way = push("pulled by the old update, crashes", mark="bad")
 sh("git", "-C", str(co), "pull", "-q", "--ff-only")
@@ -295,7 +293,6 @@ rc, out = rr("update", host, "--apply")
 check("  next update lands", (rc, head()), (0, manual_fix))
 
 # ---------------------------------------------------------------- one update at a time
-import fcntl  # noqa: E402
 lk = home / ".local/state/ranch-radio/update.lock"
 lk.parent.mkdir(parents=True, exist_ok=True)
 with open(lk, "w") as f:

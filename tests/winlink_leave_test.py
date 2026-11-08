@@ -1,11 +1,9 @@
-"""Winlink disarm puts the radio's mode (and SSB audio source) back even when
-the last poll reply still says "transmitting" for a moment after our unkey,
-and never changes the mode under a real transmission.
+"""Winlink disarm puts the radio's mode and SSB audio source back even when
+the last poll still says "transmitting" just after our unkey, and never
+changes the mode under a real transmission. In process: a stub radio whose
+tx clears 0.3 s late, or never.
 
-The bug (2026-10-23, found de-flaking qmx_test): _winlink_mode_leave cleared
-what it had saved, saw tx still set by a reply computed before the unkey
-reached the radio, and returned: the restore was lost for good. In-process
-and deterministic: a stub radio whose tx clears 0.3 s late, or never.
+Regression (2026-10-23): a stale TX reply made _winlink_mode_leave drop the restore.
 """
 import asyncio
 import os
@@ -53,7 +51,7 @@ async def stale_then_rx():
     st = Stub()
 
     async def unkey_lands():
-        await asyncio.sleep(0.3)               # the next poll says RX
+        await asyncio.sleep(0.3)
         st.radio.state["tx"] = False
     t = asyncio.ensure_future(unkey_lands())
     await server.Station._winlink_mode_leave(st)

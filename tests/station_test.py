@@ -4,8 +4,8 @@ Runs two server.py --sim radios (G90 and QMX, each on its own web, rigctl
 and Winlink lane ports, as on linux-station), a fake UV-PRO hub, tests/fake_pat.py
 as Pat, tests/fake_ardopcf.py as the modem and tests/fake_mesh_bridge.py as
 the node, then station.py in front, and checks:
-  - the page lists both radios with their own ports; the shared port goes to
-    the radio connected longest, and moves only when that radio goes away
+  - the page lists both radios with their own ports; the shared port moves
+    only when its radio goes away
   - a connection to the shared port reaches that radio; its own ports reach
     each radio whatever the shared port does
   - each radio's page and its WebSocket come through /r/<id>/
@@ -36,7 +36,8 @@ import time
 
 import aiohttp
 from aiohttp import web
-import testkit  # noqa: E402
+
+import testkit
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 B = 20000 + random.randrange(0, 4000, 40)
@@ -97,10 +98,9 @@ def rigctl(port, *cmds):
 
 
 def own_addrs():
-    """This machine's IPv4 addresses that another LAN machine could be,
-    LAN first. Not the default route's: with a VPN up (on a Mac)
-    that is the tunnel's own address, and a connection to it never arrives.
-    Loopback, link-local and point-to-point (VPN tunnel) addresses are left out."""
+    """This machine's IPv4 addresses another LAN machine could be, LAN first:
+    no loopback, link-local or point-to-point (a VPN tunnel's address, which
+    is the default route's with a VPN up, never receives the connection)."""
     found = []
     try:                                                    # Linux
         out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True,
@@ -131,8 +131,8 @@ def own_addrs():
 
 
 def lan_ip(port):
-    """The first of own_addrs() that really accepts a connection on `port`
-    (a caller here that the station sees as not-this-machine), or None."""
+    """The first of own_addrs() that accepts a connection on `port`, or None:
+    a caller the station sees as another machine."""
     for ip in own_addrs():
         try:
             socket.create_connection((ip, port), timeout=1).close()
@@ -141,8 +141,6 @@ def lan_ip(port):
             continue
     return None
 
-
-# --- a fake UV-PRO hub: its page, status and transmit switch -------------------
 
 hub_tx = []
 hub_lend = []
@@ -162,9 +160,6 @@ def fake_hub():
         hub_tx.append((await req.json(), req.remote))
         return web.json_response({"enabled": True})
 
-    app = web.Application()
-    app.router.add_get("/", index)
-    app.router.add_get("/api/status", status)
     async def lend(req):
         hub_lend.append(req.path)
         return web.json_response({"lent": None})
@@ -173,6 +168,9 @@ def fake_hub():
         hub_posts.append(req.path)
         return web.json_response({})
 
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/api/status", status)
     app.router.add_post("/api/tx", tx)
     app.router.add_post("/api/lend", lend)
     app.router.add_post("/api/return", lend)
@@ -285,7 +283,6 @@ with open(cfg_path, "w") as f:
 
 fake_hub()
 g90 = radio("g90", G90)
-time.sleep(1.2)                            # the G90 is connected first
 qmx = radio("qmx", QMX, "--winlink-mode", "USB")   # ARDOP: USB, never DiGi
 env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=PAT_LOG, FAKE_PAT_TX_S="1",
            FAKE_ARDOP_LOG=ARDOP_STARTS)
@@ -302,8 +299,7 @@ try:
     r = page.radios()
     check("both radios listed and connected", (r["g90"]["present"], r["qmx"]["present"]), (True, True))
     check("each radio's own rigctl port", (r["g90"]["rigctl"], r["qmx"]["rigctl"]), (G90["rigctl"], QMX["rigctl"]))
-    check("the station first saw both at once: one of them shared",
-          [k for k in r if r[k]["shared"]].__len__(), 1)
+    check("exactly one radio has the shared port", sum(1 for k in r if r[k]["shared"]), 1)
     shared = next(k for k in r if r[k]["shared"])
     rigctl(G90["rigctl"], "F 7074000")
     rigctl(QMX["rigctl"], "F 14074000")
@@ -389,8 +385,7 @@ try:
     check("  no HF radio armed", (armed_on_radio(G90), armed_on_radio(QMX)), (False, False))
     page.wait(wl(lambda e: e.get("session") == "ended"), timeout=30)
 
-    # --- packet with the gateway's freq= (Pat's rmslist URL): Pat would QSY and
-    # fail ("missing rig reference ... ax25+agwpe"); it gets the URL without it
+    # --- packet with the gateway's freq=: Pat would try to QSY and fail, so it gets the URL without it
     page.events.clear()
     page.send({"t": "winlink_connect", "url": "ax25:///N7RCC-10?freq=145010", "via": "packet"})
     e = page.wait(lambda e: e.get("t") == "notice" and "145.010 MHz" in e.get("msg", ""), 5)
@@ -400,9 +395,8 @@ try:
         urls = [json.loads(x).get("url") for x in f if '"connect"' in x]
     check("  Pat got the URL without freq=", urls[-1:], ["ax25:///N7RCC-10"])
 
-    # --- packet hub page and its transmit switch. Any page on the LAN may
-    # switch transmit on or off (D7, 2026-10-19); lending stays with this
-    # machine; a page from elsewhere may do neither (cross-site guard).
+    # --- packet hub page and its transmit switch: any LAN page may switch
+    # transmit; lending stays with this machine; a foreign page may do neither.
     async def hub():
         out = {}
         async with aiohttp.ClientSession() as s:
@@ -419,8 +413,7 @@ try:
                                         headers={"Origin": "http://evil.example"})
             out["foreign_mailbox"] = await post(f"{local}/winlink/api/mailbox/out", {},
                                                 headers={"Origin": "http://evil.example"})
-            # APRS messaging (plan 2026-11-07, 3.5): a message from a page is
-            # PTT-like; a foreign page is refused, this station's page passes.
+            # An APRS message is PTT-like: a foreign page is refused.
             out["foreign_msg"] = await post(f"{local}/packet/api/aprs/message", {"to": "W7TST", "text": "x"},
                                             headers={"Origin": "http://evil.example"})
             out["local_msg"] = await post(f"{local}/packet/api/aprs/message", {"to": "W7TST", "text": "x"},
@@ -437,11 +430,10 @@ try:
                                    for p in ("api/hold", "api/hold/release")]
                 out["lan_msg"] = await post(f"{lan}/packet/api/aprs/message", {"to": "W7TST", "text": "x"},
                                             headers={"Origin": lan})
-                # The bypass reproduced on 2026-10-19: aiohttp kept "x/../" in the
-                # tail, the lend check missed it, and the hub got /api/lend.
+                # Regression 2026-10-19: aiohttp kept "x/../" in the tail and the hub got /api/lend.
                 bypass = ("x/../api/lend", "x/%2e%2e/api/lend", "x/%2E%2E/api/lend", "./api/lend",
                           "x/%252e%252e/api/lend", "x//api/lend", "x\\..\\api/lend",
-                          # code review 2026-10-19 (Codex): decoded ?, # and controls
+                          # decoded ?, # and controls
                           "api/lend%3fignored", "api/return%23ignored", "api/lend%09", "api/lend%0d",
                           "api/lend%20")
                 out["bypass"] = []
@@ -450,8 +442,7 @@ try:
                     out["bypass"].append(await post(url, {"seconds": 60}))
                 url = aiohttp.client.URL(f"{lan}/r/g90/x/../ws", encoded=True)
                 out["radio_bypass"] = await post(url, {})
-            # DNS rebinding (review 2026-10-19, Codex): an internet name pointed
-            # at this machine makes its page same-origin; the Host gives it away.
+            # DNS rebinding: the page is same-origin, but the Host gives it away.
             evil = f"http://evil.example:{WEB}"
             out["rebind_post"] = await post(f"{local}/packet/api/tx", {"enabled": True},
                                             headers={"Host": f"evil.example:{WEB}", "Origin": evil})

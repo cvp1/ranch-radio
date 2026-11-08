@@ -1,36 +1,27 @@
 #!/usr/bin/env python3
 """A stand-in for addons/uvpro_bridge.py: the same JSON-lines protocol, no radio.
 
-    fake_uvpro_bridge.py ADDRESS [--battery-every S]
+    fake_uvpro_bridge.py ADDRESS        ("absent": unreachable, exit 2)
 
-ADDRESS "absent" -> the radio can't be reached (status false, exit 2).
-On start: connected, device, four channels (146.520 simplex, a 146.940 -0.600
-repeater with a 100.0 tone, 144.390 APRS, 162.550 NOAA RX only), settings,
-VFO A/B (records 251, 252), beacon (N9ABC-7), state, battery 87 %, extras
-(volume 8, regions HOME/TRAVEL/AIR, FM off on 91.5, path WIDE1-1,WIDE2-1).
-volume / region / fm / aprs_path / power change those and send them back;
-a region switch sends the other region's channels (names get the region's
-name as a prefix). A channel or VFO write to 99.999 MHz TX is "rewritten by
-the radio" (TX 0.0) and reported failed, as the real bridge's read-back does.
-Writes update the values and send them back, then done; a channel named
-"fail" is refused by the "radio"; a channel named "die" makes the radio go
-away (exit 3). "refresh" re-sends everything; if $FAKE_UVPRO_TX names a file
-that exists, the state then says the radio is transmitting.
-Each start appends a line to $FAKE_UVPRO_STARTS and every command received
-goes to $FAKE_UVPRO_LOG. $FAKE_UVPRO_CH3 (MHz) makes channel 3 a simplex
-channel on that frequency instead of APRS. Channels whose ids $FAKE_UVPRO_INEXACT lists (comma
-separated) are reported as not read back byte for byte ("exact").
-FAKE_UVPRO_NO_VFO=1 is a radio like the UV-50PRO: supports_vfo false and
-both VFO records reading 0.000000 MHz. FAKE_UVPRO_FAIL_NEXT=<cmd> ("settings"
-or "channel") answers the next command of that kind done ok:false; a channel
-write is applied (and sent back) first, as the real bridge's write-then-read-
-back may leave the radio changed when it reports a failure. FAKE_UVPRO_SETTINGS
-(JSON) is merged into the settings the radio starts with. $FAKE_UVPRO_STATE
-names a file the "radio" keeps its settings, channels and VFOs in across
-bridge restarts, as a real radio keeps its channel when the server dies
-(read at start if it exists, written after every change). With
-$FAKE_UVPRO_LOG_T set each logged command gets "t", the time it arrived;
-with $FAKE_UVPRO_PROBE (a path), "probe": whether that file existed then.
+Starts connected with four channels (simplex, a -0.600 repeater with tone,
+APRS, RX-only NOAA), VFOs 251/252, settings, beacon N9ABC-7, battery 87 %,
+extras (volume, regions HOME/TRAVEL/AIR, FM, APRS path). Writes are applied
+and sent back, then done; a region switch sends that region's channels. A
+channel/VFO TX of 99.999 MHz is "rewritten by the radio" and reported failed;
+a channel named "fail" is refused, "die" exits 3.
+
+Environment:
+  FAKE_UVPRO_LOG        file: every command received (FAKE_UVPRO_LOG_T adds
+                        "t"; FAKE_UVPRO_PROBE=path adds "probe": path existed)
+  FAKE_UVPRO_STARTS     file: a line per start (FAKE_UVPRO_ARGV: also argv)
+  FAKE_UVPRO_TX         file: while it exists, the state says transmitting
+  FAKE_UVPRO_CH3        MHz: channel 3 is simplex there instead of APRS
+  FAKE_UVPRO_INEXACT    ids (comma separated) reported not exact
+  FAKE_UVPRO_NO_VFO=1   a UV-50PRO: supports_vfo false, VFOs read 0.0
+  FAKE_UVPRO_FAIL_NEXT  "settings" or "channel": next one answers ok:false
+                        (a channel write is still applied, as the real one may be)
+  FAKE_UVPRO_SETTINGS   JSON merged into the starting settings
+  FAKE_UVPRO_STATE      file: settings, channels and VFOs survive restarts
 """
 import json
 import os
@@ -63,14 +54,13 @@ def ch(i, name, rx, tx, tone="", tx_disable=False):
 CHANNELS = [ch(0, "2M CALL", 146.52, 146.52), ch(1, "RPT", 146.94, 146.34, "100.0"),
             ch(2, "APRS", 144.39, 144.39), ch(3, "NOAA", 162.55, 162.55, tx_disable=True)]
 if os.environ.get("FAKE_UVPRO_CH3"):
-    # Winlink's packet tests: channel 3 as a gateway's simplex channel (MHz),
-    # since Winlink never tunes to the APRS channel (winlink.check_url).
+    # Winlink never tunes to the APRS channel (winlink.check_url)
     _f = float(os.environ["FAKE_UVPRO_CH3"])
     CHANNELS[2] = ch(2, "WL2K", _f, _f)
 SETTINGS = {"channel_a": 0, "channel_b": 2, "scan": False, "squelch_level": 3, "mic_gain": 4, "bt_mic_gain": 4,
             "tail_elim": True, "power_saving_mode": False, "dis_tone": False, "imperial_unit": True,
             "ptt_lock": False, "ch_data_lock": False, "double_channel": 1}
-SETTINGS.update(json.loads(os.environ.get("FAKE_UVPRO_SETTINGS") or "{}"))   # e.g. {"auto_relay_en": true}
+SETTINGS.update(json.loads(os.environ.get("FAKE_UVPRO_SETTINGS") or "{}"))
 BEACON = {"aprs_callsign": "N9ABC", "aprs_ssid": 7, "aprs_symbol": "/[", "beacon_message": "UV-PRO",
           "location_share_interval": 0, "should_share_location": False, "packet_format": "APRS",
           "send_pwr_voltage": False, "ptt_release_send_location": False, "ptt_release_send_id_info": False}
@@ -78,7 +68,7 @@ DEVICE = {"vendor_id": 1, "product_id": 2, "hardware_version": 1, "firmware_vers
           "supports_dmr": False, "supports_vfo": True, "supports_radio": True, "region_count": 3,
           "supports_software_power_control": True}
 VFOS = [ch(251, "", 146.52, 146.52), ch(252, "", 446.0, 446.0)]
-if os.environ.get("FAKE_UVPRO_NO_VFO") == "1":      # the UV-50PRO: no VFO over the protocol
+if os.environ.get("FAKE_UVPRO_NO_VFO") == "1":
     DEVICE["supports_vfo"] = False
     VFOS = [ch(251, "", 0.0, 0.0), ch(252, "", 0.0, 0.0)]
 FAIL_NEXT = {os.environ.get("FAKE_UVPRO_FAIL_NEXT") or None} - {None}

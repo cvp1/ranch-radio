@@ -1,10 +1,8 @@
-"""tnc_hub.py at the wire: the real hub against tests/fake_kiss_radio.py.
-
-Each scenario starts a fake KISS radio on a pseudo-terminal and tnc_hub.py on
-it, drives the hub through its AGWPE and KISS ports and its web API, and
-asserts on what reached the "air". A simulated station (built on ax25_link,
-running in this process) answers connected-mode calls, optionally over a
-lossy channel. Nothing here opens real hardware or transmits.
+"""tnc_hub.py at the wire: the real hub against tests/fake_kiss_radio.py,
+driven through its AGWPE, KISS and control ports and web API, asserting on
+what reached the "air". A simulated station (ax25_link, in process) answers
+connected-mode calls. No real hardware, no transmit. Other tests import this
+file's harness (HubProc, Agw, Kiss, FakeKissRadio, ...).
 
     .venv/bin/python tests/tnc_hub_test.py          (ONLY=<name part> to pick one)
     PAT=/path/to/pat .venv/bin/python tests/tnc_hub_test.py   # adds the real-Pat scenario
@@ -34,7 +32,7 @@ sys.path.insert(0, ROOT)
 from ax25 import Address, Frame, KissDecoder, U_DISC, U_DM, U_SABM, kiss_wrap  # noqa: E402
 from ax25_link import Link  # noqa: E402
 from fake_kiss_radio import FakeKissRadio as _FakeKissRadio  # noqa: E402
-from testkit import free_port, real_pat_env  # noqa: E402
+from testkit import free_port, pat_config, real_pat_env  # noqa: E402
 
 AGW_HDR = struct.Struct("<B3xcxBx10s10sI4x")
 fails = 0
@@ -55,9 +53,8 @@ def check_true(name, cond, detail=""):
     return cond
 
 
-# Every hub and fake radio a scenario starts, so one that raised half way
-# (a hub that didn't start) is still stopped before the next scenario: a
-# leftover reader thread on a reused fd steals the next test's bytes.
+# Every hub and fake radio started, so a scenario that raised half way still
+# stops them: a leftover reader on a reused fd steals the next test's bytes.
 live = []
 
 
@@ -102,17 +99,15 @@ class HubProc:
                "--mycall", "N9ABC", "--agw-port", str(self.agw), "--kiss-port", str(self.kiss),
                "--http-port", str(self.http), "--http-bind", "127.0.0.1", "--control-port", str(self.ctrl),
                "--frack", "0.4", "--retries", "4", "--baud", "96000",
-               # This clock runs ~80x faster than 1200 baud, so the per-minute
-               # runaway guard is raised here; scenario_frame_rate_cap tests it.
+               # ~80x faster than 1200 baud: the per-minute guard is raised
+               # here; scenario_frame_rate_cap tests it.
                "--max-frames-per-min", "100000",
                "--log-dir", self.tmp, *extra]
         if tx:
             cmd.append("--tx")
         self.log = open(os.path.join(self.tmp, "hub.log"), "w+")
         self.p = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT)
-        # Up = every port listening (the "tnc_hub up" line is logged after the
-        # last one opens; radio "up" alone can come before the AGWPE, KISS and
-        # control ports exist) and the radio open.
+        # "tnc_hub up:" is logged once every port listens; radio up alone can come first.
         ok = wait_for(lambda: self.p.poll() is None and "tnc_hub up:" in self.output()
                       and self._up(), self.START_S)
         if not ok:
@@ -134,8 +129,7 @@ class HubProc:
         return self.post("/api/tx", {"enabled": enabled}, host=host, **kw)
 
     def post(self, path, body, host="127.0.0.1", csrf=True, origin=None):
-        """csrf: send the X-Ranch-Radio header every POST needs (as the
-        hub's pages and the UV-PRO add-on do); origin: a browser's Origin."""
+        """csrf: send the X-Ranch-Radio header; origin: a browser's Origin."""
         headers = {"content-type": "application/json"}
         if csrf:
             headers["X-Ranch-Radio"] = "1"
@@ -154,8 +148,7 @@ class HubProc:
             return fh.read()
 
     def wait_log(self, text, since=0, timeout=10.0):
-        """Wait for a hub log line containing text, after character `since`
-        (a mark from len(hub.output())): causal evidence the hub acted."""
+        """Wait for a hub log line containing text after mark `since` (len(hub.output()))."""
         return wait_for(lambda: text in self.output()[since:], timeout)
 
     def counts(self):
@@ -167,7 +160,7 @@ class HubProc:
         self.stopped = True
         if self in live:
             live.remove(self)
-        if fails > self.fails_at_start:     # the context a failing check needs, in CI's log too
+        if fails > self.fails_at_start:     # print context for the failing check
             try:
                 st = self.status()
                 print(f"      hub radio: {st['radio']}, counts {st['counts']}")
@@ -189,10 +182,7 @@ class HubProc:
 class Agw:
     def __init__(self, port):
         self.s = socket.create_connection(("127.0.0.1", port), timeout=5)
-        # Blocking from here: with the connect timeout left on, the reader
-        # thread died silently after 5 s without traffic, and every later
-        # frame (a 'd' after a slow lossy transfer) was never seen.
-        self.s.settimeout(None)
+        self.s.settimeout(None)         # with a timeout the reader died silently in a quiet spell
         self.frames = []
         self.lock = threading.Lock()
         threading.Thread(target=self._rx, daemon=True).start()
@@ -229,8 +219,7 @@ class Agw:
         return wait_for(lambda: len(self.got(kind)) >= n and self.got(kind), timeout)
 
     def close(self):
-        # shutdown first: a bare close() leaves the reader blocked in recv on
-        # an fd number the next socket or pty may reuse.
+        # shutdown first: a bare close() leaves the reader in recv on a reusable fd
         try:
             self.s.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -241,7 +230,7 @@ class Agw:
 class Kiss:
     def __init__(self, port):
         self.s = socket.create_connection(("127.0.0.1", port), timeout=5)
-        self.s.settimeout(None)         # the reader must not die in a quiet spell (see Agw)
+        self.s.settimeout(None)         # see Agw
         self.dec = KissDecoder()
         self.frames = []
         threading.Thread(target=self._rx, daemon=True).start()
@@ -260,8 +249,7 @@ class Kiss:
         self.s.sendall(kiss_wrap(raw, cmd=cmd))
 
     def close(self):
-        # shutdown first: a bare close() leaves the reader blocked in recv on
-        # an fd number the next socket or pty may reuse.
+        # shutdown first: a bare close() leaves the reader in recv on a reusable fd
         try:
             self.s.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -306,21 +294,16 @@ class SimStation:
             return
         if self.link is None or self.link.state == "disconnected":
             if f.kind == "U" and f.utype == U_SABM:
-                # n2 as the hub's --retries 12 in the connected scenarios: at
-                # 6 tries of 0.4 s the station gave up after ~3 s without an
-                # answer, which a starved 2-CPU runner can produce on its own.
+                # n2 matches the hub's --retries 12: fewer gave up on a starved CI runner
                 self.link = Link(self.call, str(f.src), self._send, self, frack=0.4, n2=12,
                                  baud=96000, ack_delay=0.05)
                 self.link.accept(f)
             elif f.kind == "U" and f.utype == U_DISC:
-                # AX.25 2.2, disconnected state: a DISC is answered with DM.
-                # Our UA to the hub's first DISC can be the frame that's lost;
-                # ignoring the retry left the hub retrying to the end.
+                # AX.25 2.2: DM in disconnected state (our UA to the first DISC may be lost)
                 self._send(Frame(f.src, f.dest, kind="U", utype=U_DM, pf=f.pf, command=False))
             return
         self.link.handle(f)
 
-    # Link events
     def on_connected(self, link, inbound):
         self.events.append("connected")
         if self.mode == "rms":
@@ -369,10 +352,8 @@ def aprs(src, info, dest="APRS", digis=()):
 
 
 def clients_ready(hub, kiss=0, agw_raw=0, control=0, timeout=10):
-    """Wait until the hub lists the clients a check depends on. A TCP connect
-    returns once the kernel queues it, before the hub has accepted it: a frame
-    heard in that gap reaches nobody (2026-10-23: the first of two frames went
-    missing on a busy runner)."""
+    """Wait until the hub lists these clients: a TCP connect returns before
+    the hub has accepted it, and a frame heard in that gap reaches nobody."""
     def ok():
         c = hub.status()["clients"]
         return (len(c["kiss"]) >= kiss and len(c["control"]) >= control
@@ -381,15 +362,13 @@ def clients_ready(hub, kiss=0, agw_raw=0, control=0, timeout=10):
 
 
 def processed(hub, n, timeout=20):
-    """Wait until the hub has decided on n frames handed to it (sent or
-    refused): its own counters, not elapsed time."""
+    """Wait until the hub has decided on n frames (sent or refused)."""
     return wait_for(lambda: (lambda c: c.get("tx_frames", 0) + c.get("tx_refused", 0) >= n)(hub.counts()),
                     timeout)
 
 
 def on_air(radio, hub, timeout=10):
-    """Wait until every frame the hub counts as sent has reached the fake
-    radio ("sent by the hub" is not yet "read off the pty")."""
+    """Wait until every frame the hub counts as sent has reached the fake radio."""
     return wait_for(lambda: len(radio.transmitted()) >= hub.counts().get("tx_frames", 0), timeout)
 
 
@@ -440,7 +419,8 @@ def scenario_receive_only_refuses_everything():
         time.sleep(0.5)                # negative check: a window for a stray frame to show up
         check("nothing transmitted (KISS, UI, connect)", radio.transmitted(), [])
         status, body = hub.set_tx(True)
-        check("page cannot switch transmit on without --tx", status, 403)
+        check("page cannot switch transmit on without --tx", (status, body.get("error")),
+              (403, "started without --tx"))
         k.close(); a.close()
     finally:
         hub.stop(); radio.stop()
@@ -448,7 +428,6 @@ def scenario_receive_only_refuses_everything():
 
 def scenario_callsign_gate_and_kiss_commands():
     radio = FakeKissRadio().start()
-    # N0CALL: a placeholder second call (KK1ABC, the old one, is retired).
     hub = HubProc(radio, tx=True, extra=["--allow-calls", "N9ABC,N0CALL"])
     try:
         k = Kiss(hub.kiss)
@@ -504,8 +483,7 @@ def scenario_page_kill_switch():
               (200, True))
         lan = lan_address()
         if lan:
-            # D7 (2026-10-19): any page on the LAN may switch transmit on or
-            # off, as radio pages take PTT from the LAN; --tx is the hard switch.
+            # By design: any LAN page may switch transmit (--tx is the hard switch).
             check("another machine switches it off", hub.set_tx(False, host=lan)[0], 200)
             check("another machine switches it back on", hub.set_tx(True, host=lan), (200, {"enabled": True}))
         else:
@@ -553,20 +531,9 @@ def scenario_cross_site_guard():
         hub.stop(); radio.stop()
 
 
-def scenario_on_needs_tx_at_start():
-    radio = FakeKissRadio().start()
-    hub = HubProc(radio, tx=False)
-    try:
-        status, body = hub.set_tx(True)
-        check("started without --tx: On refused", (status, body.get("error")), (403, "started without --tx"))
-    finally:
-        hub.stop(); radio.stop()
-
-
 def scenario_frame_rate_cap():
     radio = FakeKissRadio().start()
-    # 9/min overall, of which the last 4 are kept for acks (plan 2026-11-07,
-    # 3.3): an app's frames stop at 5. The UI caps are raised out of the way.
+    # 9/min overall, the last 4 kept for acks; the UI caps are raised out of the way.
     hub = HubProc(radio, tx=True, extra=["--max-frames-per-min", "9", "--max-ui-per-min", "100",
                                          "--max-ui-total-per-min", "100", "--max-airtime-s-per-min", "100"])
     try:
@@ -602,7 +569,7 @@ def _connected_transfer(loss, size, name):
               ("W7TST-10", "N9ABC-10"))
         for i in range(0, len(payload), 200):
             a.send("D", "N9ABC-10", "W7TST-10", payload[i:i + 200], pid=0xF0)
-        got = wait_for(lambda: sum(len(d[3]) for d in a.got("D")) >= size and a.got("D"), 90)
+        wait_for(lambda: sum(len(d[3]) for d in a.got("D")) >= size, 90)
         echoed = b"".join(d[3] for d in a.got("D"))
         check(f"{name}: {size} bytes echoed back intact", echoed == payload, True)
         a.send("Y", "N9ABC-10", "W7TST-10")
@@ -617,7 +584,6 @@ def _connected_transfer(loss, size, name):
               f"tx frames {st['counts'].get('tx_frames')}, rx {st['counts'].get('rx_frames')}")
         check(f"{name}: hub link table empty after disconnect", st["links"], [])
         a.close()
-        del got
     finally:
         hub.stop(); sim.stop(); radio.stop()
 
@@ -775,8 +741,6 @@ def scenario_lend_radio():
         d = a.wait("d", 10)
         check_true("lend: a connect is refused, saying why",
                    bool(d) and b"lent to uvpro" in d[0][3], repr(d[0][3]) if d else "no 'd'")
-        # The KISS frame went on another connection: wait for the hub to have
-        # refused it before the checks that depend on it.
         check_true("lend: the frame sent while lent is refused",
                    bool(hub.wait_log("TX refused (the radio is lent to uvpro", mark)))
         time.sleep(0.5)                # negative check: a window for a stray frame to show up
@@ -810,6 +774,12 @@ def scenario_lend_radio():
         hub.stop(); sim.stop(); radio.stop()
 
 
+def pat_setup(tmp, hub):
+    """A clean Pat config pointed at the hub's AGWPE port, and its environment."""
+    cfgp = pat_config(os.path.join(tmp, "config.json"), agwpe={"addr": f"127.0.0.1:{hub.agw}", "radio_port": 0})
+    return cfgp, real_pat_env(tmp, "N9ABC")
+
+
 def scenario_real_pat():
     pat = os.environ.get("PAT")
     if not pat:
@@ -820,15 +790,7 @@ def scenario_real_pat():
     hub = HubProc(radio, tx=True)
     tmp = tempfile.mkdtemp(prefix="pat-")
     try:
-        cfg = {"mycall": "N9ABC", "secure_login_password": "", "locator": "FN31",
-               "ax25": {"engine": "agwpe", "beacon": {"every": 0}},
-               "agwpe": {"addr": f"127.0.0.1:{hub.agw}", "radio_port": 0},
-               "connect_aliases": {}, "listen": [], "hamlib_rigs": {}}
-        cfgp = os.path.join(tmp, "config.json")
-        with open(cfgp, "w") as fh:
-            json.dump(cfg, fh)
-        env = {**os.environ, "HOME": tmp, "XDG_CONFIG_HOME": tmp, "XDG_DATA_HOME": tmp,
-               "XDG_STATE_HOME": tmp}
+        cfgp, env = pat_setup(tmp, hub)
         r = subprocess.run([pat, "--config", cfgp, "--mbox", os.path.join(tmp, "mbox"),
                             "--log", os.path.join(tmp, "pat.log"),
                             "connect", "ax25+agwpe:///W7TST-10"],
@@ -855,15 +817,7 @@ def scenario_real_pat_sends_message():
     hub = HubProc(radio, tx=True, extra=["--retries", "12"])
     tmp = tempfile.mkdtemp(prefix="pat-")
     try:
-        cfg = {"mycall": "N9ABC", "secure_login_password": "", "locator": "FN31",
-               "ax25": {"engine": "agwpe", "beacon": {"every": 0}},
-               "agwpe": {"addr": f"127.0.0.1:{hub.agw}", "radio_port": 0},
-               "connect_aliases": {}, "listen": [], "hamlib_rigs": {}}
-        cfgp = os.path.join(tmp, "config.json")
-        with open(cfgp, "w") as fh:
-            json.dump(cfg, fh)
-        env = {**os.environ, "HOME": tmp, "XDG_CONFIG_HOME": tmp, "XDG_DATA_HOME": tmp,
-               "XDG_STATE_HOME": tmp}
+        cfgp, env = pat_setup(tmp, hub)
         base = [pat, "--config", cfgp, "--mbox", os.path.join(tmp, "mbox"),
                 "--log", os.path.join(tmp, "pat.log")]
         rng = random.Random(5)
@@ -902,8 +856,7 @@ def scenario_real_pat_sends_message():
         shutil.rmtree(tmp, ignore_errors=True)
 
 # ------------------------------------------- answering inbound connects (A0)
-# Plan winlink-p2p A0: an inbound SABM is answered only inside an inbound
-# window (POST /api/inbound); otherwise ignored, with nothing transmitted.
+# An inbound SABM is answered only inside an inbound window (POST /api/inbound).
 
 def sabm(src="N0XYZ", dest="N9ABC"):
     return Frame(Address.from_text(dest), Address.from_text(src), kind="U", utype=U_SABM,
@@ -930,16 +883,14 @@ def heard_sabm(hub, n, timeout=10):
 
 
 def scenario_inbound_ignored_without_window():
-    """A0-1: SABM to a registered call (Pat's MyCall) with no window:
-    nothing transmitted, counted as ignored. (On main: a UA goes out.)"""
+    """A0-1: SABM to a registered call with no window: nothing transmitted."""
     radio = FakeKissRadio().start()
     hub = HubProc(radio, tx=True)
     try:
         a = Agw(hub.agw)
         a.send("X", "N9ABC")                 # as Pat registers its MyCall
         check_true("A0-1 precondition: N9ABC registered", bool(registered(hub, "N9ABC")))
-        check("A0-1 status: no inbound window", hub.status()["inbound"] if "inbound" in hub.status() else None,
-              None)
+        check("A0-1 status: no inbound window", hub.status().get("inbound"), None)
         mark = len(hub.output())
         radio.inject(sabm(), lossy=False)
         check_true("A0-1 the hub read the SABM", bool(heard_sabm(hub, 1)))
@@ -974,7 +925,6 @@ def scenario_inbound_window():
                    bool(c) and c[0][3].startswith(b"*** CONNECTED To Station N0XYZ"), repr(c))
         check("A0-2 a UA went out to N0XYZ", wait_for(lambda: frames_to(radio, "N0XYZ"), 5), ["UA"])
         check_true("A0-2 the hub lists the link", bool(wait_for(lambda: hub.status()["links"], 5)))
-        # The caller hangs up: DISC, the hub answers UA and drops the link.
         radio.inject(Frame(Address.from_text("N9ABC"), Address.from_text("N0XYZ"), kind="U", utype=U_DISC,
                            pf=True, command=True).encode(), lossy=False)
         check_true("A0-2 link gone after the caller's DISC", bool(wait_for(lambda: not hub.status()["links"], 10)))
@@ -1039,8 +989,7 @@ def scenario_inbound_guards():
         a.close()
     finally:
         hub.stop(); radio.stop()
-    # Off-host: the request's peer is another machine (in process: this Mac's
-    # LAN address doesn't reach its own listeners, so it is rewritten here).
+    # Off-host, in process: a host's own LAN address doesn't reach its listeners, so the peer is rewritten.
     import tnc_hub
     from aiohttp import web as aweb
     from aiohttp.test_utils import TestClient, TestServer
@@ -1069,9 +1018,8 @@ def pat_bin():
 
 
 def scenario_real_pat_inbound_ignored():
-    """E-4: real Pat (pat http) after an outbound packet session keeps its
-    AGWPE registration (F10). With no inbound window, a SABM to its MyCall
-    gets nothing back. (On main the hub UAs, then DISCs when Pat closes it.)"""
+    """E-4: real Pat (pat http) keeps its AGWPE registration after an
+    outbound session; with no inbound window a SABM to its MyCall gets nothing."""
     pat = pat_bin()
     if not pat:
         print("skip  E-4 real Pat inbound scenario (no pat on PATH; set PAT=)")
@@ -1082,15 +1030,7 @@ def scenario_real_pat_inbound_ignored():
     tmp = tempfile.mkdtemp(prefix="pat-")
     proc = None
     try:
-        cfg = {"mycall": "N9ABC", "secure_login_password": "", "locator": "FN31",
-               "ax25": {"engine": "agwpe", "beacon": {"every": 0}},
-               "agwpe": {"addr": f"127.0.0.1:{hub.agw}", "radio_port": 0},
-               "connect_aliases": {}, "listen": [], "schedule": {}, "hamlib_rigs": {},
-               "version_reporting_disabled": True}
-        cfgp = os.path.join(tmp, "config.json")
-        with open(cfgp, "w") as fh:
-            json.dump(cfg, fh)
-        env = real_pat_env(tmp, "N9ABC")
+        cfgp, env = pat_setup(tmp, hub)
         port = free_port()
         proc = subprocess.Popen([pat, "--config", cfgp, "--mbox", os.path.join(tmp, "mbox"),
                                  "--log", os.path.join(tmp, "pat.log"), "http", "--addr", f"127.0.0.1:{port}"],
@@ -1143,9 +1083,8 @@ def gaia(cmd, body=b"", group=2, reply=False, flags=0):
     return out + (bytes([sum(out) & 0xFF]) if flags & 1 else b"")
 
 
-# A GET_DEV_INFO reply as linux-station's UV-PRO sent it on RFCOMM 1 (2026-10-16),
-# with a C0 (the KISS frame end) put in its body: a channel's frequency or
-# name bytes can hold one; this reply didn't.
+# A real UV-PRO GET_DEV_INFO reply with a C0 (KISS frame end) put in its body,
+# as a channel's frequency or name bytes can hold one.
 DEV_INFO_REPLY = bytes.fromhex("ff01000b0002800400060104010090d0c01e54")
 
 
@@ -1154,7 +1093,7 @@ def scenario_split_unit():
     s = tnc_hub.RadioSplit()
     a, b = aprs("KF7ABC-9", ">one"), aprs("KF7ABC-9", ">two")
     stream = kiss_wrap(a) + DEV_INFO_REPLY + kiss_wrap(b)
-    check("split: the reply's C0 is inside it", b"\xc0" in DEV_INFO_REPLY[8:], True)
+    assert b"\xc0" in DEV_INFO_REPLY[8:]
     kiss, frames = s.feed(stream)
     check("split: the Gaia frame out whole", frames, [DEV_INFO_REPLY])
     check("split: the KISS bytes are the two frames", kiss, kiss_wrap(a) + kiss_wrap(b))
@@ -1224,8 +1163,7 @@ def scenario_control_port():
         check("  counted", hub.counts().get("control_refused"), 5)
         c.sendall(gaia(22))                              # GET_VOLUME: allowed
         wait_for(lambda: len(radio.control) > n, 10)
-        # After the allowed one arrived, every refused one sent before it on
-        # the same stream has been decided: none may be in between.
+        # Same stream: once the allowed one arrived, every refused one before it was decided.
         check("refused commands never reach the radio", radio.control[n:-1] if len(radio.control) > n else [], [])
         check("an allowed one still passes after", radio.control[n:], [gaia(22)])
         c.sendall(b"junk!")
@@ -1264,8 +1202,7 @@ def _get(hub, path):
 
 
 def scenario_aprs_store():
-    """APRS plan M2: heard frames reach the store's API, survive a restart,
-    and api/status keeps its shape."""
+    """Heard frames reach the store's API, survive a restart, and api/status keeps its shape."""
     logdir = tempfile.mkdtemp(prefix="tnchub-aprs-")
     radio = FakeKissRadio().start()
     try:
@@ -1315,14 +1252,14 @@ def scenario_aprs_store():
 
 
 class FakeAprsIs:
-    """An APRS-IS server on loopback: records every line a client sends,
-    answers the login (verified unless verified=False), then sends a packet
-    line, as a full feed would, to show the hub never puts it on the air."""
+    """An APRS-IS server on loopback: records every line a client sends and
+    answers the login (verified unless verified=False). With feed=True it then
+    sends a packet line, as a full feed would; send() writes more."""
 
-    def __init__(self, verified=True):
-        self.verified = verified
+    def __init__(self, verified=True, feed=True):
+        self.verified, self.feed = verified, feed
         self.lines = []
-        self.logins = 0
+        self.conns = []
         self.srv = socket.create_server(("127.0.0.1", 0))
         self.port = self.srv.getsockname()[1]
         threading.Thread(target=self._serve, daemon=True).start()
@@ -1333,31 +1270,37 @@ class FakeAprsIs:
                 c, _ = self.srv.accept()
             except OSError:
                 return
+            self.conns.append(c)
             threading.Thread(target=self._client, args=(c,), daemon=True).start()
 
     def _client(self, c):
-        c.sendall(b"# aprsc 2.1.19 fake\r\n")
-        f = c.makefile("rb")
         try:
-            for raw in f:
+            c.sendall(b"# aprsc 2.1.19 fake\r\n")
+            for raw in c.makefile("rb"):
                 text = raw.decode("latin-1").rstrip("\r\n")
                 self.lines.append(text)
                 if text.startswith("user "):
-                    self.logins += 1
-                    login = text.split()[1]
-                    c.sendall(f"# logresp {login} {'verified' if self.verified else 'unverified'}, server FAKE\r\n"
-                              .encode())
-                    c.sendall(b"W1AW>APRS,TCPIP*,qAC,T2FAKE:>from APRS-IS, never for the air\r\n")
+                    c.sendall(f"# logresp {text.split()[1]} {'verified' if self.verified else 'unverified'},"
+                              " server FAKE\r\n".encode())
+                    if self.feed:
+                        c.sendall(b"W1AW>APRS,TCPIP*,qAC,T2FAKE:>from APRS-IS, never for the air\r\n")
         except OSError:
             pass
-        finally:
-            c.close()
+
+    def send(self, data):
+        for c in self.conns:
+            c.sendall(data)
 
     def packets(self):
         return [ln for ln in self.lines if not ln.startswith("user ")]
 
     def stop(self):
         self.srv.close()
+        for c in self.conns:
+            try:
+                c.close()
+            except OSError:
+                pass
 
 
 def repeated(src, info, digis, used=1):
@@ -1485,16 +1428,15 @@ def scenario_igate_beacon():
 
 
 def scenario_aprs_loop_latency():
-    """APRS plan M2: the event loop stays responsive (p99 lag < 50 ms, from
-    the hub's own ticker) through a backfill of the heard sample and a burst."""
+    """The event loop stays responsive (p99 lag < 50 ms, the hub's own ticker)
+    through a backfill and a burst."""
     logdir = tempfile.mkdtemp(prefix="tnchub-lat-")
-    sys.path.insert(0, HERE)
     import corpus
     sample = corpus.sample()
     if sample:
         with open(sample) as f:
             lines = [l for l in f if l.strip()]
-    else:                                        # volume is what matters here: synthetic packets
+    else:                                        # volume is what matters: synthetic packets
         lines = [json.dumps({"t": 1792000000 + i, "text": f"N{i % 10}CALL-{i % 16}>APRS,WIDE2-1:!4053.{i % 60:02d}N/10510.00W-test {i}"}) + "\n"
                  for i in range(429)]
     with open(os.path.join(logdir, "rx.jsonl"), "w") as f:
@@ -1521,7 +1463,7 @@ def scenario_aprs_loop_latency():
         shutil.rmtree(logdir, ignore_errors=True)
 
 
-SCENARIOS = [scenario_cross_site_guard, scenario_on_needs_tx_at_start, scenario_split_unit, scenario_control_port, scenario_receive_fanout, scenario_receive_only_refuses_everything,
+SCENARIOS = [scenario_cross_site_guard, scenario_split_unit, scenario_control_port, scenario_receive_fanout, scenario_receive_only_refuses_everything,
              scenario_callsign_gate_and_kiss_commands, scenario_ui_rate_limit,
              scenario_page_kill_switch, scenario_frame_rate_cap, scenario_connected_clean, scenario_connected_lossy,
              scenario_connect_no_answer, scenario_connect_busy, scenario_wrong_source_connect,
@@ -1533,9 +1475,7 @@ SCENARIOS = [scenario_cross_site_guard, scenario_on_needs_tx_at_start, scenario_
 
 if __name__ == "__main__":
     only = os.environ.get("ONLY", "")
-    # tests/flake_hunt.sh passes ONLY="<test file names>" through to the
-    # suite: this file's own name means every scenario. (Read as a scenario
-    # filter it matched none, and the hunt counted an empty run as a pass.)
+    # flake_hunt.sh passes ONLY="<test file names>": this file's name means all.
     if os.path.splitext(os.path.basename(__file__))[0] in only.split():
         only = ""
     picked = [sc for sc in SCENARIOS if not only or only in sc.__name__]

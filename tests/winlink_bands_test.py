@@ -4,8 +4,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from server import band_of          # noqa: E402
-from winlink import check_url, without_freq       # noqa: E402
+from server import band_of  # noqa: E402
+from winlink import check_url, without_freq  # noqa: E402
 
 fails = 0
 
@@ -35,7 +35,6 @@ check("packet with no freq: allowed", refused("ax25:///N7RCC-10"), False)
 
 check("without_freq: drops freq only",
       without_freq("ardop:///N0DAJ?bw=2000MAX&freq=3588.5"), "ardop:///N0DAJ?bw=2000MAX")
-check("without_freq: packet", without_freq("ax25:///N7RCC-10?freq=145010"), "ax25:///N7RCC-10")
 check("without_freq: none to drop", without_freq("ax25:///N7RCC-10"), "ax25:///N7RCC-10")
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")

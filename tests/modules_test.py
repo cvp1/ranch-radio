@@ -1,34 +1,27 @@
-"""Module manifests, `ranch-radio add` / `remove` / `doctor`.
-
-The falsifiers:
-- add then remove of every module on every host file gives back the file
-  byte for byte (the in-place editor never reformats a hand-written file);
-- doctor reports a missing binary as missing (a control that can fail),
-  and the same block pointed at a real executable as ok;
+"""Module manifests, `ranch-radio add` / `remove` / `doctor`, on copies of
+examples/hosts (touches no radio or service):
+- add then remove of every module on every host file is byte-identical
+  (the in-place editor never reformats a hand-written file);
+- doctor reports a missing binary as missing, the same block at a real
+  executable as ok;
 - remove refuses to take away a module another one leans on.
-Works on copies of hosts/ in a temp directory; touches no radio or service.
 
     python3 tests/modules_test.py
 """
 import contextlib
 import io
 import json
-import os as _os  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
-# doctor's Winlink check reads Pat's config: point its default at an empty
-# directory, so the suite never reads this machine's own Pat config.
-_os.environ["XDG_CONFIG_HOME"] = _tempfile.mkdtemp(prefix="rr-xdg-")
 import os
 import re
 import shutil
 import stat
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
 import tempfile
 from pathlib import Path
+
+# Never read this machine's own Pat config (doctor's Winlink check) or host files.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rr-xdg-")
+os.environ["RANCH_RADIO_HOSTS"] = ""
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -208,9 +201,7 @@ cli.this_host = real_host
 rc, out = run(["doctor", "doctest"])
 check("doctor for another host checks the host file only", "host file only" in out, True)
 
-# One benlink: the doctor's install, its printed fix, CI and the flake-hunt
-# image all pin the commit the UV-PRO bridge is tested against (a printed fix
-# of plain "pip install benlink" pulled a release the bridge can't parse).
+# One benlink pin everywhere: an unpinned release can't be parsed by the bridge.
 pin = re.search(r"@([0-9a-f]{40})", manifest.BENLINK_PIP).group(1)
 need = manifest.MANIFESTS["uvpro"]["needs"][0]
 check("benlink: doctor's install and its printed fix use the pin",

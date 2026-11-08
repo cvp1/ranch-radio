@@ -43,12 +43,10 @@ check "get split"              "$(r s VFOA)"                 '^0 VFOA$'
 check "bad mode refused"       "$(r M VFOA WFM 0)"           'error|Invalid'
 check "several in one session" "$(r f VFOA m VFOA t VFOA s VFOA)"           '^[0-9]+ (PKT)?LSB [0-9]+ 0 0 VFOA$'
 
-# The listener runs in rigctld --vfo mode (chk_vfo 1), so the CLI names VFOs.
-# A set aimed at VFO B is the split TX frequency and must never move VFO A
-# (rig_set_freq(VFO_B) in non-VFO mode arrived as a bare F and landed on A).
+# The listener runs in --vfo mode: a set aimed at VFO B is the split TX
+# frequency and must never move VFO A (it once arrived as a bare F on A).
 before="$(r f VFOA)"
-# One session: the G90's emulated split TX frequency is cleared when the last
-# client leaves (F9), and each r call is its own connection.
+# One session: the G90's emulated split is cleared when the last client leaves.
 check "F VFOB -> TX freq"      "$(r F VFOB 14075500 f VFOB)" '^14075500$'
 check "F VFOB leaves VFO A"    "$(r f VFOA)"            "^${before}\$"
 

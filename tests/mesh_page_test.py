@@ -1,25 +1,10 @@
-"""M2: the Mesh panel on the page, driven in headless Chromium.
+"""The Mesh panel on the page (headless Chromium), against tests/fake_mesh_bridge.py.
 
-Runs server.py --sim with tests/fake_mesh_bridge.py as the node, opens the
-page in Chromium (DevTools protocol, no extra packages) and checks:
-  - the panel shows only on a server with a mesh node
-  - it shows the node, Connected, a tab per channel plus Direct, and the
-    HomeNet key check
-  - the HomeNet tab shows the incoming message
-  - typing and Send posts to the channel; the row goes to delivered (✓✓)
-  - Send is disabled past 200 bytes
-  - clicking a node opens Direct addressed to it, and the DM goes to that node
-  - a message on another tab while you read this one counts as unread
-  - the star on a node makes it a favorite on the node
-  - the list shows every known node (Recent narrows it to the last day)
-  - the map shows the nodes with a position and says how many; clicking
-    one opens its card; a packet heard from a node pulses on it
-  - the card's Traceroute shows the path there and back with SNRs, and the
-    map draws it
-  - Settings: the node's sections and values; an edit marks the field and
-    enables Save; an invalid value disables it; Save sends only the changed
-    fields and the form shows the node's new values; a risky field asks
-    first and nothing is sent when you say no; Revert drops the edits
+Covers: the panel only with a mesh node; node, state, channel tabs and key
+check (never the key); messages, Send's 200-byte limit, delivery ticks,
+DMs from a node card, unread counts; favorites; the node list and map;
+traceroute; Settings (dirty marking, validation, only changed fields sent,
+risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 
     python3 tests/mesh_page_test.py [screenshot.png]
 """
@@ -32,7 +17,6 @@ import subprocess
 import sys
 import tempfile
 import time
-
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
@@ -160,7 +144,6 @@ try:
         dm = [c for c in commands() if c.get("text") == "are you there"]
         check("  the DM goes to !0000beef", dm and dm[0]["to"], "!0000beef")
 
-        # A channel message arriving while Direct is open: unread on HomeNet.
         b.js("send({ t: 'mesh_send', text: 'from another page', ch: 1 })")
         time.sleep(0.5)
         check("own sends elsewhere don't count as unread",
@@ -273,7 +256,7 @@ try:
         b.js("document.querySelector('#mesh-cfg-btn').click()")
         check("Settings closed: messages again", b.js(f"({VISIBLE})('#mesh-list')"), True)
 
-        # The add-on's on/off switch (addons/mesh.py), in the Mesh tab's header.
+        # the add-on's on/off switch
         check("power: the switch reads 'Switch off'", b.js(f"({TEXT})('#mesh-power')"), "Switch off")
         b.js("window.confirm = (q) => { window.asked = q; return true; }")
         b.js("document.querySelector('#mesh-power').click()")

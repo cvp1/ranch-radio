@@ -1,5 +1,4 @@
-"""Headless Chromium on one page, through the DevTools protocol (no extra
-packages), for the page tests."""
+"""Headless Chromium for the page tests, over the DevTools protocol."""
 import asyncio
 import json
 import shutil
@@ -12,8 +11,6 @@ import aiohttp
 
 
 class Browser:
-    """Headless Chromium on one page, through the DevTools protocol."""
-
     def __init__(self, chrome, cdp_port, size="1500,1400", extra=()):
         self.dir = tempfile.mkdtemp(prefix="page-chrome-")
         self.proc = subprocess.Popen(
@@ -63,8 +60,7 @@ class Browser:
         time.sleep(1.5)
 
     def wait(self, expr, timeout=30):
-        # A ceiling for "something is broken", not a guess at how fast the
-        # page is: it returns as soon as expr holds (CI flake, 2026-10-23).
+        # A ceiling, not a guess: returns as soon as expr holds.
         end = time.time() + timeout
         while time.time() < end:
             v = self.js(expr)

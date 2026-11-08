@@ -1,37 +1,15 @@
-"""APRS messaging at the wire (plan 2026-11-07, sections 3.2-3.6): the real
-tnc_hub.py on tests/fake_kiss_radio.py, its HTTP API, an in-process fake
-APRS-IS server, a crash at a named point, and the UV-PRO add-on's hold
-against the real hub.
-
-  - contract both ways: POST api/aprs/message stores exactly the text sent
-    (non-ASCII, 68 characters and "{" refused) and the frame on the radio
-    carries exactly that text and msgno; a heard ack completes it
-  - the observer: the login line with the filter; an IS packet becomes a
-    port 'is' row; with a positive control first (an RF message to us is
-    acked in effective full), the same message as an IS line puts nothing
-    on the radio, ever; an IS line with a bare CR never becomes two packets;
-    a 10 kB line is dropped and counted; our own frame heard back on RF is
-    not gated
-  - a hub killed after radio.write and before the slot is recorded sent:
-    the next process does not send that slot again
-  - G1: with the add-on's qsy() returned (the hold set on the hub) and no
-    link and no inbound window, a due retry writes nothing
-
-Nothing here opens real hardware, reaches APRS-IS or transmits.
+"""APRS messaging at the wire: the real tnc_hub.py on tests/fake_kiss_radio.py,
+its HTTP API, a fake APRS-IS server, a crash at a named point, and the UV-PRO
+add-on's hold against the real hub. No real hardware, APRS-IS or transmit.
 
     .venv/bin/python tests/aprs_msg_wire_test.py
 """
 import asyncio
-import copy
-import json
 import os
 import shutil
-import socket
 import sys
 import tempfile
-import threading
 import time
-import urllib.error
 from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,7 +54,7 @@ def scenario_contract():
             check(f"POST api/aprs/message refuses {name}: 400 with the reason",
                   (code, body.get("error", "").startswith("text:")), (400, True))
         text = "Ranch radio test 1, 2, 3 -- reply if you copy" + "." * 22
-        check("  (67 characters)", len(text), 67)
+        assert len(text) == 67
         code, body = hub.post("/api/aprs/message", {"to": "w7tst", "text": text})
         check("67 characters: accepted", (code, body.get("state")), (200, "pending"))
         sent = wait_for(lambda: air(radio), 10)
@@ -100,60 +78,12 @@ def scenario_contract():
         shutil.rmtree(logdir, ignore_errors=True)
 
 
-class FakeAprsIs:
-    """An APRS-IS server on loopback: records what the client sends, answers
-    the login, then sends the scripted lines (bytes, sent as they are)."""
-
-    def __init__(self, script=()):
-        self.script = list(script)
-        self.lines = []
-        self.conns = []
-        self.srv = socket.create_server(("127.0.0.1", 0))
-        self.port = self.srv.getsockname()[1]
-        threading.Thread(target=self._serve, daemon=True).start()
-
-    def _serve(self):
-        while True:
-            try:
-                c, _ = self.srv.accept()
-            except OSError:
-                return
-            self.conns.append(c)
-            threading.Thread(target=self._client, args=(c,), daemon=True).start()
-
-    def _client(self, c):
-        c.sendall(b"# aprsc 2.1.19 fake\r\n")
-        try:
-            for raw in c.makefile("rb"):
-                text = raw.decode("latin-1").rstrip("\r\n")
-                self.lines.append(text)
-                if text.startswith("user "):
-                    c.sendall(f"# logresp {text.split()[1]} verified, server FAKE\r\n".encode())
-        except OSError:
-            pass
-
-    def send(self, data):
-        for c in self.conns:
-            c.sendall(data)
-
-    def packets(self):
-        return [ln for ln in self.lines if not ln.startswith("user ")]
-
-    def stop(self):
-        self.srv.close()
-        for c in self.conns:
-            try:
-                c.close()
-            except OSError:
-                pass
-
-
 def scenario_observer():
     logdir = tempfile.mkdtemp(prefix="aprsw-")
     pfile = os.path.join(logdir, "passcode")
     with open(pfile, "w") as f:
         f.write("12345\n")
-    srv = FakeAprsIs()
+    srv = T.FakeAprsIs(feed=False)
     radio = T.FakeKissRadio().start()
     hub = hub_at(radio, logdir, (*MSG, "--igate-login", "N9ABC-10", "--igate-passcode-file", pfile,
                                  "--igate-server", f"127.0.0.1:{srv.port}", "--igate-observe"))
@@ -164,7 +94,6 @@ def scenario_observer():
               ["user N9ABC-10 pass 12345 vers RanchRadio 0.1 filter b/N9ABC* g/N9ABC*"])
         check_true("status: the observer connected and verified, with the filter",
                    bool(ob) and ob["filter"] == "b/N9ABC* g/N9ABC*", str(ob))
-        # positive control: an RF message with a msgno, to us, in effective full, is acked
         radio.inject(T.aprs("W7TST", ":N9ABC    :over the air{51"))
         check("positive control: an RF message to N9ABC is acked (effective full)",
               wait_for(lambda: air(radio), 10), ["N9ABC>APZRR0,WIDE1-1,WIDE2-1::W7TST    :ack51"])
@@ -178,19 +107,18 @@ def scenario_observer():
               [(m["text"], m["via"]) for m in rows or []], [("from the internet", "internet")])
         ob = wait_for(lambda: (lambda o: o["too_long"] >= 1 and o)(hub.status()["igate"]["observe"]), 10)
         check("a 10 kB line is dropped and counted", ob and ob["too_long"], 1)
-        time.sleep(3)                       # a quiet window: anything the IS lines caused would be on air by now
+        time.sleep(3)                       # quiet window for the negative check
         check("IS copies of messages to us: nothing on the radio, ever", air(radio, n), [])
-        bad = [m for m in thread(hub, "K7BAD")]
+        bad = thread(hub, "K7BAD")
         check("a line with a bare CR inside never becomes two packets (it is dropped)",
               ([m["text"] for m in bad], hub.counts().get("is_line_break")), ([], 1))
         st = hub.status()["aprs"]["messaging"]
         check("  and the engine sent no ack for any of them", st.get("acks_sent"), 1)
         radio.inject(T.repeated("N9ABC", ":W7TST    :ack51", ["K7RDG-1", "WIDE2-1"]))
         radio.inject(T.aprs("KD7XYZ", ">someone else"))
-        got = wait_for(lambda: [p for p in srv.packets() if "KD7XYZ" in p], 10)
+        wait_for(lambda: [p for p in srv.packets() if "KD7XYZ" in p], 10)
         check("our own frame heard back is not gated; another station's is (qAO)",
               [p for p in srv.packets() if p.startswith(("N9ABC", "KD7XYZ"))], ["KD7XYZ>APRS,qAO,N9ABC-10:>someone else"])
-        del got
     finally:
         hub.stop(); radio.stop(); srv.stop()
         shutil.rmtree(logdir, ignore_errors=True)
@@ -229,11 +157,11 @@ def scenario_restart_mid_retry():
         shutil.rmtree(logdir, ignore_errors=True)
 
 
-# ---------------------------------------------------------------- G1: the add-on's hold, the real hub
+# ---------------------------------------------------------------- the add-on's hold, the real hub
 
 def stub_addon(hub_url):
-    """The UV-PRO add-on in control mode, its bridge stubbed (answers like the
-    bridge), its hold going to the real hub over HTTP."""
+    """The UV-PRO add-on in control mode with a stubbed bridge; its hold goes
+    to the real hub over HTTP."""
     from addons import uvpro
 
     class Host:
