@@ -243,8 +243,9 @@ def main():
         def publish_nodes(self, nodes, force=False):
             self.nodes_sent.append(nodes)
 
-    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=1), nodesByNum={},
-                            nodes={"!0000beef": {"lastHeard": 1}})
+    beef = {"num": 2, "lastHeard": 1, "snr": 1.0, "hopsAway": 3}
+    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=1), nodesByNum={2: beef},
+                            nodes={"!0000beef": beef})
     br = mesh_bridge.Bridge(iface, {})
     br.nodes_dirty = False
     br.feed = FakeFeed()
@@ -252,10 +253,17 @@ def main():
     t.start()
     time.sleep(0.2)
     before = len(br.feed.nodes_sent)
-    iface.nodes["!0000beef"]["lastHeard"] = 2
-    br.on_receive({"from": 2, "fromId": "!0000beef", "decoded": {"portnum": "TELEMETRY_APP"}}, iface)
+    # the library does NOT touch lastHeard on a packet: the bridge must stamp it
+    br.on_receive({"from": 2, "fromId": "!0000beef", "rxTime": 1000, "rxSnr": 7.5,
+                   "hopStart": 3, "hopLimit": 3, "decoded": {"portnum": "TELEMETRY_APP"}}, iface)
     check(wait_for(lambda: len(br.feed.nodes_sent) > before, 2), "a packet refreshes the feed's node list")
-    check(br.feed.nodes_sent[-1]["!0000beef"]["lastHeard"] == 2, "with the new lastHeard")
+    last = br.feed.nodes_sent[-1]["!0000beef"]
+    check((last["lastHeard"], last["snr"], last["hopsAway"]) == (1000, 7.5, 0),
+          "the bridge stamps lastHeard, SNR and hops from the packet")
+    br.on_receive({"from": 1, "fromId": "!00000001", "rxTime": 2000}, iface)
+    check(beef["lastHeard"] == 1000, "our own packets stamp nothing")
+    br.on_receive({"from": 9, "fromId": "!00000009", "rxTime": 3000}, iface)
+    check(9 not in iface.nodesByNum, "an unknown sender isn't invented")
     br.lost.set()
 
     # --- bad URLs are refused up front
