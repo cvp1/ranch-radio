@@ -187,6 +187,7 @@ class Bridge:
         self.lost = threading.Event()
         self.closing = False
         self.feed = None              # mesh_feed.Feed with --feed
+        self.feed_dirty = False       # a packet changed lastHeard/SNR: the feed's node list is stale
 
     # --- node -> server
 
@@ -235,6 +236,7 @@ class Bridge:
 
     def on_receive(self, packet, interface):
         if self.feed is not None:
+            self.feed_dirty = True    # the library updated this sender's lastHeard; the page doesn't need it
             try:
                 self.feed.publish_packet(packet)
             except Exception:
@@ -275,12 +277,17 @@ class Bridge:
         while not self.lost.is_set():
             if self.nodes_dirty:
                 self.nodes_dirty = False
+                self.feed_dirty = True
                 try:
                     self.nodes()
-                    if self.feed is not None:
-                        self.feed.publish_nodes(dict(self.iface.nodes or {}))
                 except Exception:
                     log.exception("node list")
+            if self.feed is not None and self.feed_dirty:
+                self.feed_dirty = False   # Feed keeps the latest and sends it at most every NODES_EVERY_S
+                try:
+                    self.feed.publish_nodes(dict(self.iface.nodes or {}))
+                except Exception:
+                    log.exception("feed node list")
             self.lost.wait(NODES_EVERY_S)
 
     def _section(self, where, section):

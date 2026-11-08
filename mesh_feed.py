@@ -288,7 +288,7 @@ class Feed:
                 self._q = deque((x for x in self._q if not x[2]), maxlen=QUEUE_MAX)
             for topic, payload in retained:
                 self._write(sock, publish_packet(topic, payload, retain=True))
-            last_out = last_in = time.monotonic()
+            last_out = last_in = last_ping = time.monotonic()
             while not self._stop.is_set():
                 while True:
                     with self._lock:
@@ -303,9 +303,12 @@ class Feed:
                     continue
                 if now - last_in > KEEPALIVE_S * 1.5:   # pings unanswered: the link is dead
                     raise ConnectionError("broker stopped answering")
-                if now - last_out >= KEEPALIVE_S / 2:
+                # Ping when we've sent nothing (the broker's keepalive) AND when we've
+                # heard nothing: publishes get no reply, so a busy feed must still ask.
+                if now - last_ping >= KEEPALIVE_S / 2 and (now - last_out >= KEEPALIVE_S / 2
+                                                            or now - last_in >= KEEPALIVE_S / 2):
                     self._write(sock, PINGREQ)
-                    last_out = now
+                    last_out = last_ping = now
                 ready, _, _ = select.select([sock], [], [], 0.2)
                 if not ready:
                     continue

@@ -215,6 +215,49 @@ def main():
     f2.close()
     b2.close()
 
+    # --- a busy feed (publishing more often than it pings) stays connected
+    old_ka = mesh_feed.KEEPALIVE_S
+    mesh_feed.KEEPALIVE_S = 2
+    b3 = FakeBroker()
+    f3 = mesh_feed.Feed(f"mqtt://127.0.0.1:{b3.port}/busy")
+    f3.start()
+    check(wait_for(lambda: f3.connected, 3), "busy feed connects")
+    end = time.time() + 5            # 2.5 x the keepalive, a packet every 0.2 s
+    while time.time() < end:
+        f3.publish_packet({"n": 1})
+        time.sleep(0.2)
+    check(len(b3.connects) == 1, f"a busy feed is not mistaken for a dead broker ({len(b3.connects)} connects)")
+    f3.close()
+    b3.close()
+    mesh_feed.KEEPALIVE_S = old_ka
+
+    # --- the bridge refreshes the feed's node list when a packet arrives
+    import mesh_bridge
+    mesh_bridge.NODES_EVERY_S = 0.05
+
+    class FakeFeed:
+        def __init__(self):
+            self.nodes_sent = []
+        def publish_packet(self, p):
+            pass
+        def publish_nodes(self, nodes, force=False):
+            self.nodes_sent.append(nodes)
+
+    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=1), nodesByNum={},
+                            nodes={"!0000beef": {"lastHeard": 1}})
+    br = mesh_bridge.Bridge(iface, {})
+    br.nodes_dirty = False
+    br.feed = FakeFeed()
+    t = threading.Thread(target=br.nodes_loop, daemon=True)
+    t.start()
+    time.sleep(0.2)
+    before = len(br.feed.nodes_sent)
+    iface.nodes["!0000beef"]["lastHeard"] = 2
+    br.on_receive({"from": 2, "fromId": "!0000beef", "decoded": {"portnum": "TELEMETRY_APP"}}, iface)
+    check(wait_for(lambda: len(br.feed.nodes_sent) > before, 2), "a packet refreshes the feed's node list")
+    check(br.feed.nodes_sent[-1]["!0000beef"]["lastHeard"] == 2, "with the new lastHeard")
+    br.lost.set()
+
     # --- bad URLs are refused up front
     for url in ("http://x/p", "mqtt://host", "mqtt:///p"):
         try:
