@@ -124,6 +124,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **CI keeps a time budget.** A run that got much slower than its recorded
+  time, a new run over 90 seconds, or shards that drifted apart each raise a
+  warning on the pull request. A run that never reported a time fails it. A
+  hung test is stopped after 5 minutes instead of 15.
+
 - **CI runs the suite on four runners at once.** The split comes from
   measured test durations, so a pull request's check takes about a quarter
   of the time it did. Each result line now shows how long that test ran.

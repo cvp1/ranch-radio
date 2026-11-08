@@ -41,6 +41,13 @@ much slower or faster, refresh the durations from a green CI run:
 gh run view <run-id> --log | python3 tests/ci/shard.py refresh
 ```
 
+CI also keeps a time budget. The `tests` check fails if any run reported no
+time. It warns, without failing, when a run takes 1.5 times its recorded time
+and at least 30 s more, when a new run takes over 90 s, or when the shards
+drift more than 20% apart. A run is killed after 5 minutes (`RR_TEST_TIMEOUT`)
+and a shard after 15. A new test that needs more than 90 s should wait on
+conditions instead of clocks, or be split.
+
 ### Tests that pass on every machine
 
 CI runs on small, busy runners, so a test that only passes on a fast laptop

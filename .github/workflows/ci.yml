@@ -17,7 +17,7 @@ jobs:
   # shard on its own runner, so the serial-only tests never share ports.
   shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15   # the slowest shard takes ~10 min; a hang fails fast
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +45,14 @@ jobs:
           RR_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           RR_SENTINEL: 1   # decoy station state in the runner's HOME must survive the suite
         run: bash tests/run_all.sh
+      - name: Keep this shard's run times
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: durations-${{ matrix.shard }}
+          path: ${{ runner.temp }}/rr-suite/durations.tsv
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Logs of failed tests
         if: failure()
         run: |
@@ -52,10 +60,20 @@ jobs:
             grep -qE '^FAIL|FAILED|Traceback' "$f" || continue
             echo "::group::$(basename "$f")"; grep -nE -B3 -A6 '^FAIL|Traceback' "$f" | head -120; echo "::endgroup::"
           done
-  # The one required check: green only when every shard passed.
+  # The one required check: green only when every shard passed and every
+  # run reported a time. Warns (never fails) on a run that got much slower,
+  # a new run over 90 s, or shards that drifted apart (tests/ci/shard.py).
   tests:
     needs: shard
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: test "${{ needs.shard.result }}" = success
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: durations-*
+          path: ${{ runner.temp }}/durations
+      - name: CI time budget
+        run: RR_LIST=1 bash tests/run_all.sh | python3 tests/ci/shard.py check "$RUNNER_TEMP"/durations/*/durations.tsv
