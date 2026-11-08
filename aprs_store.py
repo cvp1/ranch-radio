@@ -27,11 +27,13 @@ import aprs
 
 log = logging.getLogger("aprs_store")
 
-SCHEMA_VERSION = 3                # 2: probes (the APRS round-trip probe, aprs_probe.py); 3: igate_days
+SCHEMA_VERSION = 4                # 2: probes (the APRS round-trip probe, aprs_probe.py); 3: igate_days;
+                                  # 4: thread_state (message management: read and archived marks)
 DUP_WINDOW_S = 30
 IS_KEEPS_RF_S = 600               # an untimestamped IS fix never replaces an RF fix this fresh
 RETENTION = {"packets": 30 * 86400, "positions": 7 * 86400, "stations": 90 * 86400,
-             "killed_objects": 86400, "tombstones": 30 * 86400}
+             "killed_objects": 86400, "tombstones": 30 * 86400,
+             "others_messages": 30 * 86400}   # heard messages between other stations; ours stay until deleted
 TRACK_MAX = 500                   # positions kept per station
 RETENTION_EVERY_S = 3600
 QUEUE_MAX = 20000
@@ -85,6 +87,13 @@ IGATE_DAYS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS igate_days (day TEXT, call TEXT, n INTEGER, PRIMARY KEY (day, call));
 """
 IGATE_DAYS_KEEP_S = 30 * 86400
+# Per correspondent: read_t, the newest message the operator has seen (an
+# inbound message after it is unread), and archived_t (the thread is hidden
+# from the list until a message newer than it arrives). Kept in the store, not
+# the browser, so a phone and a desktop agree.
+THREAD_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS thread_state (call TEXT PRIMARY KEY, read_t REAL, archived_t REAL);
+"""
 
 PROBE_COLS = ("t", "target", "text", "token", "msg_id", "msgno", "t_first", "window_end", "state", "legs",
               "coverage", "notes", "last_seen")
@@ -163,6 +172,13 @@ class Db:
         if v < 3:
             self.db.executescript(IGATE_DAYS_SCHEMA)
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('igate_days_since', ?)",
+                            (str(0 if v == 0 else self.clock()),))
+        # 3 -> 4: thread_state. In an existing file every message already there
+        # counts as read (read_floor = now): the page's old per-browser marks
+        # are not carried over, and 1,000 old threads must not all turn unread.
+        if v < 4:
+            self.db.executescript(THREAD_STATE_SCHEMA)
+            self.db.execute("INSERT OR IGNORE INTO meta VALUES ('read_floor', ?)",
                             (str(0 if v == 0 else self.clock()),))
         self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.db.execute("INSERT OR IGNORE INTO meta VALUES ('rev', '0')")
@@ -457,20 +473,145 @@ class Db:
             " ORDER BY t DESC, id DESC LIMIT ?", (c, *own, c, *own, n)).fetchall()
         return [dict(r) for r in rows][::-1]
 
-    def correspondents(self, owned, n=50):
-        """Who we have threads with, most recent first: (call, last t, unread count)."""
+    def _thread_where(self, owned):
         own = sorted({aprs.norm_call(x) for x in owned})
         marks = ", ".join("?" * len(own))
-        out = {}
-        for r in self.db.execute(
-                f"SELECT dir, src, dst, t, state FROM messages WHERE dst IN ({marks}) OR (dir='out' AND src IN ({marks}))"  # nosec B608
-                " ORDER BY t DESC LIMIT 2000", (*own, *own)):
-            peer = r["src"] if r["dir"] == "in" else r["dst"]
-            e = out.setdefault(peer, {"call": peer, "last": r["t"], "received": 0})
-            e["received"] += r["dir"] == "in"
+        return f"((dir='in' AND dst IN ({marks})) OR (dir='out' AND src IN ({marks})))", (*own, *own)
+
+    def correspondents(self, owned, n=200, archived=False, brief=False):
+        """Who we have threads with, most recent first: call, last t, counts,
+        unread (inbound newer than the read mark), archived, and the last
+        message. Archived threads (no message since archiving) only with
+        archived=True."""
+        if not owned:
+            return []
+        where, args = self._thread_where(owned)
+        floor = float(self.meta("read_floor", 0) or 0)
+        rows = self.db.execute(
+            "SELECT m.peer AS call, MAX(m.t) AS last, SUM(m.dir='in') AS received, SUM(m.dir='out') AS sent,"
+            " SUM(m.dir='in' AND m.t > COALESCE(ts.read_t, ?)) AS unread, ts.read_t, ts.archived_t"
+            " FROM (SELECT CASE WHEN dir='in' THEN src ELSE dst END AS peer, t, dir FROM messages"
+            f" WHERE {where}) m LEFT JOIN thread_state ts ON ts.call = m.peer"  # nosec B608 - marks only
+            " GROUP BY m.peer ORDER BY last DESC", (floor, *args)).fetchall()
+        out = []
+        for r in rows:
+            e = dict(r)
+            e["archived"] = e["archived_t"] is not None and e["last"] <= e["archived_t"]
+            if e["archived"] != archived:
+                continue
+            if brief:
+                out.append(e)
+                continue
+            last = self.db.execute(
+                f"SELECT dir, text, state FROM messages WHERE {where} AND (src=? OR dst=?)"  # nosec B608
+                " ORDER BY t DESC, id DESC LIMIT 1", (*args, e["call"], e["call"])).fetchone()
+            e["last_text"], e["last_dir"], e["last_state"] = last["text"], last["dir"], last["state"]
+            out.append(e)
             if len(out) >= n:
                 break
-        return list(out.values())
+        return out
+
+    def thread_counts(self, owned):
+        """{unread, threads, archived}: the Messages tab's badge and toggles."""
+        live = self.correspondents(owned, n=10**6, brief=True)
+        return {"unread": sum(e["unread"] for e in live), "total": len(live),
+                "archived": len(self.correspondents(owned, n=10**6, archived=True, brief=True))}
+
+    def _thread_state(self, call, **changes):
+        c = aprs.norm_call(call)
+        self.db.execute("INSERT OR IGNORE INTO thread_state (call) VALUES (?)", (c,))
+        cols = ", ".join(f"{k}=?" for k in changes)        # keys: read_t / archived_t, from this file only
+        self.db.execute(f"UPDATE thread_state SET {cols} WHERE call=?", (*changes.values(), c))  # nosec B608
+
+    def thread_last(self, call, owned):
+        """The newest message time in the thread with CALL, or None."""
+        where, args = self._thread_where(owned)
+        c = aprs.norm_call(call)
+        return self.db.execute(f"SELECT MAX(t) FROM messages WHERE {where} AND (src=? OR dst=?)",  # nosec B608
+                               (*args, c, c)).fetchone()[0]
+
+    def thread_read(self, call, owned, read=True):
+        """Mark the thread read (through its newest message) or unread (its
+        newest inbound message unread again). Returns the thread's unread count."""
+        c = aprs.norm_call(call)
+        where, args = self._thread_where(owned)
+        if read:
+            self._thread_state(c, read_t=self.thread_last(c, owned) or self.clock())
+        else:
+            t = self.db.execute(f"SELECT MAX(t) FROM messages WHERE {where} AND dir='in' AND src=?",  # nosec B608
+                                (*args, c)).fetchone()[0]
+            if t is None:
+                return 0
+            self._thread_state(c, read_t=t - 1e-3)
+        return self.thread_unread(c, owned)
+
+    def thread_meta(self, call, owned):
+        """{unread, archived} for the thread with CALL."""
+        c = aprs.norm_call(call)
+        r = self.db.execute("SELECT archived_t FROM thread_state WHERE call=?", (c,)).fetchone()
+        last = self.thread_last(c, owned)
+        archived = bool(r and r["archived_t"] is not None and last is not None and last <= r["archived_t"])
+        return {"unread": self.thread_unread(c, owned), "archived": archived}
+
+    def thread_unread(self, call, owned):
+        c = aprs.norm_call(call)
+        where, args = self._thread_where(owned)
+        r = self.db.execute("SELECT read_t FROM thread_state WHERE call=?", (c,)).fetchone()
+        mark = r["read_t"] if r and r["read_t"] is not None else float(self.meta("read_floor", 0) or 0)
+        return self.db.execute(f"SELECT COUNT(*) FROM messages WHERE {where} AND dir='in' AND src=? AND t > ?",  # nosec B608
+                               (*args, c, mark)).fetchone()[0]
+
+    def thread_read_all(self, owned):
+        for e in self.correspondents(owned, n=10**6, brief=True):
+            if e["unread"]:
+                self._thread_state(e["call"], read_t=e["last"])
+        return True
+
+    def thread_archive(self, call, owned, archived=True):
+        """Hide the thread until a newer message arrives (archived=False shows it again)."""
+        c = aprs.norm_call(call)
+        if archived:
+            last = self.thread_last(c, owned)
+            if last is None:
+                raise ValueError(f"no thread with {c}")
+            self._thread_state(c, archived_t=last, read_t=last)
+        else:
+            self._thread_state(c, archived_t=None)
+        return True
+
+    def msg_delete(self, mid, owned):
+        """Delete one message of a thread with our calls; an outbound one still
+        queued, pending or sending is refused (cancel it first)."""
+        where, args = self._thread_where(owned)
+        r = self.db.execute(f"SELECT dir, state FROM messages WHERE id=? AND {where}",  # nosec B608
+                            (mid, *args)).fetchone()
+        if r is None:
+            raise ValueError("no such message in a thread with this station")
+        if r["dir"] == "out" and r["state"] in self.ACTIVE:
+            raise ValueError("it is still being sent: cancel it first")
+        self.db.execute("DELETE FROM messages WHERE id=?", (mid,))
+        return True
+
+    def thread_delete(self, call, owned):
+        """Delete every message in the thread with CALL, and its marks. Refused
+        while one of ours to CALL is still queued, pending or sending."""
+        c = aprs.norm_call(call)
+        where, args = self._thread_where(owned)
+        busy = self.db.execute(
+            f"SELECT COUNT(*) FROM messages WHERE {where} AND dir='out' AND dst=? AND state IN ('queued', 'pending', 'sending')",  # nosec B608
+            (*args, c)).fetchone()[0]
+        if busy:
+            raise ValueError(f"{busy} message{'s are' if busy > 1 else ' is'} still being sent to {c}: cancel first")
+        self.db.execute("BEGIN")
+        try:
+            n = self.db.execute(f"DELETE FROM messages WHERE {where} AND (src=? OR dst=?)",  # nosec B608
+                                (*args, c, c)).rowcount
+            self.db.execute("DELETE FROM thread_state WHERE call=?", (c,))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        return n
 
     # ---------- probes (aprs_probe.py; schema 2). legs, coverage, notes: JSON.
 
@@ -535,6 +676,7 @@ class Db:
             if gone:
                 self.db.execute("DELETE FROM tombstones WHERE rev <= ?", (gone,))
                 self.set_meta("tomb_floor", gone)
+            r["messages"] = self._retain_messages(now)
             r["igate_days"] = self.db.execute(
                 "DELETE FROM igate_days WHERE day < ?",
                 (time.strftime("%Y-%m-%d", time.localtime(now - IGATE_DAYS_KEEP_S)),)).rowcount
@@ -544,6 +686,18 @@ class Db:
             self.db.execute("ROLLBACK")
             raise
         return r
+
+    def _retain_messages(self, now):
+        """Heard messages between other stations go after 30 days. A message
+        from or to any SSID of an owned call stays until the operator deletes
+        it. Without owned calls (messaging never started) nothing goes."""
+        bases = sorted({aprs.base_call(c) for c in self.owned})
+        if not bases:
+            return 0
+        ours = " OR ".join("src=? OR src LIKE ? OR dst=? OR dst LIKE ?" for _ in bases)
+        args = [x for b in bases for x in (b, b + "-%", b, b + "-%")]
+        return self.db.execute(f"DELETE FROM messages WHERE t < ? AND dir='in' AND NOT ({ours})",  # nosec B608
+                               (now - RETENTION["others_messages"], *args)).rowcount
 
     # ---------- backfill
 
@@ -672,13 +826,19 @@ class Db:
                              "raw": raw, "value": round(v, 3) if isinstance(v, float) else v})
         return {"t": row["t"], "seq": d.get("seq"), "channels": channels, "bits": d.get("bits")}
 
-    def messages(self, with_call=None, n=200):
+    def messages(self, with_call=None, n=200, q=None):
+        """Heard and sent messages, oldest first; WITH_CALL as sender or
+        addressee, Q a case-insensitive substring of the text."""
+        where, args = [], []
         if with_call:
             c = aprs.norm_call(with_call)
-            rows = self.db.execute("SELECT * FROM messages WHERE src=? OR dst=? ORDER BY t DESC LIMIT ?",
-                                   (c, c, n))
-        else:
-            rows = self.db.execute("SELECT * FROM messages ORDER BY t DESC LIMIT ?", (n,))
+            where.append("(src=? OR dst=?)")
+            args += [c, c]
+        if q:
+            where.append("text LIKE ? ESCAPE '\\'")
+            args.append("%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+        sql = "SELECT * FROM messages" + (f" WHERE {' AND '.join(where)}" if where else "")  # nosec B608
+        rows = self.db.execute(sql + " ORDER BY t DESC LIMIT ?", (*args, n))
         return [dict(r) for r in rows][::-1]
 
     def messages_to(self, bases, n=100):

@@ -450,6 +450,12 @@ has connected. Received frames appear in the heard list and the APRS store.
   monitoring AGWPE client, a Winlink link, a listen window or an off-channel
   hold is in the way, and the page says why. Acks have their own share of
   the transmit gate's count and airtime, so app traffic can't starve them.
+  Each conversation can be managed from the page: **Cancel** a message still
+  retrying, **Resend** one that failed, **Delete** a message or the whole
+  conversation, **Archive** it until a new message arrives, mark it read or
+  unread, and **Export** it as text. Read marks live in the hub, so every
+  browser shows the same unread badge. Heard messages between other stations
+  are kept 30 days; yours stay until you delete them.
 - **The round-trip probe:** `"aprs": {"probe": {"target": "WXBOT", "text":
   "CWOP"}}` puts a **Probe** button on the Messages tab. One press sends one
   message and reports five legs separately: sent, digipeated copy heard,
