@@ -55,6 +55,7 @@ import logging
 import os
 import sys
 import threading
+import time
 
 log = logging.getLogger("mesh_bridge")
 
@@ -234,9 +235,33 @@ class Bridge:
             })
         emit(ev="nodes", nodes=out)
 
+    def note_heard(self, packet):
+        """Stamp the sender's lastHeard, SNR and hops from this packet. The
+        meshtastic library only takes those from the node database it reads at
+        connect, so without this every node's "last heard" freezes there."""
+        num = packet.get("from")
+        if num is None or num == self.my_num:
+            return False
+        nodes = [n for n in (self.iface.nodesByNum.get(num),
+                             (self.iface.nodes or {}).get(packet.get("fromId") or "")) if n]
+        if not nodes:
+            return False              # unknown yet: its NodeInfo will add it
+        hops = None
+        if "hopStart" in packet and "hopLimit" in packet:
+            hops = packet["hopStart"] - packet["hopLimit"]
+        for n in nodes:
+            n["lastHeard"] = int(packet.get("rxTime") or time.time())
+            if packet.get("rxSnr") is not None:
+                n["snr"] = packet["rxSnr"]
+            if hops is not None and hops >= 0:
+                n["hopsAway"] = hops
+        return True
+
     def on_receive(self, packet, interface):
+        if self.note_heard(packet):
+            self.nodes_dirty = True   # the page's node list and the feed's are both stale now
         if self.feed is not None:
-            self.feed_dirty = True    # the library updated this sender's lastHeard; the page doesn't need it
+            self.feed_dirty = True
             try:
                 self.feed.publish_packet(packet)
             except Exception:
