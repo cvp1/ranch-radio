@@ -9,7 +9,6 @@ VARA HF, and Winlink refused when Pat's config would listen.
 import hashlib
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -24,11 +23,11 @@ import testkit  # noqa: E402
 from winlink_test_lib import fake_log, stop  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APPS = 15000 + random.randrange(1000)
-LANE = 16000 + random.randrange(1000)
-PATP = 17000 + random.randrange(1000)
-WEB = 18000 + random.randrange(1000)
-CDP = 19000 + random.randrange(1000)
+APPS = testkit.free_port()
+LANE = testkit.free_port()
+PATP = testkit.free_port()
+WEB = testkit.free_port()
+CDP = testkit.free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 fails = 0
 
@@ -90,12 +89,7 @@ def start(env_extra=None, *extra, winlink=True):
     raise SystemExit("server did not start")
 
 
-class Browser(cdp_browser.Browser):
-    def goto(self, url):
-        """Navigate and wait for the new document, not a fixed sleep."""
-        self.js("window.__old = 1")
-        self.call("Page.navigate", url=url)
-        self.wait("!window.__old && document.readyState === 'complete'")
+Browser = cdp_browser.Browser
 
 
 if not CHROME:
@@ -246,6 +240,9 @@ try:
         n = len(recs(flog, "compose"))
         b.js("document.querySelector('#wl-compose').requestSubmit()")
         got = wait_for(lambda: len(recs(flog, "compose")) > n)
+        # Pat has it, but the page still has to close the form and reload its box,
+        # which clears the reader: the next click must wait for that (P4b flake).
+        b.wait(f"!({VISIBLE})('#wl-compose')", 10)
         return recs(flog, "compose")[-1] if got else None
 
     server, flog = start()

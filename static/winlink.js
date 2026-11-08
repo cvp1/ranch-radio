@@ -24,7 +24,7 @@ const winlink = (() => {
   // The message in the read pane: {box, mid, m}. Every action reads it from
   // here, never from the DOM. readGen drops a read() answer that comes back
   // after the operator moved on; fwdGen does the same for Forward's fetches.
-  let current = null, readGen = 0, fwdGen = 0, busy = false;
+  let current = null, readGen = 0, fwdGen = 0, boxGen = 0, busy = false;
   let pending = null, delTimer = null;   // Delete's own two-click confirm, bound to {box, mid}
 
   // The thrown message is what the page shows: the server's sentence, or the
@@ -50,6 +50,7 @@ const winlink = (() => {
 
   async function loadBox(b = box) {
     box = b;
+    const g = ++boxGen;   // a late answer for a box no longer shown is dropped
     readGen++;
     current = null;
     resetDelete();
@@ -59,6 +60,7 @@ const winlink = (() => {
     const list = $("#wl-list");
     try {
       const msgs = await (await api(`${BASE}winlink/api/mailbox/${box}`)).json();
+      if (g !== boxGen) return;
       msgs.sort((a, b) => String(b.Date).localeCompare(String(a.Date)));
       list.innerHTML = msgs.length ? "" : `<div class="wl-empty">No messages</div>`;
       for (const m of msgs) {
@@ -72,6 +74,7 @@ const winlink = (() => {
         list.append(row);
       }
     } catch (e) {
+      if (g !== boxGen) return;
       list.innerHTML = `<div class="wl-empty">Mailbox unavailable: ${esc(e.message)}</div>`;
     }
   }

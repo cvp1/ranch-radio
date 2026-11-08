@@ -18,7 +18,6 @@
 """
 import json
 import os
-import random
 import shutil
 import socket
 import struct
@@ -33,11 +32,12 @@ from cdp_browser import Browser  # noqa: E402
 from fake_opengd77 import FakeOpenGD77, channel  # noqa: E402
 sys.path.insert(0, ROOT)
 import opengd77 as g  # noqa: E402
+import testkit  # noqa: E402
 
 MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME = (os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
           or (MAC_CHROME if os.path.exists(MAC_CHROME) else None))
-WEB = 22000 + random.randrange(1000)
+WEB = testkit.free_port()
 CDP = WEB + 1000
 TMP = tempfile.mkdtemp(prefix="opengd77-page-")
 P = ".addon-opengd77"

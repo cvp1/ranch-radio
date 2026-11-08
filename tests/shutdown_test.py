@@ -9,7 +9,6 @@ when each client sees its connection end and when the process exits.
 """
 import asyncio
 import os
-import random
 import signal
 import socket
 import subprocess
@@ -18,6 +17,7 @@ import threading
 import time
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
@@ -40,7 +40,7 @@ def check_true(name, cond, detail=""):
 
 
 def start_server():
-    rport, web = 15000 + random.randrange(2000), 18000 + random.randrange(2000)
+    rport, web = testkit.free_port(), testkit.free_port()
     proc = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--rig", RIG, "--no-audio",
          "--listen", str(web), "--host", "127.0.0.1", "--rigctl-port", str(rport)],

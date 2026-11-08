@@ -19,7 +19,6 @@ import asyncio
 import base64
 import json
 import os
-import random
 import socket
 import stat
 import subprocess
@@ -33,8 +32,9 @@ import aiohttp
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from fake_mesh_bridge import FAKE_KEY  # noqa: E402
+import testkit  # noqa: E402
 
-WEB = 18000 + random.randrange(1000)
+WEB = testkit.free_port()
 fails = 0
 TMP = tempfile.mkdtemp(prefix="meshtest-")
 GOOD_KEY = os.path.join(TMP, "good_key")

@@ -1510,7 +1510,7 @@ def main():
     p.add_argument("--audio-device", default=DEFAULT_DEVICE,
                    help="the radio's USB audio codec (ALSA device on Linux, device name on macOS)")
     p.add_argument("--no-audio", action="store_true")
-    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--host", default=os.environ.get("RANCH_RADIO_DEFAULT_HOST") or "0.0.0.0")
     p.add_argument("--listen", type=int, default=7300, help="HTTP port (default 7300)")
     p.add_argument("--https", action="store_true",
                    help="serve over TLS with a self-signed cert (browsers only allow the mic on https)")

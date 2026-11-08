@@ -10,7 +10,6 @@ risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 """
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -22,9 +21,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
 from fake_mesh_bridge import FAKE_KEY  # noqa: E402
+import testkit  # noqa: E402
 
-WEB = 18000 + random.randrange(1000)
-CDP = 19000 + random.randrange(1000)
+WEB = testkit.free_port()
+CDP = testkit.free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 SHOT = sys.argv[1] if len(sys.argv) > 1 else None
 TMP = tempfile.mkdtemp(prefix="meshpage-")

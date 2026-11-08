@@ -1976,7 +1976,7 @@ def parse_args(argv=None):
     p.add_argument("--kiss-port", type=int, default=8001, help="0 turns it off")
     p.add_argument("--control-port", type=int, default=8002,
                    help="the radio's command protocol, loopback only (0 turns it off)")
-    p.add_argument("--http-bind", default="0.0.0.0")
+    p.add_argument("--http-bind", default=os.environ.get("RANCH_RADIO_DEFAULT_HOST") or "0.0.0.0")
     p.add_argument("--allow-host", action="append", default=[],
                    help="a dotted host name browsers use for the page (IPs, single-label, .local, "
                         ".home.arpa and .ts.net names are always allowed)")

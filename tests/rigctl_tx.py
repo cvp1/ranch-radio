@@ -15,18 +15,18 @@ rigctl PTT obeys the same safety as the browser:
 import asyncio
 import json
 import os
-import random
 import socket
 import subprocess
 import sys
 import time
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
-PORT = 15000 + random.randrange(1000)
-WEB = 18000 + random.randrange(1000)
+PORT = testkit.free_port()
+WEB = testkit.free_port()
 TX_TIMEOUT = 8
 
 

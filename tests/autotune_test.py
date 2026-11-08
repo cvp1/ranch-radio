@@ -5,13 +5,13 @@
 import asyncio
 import json
 import os
-import random
 import socket
 import subprocess
 import sys
 import time
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "g90"
@@ -39,7 +39,7 @@ class Rig:
 
 
 async def run(extra, scenario, early=False):
-    port, web = 15000 + random.randrange(1000), 18000 + random.randrange(1000)
+    port, web = testkit.free_port(), testkit.free_port()
     proc = subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", RIG, "--no-audio",
                              "--listen", str(web), "--rigctl-port", str(port)] + extra,
                             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

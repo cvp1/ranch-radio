@@ -13,7 +13,6 @@ and a station serves Modules from its config's "host_file".
 import asyncio
 import json
 import os
-import random
 import socket
 import stat
 import subprocess
@@ -26,6 +25,7 @@ os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rr-xdg-")
 os.environ["RANCH_RADIO_HOSTS"] = ""
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="modsrv-")
@@ -193,7 +193,7 @@ async def station_page(port):
     await a.close()
 
 
-p1 = 19000 + random.randrange(1000)
+p1 = testkit.free_port()
 srv = server(p1)
 try:
     asyncio.run(radio_server(p1))

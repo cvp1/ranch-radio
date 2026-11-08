@@ -6,7 +6,6 @@ a reload, 2026-10-30.)
     python3 tests/addons_page_test.py
 """
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -16,6 +15,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
+import testkit  # noqa: E402
 
 MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME = (os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
@@ -32,7 +32,7 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:58} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
-web = 22000 + random.randrange(1000)
+web = testkit.free_port()
 server = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(web),
                            "--host", "127.0.0.1", "--rigctl-port", "0"],
                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)

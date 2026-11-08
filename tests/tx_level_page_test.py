@@ -10,7 +10,6 @@ Server-side behaviour is tests/tx_level_test.py; this is the page.
 import asyncio
 import json
 import os
-import random
 import re
 import shutil
 import socket
@@ -25,6 +24,7 @@ import aiohttp
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
+import testkit  # noqa: E402
 
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 if not CHROME:
@@ -50,8 +50,8 @@ RIGCTL = [0]
 
 
 def serve(*extra, audio=False, log=None):
-    web = 18000 + random.randrange(1500)
-    RIGCTL[0] = 15000 + random.randrange(1500)
+    web = testkit.free_port()
+    RIGCTL[0] = testkit.free_port()
     out = open(log, "w") if log else subprocess.DEVNULL
     p = subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", "g90",
                           *(() if audio else ("--no-audio",)),
@@ -91,7 +91,7 @@ TEXT = "(s) => (document.querySelector(s)?.textContent || '')"
 LEVELS = ("--winlink-codec-db", "default=-32,20m=-33", "--winlink-codec-mixer", "CODEC:PCM",
           "--voice-codec-db", "default=-30", "--codec-min-db", "-36")
 
-b = Browser(CHROME, 19000 + random.randrange(500), size="1500,1000",
+b = Browser(CHROME, testkit.free_port(), size="1500,1000",
             extra=("--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"))
 try:
     print("# no codec level: no row")
@@ -273,7 +273,7 @@ try:
 
     print("\n# --codec-save: Save shown, enabled only when unsaved")
     p, web = serve(*LEVELS, "--codec-save", "nohost:g90",
-                   "--winlink-rigctl-port", str(16000 + random.randrange(1500)))
+                   "--winlink-rigctl-port", str(testkit.free_port()))
     try:
         b.goto(f"http://127.0.0.1:{web}/")
         b.wait(f"({TEXT})('#conn b') === 'Connected'")

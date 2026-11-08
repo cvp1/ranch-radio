@@ -16,7 +16,6 @@ import asyncio
 import hashlib
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -32,6 +31,7 @@ os.environ["RANCH_RADIO_HOSTS"] = ""     # never this machine's own host files
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from ranch_radio import hostlock, levels, modules  # noqa: E402
+import testkit  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="modapply-")
 REPO, HOME = os.path.join(TMP, "repo"), os.path.join(TMP, "home")
@@ -298,7 +298,7 @@ def lock_and_save_race():
 
 
 lock_and_save_race()
-p1 = 19000 + random.randrange(1000)
+p1 = testkit.free_port()
 st = station(p1)
 try:
     asyncio.run(linux_station(p1))

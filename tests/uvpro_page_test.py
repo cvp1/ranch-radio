@@ -10,7 +10,6 @@ Station page: tab, Overview card, own view. Auto relay warning. Borrow mode:
 """
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -22,11 +21,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
 from testkit import wait_for  # noqa: E402
+import testkit  # noqa: E402
 
 MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME = (os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
           or (MAC_CHROME if os.path.exists(MAC_CHROME) else None))
-WEB = 21000 + random.randrange(1000)
+WEB = testkit.free_port()
 CDP = WEB + 1000
 TMP = tempfile.mkdtemp(prefix="uvpropage-")
 CMD_LOG = os.path.join(TMP, "commands.jsonl")

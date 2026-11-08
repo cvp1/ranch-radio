@@ -23,7 +23,6 @@ Nothing here touches a radio or the real host file.
 import asyncio
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -37,6 +36,7 @@ import aiohttp
 os.environ["RANCH_RADIO_HOSTS"] = ""     # never the real host files of this machine
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from testkit import wait_for  # noqa: E402
+import testkit  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="tx-level-")
 STATE = os.path.join(TMP, "level")
@@ -121,7 +121,7 @@ class Page:
 
 
 def start(*extra, env=None):
-    web, apps = 18000 + random.randrange(1500), 15000 + random.randrange(1500)
+    web, apps = testkit.free_port(), testkit.free_port()
     p = subprocess.Popen(
         [sys.executable, "server.py", "--sim", "--rig", "g90", "--no-audio", "--listen", str(web),
          "--host", "127.0.0.1", "--rigctl-host", "127.0.0.1", "--rigctl-port", str(apps),
@@ -312,7 +312,7 @@ shutil.copy(os.path.join(ROOT, "examples/hosts/linux-station.json"), os.path.joi
 home = os.path.join(TMP, "home")
 before = open(os.path.join(repo, "hosts/linux-station.json")).read()
 set_level(0.0)
-LANE = 16000 + random.randrange(1500)
+LANE = testkit.free_port()
 SCTL_LOG = os.path.join(TMP, "systemctl.jsonl")
 with open(os.path.join(TMP, "systemctl"), "w") as f:
     f.write(f'#!/bin/sh\nexec "{sys.executable}" "{ROOT}/tests/fake_systemctl.py" "$@"\n')

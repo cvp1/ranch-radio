@@ -22,7 +22,6 @@ Runs with tests/fake_amixer.py as amixer and tests/fake_pat.py as Pat.
 import asyncio
 import json
 import os
-import random
 import socket
 import subprocess
 import sys
@@ -39,10 +38,10 @@ import codec_level  # noqa: E402
 import testkit  # noqa: E402
 from testkit import wait_for  # noqa: E402
 
-APPS = 15000 + random.randrange(1000)
-LANE = 16000 + random.randrange(1000)
-PATP = 17000 + random.randrange(1000)
-WEB = 18000 + random.randrange(1000)
+APPS = testkit.free_port()
+LANE = testkit.free_port()
+PATP = testkit.free_port()
+WEB = testkit.free_port()
 URL = "ardop:///N0DAJ?bw=2000MAX&freq=3588.5"
 TMP = tempfile.mkdtemp(prefix="codec-level-")
 STATE = os.path.join(TMP, "level")
@@ -173,11 +172,14 @@ def start(env_extra=None, *extra):
          *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
+        if p.poll() is not None:     # died (a port taken?): another listener is not this server
+            break
         try:
             for port in (WEB, LANE, PATP):
                 socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
             time.sleep(0.5)          # Radio Remote's websocket to Pat
-            return p, logf
+            if p.poll() is None:
+                return p, logf
         except OSError:
             time.sleep(0.1)
     p.kill()
