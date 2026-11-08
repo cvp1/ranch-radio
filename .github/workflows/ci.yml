@@ -47,7 +47,7 @@ jobs:
         run: bash tests/run_all.sh
       - name: Keep this shard's run times
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: durations-${{ matrix.shard }}
           path: ${{ runner.temp }}/rr-suite/durations.tsv
@@ -71,7 +71,7 @@ jobs:
     steps:
       - run: test "${{ needs.shard.result }}" = success
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: durations-*
           path: ${{ runner.temp }}/durations
