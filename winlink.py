@@ -1256,7 +1256,7 @@ class PatEngine:
         rec = self._read_listen()
         if rec is None:
             log.warning("winlink: a listening Pat (pid %d) started with no window record", pid)
-            rec = {"stage": "orphan"}
+            rec = {"stage": "orphan", "server_pid": os.getpid()}
         rec.update(pid=pid, argv=list(argv), pat_port=self.port)
         try:
             self._save_listen(rec)
@@ -1377,6 +1377,7 @@ class PatEngine:
                 return refuse(why)
             now = time.time()
             rec = {"method": plan.method, "hz": plan.hz, "since": now, "until": now + hours * 3600,
+                   "server_pid": os.getpid(),
                    "stage": "tuning", "hub": hub, "name": name, "call": call, "pat_port": self.port}
             try:
                 self._save_listen(rec)    # before the radio is touched: a crash from here is undone
@@ -1633,6 +1634,14 @@ class PatEngine:
         rec = self._read_listen()
         if rec is None:
             return
+        owner = rec.get("server_pid")
+        if isinstance(owner, int) and owner != os.getpid() and self._is_server(owner):
+            # Another server that is still running wrote it (a second server on
+            # the same state, as every test server once was): its window, its
+            # Pat and the hub's inbound window are its own, never ended here.
+            log.warning("winlink: the listen record %s belongs to a running server (pid %d); left alone",
+                        self.listen_path, owner)
+            return
         log.warning("winlink: a listen window (stage %s) was left by a server that did not end it; ending it",
                     rec.get("stage"))
         await self._hub_close(rec.get("hub"))
@@ -1659,6 +1668,12 @@ class PatEngine:
             log.warning("winlink: the radio is not back after the old listen window yet (%s); the UV-PRO "
                         "add-on keeps trying", why)
         self._drop_listen()
+
+    @classmethod
+    def _is_server(cls, pid):
+        """Is pid a running Ranch Radio server (server.py, or station.py, which runs Pat on Linux)?"""
+        cmd = cls._command_of(pid) or ""
+        return any(os.path.basename(w) in ("server.py", "station.py") for w in cmd.split())
 
     @staticmethod
     def _command_of(pid):

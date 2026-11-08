@@ -71,6 +71,18 @@ All notable changes to Ranch Radio are recorded here. The format follows
   what comes back is stored as port `is` and shown "via internet". Nothing
   from APRS-IS is acked, matched or transmitted.
 
+### Fixed
+
+- **A second server no longer ends a running server's listen window.** The
+  listen record (`winlink-listen.json`, beside `--addons-state`) now names the
+  server that wrote it (`server_pid`). At start, a server finds a record from
+  a server that is still running and leaves it alone; only a record whose
+  server is gone is ended as before. Every test server reads the default
+  state, so a test run during a live window closed the live hub's inbound
+  window, stopped the live listening Pat and deleted the record (a live station,
+  2026-11-07, twice). Test B-13, with the owner-gone case as its positive
+  control.
+
 ### Changed
 
 - **rigctl `T 0` releases only the sender's own PTT**, on every port.
