@@ -7,6 +7,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **MeshCore prefers Wi-Fi over Bluetooth, every time.** Every Wi-Fi link is
+  tried before any Bluetooth one, and the address the companion last reported
+  is tried before the configured one, so a DHCP move no longer strands the
+  bridge on Bluetooth. On Bluetooth the bridge asks the node for its Wi-Fi
+  address at start and every minute, and moves to Wi-Fi as soon as it answers
+  there (Wi-Fi first, then Bluetooth let go).
 - **APRS message management on the packet page's Messages tab.**
   - **Cancel** stops one of your messages that is still queued or retrying. It
     is never sent again, and the next message queued to that station starts.

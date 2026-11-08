@@ -11,6 +11,13 @@ process exits and the add-on starts it again.
     meshcore_bridge.py ble:NODE                (Bluetooth: MeshCore-NODE, bonded once)
     meshcore_bridge.py tcp:192.168.1.50:5000,ble:NODE   (the first that answers)
 
+Wi-Fi wins over Bluetooth whenever the node is on Wi-Fi. Every Wi-Fi link is
+tried before any Bluetooth one, the address the node last reported is tried
+before the configured one (DHCP moves it; the host file doesn't follow), and
+on Bluetooth the bridge asks the node for its Wi-Fi address at start and every
+WIFI_RECHECK_S, moving to Wi-Fi as soon as it answers there. The firmware
+serves both at once, so the move connects Wi-Fi before letting Bluetooth go.
+
 Bluetooth needs the node paired with this host once (the PIN on its
 screen; macOS asks for it), and its one Bluetooth link free: while a phone
 holds it this bridge can't connect, and the other way round. A serial
@@ -88,6 +95,8 @@ BATTERY_EVERY_S = 60.0
 CHANNELS_MAX = 8              # channels read from the node (it has up to 40; apps show the first few)
 CONNECT_TIMEOUT_S = 15.0
 BLE_CONNECT_TIMEOUT_S = 40.0  # a scan, then the connect (and the pairing prompt the first time)
+WIFI_RECHECK_S = 60.0         # on Bluetooth with Wi-Fi configured: how often to look for Wi-Fi
+WIFI_STATE = "~/.local/state/radio-remote/meshcore-wifi.json"   # configured tcp link -> last address seen
 LINK_FAILS = 2                # battery reads failing in a row before the link counts as lost
 STATS_EVERY_S = 60.0
 MAX_TRIES = 3                 # a direct message: attempts before it counts as not delivered
@@ -177,6 +186,47 @@ def candidates(spec):
     if not out:
         raise ValueError("no port")
     return [l for l in out if l[0] != "serial" or os.path.exists(l[1])]
+
+
+def wifi_first(links, learned):
+    """Every Wi-Fi link before any Bluetooth one, each configured tcp link
+    preceded by the address the node last reported for it (if different)."""
+    tcp, other = [], []
+    for l in links:
+        if l[0] == "tcp":
+            ip = learned.get(link_name(l))
+            if ip and ip != l[1]:
+                tcp.append(("tcp", ip, l[2]))
+            tcp.append(l)
+        else:
+            other.append(l)
+    ble = [l for l in other if l[0] == "ble"]
+    return list(dict.fromkeys(tcp + [l for l in other if l[0] != "ble"] + ble))
+
+
+def load_learned(path=WIFI_STATE):
+    try:
+        with open(os.path.expanduser(path)) as f:
+            d = json.load(f)
+        return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str)}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def save_learned(configured, ip, path=WIFI_STATE):
+    path = os.path.expanduser(path)
+    d = load_learned(path)
+    if d.get(configured) == ip:
+        return
+    d[configured] = ip
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        log.warning("Wi-Fi address not saved: %s", e)
 
 
 def link_name(link):
@@ -846,9 +896,55 @@ async def connect(link, MeshCore):
     return await asyncio.wait_for(MeshCore.create_serial(link[1], 115200), CONNECT_TIMEOUT_S)
 
 
+async def wifi_address(b):
+    """The node's Wi-Fi address when it says it is connected, else None."""
+    try:
+        w = await asyncio.wait_for(b.wifi_state(), 20)
+    except Exception as e:
+        log.warning("Wi-Fi state not read: %s: %s", type(e).__name__, e)
+        return None
+    return w["ip"] if w and w.get("status") == "connected" and w.get("ip") else None
+
+
+async def try_wifi(ip, port, MeshCore):
+    """A connected MeshCore over tcp:ip:port, or None."""
+    try:
+        mc = await connect(("tcp", ip, port), MeshCore)
+    except Exception:
+        return None
+    if mc is not None and mc.self_info:
+        return mc
+    try:
+        if mc is not None:
+            await asyncio.wait_for(mc.disconnect(), 3)
+    except Exception:
+        pass
+    return None
+
+
+async def wifi_watch(b, wifi, MeshCore):
+    """On Bluetooth: when the node answers on Wi-Fi, end this run so the add-on
+    starts the bridge again, which then tries that address first."""
+    while not b.closing:
+        await asyncio.sleep(WIFI_RECHECK_S)
+        ip = await wifi_address(b)
+        mc = await try_wifi(ip, wifi[2], MeshCore) if ip else None
+        if mc is None:
+            continue
+        try:
+            await asyncio.wait_for(mc.disconnect(), 3)
+        except Exception:
+            pass
+        save_learned(link_name(wifi), ip)
+        emit(ev="status", connected=False, error=f"moving to Wi-Fi ({ip})")
+        b.closing = True
+        return
+
+
 async def run(port):
     try:
-        links = candidates(port)
+        configured = candidates(port)
+        links = wifi_first(configured, load_learned())
     except ValueError as e:
         emit(ev="status", connected=False, error=str(e))
         return 2
@@ -876,6 +972,20 @@ async def run(port):
     if mc is None:
         emit(ev="status", connected=False, error="; ".join(errors) or f"none of {port} is present")
         return 2
+    wifi = next((l for l in configured if l[0] == "tcp"), None)
+    if wifi and link[0] == "tcp":
+        save_learned(link_name(wifi), link[1])
+    elif wifi and link[0] == "ble":
+        # The firmware serves Wi-Fi and Bluetooth at once: connect Wi-Fi, then let Bluetooth go.
+        ip = await wifi_address(Bridge(mc, EventType, link))
+        wmc = await try_wifi(ip, wifi[2], MeshCore) if ip else None
+        if wmc is not None:
+            save_learned(link_name(wifi), ip)
+            try:
+                await asyncio.wait_for(mc.disconnect(), 3)
+            except Exception:
+                pass
+            mc, link = wmc, ("tcp", ip, wifi[2])
     b = Bridge(mc, EventType, link)
     b.R = (BinaryReqType, AnonReqType)
     mc.subscribe(EventType.CONTACT_MSG_RECV, b.on_msg)
@@ -895,6 +1005,8 @@ async def run(port):
     while (await mc.commands.get_msg()).type not in (EventType.NO_MORE_MSGS, EventType.ERROR):
         pass
     tasks = [asyncio.create_task(b.stdin_loop()), asyncio.create_task(b.loops())]
+    if wifi and link[0] == "ble":
+        tasks.append(asyncio.create_task(wifi_watch(b, wifi, MeshCore)))
     done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     b.closing = True
     try:
