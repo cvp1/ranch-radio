@@ -312,6 +312,17 @@ class LocalLane:
         if not st.winlink_armed:
             return False
         st.winlink_qsy_hz = url_hz(url)
+        # Pat QSYs inside /api/connect and the modem keys at once: a band
+        # change's auto-tune then ran under the modem's first key, which was
+        # refused, and xara exits on a refused key (2026-11-07). The radio
+        # goes to the session's frequency here and its tune ends first.
+        wait = getattr(st, "winlink_qsy_and_settle", None)
+        if wait is not None:
+            why = await wait(url_hz(url))
+            if why:
+                st.notice(f"Not connecting: {why}", "warn", ws)
+                await st.winlink_disarm(why)
+                return False
         return True
 
     async def end(self, started, ok, reason, closing, notify):
@@ -852,6 +863,9 @@ class PatEngine:
         if not why and peer:
             why = check_peer(url, self.mycall)
         lane = None
+        if not why and getattr(st, "tx_stopped", None) and urlsplit(url).scheme != "telnet":
+            # STOP TX: no session that keys a radio until the operator resumes.
+            why = "Not connecting: transmit is stopped (STOP TX); press Resume first."
         if not why:
             lane, why = self.lane_for(url, via)
         if why or self.inbound:
@@ -1332,6 +1346,8 @@ class PatEngine:
             return refuse(f"{hours!r} is not a number of hours")
         if not MIN_HOURS <= hours <= plan.max_hours:
             return refuse(f"a window is {MIN_HOURS:g} to {plan.max_hours:g} hours")
+        if getattr(st, "tx_stopped", None):
+            return refuse("transmit is stopped (STOP TX); press Resume first")
         if self.listening or self._listen_busy:
             return refuse("a listen window is already open" if self.listening and not self._listen_busy
                           else self._listen_busy_text()[:1].lower() + self._listen_busy_text()[1:])

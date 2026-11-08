@@ -84,6 +84,8 @@ class SimRadio(Radio):
     async def _apply(self, key, value):
         if key == "tuner" and value == 2:
             self._tune_until = time.monotonic() + 2.5
+        elif key == "tuner":
+            self._tune_until = 0.0           # a tune ended from here (STOP TX)
         self._update(**{key: value})
 
     async def swap_vfo(self):

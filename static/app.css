@@ -568,3 +568,20 @@ body.addon-view .panel.addon-current { grid-column: 1 / -1; }
 .addon-msg { padding: 24px; }
 .stat.on { color: var(--accent); }
 .stat.warn { color: var(--warm); }
+
+/* STOP TX (2026-11-07): always visible, never hidden by a view or embedding. */
+.tx-stop {
+  height: 34px; padding: 0 16px; border-radius: 8px; border: 2px solid #b91c1c;
+  background: #dc2626; color: #fff; font: 800 13px/1 var(--mono, monospace); letter-spacing: .08em;
+  cursor: pointer; box-shadow: 0 0 10px rgba(220, 38, 38, .45);
+}
+.tx-stop:hover { background: #ef4444; }
+.tx-stop:active { transform: translateY(1px); }
+body.tx-stopped .tx-stop { background: #7f1d1d; animation: pulse 1.2s ease-in-out infinite; }
+.tx-stop-banner {
+  display: flex; align-items: center; gap: 12px; max-width: 1600px; margin: 0 auto 10px;
+  padding: 10px 22px; background: #7f1d1d; color: #fff; border-radius: 8px;
+}
+.tx-stop-banner[hidden] { display: none; }
+.tx-stop-banner span { flex: 1; }
+.tx-stop-banner button { height: 30px; padding: 0 14px; border-radius: 6px; border: 1px solid #fff; background: transparent; color: #fff; font-weight: 700; cursor: pointer; }

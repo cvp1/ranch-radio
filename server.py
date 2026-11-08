@@ -45,6 +45,7 @@ log = logging.getLogger("server")
 LEVEL_KEYS = {"af", "rf", "sql", "power"}   # every CAT level any rig profile can list
 
 PTT_KEEPALIVE_S = 2.0
+STOP_MSG = "Transmit is stopped (STOP TX); press Resume on the radio page first."
 
 # Amateur bands (IARU Region 2 / US) for auto-tune. Off-band = never tune.
 HAM_BANDS = [("160 m", 1.8e6, 2.0e6), ("80 m", 3.5e6, 4.0e6), ("60 m", 5.25e6, 5.45e6),
@@ -55,6 +56,16 @@ AUTO_TUNE_SETTLE_S = 2.0     # wait for the dial to stop before tuning
 AUTO_TUNE_RETRY_S = 2.0      # someone is transmitting: try again shortly
 AUTO_TUNE_GIVE_UP_S = 60.0
 AUTO_TUNE_ARM_S = 3.0        # after connecting, readings only set the band
+# A tune is not a band change. While the ATU tunes, and for this long after,
+# the radio's frequency reports start no auto-tune; the band is looked at once
+# it is quiet. On 2026-11-07 the IC-7300 re-tuned 20 m 15 times in 34 s, one
+# tune every settle period, and the operator had to switch the radio off.
+AUTO_TUNE_QUIET_S = 1.0
+# Belt and braces whatever the trigger: a band auto-tuned this many times
+# within AUTO_TUNE_REPEAT_WINDOW_S stops auto-tune for the run, loudly.
+AUTO_TUNE_REPEAT_MAX = 2
+AUTO_TUNE_REPEAT_WINDOW_S = 60.0
+WINLINK_TUNE_WAIT_S = 20.0   # before Pat dials: the most a band change's tune may take
 HOLD_SETTLE_S = 1.5          # let a front-panel change finish before undoing it
 HOLD_MAX_RESTORES = 3        # per HOLD_WINDOW_S; then stop fighting and warn
 HOLD_WINDOW_S = 30.0
@@ -117,6 +128,14 @@ class Station(TxAudio):
         self._tune_task = None
         self._tune_why = "band change"
         self._first_use_wait = None  # app freq seen before arming: tune once armed (F11)
+        self._tune_quiet_until = 0.0  # monotonic: no auto-tune from freq reports before this
+        self._quiet_task = None      # looks at the band once a tune is over
+        self._auto_tunes = {}        # band -> monotonic times of its recent auto-tunes
+        # STOP TX (2026-11-07): the operator's kill switch. Set, nothing on
+        # this server keys or tunes (browser, rigctl apps, Winlink lanes,
+        # auto-tune) until a page presses Resume. Held here, not in a page, so
+        # a reload or a second page sees it. {"at": epoch, "by": who} or None.
+        self.tx_stopped = None
         # Split emulated for rigctl apps on rigs that can't set VFO B over CAT
         # (G90): the TX frequency is held here and dialled in only while keyed.
         self.emu_split = False
@@ -174,7 +193,7 @@ class Station(TxAudio):
 
     def config(self):
         return {"name": self.radio.name, "tx_allowed": not self.args.no_tx,
-                "auto_tune": self.auto_tune,
+                "auto_tune": self.auto_tune, "tx_stopped": self.tx_stopped,
                 # The Winlink panel: only where this server runs Pat. A lane
                 # without Pat here is driven by the station page's Pat.
                 "winlink": bool(self.addons and self.addons.get("winlink")),
@@ -217,6 +236,9 @@ class Station(TxAudio):
             self._band = band_of(self.radio.state["freq"])
         elif diff.get("connected") is False:
             self._tune_armed_at = None
+        if "tuner" in diff:
+            # Entering or leaving a tune: the readings around it are the tune's.
+            self._tune_quiet_until = max(self._tune_quiet_until, time.monotonic() + AUTO_TUNE_QUIET_S)
         if "freq" in diff:
             self._band_watch(diff["freq"])
         if diff.keys() & {"freq", "mode", "data", "split", "tx", "tuner"}:
@@ -373,7 +395,28 @@ class Station(TxAudio):
 
     # auto-tune on band change
 
-    def _band_watch(self, hz):
+    def _tune_quiet(self):
+        return self.radio.state.get("tuner") == 2 or time.monotonic() < self._tune_quiet_until
+
+    async def _band_after_quiet(self):
+        """A frequency report arrived during (or just after) a tune: look at
+        the band once the tune is over, as one reading. The time waited counts
+        toward the settle, so a real band change is not held up twice."""
+        try:
+            since = time.monotonic()
+            while self._tune_quiet():
+                await asyncio.sleep(0.1)
+            self._band_watch(self.radio.state["freq"], since=since)
+        except asyncio.CancelledError:
+            pass
+
+    def _band_watch(self, hz, since=None):
+        if self._tune_quiet():
+            # A tune is not a band change (2026-11-07: a report during each
+            # tune started the next one, 15 tunes in 34 s). Decided after.
+            if not (self._quiet_task and not self._quiet_task.done()):
+                self._quiet_task = asyncio.ensure_future(self._band_after_quiet())
+            return
         band = band_of(hz)
         if band == self._band:
             if self._tune_task and not self._tune_task.done():
@@ -390,15 +433,16 @@ class Station(TxAudio):
         # off-band.
         if not self.auto_tune or settling or band is None:
             return
-        self._schedule_tune(band, "band change")
+        settle = AUTO_TUNE_SETTLE_S if since is None else max(0.0, AUTO_TUNE_SETTLE_S - (time.monotonic() - since))
+        self._schedule_tune(band, "band change", settle)
 
-    def _schedule_tune(self, band, why):
+    def _schedule_tune(self, band, why, settle=AUTO_TUNE_SETTLE_S):
         self._tune_why = why
-        self._tune_task = asyncio.ensure_future(self._auto_tune(band, why))
+        self._tune_task = asyncio.ensure_future(self._auto_tune(band, why, settle))
 
-    async def _auto_tune(self, band, why="band change"):
+    async def _auto_tune(self, band, why="band change", settle=AUTO_TUNE_SETTLE_S):
         try:
-            await asyncio.sleep(AUTO_TUNE_SETTLE_S)
+            await asyncio.sleep(settle)
             deadline = time.monotonic() + AUTO_TUNE_GIVE_UP_S
             while self.ptt_owner is not None or self.radio.state.get("tx"):
                 if time.monotonic() > deadline:
@@ -409,8 +453,22 @@ class Station(TxAudio):
                 return
             if why == "first use this run" and band in self._tuned_bands:
                 return
-            if self.retune_blocked() or not self.radio.state.get("connected"):
+            if self.retune_blocked() or not self.radio.state.get("connected") or self.tx_stopped:
                 return
+            now = time.monotonic()
+            recent = [t for t in self._auto_tunes.get(band, []) if now - t < AUTO_TUNE_REPEAT_WINDOW_S]
+            if len(recent) >= AUTO_TUNE_REPEAT_MAX:
+                # Something keeps asking for the same band: stop, never loop.
+                self.auto_tune = False
+                log.warning("auto-tune: %s asked for again (%d tunes in %.0f s); auto-tune OFF for this run",
+                            band, len(recent), AUTO_TUNE_REPEAT_WINDOW_S)
+                self.notice(f"Auto-tune stopped: it kept re-tuning {band} ({len(recent)} tunes in "
+                            f"{AUTO_TUNE_REPEAT_WINDOW_S:.0f} s). Tune by hand; auto-tune is off "
+                            "until the server restarts.", "warn")
+                self._broadcast(json.dumps({"t": "config", "config": self.config()}))
+                return
+            recent.append(now)
+            self._auto_tunes[band] = recent
             self._tuned_bands.add(band)
             log.info("auto-tune: ATU tuning for %s at %.3f MHz", band, self.radio.state["freq"] / 1e6)
             self.notice(f"ATU tuning for {band} ({why})", "info")
@@ -450,6 +508,8 @@ class Station(TxAudio):
 
     def winlink_lane_gate(self, modem):
         """Why a Winlink lane of this modem may not key now (None: it may)."""
+        if self.tx_stopped:
+            return "transmit is stopped (STOP TX)"
         if not self.winlink_armed:
             return "no Winlink session is armed"
         if (self.winlink_scheme or "ardop") != modem:
@@ -591,6 +651,8 @@ class Station(TxAudio):
 
     def _winlink_arm_blocked(self):
         s = self.radio.state
+        if self.tx_stopped:
+            return "transmit is stopped (STOP TX); press Resume first."
         if self.ptt_owner is not None and not self._winlink_keying():
             return "another operator is transmitting."
         if s.get("tx") and not self._winlink_keying():
@@ -694,6 +756,43 @@ class Station(TxAudio):
         if "data" in self.radio.caps.get("features", []) or self.radio.caps.get("data_modes"):
             await self.radio.set("data", data)
 
+    def _tune_pending(self):
+        """A tune is running, or one is scheduled or about to be decided."""
+        return (self.radio.state.get("tuner") == 2
+                or any(t is not None and not t.done() for t in (self._tune_task, self._quiet_task))
+                or (self._tune_ours_at is not None and not self._tune_seen
+                    and time.monotonic() - self._tune_ours_at < TUNE_START_GRACE_S))
+
+    async def winlink_qsy_and_settle(self, hz):
+        """Before Pat dials an armed local session: the radio on the session's
+        dial frequency and any ATU tune that brings over. None when ready,
+        else why not (the caller disarms). Pat's own QSY then finds the radio
+        already there: no change, no tune under the modem's first key."""
+        s = self.radio.state
+        if hz is not None and s.get("connected") and abs((s.get("freq") or 0) - hz) > rigctl_server.LANE_QSY_SLOP_HZ:
+            if self.retune_blocked():
+                return "the radio is busy (transmitting or tuning); try again in a moment."
+            log.info("winlink: radio to the session's %d Hz before Pat dials", hz)
+            self.app_set("freq", hz, hold=False)
+            await self.radio.set("freq", hz)
+            await asyncio.sleep(0.1)           # let the change reach the band watch
+        end = time.monotonic() + AUTO_TUNE_SETTLE_S + WINLINK_TUNE_WAIT_S
+        told = False
+        while self._tune_pending():
+            if self.tx_stopped:
+                return "transmit is stopped (STOP TX)."
+            if time.monotonic() > end:
+                return "the ATU tune did not finish; tune by hand, then connect."
+            if not told and s.get("tuner") == 2:
+                told = True
+                log.info("winlink: holding Pat until the ATU tune ends")
+                self.notice("Winlink: waiting for the ATU tune to finish before connecting.", "info",
+                            self.winlink_owner)
+            await asyncio.sleep(0.1)
+        if self.tx_stopped:
+            return "transmit is stopped (STOP TX)."
+        return None
+
     async def winlink_disarm(self, reason=None):
         if self.winlink_owner is None:
             return
@@ -752,6 +851,8 @@ class Station(TxAudio):
         s = self.radio.state
         if self.args.no_tx:
             return "Transmit is disabled on this server (--no-tx)."
+        if self.tx_stopped:
+            return STOP_MSG
         if self.ptt_owner not in (None, owner):
             return "Another operator is transmitting."
         if self._winlink_arming is not None:
@@ -828,9 +929,14 @@ class Station(TxAudio):
 
     async def start_tune(self):
         """Start an ATU tune on behalf of an app. The watchdog cuts it after
-        --tune-timeout; a tune started at the radio is never cut."""
+        --tune-timeout; a tune started at the radio is never cut. False:
+        refused (STOP TX), nothing was sent to the radio."""
+        if self.tx_stopped:
+            log.warning("ATU tune refused: transmit is stopped (STOP TX)")
+            return False
         self._tune_ours_at, self._tune_seen = time.monotonic(), False
         await self.radio.set("tuner", 2)
+        return True
 
     async def unkey(self, reason=None, write=True, force=False, by=None, own=False):
         """Release the key. write=False: the radio already stopped (unkeyed
@@ -874,6 +980,62 @@ class Station(TxAudio):
             rx, self.split_restore = self.split_restore, None
             log.info("split: back to RX %d", rx)
             await self.radio.set("freq", rx)
+
+    # STOP TX: the operator's kill switch (2026-11-07)
+
+    @staticmethod
+    def _who(ws):
+        return str(getattr(getattr(ws, "_req", None), "remote", None) or getattr(ws, "peer", None) or "a page")
+
+    def _stop_broadcast(self):
+        self._broadcast(json.dumps({"t": "tx_stop", "stopped": self.tx_stopped}))
+
+    async def tx_stop(self, ws=None, why="STOP TX pressed"):
+        """Stop every transmission this server started or could start, and
+        refuse every new one until tx_resume. Order: latch (nothing new keys),
+        unkey (the carrier ends first), then undo what would key again.
+        Each step runs whatever the one before it did."""
+        again = self.tx_stopped is not None
+        self.tx_stopped = {"at": time.time(), "by": self._who(ws)}
+        log.warning("STOP TX by %s%s", self.tx_stopped["by"], " (again)" if again else "")
+        for t in (self._tune_task, self._quiet_task, self._first_use_wait, self._pending_task):
+            if t and not t.done():
+                t.cancel()
+        self.pending_freq = None
+        tuning = self.radio.state.get("tuner") == 2
+        steps = [("unkey", lambda: self.unkey(why, force=True))]
+        if tuning:
+            # The unkey cuts a tune (as the F7 watchdog does); tuner 1 (ATU
+            # on, not tuning) says so too, for a radio that ignores the unkey.
+            steps.append(("ATU tune", lambda: self.radio.set("tuner", 1)))
+        eng = self.winlink
+        if eng is not None:
+            if getattr(eng, "_admitting", False):
+                eng._admit_stop = True             # still arming: undone, never dialed
+            steps.append(("Winlink session", lambda: eng.abort(why)))
+            if getattr(eng, "listening", None) or getattr(eng, "_listen_busy", None):
+                steps.append(("Winlink listen window", lambda: eng.listen_stop(ws)))
+        steps.append(("Winlink lanes", lambda: self.winlink_disarm(why)))
+        failed = []
+        for name, step in steps:
+            try:
+                await step()
+            except Exception:                  # noqa: BLE001 - every step must get its turn
+                log.exception("STOP TX: %s", name)
+                failed.append(name)
+        self._tune_ours_at = None
+        self._stop_broadcast()
+        self.notice("STOP TX: transmitter released, Winlink stopped and disarmed; nothing keys "
+                    "until Resume." + (f" Could not stop: {', '.join(failed)}; check the radio."
+                                       if failed else ""), "warn" if failed else "info")
+
+    async def tx_resume(self, ws=None):
+        if self.tx_stopped is None:
+            return
+        log.warning("STOP TX cleared (Resume) by %s", self._who(ws))
+        self.tx_stopped = None
+        self._stop_broadcast()
+        self.notice("Transmit resumed. Nothing was re-armed: start Winlink again from its panel.", "info")
 
     async def _tune_watch(self):
         """F7: a tune we started that runs past --tune-timeout is cut."""
@@ -992,10 +1154,16 @@ class Station(TxAudio):
                 self.notice(f"{k} is set on the radio itself, not here.", "warn", ws)
                 await self._confirm(ws, k)
             elif k == "tuner" and v == 2:
-                await self.start_tune()
+                if not await self.start_tune():
+                    self.notice(STOP_MSG, "warn", ws)
+                    await self._confirm(ws, k)
             else:
                 self.app_set(k, v)
                 await self.radio.set(k, v)
+        elif t == "tx_stop":
+            await self.tx_stop(ws)
+        elif t == "tx_resume":
+            await self.tx_resume(ws)
         elif t == "sim_panel" and self.args.sim:
             # Test hook (simulator only): a change made at the radio's front
             # panel, bypassing every app path.
