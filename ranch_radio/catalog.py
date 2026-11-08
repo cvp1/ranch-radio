@@ -68,6 +68,10 @@ MODULES = [
      "code": "addons/propagation.py, static/addons/propagation.js (NOAA SWPC JSON; optional skywatch InfluxDB)",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block; add \"skywatch\": {\"url\", \"db\"} for per-band decodes and forecast openings"},
+    {"name": "logbook", "kind": "addon", "title": "Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation",
+     "code": "addons/logbook.py, static/addons/logbook.js (the browser frames the logbook; the server never talks to it)",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's addons block: \"url\", or \"port\" for a logbook on the radio's own machine"},
 
     # --- desktop integrations
     {"name": "macos-widget", "kind": "integration", "title": "Menu bar on/off for the radio agent",

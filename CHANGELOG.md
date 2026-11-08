@@ -7,6 +7,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **A Logbook tab beside Propagation.** The `logbook` add-on frames your web
+  logbook (Wavelog, Cloudlog), loaded only when the tab is opened, with a link
+  to open it in its own tab. Configure a `url`, or a `port` for a logbook on
+  the radio's own machine, which is framed under the page's own name so the
+  logbook's login holds. A secure page with a plain-http logbook gets the
+  link only, with the reason.
 - **MeshCore prefers Wi-Fi over Bluetooth, every time.** Every Wi-Fi link is
   tried before any Bluetooth one, and the address the companion last reported
   is tried before the configured one, so a DHCP move no longer strands the

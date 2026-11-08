@@ -1,0 +1,6 @@
+/* The Logbook tab (static/addons/logbook.js). */
+.lb { display: flex; flex-direction: column; gap: 8px; }
+.lb-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lb-url { overflow-wrap: anywhere; }
+.lb-frame { width: 100%; height: calc(100vh - 180px); min-height: 480px; border: 0; border-radius: 6px; background: #fff; }
+.lb-hint { font-size: 0.85em; }

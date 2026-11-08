@@ -163,6 +163,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `uvpro` | UV-PRO / UV-50PRO control: channels, settings, beacon | `benlink`; the packet hub on the same radio |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
+| `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
@@ -197,6 +198,24 @@ the band it's tuned to. A source that can't be reached reads "unknown", never
 zero. PSKReporter is asked at most every 10 minutes.
 
 ![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
+
+**The Logbook tab.** The `logbook` add-on shows your web logbook (Wavelog,
+Cloudlog) in a tab beside Propagation, with a link to open it in its own tab.
+The browser loads the logbook directly, with its own login, and only when the
+tab is first opened; the radio's server never talks to it. Give its address,
+or just its port when it runs on the radio's own machine:
+
+```json
+"addons": {"logbook": {"enabled": true, "url": "https://192.168.1.20:8087/"}}
+"addons": {"logbook": {"enabled": true, "port": 8087}}
+```
+
+With `port` (and optional `"scheme"`, default https, and `"path"`) the frame
+uses the same machine name as the page, so the browser counts it as the same
+site and the logbook's login cookie holds inside the frame. A secure (https)
+radio page can't frame a plain-http logbook: the tab then offers only the
+link, so give the logbook an https front door. If the frame is blank, open
+the logbook once in its own tab and accept its certificate.
 
 **The Winlink mailbox.** Open a message to read it (that marks it read in
 Pat), then Reply, Reply all, Forward (its attachments go along), Archive or
