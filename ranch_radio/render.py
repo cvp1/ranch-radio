@@ -117,6 +117,7 @@ RULES = [
     (("packet", "aprs", "owned_calls", "*"), CALL), (("packet", "aprs", "path", "*"), CALL),
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
+    (("mesh", "feed"), TOKEN), (("mesh", "feed_cred"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
     (("updates", "at"), CLOCK), (("updates", "label"), LABEL),
     (("addons", "*"), None),     # add-on names: checked below
@@ -127,7 +128,7 @@ PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lan
          ("station", "rigctl_port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
-         ("updates", "apply")]
+         ("updates", "apply"), ("mesh", "feed_tx")]
 
 # APRS messaging (plan 2026-11-07, 3.7): packet.aprs caps -> the hub's flags,
 # with their bounds. The hub's overall runaway cap (300/min) bounds the UI total.
@@ -650,6 +651,12 @@ def server_args(h, r, pth):
         for k in m.get("keys", []):
             ch, _, f = k.partition("=")
             a += ["--mesh-key", f"{ch}={pth(f)}"]
+        if m.get("feed"):                       # the node's traffic on an MQTT broker (mesh_feed.py)
+            a += ["--mesh-feed", m["feed"]]
+            if m.get("feed_cred"):
+                a += ["--mesh-feed-cred", pth(m["feed_cred"])]
+            if m.get("feed_tx"):
+                a += ["--mesh-feed-tx"]
     if mac_addons(h) and not linux:             # on Linux the station runs them
         a += ["--addons", pth("~/" + MAC_ADDONS)]
     if not linux:                               # the Modules tab (on Linux: the station's)

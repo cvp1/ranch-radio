@@ -45,6 +45,13 @@ class MeshEngine:
         self.station = station
         self.cmd = [os.path.expanduser(args.mesh_python), args.mesh_bridge, args.mesh_port,
                     *(f"--key={k}" for k in args.mesh_key)]
+        feed = getattr(args, "mesh_feed", None)
+        if feed:                      # the node's traffic on an MQTT broker too (mesh_feed.py)
+            self.cmd += [f"--feed={feed}"]
+            if getattr(args, "mesh_feed_cred", None):
+                self.cmd += [f"--feed-cred={args.mesh_feed_cred}"]
+            if getattr(args, "mesh_feed_tx", False):
+                self.cmd += ["--feed-tx"]
         self.log_path = os.path.expanduser(args.mesh_log) if args.mesh_log else None
         self.proc = None
         self.connected = False
