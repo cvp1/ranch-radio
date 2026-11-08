@@ -1,9 +1,8 @@
 """Winlink on a radio's own page (server.py) reaches the packet hub.
 
-A Mac has no station page: its one radio server runs the Packet add-on,
-and its Winlink panel must offer the hub's radio for packet the way the
-station page does. Against server.py --sim with tests/fake_pat.py as Pat, a
-stand-in hub and the Packet add-on pointed at it:
+A host with no station page runs the Packet add-on in its one radio server;
+its Winlink panel must offer the hub's radio for packet. Against server.py
+--sim with tests/fake_pat.py as Pat, a stand-in hub and the Packet add-on:
   - an ax25 connect while the hub is up runs through the hub (via the hub's
     name, freq= dropped for Pat), and this radio's own lane stays unarmed:
     Pat's PTT through it is refused, so the radio never keys
@@ -17,7 +16,6 @@ stand-in hub and the Packet add-on pointed at it:
 import asyncio
 import json
 import os
-import socket
 import sys
 import tempfile
 import threading
@@ -27,6 +25,7 @@ from aiohttp import web
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import testkit  # noqa: E402
 import winlink_test_lib as L  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="wlpacket-")
@@ -43,14 +42,6 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:66} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
-
-
 async def hub_main(port, ready):
     async def status(request):
         return web.json_response({"radio": {"up": HUB["up"], "last_rx": time.time()}, "tx": {"enabled": True}})
@@ -61,15 +52,6 @@ async def hub_main(port, ready):
     await web.TCPSite(runner, "127.0.0.1", port).start()
     ready.set()
     await asyncio.Event().wait()
-
-
-def wait_for(pred, timeout=10):
-    end = time.time() + timeout
-    while time.time() < end:
-        if pred():
-            return True
-        time.sleep(0.2)
-    return False
 
 
 def hub_seen_up(want):
@@ -92,7 +74,7 @@ def connect_urls(flog, since):
 
 
 def session(page, flog, url, via):
-    """Start a session and wait for its end; returns (armed event, notices, Pat's connect URLs, PTT replies)."""
+    """Run a session to its end: (armed event, notices, Pat's connect URLs, PTT replies)."""
     n0 = len(L.fake_log(flog))
     page.events.clear()
     page.send({"t": "winlink_connect", "url": url, "via": via})
@@ -102,7 +84,7 @@ def session(page, flog, url, via):
     return armed, notices, connect_urls(flog, n0), ptt_replies(flog, n0)
 
 
-hub_port = free_port()
+hub_port = testkit.free_port()
 ready = threading.Event()
 loop = asyncio.new_event_loop()
 threading.Thread(target=lambda: loop.run_until_complete(hub_main(hub_port, ready)), daemon=True).start()
@@ -113,7 +95,7 @@ with open(addons, "w") as f:
 
 srv, flog = L.start(None, "--addons", addons, "--addons-state", "")
 try:
-    check("the Packet add-on polled the hub up", wait_for(hub_seen_up(True), 15), True)
+    check("the Packet add-on polled the hub up", testkit.wait_for(hub_seen_up(True), 15, 0.2), True)
     page = L.Page()
     check("hello: the radio server runs the Packet add-on",
           "packet" in [a["name"] for a in page.hello["config"]["addons"]], True)
@@ -134,7 +116,7 @@ try:
     check("  and is disarmed after the session", L.lane_ptt_refused(), True)
 
     HUB["up"] = False
-    check("the hub goes down: the add-on notices", wait_for(hub_seen_up(False), 25), True)
+    check("the hub goes down: the add-on notices", testkit.wait_for(hub_seen_up(False), 25, 0.2), True)
     armed, notices, urls, ptt = session(page, flog, AX25, "packet")
     check("ax25, hub down: refused, saying so",
           (armed, [m for m in notices if "not running" in m]), (None, ["The Direwolf packet hub is not running."]))
@@ -151,7 +133,7 @@ finally:
     srv.terminate()
     srv.wait(10)
 
-srv, flog = L.start()
+srv, flog = L.start(None, "--addons-state", "")       # never the user's own add-on state
 try:
     page = L.Page()
     armed, notices, urls, ptt = session(page, flog, AX25, "packet")

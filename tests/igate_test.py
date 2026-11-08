@@ -1,17 +1,6 @@
-"""The packet hub's receive-only iGate (igate.py, "packet": {"igate": ...}).
-
-  - which heard frames are gated and how each line reads (the APRS-IS iGate
-    rules: no TCPIP/TCPXX/NOGATE/RFONLY, no queries, third-party unwrapped,
-    info cut at CR/LF, ",qAO,<login>" after the path: a receive-only iGate;
-    our own calls, outer or inner source, never gated)
-  - the observer's line splitting: CR LF only, 512-byte cap
-  - the passcode file and the server's host:port
-  - the host file renders the iGate onto the hub's command line, on macOS and
-    Linux, as a path to the passcode file; a block missing its passcode, or
-    one next to Direwolf's own iGate, is refused
-
-The hub at the wire, against a fake APRS-IS server, is
-tests/tnc_hub_test.py's scenario_igate.
+"""The receive-only iGate (igate.py): what is gated and how each line reads,
+the observer's line splitting, passcode and server, the beacon, and the host
+file's "igate" block. At the wire: tests/tnc_hub_test.py's scenario_igate.
 
     python3 tests/igate_test.py
 """

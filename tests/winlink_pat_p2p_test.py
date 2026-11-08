@@ -1,21 +1,15 @@
-"""E-1: P2P between two real Pats over telnet on 127.0.0.1 (plan winlink-p2p).
+"""E-1: P2P between two real Pats over telnet on 127.0.0.1. Nothing on air.
 
-Station A is Radio Remote (server.py --sim) running a real `pat http`; it
-dials B as a peer from the page's WebSocket, the way the page does
-({"t": "winlink_connect", "url": "telnet://N9ABC:pw@127.0.0.1:PORT/N0XYZ",
-"peer": true}). Station B is a second real Pat listening on telnet
-(`pat --listen telnet http`). Both live in temp dirs (config, mailbox,
-state): nothing here touches this machine's own Pat, and nothing is on air.
+Station A is server.py --sim running a real `pat http`, dialing B as a peer
+from the page's WebSocket. Station B is a second real Pat on `--listen
+telnet`. Both live in temp dirs: this machine's own Pat is never touched.
 
   - A's outbox {to B, to B and another, P2P only to B, to an email}: B gets
-    exactly the first and the third (Pat sends a peer only what is addressed
-    solely to a forwarder it advertised, wl2k-go GetOutbound); A's page
-    hears "sent 2, 2 left", with no "still in the outbox" warning
-  - variant: B with an auxiliary address C; a message solely to C is sent too
+    exactly the first and third (Pat sends a peer only what is addressed
+    solely to it, wl2k-go GetOutbound); A hears "sent 2, 2 left"
+  - variant: B with an auxiliary address C; a message solely to C goes too
 
-Skips (does not pass) without `pat` on PATH (or PAT=/path/to/pat).
-
-    .venv/bin/python tests/winlink_pat_p2p_test.py
+Skips (does not pass) without `pat` on PATH (or PAT=).
 """
 import json
 import os
@@ -112,7 +106,7 @@ class StationA:
         up = wait_for(lambda: self._snap().get("pat_busy") is False, 30)
         check("E-1 A (Radio Remote + real Pat N9ABC) is up", up, True)
         self.page = Page(self.web)
-        time.sleep(1.2)                # past Pat's log replay
+        time.sleep(1.2)                # past Pat's log replay (winlink.REPLAY_S)
 
     def _snap(self):
         try:
@@ -155,9 +149,9 @@ class StationA:
 a = StationA()
 out = ""
 try:
-    for to, subject, p2p in (("N0XYZ", "to B", False), ("N0XYZ K7ABC", "to B and another", False),
-                             ("N0XYZ", "p2p only to B", True), ("someone@example.com", "to an email", False)):
-        check(f"E-1 A composes: {subject}", a.compose(to, subject, p2p), 201)
+    check("E-1 A composes four messages", [a.compose(to, subject, p2p) for to, subject, p2p in (
+        ("N0XYZ", "to B", False), ("N0XYZ K7ABC", "to B and another", False),
+        ("N0XYZ", "p2p only to B", True), ("someone@example.com", "to an email", False))], [201] * 4)
     b = PatB("N0XYZ")
     try:
         e = a.connect_peer(b, "N0XYZ")
@@ -169,7 +163,7 @@ try:
         check("E-1 A's outbox keeps the other two", a.outbox(), ["to B and another", "to an email"])
     finally:
         b.stop()
-    # Variant: B advertises an auxiliary address C (N0AUX): a message solely to C goes too.
+    # B advertises an auxiliary address C (N0AUX)
     check("E-1 A composes: to C (B's auxiliary address)", a.compose("N0AUX", "to C"), 201)
     b = PatB("N0XYZ", aux=["N0AUX"])
     try:

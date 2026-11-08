@@ -1,36 +1,21 @@
 """MeshCore add-on (addons/meshcore.py), against tests/fake_meshcore_bridge.py.
 
-  - listed as an add-on with a panel; the node connects and the snapshot has
-    its info, channels, contacts, battery and the message it heard
-  - a channel send reaches the node and settles "sent"; a direct message to
-    a contact settles "delivered" on its ACK; a failed send says why
-  - refused before the node sees them: empty, too long, a channel the node
-    doesn't have, a key that isn't a contact
-  - advert: the first is sent, a second inside the gap is refused
-  - the node going away fails what was in flight, and the bridge restarts
-  - switch off stops the bridge (the port is free); a send while off is
-    refused; switch on starts a fresh bridge
-  - messages survive a server restart through the log, mode 600
-  - settings: the snapshot has the node's sections and the radio presets
-    (the host's first, then the built-in one); a valid write reaches the
-    node and the page gets the read-back; out-of-range, wrong-type, unknown
-    and multi-line values are refused before the node sees them; a refused
-    write says why; a Wi-Fi write says to reboot; the Wi-Fi password reaches
-    the node and nowhere else (no snapshot, page message, log or notice)
-  - reboot: the page is told, and the bridge comes back
-  - other nodes: the snapshot has the radio stats, what was heard on the
-    air and the node not yet added; status, telemetry, neighbours, path and
-    trace answers reach the page and the snapshot; a server-only request to
-    a companion, a second request inside the gap, one to a node already
-    waiting and a trace with no route are refused before the node sees
-    them; a node that doesn't answer says so
-  - login: a wrong typed password fails, the saved one logs in as admin;
-    neither password is in a page message, a snapshot, the message log or
-    the server's log; remote commands are refused until an admin login, then
-    each command and its reply reach the page (and not the message log)
-  - favourite, add a pending node, forget a route, remove: the contacts
-    follow; a direct message reports its tries and round trip
-  - channels: a #hashtag is joined, a bad name refused, a channel left
+  - snapshot: info, channels, contacts, battery, the heard message
+  - sends: channel "sent", direct "delivered" on ACK with tries and round
+    trip, failures say why; bad sends refused before the node; advert gap
+  - the node going away fails what was in flight and the bridge restarts;
+    switch off frees the port and refuses sends; switch on starts afresh
+  - messages survive a restart through the log, mode 600
+  - settings: sections and presets; a valid write is read back; bad values
+    are refused before the node; refusals and Wi-Fi reboots are reported;
+    the Wi-Fi password and Bluetooth PIN reach the node and nowhere else
+  - other nodes: stats, heard packets, pending nodes; status, telemetry,
+    neighbours, path, trace, owner answers; refusals (companion, request
+    gap, no route, no admin login); a node that doesn't answer says so
+  - login: typed and saved passwords, never in a page message, snapshot,
+    message log or server log; remote commands only after an admin login
+  - favourite, add, reset path, remove; #hashtag channels join and leave;
+    reboot
 
     python3 tests/meshcore_addon_test.py
 """
@@ -49,7 +34,7 @@ import aiohttp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
-from testkit import free_port  # noqa: E402
+from testkit import free_port, wait_for  # noqa: E402
 
 WEB = free_port()
 TMP = tempfile.mkdtemp(prefix="mcaddon-")
@@ -189,11 +174,11 @@ def commands_cmd(cmd):
         return []
 
 
-def settled(text, state, since=0):
+def settled(text, state):
     return lambda e: mc(e) and (e.get("update") or {}).get("text") == text and e["update"].get("ack") == state
 
 
-def warned(words, since=0):
+def warned(words):
     return lambda e: e.get("t") == "notice" and e.get("level") == "warn" and words in e.get("msg", "")
 
 
@@ -270,10 +255,7 @@ try:
     page.do("power", on=False)
     off = page.wait(lambda e: mc(e) and e.get("on") is False, since=m)
     check("switch off: the page is told", off is not None, True)
-    end = time.time() + 5
-    while time.time() < end and bridge_running():
-        time.sleep(0.1)
-    check("  the bridge is stopped (the port is free)", bridge_running(), False)
+    check("  the bridge is stopped (the port is free)", wait_for(lambda: not bridge_running(), 5), True)
     m = len(page.events)
     page.do("send", text="while off", ch=0)
     check("a send while off is refused", page.wait(warned("switched off"), since=m, timeout=3) is not None, True)

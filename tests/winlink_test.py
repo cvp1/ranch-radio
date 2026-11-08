@@ -1,64 +1,44 @@
 """W2: Winlink sessions and mailbox through Radio Remote, with tests/fake_pat.py as Pat.
 
-Checks:
-  - mailbox/read/compose/gateway routes reach Pat; anything off the list is 404
-  - compose without a date gets one added (Pat answers 400 without it); Cc
-    passes through; compose with an X-Pat-SourcePath header is refused
-  - mark read: {"read": true} marks it read, a bare `true` is Pat's 400
-  - archive (move) and delete reach Pat; a bad source path, a dotfile MID or
-    an encoded traversal in the source path never reach Pat
-  - the outbox can't be changed while a session runs (409), other boxes can;
-    in process, the guard covers the admit window and connect() waits for a
-    mailbox change already under way
+  - mailbox/read/compose/move/delete/gateway routes reach Pat; anything else is
+    404; bad source paths, dotfile MIDs and encoded traversals never reach Pat
+  - the outbox can't change while a session runs or is being admitted (409)
   - Pat's own port is 127.0.0.1 only
-  - winlink_connect arms the lane, Pat keys through it, the page sees the log,
-    the session end, the received count; afterwards the lane is disarmed
-  - a bad connect URL (unknown transport) is refused before anything happens
-  - Stop aborts a session (Pat /api/disconnect), radio unkeyed, disarmed
-  - the page closing mid-session aborts it and unkeys
-  - --winlink-session-max cuts a session that runs too long
-  - a busy-channel prompt reaches the page and its answer reaches Pat
-  - Pat dying is noticed and Pat is started again
-  - --no-tx: connect refused
+  - a session arms the lane, keys through it, relays Pat's log and counts, and
+    disarms; bad URLs, Stop, the page closing, the session cap, a busy-channel
+    prompt, Pat dying, and --no-tx
 
     .venv/bin/python tests/winlink_test.py
 """
 import asyncio
 import json
 import os
-import random
 import socket
-import subprocess
 import sys
 import tempfile
-import threading
 import time
 import types
 
 import aiohttp
-import testkit  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APPS = 15000 + random.randrange(1000)
-LANE = 16000 + random.randrange(1000)
-PATP = 17000 + random.randrange(1000)
-WEB = 18000 + random.randrange(1000)
-URL = "ardop:///N0DAJ?bw=2000MAX&freq=3588.5"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import testkit  # noqa: E402
+import winlink_test_lib as L  # noqa: E402
+from winlink_test_lib import APPS, PATP, ROOT, URL, ended, fake_log, lane_ptt_refused, ptt  # noqa: E402
+
 fails = 0
 
 
-
 def lan_address():
-    """A non-loopback address of this machine on which a listener bound to
-    0.0.0.0 answers, or None. The hostname may resolve to 127.0.0.1 (mac-shack)
-    and the default route may be a VPN (unreachable even for 0.0.0.0), so try
-    several routes and keep the first one the control can actually reach."""
+    """A non-loopback address on which a 0.0.0.0 listener answers, or None.
+    The hostname may resolve to 127.0.0.1 and the default route may be a VPN,
+    so try several and keep the first the control can reach."""
     cands = []
     try:
         cands += socket.gethostbyname_ex(socket.gethostname())[2]
     except OSError:
         pass
-    for target in ("192.168.1.1", "192.168.1.1", "10.0.0.1", "192.0.2.1"):  # ranch-radio: allow (generic test addresses)
+    for target in ("192.168.1.1", "10.0.0.1", "192.0.2.1"):  # ranch-radio: allow (generic test addresses)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:
                 u.connect((target, 9))       # routing lookup only; nothing is sent
@@ -78,6 +58,7 @@ def lan_address():
                 continue
     return None
 
+
 def check(name, got, want):
     global fails
     ok = got == want
@@ -85,86 +66,9 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:56} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
-def ptt():
-    with socket.create_connection(("127.0.0.1", APPS), timeout=3) as s:
-        f = s.makefile("r")
-        s.sendall(b"t\n")
-        v = f.readline().strip()
-        f.close()
-        return v
-
-
-def lane_ptt_refused():
-    with socket.create_connection(("127.0.0.1", LANE), timeout=3) as s:
-        f = s.makefile("r")
-        s.sendall(b"T 1\n")
-        v = f.readline().strip()
-        if v == "RPRT 0":
-            s.sendall(b"T 0\n")
-            f.readline()
-        f.close()
-        return v == "RPRT -11"
-
-
-class Page:
+class Page(L.WebPage):
     def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        self.events = []
-        threading.Thread(target=self.loop.run_forever, daemon=True).start()
-        self.run(self._open())
-
-    def run(self, coro, timeout=10):
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
-
-    async def _open(self):
-        self.sess = aiohttp.ClientSession()
-        self.ws = await self.sess.ws_connect(f"http://127.0.0.1:{WEB}/ws")
-        json.loads((await self.ws.receive()).data)
-        self.reader = asyncio.ensure_future(self._read())
-
-    async def _read(self):
-        async for msg in self.ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                m = json.loads(msg.data)
-                if m.get("t") in ("winlink", "notice"):
-                    self.events.append(m)
-
-    def send(self, m):
-        self.run(self.ws.send_str(json.dumps(m)))
-
-    def wait(self, pred, timeout=15):
-        end = time.time() + timeout
-        while time.time() < end:
-            for e in list(self.events):
-                if pred(e):
-                    return e
-            time.sleep(0.1)
-        return None
-
-    def http(self, method, path, **kw):
-        async def go():
-            async with self.sess.request(method, f"http://127.0.0.1:{WEB}{path}", **kw) as r:
-                return r.status, await r.text()
-        return self.run(go())
-
-    def close(self):
-        async def _c():
-            await self.ws.close()
-            await self.sess.close()
-        self.run(_c())
-        time.sleep(0.5)
-
-
-def ended(e):
-    return e.get("t") == "winlink" and e.get("session") == "ended"
-
-
-def fake_log(path):
-    try:
-        with open(path) as f:
-            return [json.loads(l) for l in f if l.strip()]
-    except OSError:
-        return []
+        super().__init__(L.WEB)
 
 
 def recs(path, route, **match):
@@ -184,36 +88,20 @@ def mids(page, box):
     return sorted(m["MID"] for m in json.loads(body)) if st == 200 else f"HTTP {st}"
 
 
+def compose(page, subject, headers=None, **fields):
+    """POST a message to the outbox; (status, body)."""
+    form = aiohttp.FormData()
+    for k, v in {"to": "N0DAJ", "subject": subject, "body": "b", **fields}.items():
+        form.add_field(k, v)
+    return page.http("POST", "/winlink/api/mailbox/out", data=form, headers=headers)
+
+
 def start(env_extra=None, *extra):
-    logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, **(env_extra or {}))
     state = os.path.join(tempfile.mkdtemp(prefix="wltest-"), "addons.json")   # never the user's own
-    p = subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-         "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
-         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(PATP),
-         "--addons-state", state, *extra],
-        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for _ in range(100):
-        try:
-            for port in (WEB, LANE, PATP):
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            time.sleep(0.5)          # Radio Remote's websocket to Pat
-            return p, logf
-        except OSError:
-            time.sleep(0.1)
-    p.kill()
-    print(p.stdout.read())
-    raise SystemExit("server did not start")
+    return L.start(env_extra, "--addons-state", state, *extra)
 
 
-def stop(p):
-    p.terminate()
-    try:
-        return p.communicate(timeout=10)[0]
-    except subprocess.TimeoutExpired:
-        p.kill()
-        return p.communicate()[0]
+stop = L.stop
 
 
 def show(out):
@@ -248,13 +136,12 @@ try:
     check("compose: attachment passed", comp and [(f["name"], f["size"]) for f in comp[-1]["files"]],
           [("a.txt", 8)])
 
-    # A2 (before A1, so its "no read line" is clean): a bare `true` is Pat's 400
+    # A2 before A1, so its "no read record" check starts clean
     st, body = page.http("POST", "/winlink/api/mailbox/in/ABC123/read", data="true",
                          headers={"Content-Type": "application/json"})
     check("A2 mark read with body `true` -> 400 through the proxy", st, 400)
     check("A2   the request reached the fake", len(reached(flog, "/api/mailbox/in/ABC123/read")) >= 1, True)
     check("A2   and earned no read record", recs(flog, "read"), [])
-    # A1: {"read": true} marks it read
     st, body = page.http("POST", "/winlink/api/mailbox/in/ABC123/read", data='{"read": true}',
                          headers={"Content-Type": "application/json"})
     check("A1 mark read {\"read\": true} -> 200", st, 200)
@@ -262,7 +149,6 @@ try:
     st, body = page.http("GET", "/winlink/api/mailbox/in")
     check("A1   inbox shows ABC123 read", [m["Unread"] for m in json.loads(body) if m["MID"] == "ABC123"], [False])
 
-    # A3: archive = move with X-Pat-SourcePath
     st, _ = page.http("POST", "/winlink/api/mailbox/archive",
                       headers={"X-Pat-SourcePath": "/api/mailbox/in/DEF456"})
     check("A3 archive DEF456 from in -> 200", st, 200)
@@ -271,29 +157,22 @@ try:
     check("A3   fake recorded the move", [(r["src"], r["mid"], r["dest"]) for r in recs(flog, "move")],
           [("in", "DEF456", "archive")])
 
-    # A4: bad source paths; compose with the header; dest in from archive
     st, _ = page.http("POST", "/winlink/api/mailbox/archive", headers={"X-Pat-SourcePath": "/api/mailbox/bogus/X"})
     check("A4 move from an unknown box -> 400", st, 400)
     st, _ = page.http("POST", "/winlink/api/mailbox/archive")
     check("A4 move without X-Pat-SourcePath -> 400", st, 400)
     n_comp = len(recs(flog, "compose"))
-    form = aiohttp.FormData()
-    for k, v in (("to", "N0DAJ"), ("subject", "not a move"), ("body", "b")):
-        form.add_field(k, v)
-    st, body = page.http("POST", "/winlink/api/mailbox/out", data=form,
-                         headers={"X-Pat-SourcePath": "/api/mailbox/in/ABC123"})
+    st, body = compose(page, "not a move", headers={"X-Pat-SourcePath": "/api/mailbox/in/ABC123"})
     check("A4 POST to out with X-Pat-SourcePath -> 400 use the move route",
           (st, body.strip(), len(recs(flog, "compose")) - n_comp), (400, "use the move route", 0))
     st, _ = page.http("POST", "/winlink/api/mailbox/in", headers={"X-Pat-SourcePath": "/api/mailbox/archive/DEF456"})
     check("A4 move DEF456 archive -> in -> 200 (allowed)", (st, "DEF456" in mids(page, "in")), (200, True))
 
-    # A6: a dotfile MID never reaches Pat (yarl normalises . and .. segments
-    # before they get to {mid}, so those would prove nothing)
+    # a dotfile MID: yarl normalises . and .. before {mid}, so those would prove nothing
     st_d, _ = page.http("DELETE", "/winlink/api/mailbox/in/.hidden")
     st_g, _ = page.http("GET", "/winlink/api/mailbox/in/.hidden")
     check("A6 DELETE and GET in/.hidden -> 404", (st_d, st_g), (404, 404))
     check("A6   no request for .hidden reached the fake", reached(flog, ".hidden"), [])
-    # A6b: an encoded traversal in the move source (in/X/../../out/OUT0 to Pat)
     st, _ = page.http("POST", "/winlink/api/mailbox/archive",
                       headers={"X-Pat-SourcePath": "/api/mailbox/in/X%2F..%2F..%2Fout%2FOUT0"})
     check("A6b move source in/X%2F..%2F..%2Fout%2FOUT0 -> 400", st, 400)
@@ -301,7 +180,7 @@ try:
 
     lan_ip = lan_address()
     check("a LAN address that reaches a 0.0.0.0 listener (control)", lan_ip is not None, True)
-    if lan_ip is not None:              # no usable address: the control above already failed
+    if lan_ip is not None:
         try:
             socket.create_connection((lan_ip, PATP), timeout=1).close()
             lan = True
@@ -323,8 +202,7 @@ try:
     check("connect: armed", e is not None, True)
     e = page.wait(lambda e: e.get("t") == "winlink" and "Connecting to" in str(e.get("log", "")), 5)
     check("connect: Pat's log relayed", e is not None, True)
-    time.sleep(0.7)
-    check("connect: radio keyed through the lane", ptt(), "1")
+    check("connect: radio keyed through the lane", testkit.wait_for(lambda: ptt() == "1", 5), True)
     e = page.wait(ended, 15)
     check("session ended ok, 1 received", e and (e.get("ok"), e.get("received")), (True, 1))
     check("session ended: the composed message counted sent, none left",
@@ -337,23 +215,16 @@ try:
     n = page.wait(lambda e: e.get("t") == "winlink" and "notify" in e, 2)
     check("new-message notification relayed", n is not None, True)
 
-    # A5: delete a message in sent/ (the one the session just sent)
     sent_mid = (mids(page, "sent") or ["?"])[0]
     st, _ = page.http("DELETE", f"/winlink/api/mailbox/sent/{sent_mid}")
     check("A5 DELETE sent/<mid> -> 200", st, 200)
     check("A5   gone from sent", mids(page, "sent"), [])
     check("A5   fake recorded the delete", [(r["box"], r["mid"]) for r in recs(flog, "delete")], [("sent", sent_mid)])
-    # A8: Cc passes through compose
-    form = aiohttp.FormData()
-    for k, v in (("to", "N0DAJ"), ("cc", "K7ABC N0XYZ"), ("subject", "cc"), ("body", "b")):
-        form.add_field(k, v)
-    st, _ = page.http("POST", "/winlink/api/mailbox/out", data=form)
+    st, _ = compose(page, "cc", cc="K7ABC N0XYZ")
     check("A8 compose with cc -> 201, fake got cc",
           (st, (recs(flog, "compose") or [{}])[-1].get("fields", {}).get("cc")), (201, "K7ABC N0XYZ"))
 
-    # Stop aborts
     page.events.clear()
-    os.environ["FAKE_PAT_TX_S"] = "1.5"
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(lambda e: e.get("t") == "winlink" and e.get("armed") is True, 5)
     time.sleep(0.8)
@@ -366,7 +237,6 @@ try:
     check("stop: radio unkeyed", ptt(), "0")
     check("stop: lane disarmed", lane_ptt_refused(), True)
 
-    # second connect while one runs is refused
     page.events.clear()
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(lambda e: e.get("t") == "winlink" and e.get("armed") is True, 5)
@@ -375,31 +245,31 @@ try:
     check("second connect while one runs refused", e is not None, True)
     page.wait(ended, 10)
 
-    # page closing mid-session
     page.events.clear()
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(lambda e: e.get("t") == "winlink" and e.get("armed") is True, 5)
     time.sleep(0.6)
     before = len([r for r in fake_log(flog) if r["route"] == "disconnect"])
     page.close()
-    time.sleep(1.5)
+    time.sleep(2)
     check("page closed: Pat told to disconnect",
           len([r for r in fake_log(flog) if r["route"] == "disconnect"]) > before, True)
     check("page closed: radio unkeyed", ptt(), "0")
     check("page closed: lane disarmed", lane_ptt_refused(), True)
 
-    # Pat dies and comes back
     pid = [r["pid"] for r in fake_log(flog) if r["route"] == "start"][-1]
     os.kill(pid, 9)
-    time.sleep(4)
     page = Page()
-    st, _ = page.http("GET", "/winlink/api/mailbox/in")
-    check("Pat restarted after dying", (st, len([r for r in fake_log(flog) if r["route"] == "start"])), (200, 2))
+
+    def restarted():
+        return (page.http("GET", "/winlink/api/mailbox/in")[0],
+                len([r for r in fake_log(flog) if r["route"] == "start"]))
+    testkit.wait_for(lambda: restarted() == (200, 2), 15)
+    check("Pat restarted after dying", restarted(), (200, 2))
     page.close()
 finally:
     show(stop(server))
 
-# --- session cap and busy prompt ---
 server, flog = start({"FAKE_PAT_TX_S": "30"}, "--winlink-session-max", "4")
 try:
     page = Page()
@@ -428,10 +298,8 @@ try:
 finally:
     show(stop(server))
 
-# --- Pat puts the dial back after a session: the radio stays put, no tune ---
-# Live 2026-10-15: Pat's QSX (revert) reaches the lane ~1 s BEFORE /api/connect
-# returns, i.e. while the session is still armed; the band change it caused
-# fired an ATU tune carrier after every session.
+# --- Pat's QSX after a session: no band change, no tune ---
+# Live 2026-10-15: the QSX arrived while still armed and fired an ATU tune carrier.
 server, flog = start({"FAKE_PAT_QSY": "1", "FAKE_PAT_TX_S": "1"}, "--auto-tune")
 try:
     def freq():
@@ -449,10 +317,8 @@ try:
     time.sleep(4)                                  # past the auto-tune arming window
     page = Page()
     with socket.create_connection(("127.0.0.1", APPS), timeout=3) as s:
-        f = s.makefile("r")
         s.sendall(b"F 10136000\n")                # an app left the radio on 30 m
-        f.readline()
-        f.close()
+        s.makefile("r").readline()
     time.sleep(6)                                  # its 30 m tune (2 s settle + 2.5 s) ends
     page.events.clear()
     page.send({"t": "winlink_connect", "url": URL})
@@ -460,10 +326,7 @@ try:
     check("QSY session ended ok", e and e.get("ok"), True)
     check("Pat's QSY reached the radio",
           [(r["hz"], r["reply"]) for r in fake_log(flog) if r["route"] == "qsy"], [(3588500, "RPRT 0")])
-    # The server puts the radio on the session's frequency before Pat dials
-    # (hold Pat until the tune is done, 2026-11-07), so the frequency Pat
-    # reads to put back afterwards is the session's own: its QSX is a no-op,
-    # never a band change. (Before, it reverted toward 30 m and was ignored.)
+    # The server QSYs before Pat dials (2026-11-07), so Pat's QSX is a no-op.
     check("Pat's QSX answered ok (no Pat error), back to where it already is",
           [(r["hz"], r["reply"]) for r in fake_log(flog) if r["route"] == "qsx"], [(3588500, "RPRT 0")])
     time.sleep(3)
@@ -478,18 +341,11 @@ check("lane log: Pat's QSY and its no-op QSX, both on the session frequency, nev
 for l in [x for x in out.splitlines() if "refused" in x or "tun" in x] + lane:
     print("   log:", l[:200])
 
-# --- what a session SENT: Pat's outbox at arm vs sent/ at the end ---
-def compose(page, subject):
-    form = aiohttp.FormData()
-    for k, v in (("to", "N0DAJ"), ("subject", subject), ("body", "b")):
-        form.add_field(k, v)
-    return page.http("POST", "/winlink/api/mailbox/out", data=form)[0]
-
-
+# --- sent counts: Pat's outbox at arm vs sent/ at the end ---
 server, flog = start({"FAKE_PAT_SEND_N": "1"})
 try:
     page = Page()
-    check("two messages queued", (compose(page, "one"), compose(page, "two")), (201, 201))
+    check("two messages queued", (compose(page, "one")[0], compose(page, "two")[0]), (201, 201))
     page.send({"t": "winlink_connect", "url": URL})
     e = page.wait(ended, 15)
     check("gateway took one of two: sent 1, 1 left in the outbox",
@@ -520,11 +376,10 @@ try:
 finally:
     stop(server)
 
-# --- A7: the outbox is Pat's while a session runs ---
 server, flog = start({"FAKE_PAT_TX_S": "30"})
 try:
     page = Page()
-    check("A7 one message queued", compose(page, "queued"), 201)
+    check("A7 one message queued", compose(page, "queued")[0], 201)
     page.send({"t": "winlink_connect", "url": URL})
     e = page.wait(lambda e: e.get("t") == "winlink" and e.get("session") == "started", 10)
     check("A7 session started", e is not None, True)
@@ -546,7 +401,7 @@ finally:
     show(stop(server))
 
 
-# --- A7b: in process, the guard covers the admit window, under a lock ---
+# --- A7b: in process, the outbox guard covers the admit window, under a lock ---
 def a7b():
     sys.path.insert(0, ROOT)
     import winlink as W
@@ -581,7 +436,8 @@ def a7b():
         app = web.Application()
         eng.routes(app, lambda r: True)
         src = {"X-Pat-SourcePath": "/api/mailbox/out/OUT0"}
-        async def probe(req):                     # (status, how many times Pat was called)
+
+        async def probe(req):                     # (status, calls to Pat)
             n = len(calls)
             return (await req).status, len(calls) - n
 
@@ -590,8 +446,7 @@ def a7b():
             res["admitting: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
             res["admitting: move from out"] = await probe(c.post("/winlink/api/mailbox/archive", headers=src))
             eng._admitting = False
-            # No Status from Pat yet: its state is unknown, which counts as
-            # busy (A4). Then Pat says it is idle, as its WebSocket would.
+            # no Status from Pat yet counts as busy
             res["unknown: delete out"] = await probe(c.delete("/winlink/api/mailbox/out/OUT0"))
             eng.pat_ws, eng._status_live = object(), True
             eng.status = {"connected": False, "dialing": False, "active_listeners": [], "remote_addr": ""}
@@ -604,10 +459,10 @@ def a7b():
                 got.set()
 
             eng._admit = fake_admit
-            await eng._outbox_lock.acquire()      # a mailbox change past its check, mid-call
+            await eng._outbox_lock.acquire()      # a mailbox change in flight
             t = asyncio.create_task(eng.connect(None, "telnet://N9ABC:CMSTelnet@cms.winlink.org:8772/wl2k"))
             try:
-                await asyncio.wait_for(got.wait(), 0.3)   # quiet window: it must NOT get there
+                await asyncio.wait_for(got.wait(), 0.3)   # must not admit while the lock is held
                 early = True
             except TimeoutError:
                 early = False

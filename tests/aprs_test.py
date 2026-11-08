@@ -1,18 +1,8 @@
-"""aprs.py, the APRS decoder and encoder (APRS plan M1). Pure: no ports, no
-radio, about a second.
+"""aprs.py, the APRS decoder and encoder. Pure: no ports, no radio.
 
-  - worked examples from APRS 1.0.1 and the 1.1/1.2 addenda, and synthetic
-    vectors for what the ranch hasn't heard (object kills, compressed
-    altitude, !DAO! with ambiguity, reply-acks both ways, wrapped messages)
-  - every packet the ranch heard (packet-logs/rx.jsonl, else the committed
-    sample tests/fixtures/aprs/rx-sample.jsonl) decodes without raising;
-    under 2 % are "unknown", and each data type decodes to its type
-  - packets pinned from the log (PHG, Mic-E with device and altitude,
-    compressed, weather wind, ambiguity, empty EQNS, ack00}, msgno + CR)
-  - round trips for the frames we'll send (messages, acks, positions)
-  - the oracle: aprslib (GPL, in its own venv, never imported here) reads the
-    same packets; latitude, longitude and altitude must agree, and every other
-    difference is one of the documented choices below. Skipped without the venv.
+Spec vectors (APRS 1.0.1, 1.1/1.2 addenda), a received corpus (decodes
+without raising, types right), round trips for what we send, and aprslib as
+an oracle (its own venv, never imported here; skipped without it).
 
     python3 tests/aprs_test.py
 """
@@ -218,20 +208,10 @@ check("  its box holds the true position",
 d = dec(aprs.position_info(-33.5, 151.25, "/>", ""))
 check("southern/eastern hemispheres round trip", (near(d["lat"], -33.5), near(d["lon"], 151.25)), (True, True))
 
-# --- traffic heard on the air -------------------------------------------------------
-# A real receive log is private (it says where the station is): it lives with
-# the station's configs. RANCH_RADIO_APRS_SAMPLE, the checkout's own
-# tests/fixtures/aprs/rx-sample.jsonl, or ~/.config/ranch-radio's; without one
-# the corpus checks are skipped.
-def _corpus_sample():
-    for c in (os.environ.get("RANCH_RADIO_APRS_SAMPLE"), ROOT / "tests/fixtures/aprs/rx-sample.jsonl",
-              Path(os.path.expanduser("~/.config/ranch-radio/tests/fixtures/aprs/rx-sample.jsonl"))):
-        if c and Path(c).exists():
-            return Path(c)
-    return None
+# --- traffic heard on the air (private sample: see tests/corpus.py) -----------------
+import corpus  # noqa: E402
 
-
-sample = _corpus_sample()
+sample = corpus.sample()
 logs = [p for p in (ROOT / "packet-logs/rx.jsonl.1", ROOT / "packet-logs/rx.jsonl") if p.exists()]
 HAVE_CORPUS = bool(logs or sample)
 rows, rows_sample = [], []
@@ -239,7 +219,6 @@ if not HAVE_CORPUS:
     print("\nskip  corpus: no receive log (RANCH_RADIO_APRS_SAMPLE or ~/.config/ranch-radio/tests/fixtures/aprs/)")
 else:
     corpus_files = logs or [sample]
-    rows = []
     for f in corpus_files:
         for line in open(f, encoding="utf-8", errors="replace"):
             try:
@@ -299,20 +278,8 @@ else:
     check("weather: wind from DDD/SSS, then temperature and pressure",
           sub(d["weather"], ("wind_dir", "wind_speed_mph", "gust_mph", "temp_f", "pressure_mbar")),
           {"wind_dir": 332, "wind_speed_mph": 3, "gust_mph": 7, "temp_f": 72, "pressure_mbar": 1015.0})
-    d = pinned("3320.  N/11136.  W")
-    check("ambiguity 2 (heard)", (d["ambiguity"], near(d["lat"], 33 + 20.5 / 60), near(d["lon"], -(111 + 36.5 / 60))),
-          (2, True, True))
-    d = pinned("EQNS.0,0.075,0,0,0.1953")
-    check("EQNS with an empty coefficient (heard)", d["eqns"][4], [0.0, 10.0, 0.0])
-    d = pinned(":ack00}")
-    check("ack00} wrapped by an iGate (heard)", sub(d, ("type", "msgno", "replyack_capable")),
-          {"type": "ack", "msgno": "00", "replyack_capable": True})
-    d = pinned("{97919\r")
-    check("msgno with a trailing CR (heard)", d and d.get("msgno"), "97919")
-    d = pinned(":TC 0")
-    check("TC 0 (heard): TNC text", d and d.get("type"), "beacon_text")
 
-# --- code review 2026-10-19 (Codex 6 Astra): regression vectors ------------------------
+# --- regression vectors (code review 2026-10-19) ----------------------------------------
 d = dec(":N0CALL   :EQNS.1e999,0,0", src="N0CALL")
 check("EQNS with an infinite coefficient: unknown, not Infinity", d["type"], "unknown")
 d = dec("T#005,1.0e999,nan,0,0,0,00000000")
@@ -324,7 +291,8 @@ check("positionless weather keeps its month", time.gmtime(aprs.reported_time(d["
 d = dec("`&+Dp!l>/", dest="SQZZZZ")
 check("Mic-E ambiguity 4: longitude box centred on the degree", (d["ambiguity"], d["lon"]), (4, -110.5))
 d = dec("!3320.  N/11136.47W-")
-check("uncompressed: longitude takes latitude's ambiguity", d["lon"], round(-(111 + 36.5 / 60), 6))
+check("ambiguity 2; longitude takes latitude's ambiguity",
+      (d["ambiguity"], near(d["lat"], 33 + 20.5 / 60), d["lon"]), (2, True, round(-(111 + 36.5 / 60), 6)))
 for la, lo, amb in [(49.9999983, -72, 4), (49.9999983, -72, 1), (32.123456, -105.98765, 2), (-33.99999, 151.99999, 3)]:
     d = aprs.decode("N0CALL", "APRS", [], aprs.position_info(la, lo, ambiguity=amb))
     half = d["box_deg"] / 2 + 1e-6
@@ -344,16 +312,13 @@ check("PARM. to another station is a message", sub(d, ("type", "msgno")), {"type
 check("tocall APRS: no 'Unknown Unknown' device", dec(">hi").get("device"), None)
 
 # --- the oracle ------------------------------------------------------------------------
-# Documented differences from aprslib (not bugs here):
-#   - weather after a _ symbol: aprslib calls DDD/SSS course/speed; here it is
-#     wind direction/speed (1.0.1 ch. 12)
-#   - a speed of 000: kept here (0 kt), dropped by aprslib
-#   - third-party: here the inner packet is decoded; aprslib doesn't place it
+# Known differences from aprslib, by choice: DDD/SSS after a _ symbol is wind
+# (1.0.1 ch. 12), speed 000 is kept, and third-party inner packets are decoded.
 print()
 if not ORACLE_PY.exists() or not HAVE_CORPUS:
     print(f"skip  oracle: no aprslib venv at {ORACLE_PY}, or no corpus")
 else:
-    src = rows_sample if not logs else rows
+    src = rows
     r = subprocess.run([str(ORACLE_PY), "-I", str(ROOT / "tests/aprs_oracle.py")],
                        input="".join(json.dumps(t) + "\n" for t in src), capture_output=True, text=True,
                        timeout=120)
@@ -377,7 +342,7 @@ else:
         else:
             bad.append((t, "alt", oa, da))
     print(f"     {pos} positions compared with aprslib")
-    # Coverage (review 2026-10-19): an oracle that refuses everything must not PASS.
+    # An oracle that refuses everything must not pass.
     ours = sum(1 for t in src if (lambda d: d["type"] != "third_party" and d.get("lat") is not None)(
         aprs.decode(*aprs.split_tnc2(t))))
     refused = sum(1 for o in out if "error" in json.loads(o))

@@ -1,19 +1,12 @@
-"""Direwolf as the packet hub's modem ("packet": {"tnc": "direwolf"}).
-
-  - the host file renders Direwolf and the hub, on macOS (launchd agents) and
-    Linux (systemd units); the hub reads Direwolf's pseudo-terminal, never a
-    network port
-  - a malformed block is refused before anything renders
-  - direwolf_tnc.py, against a stand-in Direwolf and a stand-in USB lookup:
-    waits for the cable, writes a config with no network ports and no PTT
-    unless asked, keeps the iGate passcode in a 0600 file, clears a stale
-    pty link, and stops Direwolf when the cable goes away or on SIGTERM
-  - doctor asks for Direwolf, not BlueZ, for this TNC
+"""Direwolf as the packet hub's modem ("packet": {"tnc": "direwolf"}): host
+file rendering (launchd, systemd) and validation, direwolf_tnc.py against a
+stand-in Direwolf and USB lookup, and doctor's needs for this TNC.
 
     python3 tests/direwolf_tnc_test.py
 """
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -95,7 +88,7 @@ targs = next(a for a in render.artifacts(td, home="/H") if a.path.endswith("org.
 check("txdelay reaches Direwolf's launcher", targs[targs.index("--txdelay") + 1] if "--txdelay" in targs else None, "600")
 
 names = {c.what.split(":")[0].split(" ")[0] for c in doctor.static(mac) + [
-    c for n in [m for m in doctor.MANIFESTS["packet"]["needs"]]
+    c for n in doctor.MANIFESTS["packet"]["needs"]
     for c in doctor._need("packet", n, mac["packet"], sys.executable, os.environ.get("PATH"), "macos")]}
 check("doctor: asks for Direwolf, not BlueZ, for this TNC", ("direwolf" in names, "bluetoothctl" in names), (True, False))
 
@@ -168,6 +161,6 @@ r = subprocess.run([sys.executable, str(ROOT / "direwolf_tnc.py"), "--usb", "120
 check("a passcode file that isn't digits: refused, and not echoed",
       (r.returncode != 0, "hunter2" in r.stdout + r.stderr), (True, False))
 
-subprocess.run(["rm", "-rf", str(TMP)])
+shutil.rmtree(TMP, ignore_errors=True)
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

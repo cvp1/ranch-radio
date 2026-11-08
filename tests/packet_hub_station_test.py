@@ -1,10 +1,7 @@
-"""A station with a network KISS TNC (Direwolf) and no shared rigctl port.
-
-The packet hub must render without any Bluetooth/UV-PRO plumbing when the
-host file's packet "tnc" is tcp:host:port; the station may switch its shared
-rigctl port off (station.rigctl_port 0), and then must not claim a primary
-radio; port validation must refuse conflicts. Built from examples/hosts, never
-a real host file.
+"""A station with a network KISS TNC (Direwolf) and no shared rigctl port: the
+hub renders without Bluetooth/UV-PRO plumbing, the station claims no primary
+radio with rigctl_port 0, and port conflicts are refused. Built from
+examples/hosts, never a real host file.
 
     python3 tests/packet_hub_station_test.py
 """

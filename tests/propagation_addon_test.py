@@ -20,11 +20,13 @@
 """
 import asyncio
 import json
-import socket
 import sys
+import time
 from pathlib import Path
 
 from aiohttp import web
+
+import testkit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -42,11 +44,9 @@ def check(name, got, want):
 
 
 # ---------------------------------------------------------------- parsing
-check("flux 2.63e-7 is B2.6", P.xray_class(2.632919517964183e-07), "B2.6")
-check("flux 1.2e-5 is M1.2", P.xray_class(1.2e-5), "M1.2")
-check("flux 3e-4 is X3.0", P.xray_class(3e-4), "X3.0")
-check("flux 5e-9 is A0.5", P.xray_class(5e-9), "A0.5")
-check("no flux, no class", P.xray_class(None), None)
+check("X-ray class from flux (none: no class)",
+      [P.xray_class(f) for f in (2.632919517964183e-07, 1.2e-5, 3e-4, 5e-9, None)],
+      ["B2.6", "M1.2", "X3.0", "A0.5", None])
 check("Kp labels", [P.kp_label(k) for k in (0, 3, 4.3, 5, 7, 9)],
       ["quiet", "unsettled", "active", "storm G1", "storm G3", "storm G5"])
 
@@ -137,19 +137,18 @@ check("  capped", len(P.parse_forecast(fc_open([(f"{i}m", "EU", [(H0, 0.6, ISSUE
 check("  nothing open is no windows", P.parse_forecast({"results": [{"statement_id": 0}]}, ISSUED), [])
 
 # ---------------------------------------------------------------- catalog
-check("in the module catalog as an add-on", catalog.by_name().get("propagation", {}).get("kind"), "addon")
-check("its manifest block is addons/propagation", manifest.MANIFESTS["propagation"]["block"], ("addons", "propagation"))
-check("both OSes have a template", [manifest.template("propagation", o) for o in ("macos", "linux")],
-      [{"enabled": True}, {"enabled": True}])
+check("an add-on in the catalog, at addons/propagation, enabled on both OSes",
+      (catalog.by_name().get("propagation", {}).get("kind"), manifest.MANIFESTS["propagation"]["block"],
+       [manifest.template("propagation", o) for o in ("macos", "linux")]),
+      ("addon", ("addons", "propagation"), [{"enabled": True}, {"enabled": True}]))
 
 
 # ---------------------------------------------------------------- against stand-ins
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+async def until(addon, pred, timeout=10):
+    """Return once pred(snapshot) holds (the poll loop has got that far)."""
+    end = time.monotonic() + timeout
+    while not pred(addon.snapshot()) and time.monotonic() < end:
+        await asyncio.sleep(0.05)
 
 
 class Host:
@@ -211,7 +210,7 @@ async def main():
     app.router.add_get("/psk", pskr)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = free_port()
+    port = testkit.free_port()
     await web.TCPSite(runner, "127.0.0.1", port).start()
     base = f"http://127.0.0.1:{port}"
     P.URL_KP, P.URL_XRAY, P.URL_F107 = f"{base}/noaa/kp", f"{base}/noaa/xray", f"{base}/noaa/f107"
@@ -221,7 +220,7 @@ async def main():
     a = P.Propagation(host, {"skywatch": {"url": base, "db": "skywatch"}, "window_min": 45,
                              "pskreporter": {"call": "n0call"}})
     await a.start()
-    await asyncio.sleep(1.0)
+    await until(a, lambda s: s["psk_checked"])          # PSKReporter is the loop's last poll
     s = a.snapshot()
     check("snapshot: Kp from NOAA", (s["kp"]["kp"], s["kp"]["label"]), (2.3, "quiet"))
     check("snapshot: X-ray class and solar flux", (s["xray"]["class"], s["f107"]["sfi"]), ("B2.6", 90))
@@ -239,14 +238,12 @@ async def main():
     check("the page was told (one state message)", [m.get("addon") for m in host.sent if "state" in m][:1], ["propagation"])
 
     # InfluxDB goes away: unknown, not zero.
-    a.sw_url = "http://127.0.0.1:9"          # nothing listens there
     noaa_up["on"] = False
-    a._last_swpc = 0
     host.sent.clear()
     await a.stop()
-    a.sw_url = "http://127.0.0.1:9"
+    a.sw_url = "http://127.0.0.1:9"          # nothing listens there
     await a.start()
-    await asyncio.sleep(1.5)
+    await until(a, lambda s: s["psk_error"])
     s = a.snapshot()
     check("InfluxDB down: no counts", s["bands"], {})
     check("  and says why", s["heard_error"], "skywatch not reachable")

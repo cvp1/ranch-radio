@@ -1,6 +1,5 @@
-"""Adding and removing a module from the page (modules plan M3/M4).
+"""Adding and removing a module from the page.
 
-Falsifiers from plan revision 2:
   M3  a plan writes nothing; the page is refused a path, a bool (tx), a label,
       a key not in the template, and an ASK value that fails its rule; a valid
       calls list is accepted
@@ -14,7 +13,6 @@ file), each on scratch copies (RANCH_RADIO_REPO / RANCH_RADIO_HOME).
     python3 tests/modules_apply_test.py
 """
 import asyncio
-import fcntl
 import hashlib
 import json
 import os
@@ -23,15 +21,13 @@ import shutil
 import socket
 import subprocess
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
 import tempfile
 import threading
 import time
 
 import aiohttp
+
+os.environ["RANCH_RADIO_HOSTS"] = ""     # never this machine's own host files
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -176,7 +172,7 @@ async def linux_station(port):
     check("M4 another page can't apply my plan", (r or {}).get("ok"), False)
     check("  and the file is unchanged", digest("testlinux"), before)
 
-    p = await plan(good)                      # b's attempt consumed nothing of a's? plan again to be sure
+    p = await plan(good)
     r = await a.ask({"t": "module_apply", "plan": p["id"]}, "module_applied")
     with open(hpath("testlinux")) as f:
         h = json.load(f)

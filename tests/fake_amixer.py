@@ -1,4 +1,4 @@
-"""A stand-in for ALSA's `amixer`, enough for codec_level_test.py.
+"""A stand-in for ALSA's `amixer`, for the codec level tests.
 
     amixer -c CARD sget CONTROL
     amixer -q -c CARD -- sset CONTROL -38.00dB

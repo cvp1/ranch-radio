@@ -21,11 +21,11 @@ Never connects to real hardware.
 import os
 import random
 import select
+import sys
 import threading
 import time
 import tty
 
-import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ax25 import KissDecoder, kiss_wrap  # noqa: E402
@@ -38,10 +38,7 @@ class FakeKissRadio:
         self.control = []          # Gaia frames the hub sent
         self.loss = loss
         self.max_run = max_run
-        # One generator (and drop run) per direction: "up" = hub to air,
-        # "down" = air to hub. A shared one, drawn from by the reader thread
-        # and the simulated station's thread in whatever order the scheduler
-        # picked, made the seed reproduce nothing.
+        # "up" = hub to air, "down" = air to hub; see the module doc
         self._rng = {"up": random.Random(seed), "down": random.Random(seed + 1000)}
         self._run_len = {"up": 0, "down": 0}
         self.dropped = {"up": 0, "down": 0}

@@ -7,15 +7,21 @@ rigctl PTT obeys the same safety as the browser:
   - a client that goes quiet is unkeyed after the keepalive window
   - --tx-timeout cuts a long transmission even while the client keeps polling
   - a second client can't key while the first holds PTT
+  - split as JTDX drives it (S/I, and F VFOB in --vfo mode): real on the
+    IC-7300, emulated on the G90
 
     .venv/bin/python tests/rigctl_tx.py [rig]
 """
+import asyncio
+import json
 import os
 import random
 import socket
 import subprocess
 import sys
 import time
+
+import aiohttp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
@@ -98,15 +104,13 @@ try:
     p.close()
 
     # --- split, as JTDX/WSJT-X "Rig" split drives it ---
-    import asyncio as _aio, json as _json, aiohttp as _aiohttp
-
     async def radio_state():
-        async with _aiohttp.ClientSession() as sess:
+        async with aiohttp.ClientSession() as sess:
             async with sess.ws_connect(f"http://127.0.0.1:{WEB}/ws") as ws:
-                return _json.loads((await ws.receive()).data)["state"]
+                return json.loads((await ws.receive()).data)["state"]
 
     def rs():
-        return _aio.run(radio_state())
+        return asyncio.run(radio_state())
 
     sp = Client()
     sp.cmd("F 14074000")
@@ -134,7 +138,6 @@ try:
         st = rs()
         check("G90: disconnect while keyed -> unkeyed + RX", (st["tx"], st["freq"]), (False, 14074000))
         q2 = Client()
-        # F9: the last client left, so its emulated split went with it.
         check("split cleared after the last client left", q2.cmd("s", 2), ["0", "VFOA"])
         check("S 1 turns emulated split back on", q2.cmd("S 1 VFOB"), ["RPRT 0"])
         check("S 0 turns emulated split off", q2.cmd("S 0 VFOA"), ["RPRT 0"])
@@ -146,8 +149,7 @@ try:
         check("S 0", sp.cmd("S 0 VFOA"), ["RPRT 0"])
         sp.close()
 
-    # --- split TX frequency set via set_freq(VFO_B) before split is on:
-    # TX frequency via set_freq(VFO_B) before split is on, in --vfo mode ---
+    # --- TX frequency via set_freq(VFO_B) before split is on, in --vfo mode ---
     jx = Client()
     check("vfo mode: F VFOB (TX, split off)", jx.cmd("F VFOB 14075700"), ["RPRT 0"])
     check("vfo mode: F VFOA (RX)", jx.cmd("F VFOA 14074000"), ["RPRT 0"])

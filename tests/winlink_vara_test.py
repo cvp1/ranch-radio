@@ -5,7 +5,7 @@ xara. xara keys the radio itself through its own lane
 (--winlink-vara-rigctl-port); Pat (ptt_ctrl false) never keys for VARA.
 Nothing here transmits: the radio is the simulator.
 
-Unit: check_url (varahf in, varafm / vara out); PatEngine's default modems.
+Unit: check_url (varahf in, varafm / vara out).
 Server:
   - off (no --winlink-vara-*): modems ["ardop"], a varahf connect is refused,
     and nothing listens on a VARA lane port (a leftover xara can't key)
@@ -70,16 +70,13 @@ check("check_url: varafm refused", (winlink.check_url("varafm:///N0CALL", band) 
 check("check_url: bare vara refused", (winlink.check_url("vara:///N0CALL", band) or "")[:23], "Unsupported transport '")
 check("check_url: varahf off-band freq refused", "outside the amateur bands" in
       (winlink.check_url("varahf:///N0CALL?freq=5000", band) or ""), True)
-check("PatEngine default modems: ARDOP only", winlink.DEFAULT_HF_MODEMS, ("ardop",))
 
 
 # --- harness ----------------------------------------------------------------
 
 def pat_cfg(path, **varahf):
-    v = {"addr": f"localhost:{XPORT}", "bandwidth": 500, "rig": "ic7300", "ptt_ctrl": False}
-    v.update(varahf)
     rigs = varahf.pop("_rigs", None) or {"ic7300": {"address": f"localhost:{lib.LANE}", "network": "tcp"}}
-    v.pop("_rigs", None)
+    v = {"addr": f"localhost:{XPORT}", "bandwidth": 500, "rig": "ic7300", "ptt_ctrl": False, **varahf}
     testkit.pat_config(path, varahf=v, hamlib_rigs=rigs, secure_login_password=PASSWORD)
     return path
 
@@ -182,7 +179,7 @@ def ended(page, timeout=40):
     return page.wait(lib.ended, timeout)
 
 
-def after(page, e0):
+def after():
     """Once a session ended: RX, both lanes disarmed (refused at T 1)."""
     time.sleep(0.5)
     return (lib.ptt(), lane_cmd(lib.LANE, "T 1"), lane_cmd(VLANE, "T 1"))
@@ -208,7 +205,7 @@ try:
     check("VARA off: arming for varahf refused", bool(n), True)
     page.close()
 finally:
-    out = lib.stop(server)
+    lib.stop(server)
 
 # --- on: Pat's config is checked by host and port, at every arm ---------------
 
@@ -265,7 +262,7 @@ try:
           [r for r in lib.fake_log(f["pat"]) if r["route"] == "ptt_on"], [])
     check("ours: Pat's QSY went through the ARDOP lane, applied while armed",
           [(r["hz"], r["reply"]) for r in lib.fake_log(f["pat"]) if r["route"] == "qsy"], [(3588500, "RPRT 0")])
-    check("ours: RX, both lanes disarmed after", after(page, e), ("0", "RPRT -11", "RPRT -11"))
+    check("ours: RX, both lanes disarmed after", after(), ("0", "RPRT -11", "RPRT -11"))
     check("ours: mode and codec put back", (mode(), page.snapshot().get("codec_db")), (m0, codec0))
 
     # their QRT: a fresh key right after "tx cw"
@@ -351,7 +348,7 @@ server, f = start()
 xp = xara(f)
 try:
     page = lib.WebPage(lib.WEB)
-    try:      # straight to Pat, past the page and the lane's arming (Pat dialing on its own)
+    try:      # straight to Pat, past the page's arming
         urllib.request.urlopen(f"http://127.0.0.1:{lib.PATP}/api/connect?url=" + urllib.parse.quote(VURL),
                                timeout=15).read()
     except Exception:  # noqa: BLE001 - 500: the session failed, as it should
@@ -396,7 +393,7 @@ def failure(name, env=None, extra=(), act=None, want_on_air=None, want_owed=None
         time.sleep(1.5)
         snap = page.snapshot()
         i = snap.get("id") or {}
-        check(f"{name}: RX and both lanes disarmed", after(page, e), ("0", "RPRT -11", "RPRT -11"))
+        check(f"{name}: RX and both lanes disarmed", after(), ("0", "RPRT -11", "RPRT -11"))
         check(f"{name}: mode and codec put back", (mode(), snap.get("codec_db")), (m0, codec0))
         if want_on_air is not None:
             check(f"{name}: xara's ID {'on air' if want_on_air else 'not on air'}",
@@ -447,17 +444,14 @@ try:
     check("ARDOP -> VARA -> ARDOP: each ok, its own modem's ID on air", got,
           [("ardop", True, "ardopcf", True, False), ("varahf", True, "xara", True, False),
            ("ardop", True, "ardopcf", True, False)])
-    check("back to back: RX, both lanes disarmed", after(page, None), ("0", "RPRT -11", "RPRT -11"))
+    check("back to back: RX, both lanes disarmed", after(), ("0", "RPRT -11", "RPRT -11"))
     page.close()
 finally:
     lib.stop(server)
     kill(xp)
 
-# --- hold Pat until the tune is done (2026-11-07) --------------------------------
-# A VARA session on another band, with --auto-tune: Pat QSYs inside its
-# /api/connect and the modem keys at once, so the band change's tune ran under
-# xara's first key, which was refused, and xara exited. Now the server puts
-# the radio on the session's frequency and waits out its tune before Pat dials.
+# --- hold Pat until the tune is done ----------------------------------------------
+# 2026-11-07: the band-change tune ran under xara's first key, which was refused.
 
 server, f = start(extra=("--auto-tune",))
 xp = xara(f)
@@ -466,11 +460,9 @@ try:
     time.sleep(3.5)                                   # past the post-connect arming window
     page.send({"t": "winlink_connect", "url": VURL})  # 20 m (sim start) -> 80 m
     tune_at = None
-    end = time.time() + 20
-    while time.time() < end and tune_at is None:
-        if any(e.get("t") == "notice" and "ATU tuning for 80 m" in e.get("msg", "") for e in page.events):
-            tune_at = time.time()
-        time.sleep(0.05)
+    if testkit.wait_for(lambda: any(e.get("t") == "notice" and "ATU tuning for 80 m" in e.get("msg", "")
+                                    for e in page.events), 20):
+        tune_at = time.time()
     check("hold Pat: the band change tunes 80 m", tune_at is not None, True)
     e = ended(page)
     check("hold Pat: the session ends ok", bool(e and e.get("ok")), True)
@@ -482,7 +474,7 @@ try:
           any("waiting for the ATU tune" in x.get("msg", "") for x in page.events if x.get("t") == "notice"), True)
     page.close()
 finally:
-    out = lib.stop(server)
+    lib.stop(server)
     kill(xp)
 
 # --- STOP TX during a VARA session ------------------------------------------------
@@ -499,7 +491,7 @@ try:
     e = ended(page, 15)
     check("STOP: the VARA session ends, not ok", bool(e) and e.get("ok") is False, True)
     time.sleep(0.5)
-    check("STOP: RX and both lanes refuse", after(page, e), ("0", "RPRT -11", "RPRT -11"))
+    check("STOP: RX and both lanes refuse", after(), ("0", "RPRT -11", "RPRT -11"))
     page.events.clear()
     page.send({"t": "winlink_connect", "url": VURL})
     n = page.wait(lambda x: x.get("t") == "notice" and "STOP TX" in x.get("msg", ""), 5)

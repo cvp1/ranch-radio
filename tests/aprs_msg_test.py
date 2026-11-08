@@ -1,18 +1,9 @@
 """APRS messaging (aprs_msg.py) in process, on a compressed clock.
 
-A real tnc_hub.Hub and its APRS store (a temp SQLite file), with the radio
-replaced at its write boundary: every frame the hub hands the radio is kept
-as bytes and decoded here, and inbound frames go in through
-Hub.on_radio_frame exactly as the radio's bytes would. The clock is a
-variable: tnc_hub.now and the engine's clock both read it, and the engine's
-pass (Engine.tick) is called by the test instead of its 0.5 s loop.
-
-Covers the October M3 test list with the 2026-11-07 plan's deltas: acking
-(full only), not acking, wrapped inbound, matching, retry slots, one in
-flight per addressee, the gate's reserves with acks, pauses and races, a
-restart mid-retry, the send/full split, the firmware-ack readout, and IS
-copies never acked or matched. The wire versions (HTTP, the real pty, a
-crash, APRS-IS) are in tests/aprs_msg_wire_test.py.
+A real tnc_hub.Hub and APRS store, with the radio replaced at its write
+boundary and inbound frames fed through Hub.on_radio_frame. The test drives
+the clock and calls Engine.tick itself. Wire versions (HTTP, pty, crash,
+APRS-IS) are in tests/aprs_msg_wire_test.py.
 
     .venv/bin/python tests/aprs_msg_test.py
 """
@@ -53,7 +44,7 @@ class Clock:
 
 
 clock = Clock()
-tnc_hub.now = clock                     # the gate's window, the logs, the store's receive times
+tnc_hub.now = clock
 
 
 class Radio:
@@ -78,10 +69,10 @@ class Named:
     def __init__(self, name, mon=False, raw=False):
         self.name, self.mon, self.raw = name, mon, raw
 
-    def monitor(self, f, raw):          # an AGWPE client's monitor feed (unused here)
+    def monitor(self, f, raw):
         pass
 
-    def send_frame(self, raw):          # a KISS client's feed
+    def send_frame(self, raw):
         pass
 
 
@@ -175,7 +166,7 @@ async def t_acking():
         await r.tick()
         check("  after 30 s: acked again (the sender didn't hear us)", r.radio.texts(n), [ACK.format("KF7ABC-9", "12")])
         clock.t += 3
-        r.hub.gate.ack_per_min = 0                  # the gate refuses the next ack
+        r.hub.gate.ack_per_min = 0
         n = len(r.radio.frames)
         r.hear("W7TST", ":N9ABC    :refused{55")
         await r.tick()
@@ -186,7 +177,7 @@ async def t_acking():
         await r.tick()
         check("  the next copy is acked (a refusal doesn't start the 30 s slot)", r.radio.texts(n),
               [ACK.format("W7TST", "55")])
-        clock.t += 61                               # a fresh minute: the ack cap (6/min) is not the test here
+        clock.t += 61                               # a fresh minute, clear of the ack cap
         n = len(r.radio.frames)
         r.hear("AA7JB", "}W7TST-9>APRS,TCPIP,AA7JB*::N9ABC    :hi{7", dest="APDW18")
         await r.tick()
@@ -524,15 +515,16 @@ async def t_races():
         r = await rig()
         try:
             row = await r.eng.compose("W7TST", "race")
-            go = asyncio.Event()
+            held, go = asyncio.Event(), asyncio.Event()
 
             async def hook(what, item):
                 if what == "before_transmit":
+                    held.set()
                     await go.wait()
             r.eng.hook = hook
             clock.t += 1
             task = asyncio.create_task(r.eng.tick())
-            await asyncio.sleep(0.05)               # the pass is held after its decision, before transmit()
+            await asyncio.wait_for(held.wait(), 5)  # the pass decided to send; transmit() not yet called
             act(r.hub)
             go.set()
             await task
@@ -601,8 +593,8 @@ async def t_restart_cooldown():
     await r.tick()
     t0 = r.radio.frames[0][0]
     await r.close(keep=True)
-    clock.t = t0 + 50                         # restarted between slot 1 (30) and slot 2 (90): slot 1 missed
-    r2 = await Rig().open(logdir=logdir)      # 60 s cooldown: to t0+110
+    clock.t = t0 + 50                         # between slot 1 (30) and slot 2 (90); cooldown to t0+110
+    r2 = await Rig().open(logdir=logdir)
     try:
         await r2.run_until(t0 + 109)
         check("restart: nothing during the cooldown (not at once)", len(r2.radio.frames), 0)
@@ -709,10 +701,12 @@ async def t_contract():
             check(f"compose refuses {name}", got, "refused")
         try:
             await r.eng.compose("NOT A CALL", "x")
+            got = "accepted"
         except aprs_msg.MsgError as e:
-            check("compose refuses a bad callsign", str(e).startswith("to:"), True)
+            got = str(e)
+        check("compose refuses a bad callsign", got.startswith("to:"), True)
         text = "A" * 30 + " 0123456789 !\"#$%&'()*+,-./:;<=>?@[]^_`" [:37]
-        check("  (the boundary text is 67 characters)", len(text), 67)
+        assert len(text) == 67
         row = await r.eng.compose("w7tst-9", text)
         await r.tick()
         stored = await r.row(row["id"])

@@ -1,8 +1,6 @@
-"""The Modules tab's inventory (ranch_radio/inventory.py) and doctor's budget.
-
-Falsifiers from plan revision 2 (M1):
+"""The Modules tab's inventory (ranch_radio/inventory.py) and doctor's budget:
   - a running Mesh (in Addons.items, not in describe()) reads "on"
-  - the macOS widget in the host file reads installed / install pending, never "pending"
+  - the macOS widget reads installed / install pending, never "pending"
   - an add-on with an error and on=False reads "broken", not "off"
   - mesh in the host file but not in the runtime reads "pending"
   - an add-on running but gone from the host file reads "removed"
@@ -13,17 +11,14 @@ Falsifiers from plan revision 2 (M1):
 """
 import copy
 import json
-import os as _os  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
-# doctor's Winlink check reads Pat's config: point its default at an empty
-# directory, so the suite never reads this machine's own Pat config.
-_os.environ["XDG_CONFIG_HOME"] = _tempfile.mkdtemp(prefix="rr-xdg-")
+import os
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
+import tempfile
 from pathlib import Path
+
+# Never read this machine's own Pat config (doctor's Winlink check) or host files.
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rr-xdg-")
+os.environ["RANCH_RADIO_HOSTS"] = ""
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))

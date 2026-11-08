@@ -1,13 +1,11 @@
-"""Shared test plumbing: ports the OS hands out, and waiting on a condition
-instead of sleeping. A fixed sleep before a check is a guess about how fast
-the machine is; CI's two-CPU runners guess wrong (2026-10-23)."""
+"""Shared test plumbing: OS-assigned ports, waiting on a condition instead of a
+fixed sleep (CI's two-CPU runners are slower than any guess), and a clean Pat."""
 import socket
 import time
 
 
 def free_port():
-    """A TCP port nothing on this machine is listening on, from the OS (bind
-    to port 0), not a random pick from a range that two tests can share."""
+    """A TCP port the OS says is free (bind to port 0)."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -24,10 +22,9 @@ def wait_for(pred, timeout=4.0, step=0.05):
 
 
 def pat_config(path, **over):
-    """Write a Pat config.json that is safe for the server's preflight (no
-    listen, no schedule, no beacon) and return its path. Tests pass it with
-    --winlink-pat-config (or station.json "pat_config"), so nothing ever
-    reads the Pat config of the machine the suite runs on."""
+    """Write a Pat config.json safe for the server's preflight (no listen,
+    schedule or beacon) and return its path, so no test reads this machine's
+    own Pat config."""
     import json
     cfg = {"mycall": "N9ABC", "secure_login_password": "", "locator": "FN31",
            "listen": [], "schedule": {}, "ax25": {"engine": "agwpe", "beacon": {"every": 0}},
@@ -41,10 +38,9 @@ def pat_config(path, **over):
 
 
 def real_pat_env(home, *calls):
-    """Environment for a real `pat` kept inside HOME (config, data, state),
-    with its once-per-100-days "is this Winlink account active?" check
-    already done for each call: Pat otherwise asks the CMS over the internet
-    and then waits two minutes on a web prompt before any connect."""
+    """Environment for a real `pat` kept inside HOME, with its periodic
+    account check pre-stamped for each call: otherwise Pat asks the CMS over
+    the internet and waits two minutes on a web prompt before any connect."""
     import json
     import os
     from datetime import UTC, datetime
@@ -60,9 +56,7 @@ def real_pat_env(home, *calls):
 
 
 def fake_pat_cmd(**over):
-    """The command for tests/fake_pat.py as Pat, with --config naming a
-    fresh clean config (see pat_config): the server's preflight reads that
-    file, never this machine's own Pat config."""
+    """The command for tests/fake_pat.py as Pat, with a fresh pat_config()."""
     import shlex
     import sys
     import tempfile

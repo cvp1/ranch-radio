@@ -1,28 +1,19 @@
 """The page's transmit level: voice on the page's PTT, step, save, guards.
 
-linux-station, 2026-10-17: ardopcf through the Digirig at 0 dB drove the G90 to
-~25 W on a 20 W radio, and plain USB keyed it at 0 W. Winlink got a per-band
-level (codec_level_test.py); this covers the rest of the page's control.
-
-Checks:
-  - the page's PTT puts the codec at the voice level for the band, and back
-    after unkeying; the level is set before the key and restored after it
-  - an app keying over rigctl (JTDX) never moves the codec
-  - the G90 in plain USB: the page's voice is refused with a notice, never keyed
-  - a step applies live while voice holds the codec, stops at --codec-min-db
-    and at 0 dB, and shows as unsaved; on another band it edits that band only
-  - Save without --codec-save is refused; with it, the host file's
-    voice_codec_db is rewritten in place (other lines untouched) and the
-    radio's unit is installed in the given home
-  - a Winlink arm while voice holds the codec is refused, not run at the
-    voice level
-  - review 2026-10-18 (Sol, Grok): with a slow mixer, an app's rigctl T 1
-    during the page's voice preparation is refused (the page owns PTT first),
-    and another page's unkey during preparation leaves nothing keyed or
-    changed (rigctl T 0 releases only a real transmission, by design); page PTT
-    is refused while a Winlink session is armed; Save reloads systemd (Linux)
-    without a restart; two Saves at once both land; a failed restore is kept
-    and retried instead of forgotten
+The Digirig at 0 dB once drove a 20 W G90 to ~25 W. Winlink's per-band level
+is codec_level_test.py; this covers the rest of the page's control:
+  - page PTT sets the band's voice level before the key, restores it after;
+    refused off-band and on the G90 in plain USB; an app's rigctl PTT never
+    moves the codec
+  - steps apply live, stop at --codec-min-db / 0 dB / --codec-max-db, and
+    edit only the current band
+  - Save: refused without --codec-save; with it, rewrites voice_codec_db in
+    place, installs the unit and reloads systemd (no restart); two at once
+    both land
+  - a slow mixer: the page owns PTT from the start of its preparation, and
+    another page's unkey during it leaves nothing keyed
+  - Winlink and voice never take the codec from each other mid-transmission
+  - a failed restore is kept and retried
 
 Runs the simulator (--sim --rig g90) with tests/fake_amixer.py as amixer.
 Nothing here touches a radio or the real host file.
@@ -37,17 +28,16 @@ import shutil
 import socket
 import subprocess
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
 import tempfile
 import threading
 import time
 
 import aiohttp
 
+os.environ["RANCH_RADIO_HOSTS"] = ""     # never the real host files of this machine
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from testkit import wait_for  # noqa: E402
+
 TMP = tempfile.mkdtemp(prefix="tx-level-")
 STATE = os.path.join(TMP, "level")
 MIXLOG = os.path.join(TMP, "amixer.jsonl")
@@ -66,6 +56,11 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f"\n     got:  {got!r}\n     want: {want!r}"))
 
 
+def expect(name, get, want, timeout=5):
+    wait_for(lambda: get() == want, timeout)
+    check(name, get(), want)
+
+
 def set_level(db):
     with open(STATE, "w") as f:
         f.write(str(db))
@@ -73,7 +68,7 @@ def set_level(db):
 
 def level():
     with open(STATE) as f:
-        return float(f.read())
+        return float(f.read() or "nan")     # empty mid-write by the fake amixer
 
 
 class Page:
@@ -189,7 +184,7 @@ try:
     time.sleep(0.4)
 
     print("\n# outside the amateur bands: page PTT refused with the reason")
-    page.send(t="set", k="freq", v=14_369_000)        # mac-shack, 2026-10-18: keyed nothing there
+    page.send(t="set", k="freq", v=14_369_000)
     time.sleep(0.3)
     page.send(t="set", k="tx", v=True, mic=True)
     n = page.notice("outside the amateur bands")
@@ -212,36 +207,32 @@ try:
     page.send(t="set", k="data", v=True)
     time.sleep(0.4)
     page.send(t="set", k="tx", v=True)
-    time.sleep(0.5)
-    check("keyed", rigctl(apps, "t"), "1")
-    check("codec at the voice level (default)", level(), -30.0)
+    expect("keyed", lambda: rigctl(apps, "t"), "1")
+    expect("codec at the voice level (default)", level, -30.0)
     snap = page.codec()
     check("snapshot: live on 20 m, default level", (snap["live"], snap["band"], snap["db"], snap["own"]),
           (True, "20 m", -30.0, False))
 
     print("\n# step while live: applied now, floor and top hold")
     page.send(t="codec_step", use="voice", db=-1)
-    time.sleep(0.4)
-    check("one step down, live", level(), -31.0)
+    expect("one step down, live", level, -31.0)
     snap = page.codec()
     check("20 m now has its own level, unsaved", (snap["db"], snap["own"], snap["unsaved"]), (-31.0, True, True))
     for _ in range(8):
         page.send(t="codec_step", use="voice", db=-1)
-    time.sleep(0.8)
+    wait_for(lambda: level() == -36.0)
     check("stops at the floor", (level(), page.codec()["db"]), (-36.0, -36.0))
     page.send(t="set", k="tx", v=False)
-    time.sleep(0.5)
-    check("unkeyed", rigctl(apps, "t"), "0")
-    check("codec back to its own level", level(), 0.0)
+    expect("unkeyed", lambda: rigctl(apps, "t"), "0")
+    expect("codec back to its own level", level, 0.0)
     sets = [a[-1] for a in mixer_sets()]
     check("the last mixer set is the restore, after the unkey", sets[-1:], ["0.00dB"])
 
     print("\n# the step stays for the next transmission on 20 m only")
     page.send(t="set", k="tx", v=True)
-    time.sleep(0.5)
-    check("20 m keys at the stepped level", level(), -36.0)
+    expect("20 m keys at the stepped level", level, -36.0)
     page.send(t="set", k="tx", v=False)
-    time.sleep(0.4)
+    wait_for(lambda: level() == 0.0)                 # unkeyed and restored before the retune
     page.send(t="set", k="freq", v=7_200_000)
     time.sleep(0.4)
     snap = page.codec()
@@ -295,12 +286,10 @@ try:
     page.send(t="set", k="tx", v=True, mic=True)
     time.sleep(0.3)                                  # voice is now waiting on the mixer
     check("an app's T 1 during the page's preparation is refused", rigctl(apps, "T 1") != "RPRT 0", True)
-    time.sleep(1.5)
-    check("the page then keys", rigctl(apps, "t"), "1")
+    expect("the page then keys", lambda: rigctl(apps, "t"), "1")
     check("at the voice level", level(), -30.0)
     page.send(t="set", k="tx", v=False)
-    time.sleep(1.8)
-    check("released: level back", (rigctl(apps, "t"), level()), ("0", 0.0))
+    expect("released: level back", lambda: (rigctl(apps, "t"), level()), ("0", 0.0))
 
     other = Page(web)                                # a second browser: anyone may unkey
     page.send(t="set", k="tx", v=True, mic=True)
@@ -308,8 +297,6 @@ try:
     other.send(t="set", k="tx", v=False)             # mid-preparation
     time.sleep(3.0)
     other.close()
-    # (rigctl T 0 does NOT cancel it: it releases only a real transmission,
-    # and JTDX sends T 0 when idle, so that is right.)
     check("another page's unkey during preparation: never keyed", rigctl(apps, "t"), "0")
     check("another page's unkey during preparation: level back", level(), 0.0)
     snap = page.codec()
@@ -370,22 +357,18 @@ try:
     check("codec still at the Winlink level", level(), -33.0)
     page.send(t="set", k="tx", v=False)
     page.send(t="winlink_arm", v=False)
-    time.sleep(0.5)
-    check("disarmed: restored", level(), 0.0)
+    expect("disarmed: restored", level, 0.0)
 
     print("\n# Winlink: a step while armed applies live, the disarm restores")
     page.send(t="winlink_arm", v=True, freq=14_105_000)
     check("armed", page.wait(lambda e: e.get("t") == "winlink" and e.get("armed") is True) is not None, True)
-    time.sleep(0.3)
-    check("codec at the 20 m Winlink level", level(), -33.0)
+    expect("codec at the 20 m Winlink level", level, -33.0)
     page.send(t="codec_step", use="winlink", db=-1)
-    time.sleep(0.4)
-    check("stepped live", level(), -34.0)
+    expect("stepped live", level, -34.0)
     snap = page.codec("winlink")
     check("snapshot: live, unsaved", (snap["live"], snap["db"], snap["unsaved"]), (True, -34.0, True))
     page.send(t="winlink_arm", v=False)
-    time.sleep(0.5)
-    check("disarmed: restored", level(), 0.0)
+    expect("disarmed: restored", level, 0.0)
 
     print("\n# Winlink can't arm while voice holds the codec (the page is transmitting)")
     page.send(t="set", k="mode", v="USB")
@@ -399,8 +382,7 @@ try:
     check("not armed", page.wait(lambda e: e.get("t") == "winlink" and e.get("armed") is True, 1), None)
     check("the codec still at the voice level", level(), -33.0)
     page.send(t="set", k="tx", v=False)
-    time.sleep(0.4)
-    check("restored after", level(), 0.0)
+    expect("restored after", level, 0.0)
 finally:
     page.close()
     stop(p)
@@ -416,7 +398,7 @@ errs = []
 _validate = levels.render.validate
 
 
-def slow_validate(h):          # widen the read-to-write window so a lost update shows
+def slow_validate(h):          # widens the read-to-write window so a lost update shows
     time.sleep(0.2)
     return _validate(h)
 

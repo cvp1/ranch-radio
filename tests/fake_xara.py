@@ -1,35 +1,31 @@
 #!/usr/bin/env python3
-"""A stand-in for xara (VARA HF), enough for the Winlink VARA tests. It keys
-the radio itself through its --ptt rigctld lane, as xara does, and writes
-xara-shaped --log lines ("<UTC>Z <secs> <text>", crates/xara/src/log.rs).
+"""A stand-in for xara (VARA HF) for the Winlink VARA tests. It keys the radio
+itself through its --ptt rigctld lane, as xara does, and writes xara-shaped
+--log lines ("<UTC>Z <secs> <text>").
 
     fake_xara.py --call N0CALL --hf 500 --ptt rigctld:127.0.0.1:PORT
-                 --addr 127.0.0.1 --port CMD --log FILE [other xara flags, ignored]
+                 --addr 127.0.0.1 --port CMD --log FILE [other flags ignored]
 
-Like xara v0.1.3 (crates/xara/src/ptt.rs): one persistent rigctld
-connection; at start it sends T 0 once; each key is T 1 ... T 0, expecting
-RPRT 0; ANY other reply is a keyer fault and it exits non-zero (3), never
-redialing. Listens on CMD (commands) and CMD+1 (data), 127.0.0.1.
+Like xara v0.1.3: one persistent rigctld connection; T 0 once at start; each
+key is T 1 ... T 0 expecting RPRT 0; any other reply is a keyer fault: exit 3,
+never redial. Listens on CMD (commands) and CMD+1 (data).
 
-Commands from Pat (n8jja/Pat-Vara): VERSION -> "VERSION VARA HF v4.9.0";
-PUBLIC/CWID/COMPRESSION/MYCALL/LISTEN/BW<n> -> OK; CONNECT <me> <them> runs
-a scripted session; DISCONNECT (graceful) or ABORT (dirty) end it with our
-QRT and CW ID; a dropped command connection (Pat gone) ends it the same way
-(xara's drop_link). Replies "CONNECTED <me> <them> <bw>", "DISCONNECTED".
+Commands (as Pat-Vara sends them): VERSION -> "VERSION VARA HF v4.9.0";
+CONNECT <me> <them> runs a scripted session; DISCONNECT or ABORT, or the
+command connection dropping (Pat gone), ends it with our QRT and CW ID;
+anything else -> OK.
 
 Environment:
-  FAKE_XARA_EVENTS  file: one JSON line per event (start, key, reply, exit)
-  FAKE_XARA_SCRIPT  "ours" (default): data bursts, then our QRT frame with
-                    the CW ID riding its key ("tx cw" ~1.4 s after its T 1);
-                    "theirs": data bursts, then "tx cw" and a fresh key
-                    right after it (the other station's QRT)
+  FAKE_XARA_EVENTS  file: one JSON line per event (start, key, cmd, exit, ...)
+  FAKE_XARA_SCRIPT  "ours" (default): data bursts, then our QRT frame with the
+                    CW ID riding its key; "theirs": data bursts, then the CW ID
+                    on a fresh key (the other station's QRT)
   FAKE_XARA_BURSTS  data bursts per session (default 2)
   FAKE_XARA_BURST_S seconds each data burst stays keyed (default 0.8)
   FAKE_XARA_CW_S    seconds the CW part stays keyed (default 1.5)
   FAKE_XARA_EARLY_DISC "1": say DISCONNECTED as soon as "tx cw" is logged,
-                    before the CW's T 0 (so Pat returns mid-ID)
-  FAKE_XARA_DIE_S   seconds into a session: exit at once (3), mid-burst
-  FAKE_XARA_LEVEL   speed level reported in BITRATE lines (default 3)
+                    before the CW's T 0 (Pat returns mid-ID)
+  FAKE_XARA_DIE_S   seconds into a session: exit 3 at once, mid-burst
 """
 import json
 import os
@@ -58,7 +54,7 @@ BURST_S = float(os.environ.get("FAKE_XARA_BURST_S", "0.8"))
 CW_S = float(os.environ.get("FAKE_XARA_CW_S", "1.5"))
 EARLY_DISC = os.environ.get("FAKE_XARA_EARLY_DISC") == "1"
 DIE_S = float(os.environ.get("FAKE_XARA_DIE_S", "0") or 0)
-LEVEL = int(os.environ.get("FAKE_XARA_LEVEL", "3"))
+LEVEL = 3                        # speed level in BITRATE lines
 T0 = time.monotonic()
 lock = threading.Lock()
 
@@ -98,7 +94,7 @@ class Rig:
             die(3, f"rigctld at {host}:{port}: {e}")
         self.f = self.s.makefile("r")
         self.keyed = False
-        self.set(False)                 # open() sends T 0 once
+        self.set(False)
 
     def set(self, on):
         try:

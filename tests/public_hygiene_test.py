@@ -1,8 +1,7 @@
 """What a public Ranch Radio tree must not carry (no personal list needed).
 
   - an MIT LICENSE
-  - no real host files: only examples/hosts/*.json (a machine's own host file
-    lives in ~/.config/ranch-radio/hosts, outside the checkout)
+  - no real host files: only examples/hosts/*.json
   - no home directories other than the placeholder (/Users/you, /home/you)
   - no LAN addresses other than the 192.168.1.x examples
   - no personal launchd labels (only org.ranch-radio.*)

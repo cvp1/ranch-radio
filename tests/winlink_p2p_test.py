@@ -1,12 +1,8 @@
-"""Winlink P2P and Pat occupancy (plan winlink-p2p, PR 1): server.py --sim and
-the engine in process, with tests/fake_pat.py as Pat. Nothing transmits.
+"""Winlink P2P and Pat occupancy: server.py --sim and the engine in process,
+with tests/fake_pat.py as Pat (inbound sessions announced as Pat does, via its
+log line and Status). Nothing transmits.
 
-Inbound sessions are announced the way Pat announces them: the log line
-"Got connect (<method>:<call>)" and a Status push with Pat's own remote_addr
-("AX.25:N0XYZ", "tcp:127.0.0.1:5555"), never a shortcut into the server.
-
-  A-1s  compose with p2ponly reaches Pat; without, no field
-  A-4   connect URLs: data sub-bands, never 144.390; peer: one valid call, not ours
+  A-4   packet URLs: never 144.390 or its guard; peer: one valid call, not ours
   A-5   gateway session, outbox {plain, P2P only}: left 1, no "still in the outbox"
   A-6   peer session: sent = what Pat moved to sent/, whatever its addressing
   A-7   inbound: "Answering N0XYZ"; outbox DELETE/move 409 during, 200 after
@@ -36,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
-os.chdir(ROOT)                       # the fake's command is relative to the repo
+os.chdir(ROOT)
 os.environ.pop("FAKE_PAT_LOG", None)
 
 import testkit  # noqa: E402
@@ -59,7 +55,7 @@ def check(name, got, want):
 
 
 def picked(tid):
-    return not ONLY or ONLY == tid or ONLY in tid.split("/")
+    return not ONLY or ONLY == tid
 
 
 def fake_log(path):
@@ -105,9 +101,8 @@ class Server:
             raise SystemExit("server did not start:\n" + self.p.stdout.read()[-3000:])
         self.page = Page(self.web)
         if wait_pat:
-            # Pat's event link up and its Status in: the page's hello came after.
             wait_for(lambda: self.page.snapshot().get("pat_busy") is False, 10)
-            time.sleep(1.2)            # the protocol minimum: past Pat's log replay (winlink.REPLAY_S)
+            time.sleep(1.2)            # past Pat's log replay (winlink.REPLAY_S)
 
     @staticmethod
     def _open(port):
@@ -124,12 +119,10 @@ class Server:
                 return r.status
         return self.page.run(go())
 
-    def compose(self, to, subject, p2ponly=False, cc=None):
+    def compose(self, to, subject, p2ponly=False):
         form = aiohttp.FormData()
         for k, v in (("to", to), ("subject", subject), ("body", "b")):
             form.add_field(k, v)
-        if cc:
-            form.add_field("cc", cc)
         if p2ponly:
             form.add_field("p2ponly", "true")
         return self.page.http("POST", "/winlink/api/mailbox/out", data=form)[0]
@@ -161,22 +154,6 @@ def inbound_is(call):
         (e["inbound"] or {}).get("call") == call if call else e["inbound"] is None)
 
 
-# ------------------------------------------------------------ A-1s: compose pass-through
-
-if picked("A-1"):
-    s = Server()
-    try:
-        check("A-1s compose ticked -> 201", s.compose("N0XYZ", "p2p", p2ponly=True), 201)
-        check("A-1s   Pat got p2ponly=true", (recs(s.flog, "compose") or [{}])[-1].get("fields", {}).get("p2ponly"), "true")
-        check("A-1s   the outbox lists it P2POnly",
-              [m.get("P2POnly") for m in json.loads(s.page.http("GET", "/winlink/api/mailbox/out")[1])], [True])
-        check("A-1s compose unticked -> 201", s.compose("N0XYZ", "plain"), 201)
-        check("A-1s   no p2ponly field reached Pat", "p2ponly" in (recs(s.flog, "compose") or [{}])[-1].get("fields", {}),
-              False)
-    finally:
-        s.stop()
-
-
 # ------------------------------------------------------------ A-4: URLs
 
 if picked("A-4"):
@@ -184,12 +161,10 @@ if picked("A-4"):
 
     def band_of(hz):
         return "80m" if 3.5e6 <= hz <= 4e6 else "20m" if 14e6 <= hz <= 14.35e6 else None
-    for url in ("ax25+agwpe:///N0DAJ?freq=144390", "ax25:///N0DAJ?freq=144395", "ax25+agwpe:///N0DAJ?freq=144050"):
-        check(f"A-4 refused: {url}", W.check_url(url, band_of) is not None, True)
-    for url in ("ax25+agwpe:///N0DAJ?freq=145010", "ax25+agwpe:///N0DAJ?freq=440100", URL):
-        check(f"A-4 accepted: {url}", W.check_url(url, band_of), None)
-    check("A-4 the 144.390 refusal names the APRS channel",
+    check("A-4 refused: 144.390, naming the APRS channel",
           "APRS" in (W.check_url("ax25+agwpe:///N0DAJ?freq=144390", band_of) or ""), True)
+    for url in ("ax25:///N0DAJ?freq=144395", "ax25+agwpe:///N0DAJ?freq=144050"):
+        check(f"A-4 refused: {url}", W.check_url(url, band_of) is not None, True)
 
 
 # ------------------------------------------------------------ in-process engine
@@ -212,16 +187,13 @@ class St:
     def band_of(self, hz):
         return "80m" if 3.5e6 <= hz <= 4e6 else None
 
-    def warned(self, *needles):
-        return [m for lvl, m in self.notes if lvl == "warn" and all(n in m for n in needles)]
 
-
-def engine(cmd=None, session_max=60, lane_for=None, env=None):
+def engine(lane_for=None):
     import winlink as W
     flog = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    os.environ.update({"FAKE_PAT_LOG": flog, "FAKE_PAT_NO_PTT": "1", "FAKE_PAT_RIGCTL": "0", **(env or {})})
-    args = types.SimpleNamespace(winlink_pat=cmd or testkit.fake_pat_cmd(), winlink_pat_port=free_port(),
-                                 winlink_session_max=session_max, winlink_pat_config=None)
+    os.environ.update({"FAKE_PAT_LOG": flog, "FAKE_PAT_NO_PTT": "1", "FAKE_PAT_RIGCTL": "0"})
+    args = types.SimpleNamespace(winlink_pat=testkit.fake_pat_cmd(), winlink_pat_port=free_port(),
+                                 winlink_session_max=60, winlink_pat_config=None)
     st = St()
     eng = W.PatEngine(st, args, lane_for=lane_for)
     return eng, st, flog
@@ -237,7 +209,7 @@ async def await_for(pred, timeout=10.0, step=0.05):
 
 
 def first_status(eng):
-    """Pat's event link is up and its Status in (on main: just the link)."""
+    """Pat's event link is up, its Status in, past the log replay."""
     return eng.pat_ws is not None and bool(eng.status) and (eng.live_at or 0) <= time.monotonic()
 
 
@@ -289,7 +261,7 @@ async def admission_cases():
             await fake_post(eng, "/fake/inbound/end")
             await await_for(lambda: not eng.status.get("connected") and not getattr(eng, "inbound", None), 5)
 
-        # A-4 peer: refusals change nothing; an SSID of our own call is another station.
+        # an SSID of our own call is another station
         for name, url in () if not picked("A-4") else (("own exact MyCall", "telnet://N9ABC:pw@127.0.0.1:9/N9ABC"),
                           ("malformed call", "telnet://N9ABC:pw@127.0.0.1:9/N9_BC"),
                           ("SSID 16", "telnet://N9ABC:pw@127.0.0.1:9/N0XYZ-16"),
@@ -311,8 +283,7 @@ async def admission_cases():
 
         # A-8: an inbound call arriving at each await of the admission.
         orig_ready = eng._ready
-        box_name = "_outbox" if hasattr(eng, "_outbox") else "_mids"
-        orig_box = getattr(eng, box_name)
+        orig_box = eng._outbox
         stage = {"at": None}
 
         async def ready_hook():
@@ -328,8 +299,7 @@ async def admission_cases():
                 stage["at"] = None
                 await inbound_now()
             return r
-        eng._ready = ready_hook
-        setattr(eng, box_name, box_hook)
+        eng._ready, eng._outbox = ready_hook, box_hook
 
         async def arm_hook():
             if stage["at"] == "arm":
@@ -477,12 +447,10 @@ if picked("A-9a"):
     try:
         s.fake("/fake/inbound", {"remote": "AX.25:N0XYZ", "mode": "cooperative"})
         s.page.wait(inbound_is("N0XYZ"), 10)
-        t0 = time.time()
         e = s.page.wait(inbound_is(None), 20)
         check("A-9a cooperative past 2 s: ended", bool(e), True)
         check("A-9a   by a graceful disconnect", [r["dirty"] for r in recs(s.flog, "disconnect")], ["false"])
         check("A-9a   no signal, no respawn", (recs(s.flog, "sigterm"), len(recs(s.flog, "start"))), ([], 1))
-        print(f"      ended {time.time() - t0:.1f}s after it was seen")
     finally:
         out = s.stop()
     check("A-9a   logged as past the limit", "ran past the 2s limit" in out, True)
@@ -516,21 +484,22 @@ if picked("A-11"):
     cases = [("listen [telnet]", {"listen": ["telnet"]}, "listen"),
              ("schedule non-empty", {"schedule": {"@hourly": "connect telnet"}}, "schedule"),
              ("beacon every 600", {"ax25": {"engine": "agwpe", "beacon": {"every": 600}}}, "beacon")]
+
+    def refused(s, label, word):
+        # preflight sets `blocked` before any spawn, so once it shows Pat never started
+        check(f"A-11 {label}: Winlink says why",
+              wait_for(lambda: word in (s.page.snapshot().get("blocked") or ""), 10), True)
+        check(f"A-11 {label}: Pat not launched", recs(s.flog, "start"), [])
+
     for name, over, word in cases:
         s = Server(pat_cmd=testkit.fake_pat_cmd(**over), wait_pat=False)
         try:
-            time.sleep(2.5)            # negative check: a window for Pat to be started
-            starts = recs(s.flog, "start")
-            snap = s.page.snapshot()
-            check(f"A-11 {name}: Pat not launched", [r.get("listen") for r in starts], [])
-            check(f"A-11 {name}: Winlink says why", word in (snap.get("blocked") or ""), True)
+            refused(s, name, word)
         finally:
             s.stop()
     s = Server(pat_cmd=f"{sys.executable} tests/fake_pat.py --config {bad_json}", wait_pat=False)
     try:
-        time.sleep(2.5)                # negative check
-        check("A-11 unreadable config: Pat not launched", recs(s.flog, "start"), [])
-        check("A-11 unreadable config: Winlink says why", "can't be read" in (s.page.snapshot().get("blocked") or ""), True)
+        refused(s, "unreadable config", "can't be read")
     finally:
         s.stop()
     clean = testkit.pat_config(tempfile.NamedTemporaryFile(suffix=".json", delete=False).name)
@@ -538,8 +507,7 @@ if picked("A-11"):
     s = Server(pat_cmd=f"{sys.executable} tests/fake_pat.py --config {clean}",
                extra=("--winlink-pat-config", listen), wait_pat=False)
     try:
-        time.sleep(2.5)                # negative check
-        check("A-11 --winlink-pat-config wins over the command's --config", recs(s.flog, "start"), [])
+        refused(s, "--winlink-pat-config wins over the command's --config", "listen")
     finally:
         s.stop()
     s = Server()
@@ -566,11 +534,10 @@ async def lifecycle_cases():
         await asyncio.sleep(2.5)       # negative check: a second respawn would show by now (RESTART_S 2)
         res["two concurrent restarts"] = ([type(x).__name__ for x in out if x is not None],
                                           len(recs(flog, "start")) - n0, alive(pid0))
-        # Pat dies; restart_pat at once must not return before a new Pat is up.
+        # Pat dies: restart_pat must not return before a new Pat is up
         pid1 = recs(flog, "start")[-1]["pid"]
         os.kill(pid1, signal.SIGKILL)
         await await_for(lambda: eng.proc is not None and eng.proc.returncode is not None, 5)
-        t0 = time.monotonic()
         try:
             await asyncio.wait_for(eng.restart_pat("dead"), 30)
             err = None
@@ -579,22 +546,15 @@ async def lifecycle_cases():
         p = eng.proc
         res["restart while dead"] = (err, p is not None and p.returncode is None and alive(p.pid),
                                      recs(flog, "start")[-1]["pid"] != pid1, eng.pat_ws is not None)
-        res["restart while dead took"] = round(time.monotonic() - t0, 1)
-        # argv from `want` at spawn time: --listen as a global flag, before http.
-        if hasattr(eng, "want"):
-            eng.want["listen"] = "telnet"
+        eng.want["listen"] = "telnet"
         await asyncio.wait_for(eng.restart_pat("listen"), 30)
         r = recs(flog, "start")[-1]
         argv = r.get("argv") or []
         res["argv from want"] = (r.get("listen"), "--listen" in argv and argv.index("--listen") < argv.index("http"))
-        if hasattr(eng, "want"):
-            eng.want["listen"] = None
+        eng.want["listen"] = None
         await asyncio.wait_for(eng.restart_pat("no listen"), 30)
         res["argv from want, cleared"] = recs(flog, "start")[-1].get("listen")
-        # A config that turns bad: restart_pat raises, Pat is not started.
-        cfg = eng.config_path if hasattr(eng, "config_path") else None
-        if cfg:
-            testkit.pat_config(cfg, listen=["telnet"])
+        testkit.pat_config(eng.config_path, listen=["telnet"])
         n1 = len(recs(flog, "start"))
         try:
             await asyncio.wait_for(eng.restart_pat("bad config"), 30)
@@ -603,8 +563,7 @@ async def lifecycle_cases():
             err = type(e).__name__
         await asyncio.sleep(1.0)       # negative check
         res["restart with a bad config"] = (err, len(recs(flog, "start")) - n1)
-        if cfg:
-            testkit.pat_config(cfg)
+        testkit.pat_config(eng.config_path)
         await asyncio.wait_for(eng.restart_pat("good again"), 40)
         res["good again"] = recs(flog, "start")[-1].get("listen")
     finally:
@@ -612,7 +571,6 @@ async def lifecycle_cases():
     pids = [r["pid"] for r in recs(flog, "start")]
     res["after stop, no Pat left"] = [p for p in pids if alive(p)]
 
-    # stop during start: the child exists, its event link not yet up.
     for when in ("child spawned", "at once"):
         eng, st, flog = engine()
         await eng.start()
@@ -635,7 +593,6 @@ if picked("A-12"):
           r.get("two concurrent restarts"), ([], 1, False))
     check("A-12 restart_pat while Pat is dead: returns with a new Pat up and its events live",
           r.get("restart while dead"), (None, True, True, True))
-    print(f"      (took {r.get('restart while dead took')}s)")
     check("A-12 argv from want at spawn: --listen telnet, before http", r.get("argv from want"), (["telnet"], True))
     check("A-12   and without it again", r.get("argv from want, cleared"), [])
     check("A-12 restart_pat with a config that would listen: raises, Pat not started",

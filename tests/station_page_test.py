@@ -1,10 +1,10 @@
 """S2: the station page (station.html), driven in headless Chromium.
 
-Two simulated radios (G90 first, then QMX), station.py in front with fake
+Two simulated radios (G90, QMX), station.py in front with fake
 Pat and mesh bridge, and a packet hub that is configured but not running.
 Checks:
   - the navigation: Overview, one tab per connected radio with its rigctl
-    ports (the shared one on the radio connected first), Winlink, Mesh, and
+    ports (one carries the shared port), Winlink, Mesh, and
     Packet off the tab bar while the hub is down (its Overview card stays)
   - the overview has a card per radio and service and names the shared port
   - a radio's tab shows that radio's own page in a frame, connected, without
@@ -114,7 +114,6 @@ def shot(name):
 
 
 g90 = radio("g90", G90)
-time.sleep(0.5)
 qmx = radio("qmx", QMX)
 front = subprocess.Popen([sys.executable, "station.py", "--config", cfg_path, "--listen", str(WEB),
                           "--rigctl-port", str(SHARED)], cwd=ROOT,
@@ -184,7 +183,7 @@ try:
     check("  back to the QMX: gateways shown", b.js("document.querySelector('#wl-gateways').hidden"), False)
     shot("winlink")
 
-    # A message arriving on the station's socket while Mesh is not open.
+    # A mesh message arriving while Mesh is not open.
     b.js("(() => { const m = { t: 'mesh', msg: { k: 'msg', id: 10, t: Date.now() / 1000, from: '!0000beef', "
          "to: '^all', ch: 1, dm: false, text: 'gate shut' } }; ws.onmessage({ data: JSON.stringify(m) }); })()")
     check("mesh message elsewhere: count on the Mesh tab",
@@ -195,7 +194,6 @@ try:
           b.js(f"{TABS}.find((t) => t.textContent.startsWith('Mesh')).querySelector('.st-badge')"), None)
     shot("mesh")
 
-    # The Mesh add-on's switch on the station (addons/mesh.py): off frees the node.
     MESH_TAB = f"{TABS}.find((t) => t.textContent.startsWith('Mesh'))"
     b.wait(f"({TEXT})('#mesh-state') === 'Connected'")
     b.js("window.confirm = () => true")
@@ -206,15 +204,13 @@ try:
     check("  on again: Connected", b.wait(f"({TEXT})('#mesh-state') === 'Connected' && 'on'"), "on")
     check("  the dot comes back", b.wait(f"!{MESH_TAB}.classList.contains('off') && 'ok'"), "ok")
 
-    # The radio strip (review 2026-10-18): every HF radio's frequency and TX on
-    # the views that hide its page, with Release TX.
-    import socket as _sock
+    # The radio strip: every HF radio's frequency and TX on views that hide its page.
     b.js("location.hash = '#/home'")
     b.wait("document.querySelectorAll('#st-strip .sr').length === 2")
     check("strip: both radios on the Overview",
           b.js("[...document.querySelectorAll('#st-strip .sr b')].map((x) => x.textContent)"), ["G90", "QMX"])
     check("  with a frequency", b.js("/\\d+\\.\\d{3}\\.\\d{3}/.test(document.querySelector('#st-strip .sr .f').textContent)"), True)
-    with _sock.create_connection(("127.0.0.1", G90["rigctl"]), timeout=3) as c:
+    with socket.create_connection(("127.0.0.1", G90["rigctl"]), timeout=3) as c:
         f = c.makefile("r")
         c.sendall(b"T 1\n"); f.readline()
         b.wait("!!document.querySelector('#st-strip .sr.tx')")

@@ -105,6 +105,7 @@ def start(env_extra=None, *extra):
         [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
          "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
          "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(PATP),
+         "--addons-state", "",   # never the live add-on state; a caller's own flag comes later and wins
          *extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):

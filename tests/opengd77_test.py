@@ -51,14 +51,11 @@ def only_reads(fake):
 
 
 # --- decoding
-check("BCD 0x14652000 -> 14652000", g.bcd(0x14652000), 14652000)
-check("CTCSS 0x1000 -> 100.0", g.tone(0x1000), "100.0")
-check("CTCSS 0x0885 -> 88.5", g.tone(0x0885), "88.5")
 check("no tone (0xFFFF)", g.tone(0xFFFF), "")
 check("DCS 023 normal", g.tone(0x8023), "D023N")
 check("DCS 754 inverted", g.tone(0xC754), "D754I")
 fm = g.channel(channel("Simplex", 146_520_000, 146_520_000, rx_tone=0x1000, tx_tone=0x0885, wide=True))
-check("FM channel", fm, {"name": "Simplex", "rx_hz": 146_520_000, "tx_hz": 146_520_000, "mode": "FM",
+check("FM channel: BCD frequencies, CTCSS tones", fm, {"name": "Simplex", "rx_hz": 146_520_000, "tx_hz": 146_520_000, "mode": "FM",
                          "rx_only": False, "rx_tone": "100.0", "tx_tone": "88.5", "bandwidth": "25 kHz"})
 dmr = g.channel(channel("DMR", 439_400_000, 430_400_000, dmr=True, cc=3, ts2=True))
 check("DMR channel: colour code, timeslot", (dmr["mode"], dmr["colour_code"], dmr["timeslot"]), ("DMR", 3, 2))
@@ -247,7 +244,7 @@ def connected(e):
 
 server = start()
 try:
-    time.sleep(1.0)                        # the radio is up before the page opens
+    time.sleep(1.0)                        # the radio is up before the page opens: hello has it
     page = Page()
     snap = page.hello.get("addons", {}).get("opengd77", {})
     check("add-on: a page opened later sees it connected", (snap.get("status") or {}).get("connected"), True)

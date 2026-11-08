@@ -1,10 +1,7 @@
-"""static/addons.js in a real page (headless Chromium): messages for an
-add-on whose script hasn't registered yet are kept and replayed after its
-hello snapshot, in order, and a fresh snapshot drops them.
-
-Before, they were dropped: a UV-PRO that connected while its script loaded
-left the panel on the hello snapshot (no battery, no channels) until a
-reload (uvpro_page_test, 2 in 8 flake-hunt runs, 2026-10-30).
+"""static/addons.js in headless Chromium: messages for an add-on whose script
+hasn't registered yet are replayed after its hello snapshot, in order, and a
+fresh snapshot drops them. (Dropping them left the UV-PRO panel empty until
+a reload, 2026-10-30.)
 
     python3 tests/addons_page_test.py
 """
@@ -54,8 +51,7 @@ try:
     b.goto(f"http://127.0.0.1:{web}/")
     check("the page has the add-on loader", b.wait("typeof addons === 'object' && 'yes'"), "yes")
 
-    # A made-up add-on whose script never arrives on its own (no such file):
-    # its messages come before it registers, as on a slow link.
+    # A made-up add-on (no script file): its messages arrive before it registers.
     SEEN = "window.__seen"
     b.js("""(() => {
       window.__seen = [];
@@ -70,7 +66,6 @@ try:
     b.js("addons.event({t: 'addon', addon: 'zz', n: 3})")
     check("  then messages go straight to it", b.js(SEEN)[-1], "event 3")
 
-    # A fresh snapshot before the script registers supersedes what came earlier.
     b.js("""(() => {
       window.__seen = [];
       addons.hello([{name: "yy", label: "YY", title: "", css: false, on: true, error: null}], {yy: {on: true, n: 0}});
@@ -81,7 +76,6 @@ try:
     })()""")
     check("a fresh snapshot drops the messages before it", b.js(SEEN), ["hello 5", "event 6"])
 
-    # Switched off: nothing is replayed into it.
     b.js("""(() => {
       window.__seen = [];
       addons.hello([{name: "xx", label: "XX", title: "", css: false, on: false, error: null}], {});

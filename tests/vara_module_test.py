@@ -116,8 +116,8 @@ check("an unanswered xara field is vara's, once", st, [("vara", f"call is still 
 # ---------------------------------------------------------------- hygiene
 
 
-def refused(name, mutate, base=on):
-    h = copy.deepcopy(base)
+def refused(name, mutate):
+    h = copy.deepcopy(on)
     mutate(h)
     try:
         render.validate(h)
@@ -155,7 +155,6 @@ check("free ports skip xara's", 4534 in modules.free_ports(on, 3) or 8300 in mod
 
 # ---------------------------------------------------------------- doctor machine
 tmp = Path(tempfile.mkdtemp(prefix="rr-vara-"))
-need = manifest.MANIFESTS["vara"]["needs"][0]
 h = copy.deepcopy(on)
 h["winlink"]["xara"]["bin"] = str(tmp / "nope" / "xara")
 miss = [c for c in doctor.module_checks(h, "vara", local=True) if c.what.startswith("xara")]

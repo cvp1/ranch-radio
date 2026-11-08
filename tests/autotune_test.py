@@ -7,7 +7,6 @@ import json
 import os
 import random
 import socket
-import ssl
 import subprocess
 import sys
 import time

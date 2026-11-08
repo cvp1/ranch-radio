@@ -1,52 +1,19 @@
 """The add-on registry and the UV-PRO add-on, against tests/fake_uvpro_bridge.py.
 
 Runs server.py --sim --addons with the fake bridge as the radio and a fake
-packet hub status, and checks:
-  - the page is told the add-on is there and on, and gets the radio's
-    device info, channels, settings, beacon, state and battery
-  - tuning A/B, renaming a channel and a plain setting reach the radio
-  - channels are CHIRP memories (CHIRP's columns and values); Frequency,
-    Duplex and Offset become the radio's RX/TX frequency and RX only (CHIRP's
-    rules, confirm needed); the radio's own field names are refused; a TX the
-    radio rewrites is reported not saved
-  - CHIRP tone modes reach the radio as its TX/RX sub-audio; a change that
-    alters the TX tone, power or talk-around needs confirm, an RX-only tone
-    change does not; Mode changes the bandwidth only; Skip is scan
-  - CHIRP values the UV-PRO can't hold are refused (DTCS-R, Skip P, AM on an
-    FM channel, a tone or DTCS code not in CHIRP's lists, polarity other than NN)
-  - CHIRP CSV export: CHIRP's header and number formats; import: a preview
-    that writes nothing, rows that would clear a channel or name a missing
-    Location refused, a frequency change shown as on-air, CHIRP's simplex
-    Offset default accepted, confirm needed for on-air changes, only changed
-    channels written, one summary notice
-  - other on-air changes (beacon position) are refused without confirm and
-    go through with it
-  - schema: unknown field, wrong type, out of range, too long, bad tone,
-    a callsign not in "calls" are refused before the bridge sees them
-  - no change while the packet hub has a link up, or while the radio transmits
-  - the radio refusing a change warns
-  - switching the add-on off stops the bridge, refuses commands, and is kept
-    across a restart; switching it on connects again
-  - the radio going away restarts the bridge; an unreachable radio shows as
-    not connected while the radio server runs on
-  - a broken add-on (unknown module) is shown as not loaded; the server runs
-  - without --addons there are none and an addon command is refused
-  - the VFOs (records 251 / 252) are memories too: tuned with confirm, never
-    named; A can be pointed at one
-  - volume, region (confirm; the new region's channels arrive), FM radio,
-    APRS path (checked, confirm) and radio power (off needs confirm) reach
-    the bridge; bad values are refused before it
-  - the bridge only ever gets the commands it has
-  - borrow mode ("hub"): the radio is borrowed from the packet hub to read it
-    at start and given back when idle; the page keeps the last read and can
-    edit it; a save borrows the radio again (one lend for several saves),
-    a refusal on what is held borrows nothing, the hub refusing (a link up)
-    is shown, "give_back" ends the borrow at once, a channel the bridge
-    doesn't read back byte for byte is not written
+packet hub. Covers: hello snapshot; plain changes; CHIRP memory semantics
+(Frequency/Duplex/Offset, tones, Mode, Skip) and what the UV-PRO can't hold;
+confirm for on-air changes; schema refusals; CHIRP CSV export and import;
+VFOs; volume, region, FM, APRS path, radio power; busy refusals (packet
+link up, transmitting, auto relay); add-on off/on across a restart; bridge
+restart when the radio goes away; borrow mode and the hub's control port;
+unreachable radio, broken add-on, no add-ons; the station front.
 
     python3 tests/uvpro_test.py
 """
 import asyncio
+import csv
+import io
 import json
 import os
 import random
@@ -61,6 +28,8 @@ import aiohttp
 from aiohttp import web
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from testkit import wait_for  # noqa: E402
 WEB = 19000 + random.randrange(1000)
 HUB = WEB + 1000
 fails = 0
@@ -182,10 +151,10 @@ class Page:
         self.run(_c())
 
 
-def start(*extra):
-    env = dict(os.environ, FAKE_UVPRO_LOG=CMD_LOG, FAKE_UVPRO_STARTS=STARTS, FAKE_UVPRO_TX=TX_FLAG)
-    args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-            "--rigctl-port", "0", "--addons-state", STATE, *extra]
+def start(*extra, args=None, env=None):
+    env = env or dict(os.environ, FAKE_UVPRO_LOG=CMD_LOG, FAKE_UVPRO_STARTS=STARTS, FAKE_UVPRO_TX=TX_FLAG)
+    args = args or [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
+                    "--rigctl-port", "0", "--addons-state", STATE, *extra]
     p = subprocess.Popen(args, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
         try:
@@ -398,9 +367,8 @@ try:
     pg.wait(lambda e: ((e.get("extras") or {}).get("fm") or {}).get("on") is False, after=n)
     ok, msg = refused(pg, "aprs_path", "Needs confirming", values={"path": "WIDE2-1"})
     check("APRS path without confirm: refused", ok, True)
-    for label, path in [("lower case, spaces: WIDE1-1, wide2-2", "WIDE1-1,WIDE2-2")]:
-        ok, _ = accepted(pg, "aprs_path", values={"path": "wide1-1, wide2-2"}, confirm=True)
-        check(f"APRS path {label}", ok and commands()[-1]["values"], {"path": path})
+    ok, _ = accepted(pg, "aprs_path", values={"path": "wide1-1, wide2-2"}, confirm=True)
+    check("APRS path: lower case and spaces normalized", ok and commands()[-1]["values"], {"path": "WIDE1-1,WIDE2-2"})
     for label, path in [("SSID 16", "WIDE1-16"), ("9 hops", ",".join(["WIDE1-1"] * 9)), ("call too long", "ABCDEFG")]:
         ok, msg = refused(pg, "aprs_path", "APRS path", values={"path": path}, confirm=True)
         check(f"APRS path refused: {label}", ok, True)
@@ -455,8 +423,7 @@ try:
     check("export: NOAA row", lines[4].split(",")[:5], ["4", "WX", "162.550000", "off", "0.000000"])
 
     # --- CHIRP CSV import
-    import csv as _csv, io as _io
-    rows = list(_csv.reader(_io.StringIO("\n".join(lines))))
+    rows = list(csv.reader(io.StringIO("\n".join(lines))))
     head = rows[0]
     col = {h: i for i, h in enumerate(head)}
     rows[1][col["Name"]] = "CALL"                       # a plain change
@@ -514,8 +481,7 @@ try:
     n = pg.mark()
     pg.do("refresh")
     pg.wait(lambda e: (e.get("state") or {}).get("is_in_tx") is False, after=n)
-    # Auto relay on (2026-10-17): the radio digipeats by itself and reads as
-    # transmitting; the refusal names the setting so the fix is obvious.
+    # auto relay digipeats by itself and reads as transmitting (2026-10-17): the refusal names it
     ok, _ = accepted(pg, "settings", values={"auto_relay_en": True}, confirm=True)
     check("auto relay on: saved", ok, True)
     open(TX_FLAG, "w").close()
@@ -530,9 +496,6 @@ try:
     pg.wait(lambda e: (e.get("state") or {}).get("is_in_tx") is False, after=n)
     ok, _ = accepted(pg, "settings", values={"auto_relay_en": False}, confirm=True)
     check("auto relay off: saved", ok, True)
-    n = pg.mark()
-    pg.do("refresh")
-    pg.wait(lambda e: (e.get("state") or {}).get("is_in_tx") is False, after=n)
 
     # --- the radio refuses
     n = pg.mark()
@@ -586,15 +549,6 @@ finally:
 os.environ["FAKE_UVPRO_INEXACT"] = "2"
 
 
-def wait_for(pred, timeout=8):
-    end = time.time() + timeout
-    while time.time() < end:
-        if pred():
-            return True
-        time.sleep(0.05)
-    return False
-
-
 def lends():
     return sum(c.startswith("lend ") for c in HUB_CALLS)
 
@@ -604,7 +558,7 @@ HUB_CALLS.clear()
 before = starts()
 server = start("--addons", cfg3)
 try:
-    check("borrow: read at start, then given back", wait_for(lambda: HUB_CALLS[-1:] == ["return"]), True)
+    check("borrow: read at start, then given back", wait_for(lambda: HUB_CALLS[-1:] == ["return"], 8), True)
     check("  one lend of 60 s to uvpro", HUB_CALLS, ["lend 60 to uvpro", "return"])
     check("  one bridge start", starts(), before + 1)
     pg = Page()
@@ -627,10 +581,10 @@ try:
     check("  the radio got the name", commands()[-1]["values"], {"name": "BORROW"})
     ok, msg = accepted(pg, "settings", values={"squelch_level": 4})
     check("  a second save in the same borrow: no new lend", (ok, lends()), (True, 2))
-    check("  given back once idle", wait_for(lambda: HUB_CALLS[-1:] == ["return"]), True)
+    check("  given back once idle", wait_for(lambda: HUB_CALLS[-1:] == ["return"], 8), True)
     e = pg.wait(lambda e: (e.get("status") or {}).get("borrowed") is False and e["status"]["connected"] is False)
     check("  page told: with packet again", bool(e), True)
-    check("  the renamed channel is in the last read", pg.hello is not None and
+    check("  the renamed channel is in the last read",
           any(m.get("memory", {}).get("Name") == "BORROW" for m in pg.events), True)
 
     HUB_LINKS[:] = [{"local": "N9ABC", "remote": "W7XXX-10", "state": "connected"}]
@@ -719,17 +673,10 @@ os.environ.pop("FAKE_UVPRO_ARGV", None)
 station_cfg = os.path.join(TMP, "station.json")
 with open(station_cfg, "w") as f:
     json.dump({"name": "test", "radios": [], "addons": uvpro_cfg(), "addons_state": STATE}, f)
-env = dict(os.environ, FAKE_UVPRO_LOG=CMD_LOG, FAKE_UVPRO_STARTS=STARTS)
-st = subprocess.Popen([sys.executable, "station.py", "--config", station_cfg, "--listen", str(WEB),
-                       "--rigctl-host", "127.0.0.1", "--rigctl-port", str(WEB + 2000)],
-                      cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+st = start(args=[sys.executable, "station.py", "--config", station_cfg, "--listen", str(WEB),
+                 "--rigctl-host", "127.0.0.1", "--rigctl-port", str(WEB + 2000)],
+           env=dict(os.environ, FAKE_UVPRO_LOG=CMD_LOG, FAKE_UVPRO_STARTS=STARTS))
 try:
-    for _ in range(100):
-        try:
-            socket.create_connection(("127.0.0.1", WEB), timeout=0.2).close()
-            break
-        except OSError:
-            time.sleep(0.1)
     pg = connected_page()
     check("station: config lists the add-on", [d["name"] for d in pg.hello["config"]["addons"]], ["uvpro"])
     ok, _ = accepted(pg, "settings", values={"channel_b": 3})

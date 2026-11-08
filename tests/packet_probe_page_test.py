@@ -1,21 +1,11 @@
-"""The round-trip probe at the wire and on the packet page (plan 2026-11-07,
-section 4): the real hub on tests/fake_kiss_radio.py with messaging "send", a
-probe target, and the APRS-IS observer on an in-process fake server; the
-page in headless Chromium.
-
-  - POST api/aprs/probe without the page's armed flag: refused
-  - the Probe button is disabled until TX ARMED; a click sends one message
-    to the target (on the fake radio); a digi copy heard on RF, the IS copy
-    with qAR,K7RDG-1 from the fake server, and a }-wrapped ack via AA7JB
-    make L1-L5 "yes" in api/aprs/probes and on the page
-  - yes, not seen and unknown render differently; unknown is never green
-  - a second probe before the first one's deadline: refused, saying so
+"""The round-trip probe at the wire and on the packet page: the real hub on
+tests/fake_kiss_radio.py (messaging "send", a probe target, the APRS-IS
+observer on a fake server) and the page in headless Chromium.
 
     CHROME=... python3 tests/packet_probe_page_test.py [screenshot.png]
 """
 import json
 import os
-import random
 import shutil
 import sqlite3
 import sys
@@ -29,9 +19,9 @@ os.environ.pop("CC_OBS_TOKENS_FILE", None)
 from ax25 import Frame  # noqa: E402
 from cdp_browser import Browser  # noqa: E402
 import tnc_hub_test as T  # noqa: E402
-from aprs_msg_wire_test import FakeAprsIs  # noqa: E402
+from testkit import free_port  # noqa: E402
 
-CDP = 19000 + random.randrange(1000)
+CDP = free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 SHOT = sys.argv[1] if len(sys.argv) > 1 else None
 fails = 0
@@ -51,7 +41,7 @@ logdir = tempfile.mkdtemp(prefix="probepage-")
 pfile = os.path.join(logdir, "passcode")
 with open(pfile, "w") as f:
     f.write("12345\n")
-srv = FakeAprsIs()
+srv = T.FakeAprsIs(feed=False)
 radio = T.FakeKissRadio().start()
 hub = T.HubProc(radio, tx=True, extra=("--log-dir", logdir, "--aprs-messaging", "send", "--aprs-cooldown", "0",
                                        "--aprs-probe-target", "WXBOT", "--aprs-probe-text", "wx 85602",
@@ -78,7 +68,7 @@ try:
     msgno = info.rsplit("{", 1)[-1].rstrip("}")
     time.sleep(0.5)
     copy = Frame.ui("N9ABC", "APZRR0", info.encode(), digis=["K7RDG-1", "WIDE2-1"])
-    copy.digis[0].bit7 = True                          # K7RDG-1 repeated it
+    copy.digis[0].bit7 = True
     radio.inject(copy.encode(), lossy=False)
     srv.send(f"N9ABC>APZRR0,K7RDG-1*,WIDE2-1,qAR,K7RDG-1:{info}\r\n".encode())
     radio.inject(T.aprs("AA7JB", f"}}WXBOT>APRS,TCPIP,AA7JB*::N9ABC    :ack{msgno}", dest="APDW18"), lossy=False)
@@ -92,7 +82,7 @@ try:
     check("a second probe before the first one's deadline: refused", (code, body.get("error", "").startswith("the previous probe")),
           (409, True))
 
-    # Rendering: a finished probe with each verdict (written as the hub's own store rows are).
+    # Rendering: a finished probe with each verdict, written straight into the store.
     db = sqlite3.connect(os.path.join(logdir, "aprs.db"))
     legs = {"L1": {"v": "yes", "t": 1, "evidence": "tx"}, "L2": {"v": "not seen", "why": "no digipeated copy observed"},
             "L3": {"v": "unknown", "why": "observer coverage incomplete"}, "L4": {"v": "unknown", "why": "RF coverage incomplete"},
@@ -108,7 +98,6 @@ try:
     colors = b.js("(() => { const r = document.querySelector('#probe-table tr.probe-row'); const c = (k) => getComputedStyle("
                   "r.querySelector(`.leg[data-leg=${k}]`)).color; return [c('L1'), c('L2'), c('L3')]; })()")
     check("yes, not seen and unknown look different", len(set(colors)), 3)
-    check("  unknown is not the 'yes' green", colors[2] != colors[0], True)
     if SHOT:
         b.screenshot(SHOT)
 finally:

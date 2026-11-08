@@ -1,9 +1,9 @@
-"""F10b: the rigctl port stays open across a restart (systemd socket activation).
+"""The rigctl port stays open across a restart (systemd socket activation).
 
 The test plays systemd: it owns a listening socket and hands it to server.py as
 fd 3 with LISTEN_FDS=1 / LISTEN_PID=<pid>. A client that connects while no
-server is running must be answered once the next server starts, the way JTDX's
-single immediate retry lands in the restart gap on linux-station (2026-10-14 11:02).
+server is running (JTDX's single retry, 2026-10-14) must be answered once the
+next server starts.
 
     .venv/bin/python tests/socket_activation_test.py [rig]
 """
@@ -89,11 +89,11 @@ def main():
     os.set_inheritable(lsock.fileno(), True)
     rport = lsock.getsockname()[1]
 
-    print(f"\n# F10b rigctl port held across a restart ({RIG})")
+    print(f"\n# rigctl port held across a restart ({RIG})")
     a = start(lsock, rport)
     check("first server answers on the inherited socket", wait_reply(rport) is not None, True)
     out_a = stop(a)
-    # Server down. JTDX's retry connects now; it must not be refused or dropped.
+    # Server down: a connect now must not be refused or dropped.
     try:
         gap = socket.create_connection(("127.0.0.1", rport), timeout=1)
         connected = True

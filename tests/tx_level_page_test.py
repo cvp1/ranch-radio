@@ -7,14 +7,20 @@ Server-side behaviour is tests/tx_level_test.py; this is the page.
 
     python3 tests/tx_level_page_test.py          # SHOTS=dir to keep screenshots
 """
+import asyncio
+import json
 import os
 import random
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+
+import aiohttp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
@@ -67,6 +73,17 @@ def stop(p):
         p.wait(10)
     except subprocess.TimeoutExpired:
         p.kill()
+
+
+def press_ptt(hold_s=1.5):
+    """A real CDP mouse press on PTT (a user gesture), held hold_s."""
+    r = b.js("(() => { document.querySelector('#ptt').scrollIntoView({block: 'center'}); "
+             "const q = document.querySelector('#ptt').getBoundingClientRect(); "
+             "return [q.x + q.width / 2, q.y + q.height / 2]; })()")
+    b.call("Input.dispatchMouseEvent", type="mousePressed", x=r[0], y=r[1], button="left", clickCount=1)
+    time.sleep(hold_s)
+    b.call("Input.dispatchMouseEvent", type="mouseReleased", x=r[0], y=r[1], button="left", clickCount=1)
+    time.sleep(1.2)                      # the release's log lines
 
 
 VISIBLE = "(s) => { const e = document.querySelector(s); return !!e && !e.closest('[hidden]') && e.offsetParent !== null; }"
@@ -141,10 +158,9 @@ try:
                b.js("document.querySelector('#txl-note').classList.contains('warn')")), (True, True))
 
         print("\n# a refused change: the page shows the radio's real value")
-        import socket as _s
         b.js("setRadio('freq', 14230000)")      # not keyed: accepted
         b.wait("S.freq === 14230000")
-        with _s.create_connection(("127.0.0.1", RIGCTL[0]), timeout=3) as c:
+        with socket.create_connection(("127.0.0.1", RIGCTL[0]), timeout=3) as c:
             c.sendall(b"T 1\n"); c.recv(32)
             time.sleep(0.5)
             b.js("setRadio('freq', 7074000)")   # keyed: refused
@@ -155,8 +171,6 @@ try:
             c.sendall(b"T 0\n"); c.recv(32)
         if SHOTS:
             b.screenshot(os.path.join(SHOTS, "txl-notes.png"))
-        if SHOTS:
-            b.screenshot(os.path.join(SHOTS, "txl-winlink.png"))
     finally:
         stop(p)
 
@@ -186,23 +200,13 @@ try:
         b.wait("!document.querySelector('#ptt').disabled")
 
         print("\n# the page's mic, reported in the server log (diagnosis)")
-        # mac-shack (2026-10-18): the page's audio engine was suspended, so the mic
-        # produced 0 frames and PTT went out silent. Suspend it as a browser may
-        # (a device or focus change), then press PTT for real (a CDP mouse press,
-        # a user gesture): the press must resume it and the mic must reach the radio.
+        # Regression: a suspended audio engine sent PTT out silent. The press must resume it.
         b.js("audio.ctx.suspend()")
         b.wait("audio.ctx.state === 'suspended'")
         check("before the press: the audio engine is suspended", b.js("audio.ctx.state"), "suspended")
-        r = b.js("(() => { document.querySelector('#ptt').scrollIntoView({block: 'center'}); "
-                 "const q = document.querySelector('#ptt').getBoundingClientRect(); "
-                 "return [q.x + q.width / 2, q.y + q.height / 2]; })()")
-        b.call("Input.dispatchMouseEvent", type="mousePressed", x=r[0], y=r[1], button="left", clickCount=1)
-        time.sleep(1.5)
-        b.call("Input.dispatchMouseEvent", type="mouseReleased", x=r[0], y=r[1], button="left", clickCount=1)
-        time.sleep(1.2)
+        press_ptt()
         check("the press resumed it", b.js("audio.ctx.state"), "running")
         text = open(SLOG).read()
-        import re
         m = re.search(r"page \S+: voice: mic frames (\d+), sent (\d+)", text)
         check("the page logs its mic frames, and sent some", bool(m and int(m.group(2)) > 0), True)
         m2 = re.search(r"(\d+) kB of microphone audio sent \((\d+) kB arrived\)", text)
@@ -230,7 +234,6 @@ try:
         check("kept for this mic", b.js("micLevel.profile(micLevel.label).gainDb"), g0 + 2)
         check("another mic keeps its own (none yet)", b.js("micLevel.profile('Apple EarPods')"), None)
         b.js("document.querySelector('#micg-down').click(); document.querySelector('#micg-down').click()")
-        # The analysis, on known levels: speech is the power mean above the gate.
         a = b.js("micLevel.analyse([...Array(20).fill({rms: -30, peak: -14, gr: 0}), "
                  "...Array(10).fill({rms: -70, peak: -60, gr: 0})])")
         check("analyse: 2 s of speech at -30 dBFS, floor -70",
@@ -252,13 +255,7 @@ try:
         print("\n# test tone: a steady 1 kHz instead of the mic, measured in the log")
         b.js("document.querySelector('#txl-tone').click()")
         b.wait("!!audio.tone")
-        r = b.js("(() => { document.querySelector('#ptt').scrollIntoView({block: 'center'}); "
-                 "const q = document.querySelector('#ptt').getBoundingClientRect(); "
-                 "return [q.x + q.width / 2, q.y + q.height / 2]; })()")
-        b.call("Input.dispatchMouseEvent", type="mousePressed", x=r[0], y=r[1], button="left", clickCount=1)
-        time.sleep(1.5)
-        b.call("Input.dispatchMouseEvent", type="mouseReleased", x=r[0], y=r[1], button="left", clickCount=1)
-        time.sleep(1.2)
+        press_ptt()
         text = open(SLOG).read()
         lines = [l for l in text.splitlines() if "voice: page PTT released" in l]
         m = re.search(r"audio (-?\d+) dBFS RMS \(peak (-?\d+)\)", lines[-1] if lines else "")
@@ -290,7 +287,6 @@ try:
         check("Save enabled once unsaved", b.js("document.querySelector('#txl-save').disabled"), False)
 
         print("\n# a Winlink session armed: the page's PTT disabled, and says why")
-        import asyncio, json, threading, aiohttp
         release = threading.Event()
 
         def hold_armed():                  # a second client arms, holds, then closes (disarms)

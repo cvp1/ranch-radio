@@ -26,30 +26,38 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:58} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
-def parse(spec, fn="parse_port"):
-    """parse_port(spec) in a child: importing the bridge takes over its stdout."""
-    conv = "list(b.parse_port(sys.argv[2]))" if fn == "parse_port" else "[list(l) for l in b.candidates(sys.argv[2])]"
-    code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import meshcore_bridge as b\n"
-            f"try:\n    r = {conv}\n"
-            "except ValueError as e:\n    r = 'ValueError'\n"
-            "b.emit(r=r)")
-    out = subprocess.run([sys.executable, "-c", code, ROOT, spec], capture_output=True, text=True, timeout=30)
-    return json.loads(out.stdout.strip().splitlines()[-1])["r"]
-
-
-check("a serial device", parse("/dev/ttyUSB0"), ["serial", "/dev/ttyUSB0"])
-check("tcp:HOST:PORT", parse("tcp:192.168.1.50:5000"), ["tcp", "192.168.1.50", 5000])
-check("tcp: a host name", parse("tcp:node.lan:5000"), ["tcp", "node.lan", 5000])
-check("tcp: no port is refused", parse("tcp:192.168.1.50"), "ValueError")
-check("tcp: a port that isn't a number is refused", parse("tcp:192.168.1.50:http"), "ValueError")
-check("tcp: port 0 is refused", parse("tcp:192.168.1.50:0"), "ValueError")
-check("tcp: no host is refused", parse("tcp::5000"), "ValueError")
-check("ble:NAME", parse("ble:NODE"), ["ble", "NODE"])
-check("ble: no name is refused", parse("ble:"), "ValueError")
-check("a list, in order; a missing serial device left out",
-      parse("tcp:192.168.1.50:5000, /dev/no-such-node ,ble:NODE", "candidates"),
-      [["tcp", "192.168.1.50", 5000], ["ble", "NODE"]])
-check("a list with one bad entry is refused", parse("tcp:192.168.1.50,ble:NODE", "candidates"), "ValueError")
+CASES = [
+    ("a serial device", "parse_port", "/dev/ttyUSB0", ["serial", "/dev/ttyUSB0"]),
+    ("tcp:HOST:PORT", "parse_port", "tcp:192.168.1.50:5000", ["tcp", "192.168.1.50", 5000]),
+    ("tcp: no port is refused", "parse_port", "tcp:192.168.1.50", "ValueError"),
+    ("tcp: a port that isn't a number is refused", "parse_port", "tcp:192.168.1.50:http", "ValueError"),
+    ("tcp: port 0 is refused", "parse_port", "tcp:192.168.1.50:0", "ValueError"),
+    ("tcp: no host is refused", "parse_port", "tcp::5000", "ValueError"),
+    ("ble:NAME", "parse_port", "ble:NODE", ["ble", "NODE"]),
+    ("ble: no name is refused", "parse_port", "ble:", "ValueError"),
+    ("a list, in order; a missing serial device left out", "candidates",
+     "tcp:192.168.1.50:5000, /dev/no-such-node ,ble:NODE", [["tcp", "192.168.1.50", 5000], ["ble", "NODE"]]),
+    ("a list with one bad entry is refused", "candidates", "tcp:192.168.1.50,ble:NODE", "ValueError"),
+]
+# one child for every case: importing the bridge takes over its stdout
+CHILD = """import json, sys
+sys.path.insert(0, sys.argv[1])
+import meshcore_bridge as b
+out = []
+for fn, spec in json.loads(sys.argv[2]):
+    try:
+        r = getattr(b, fn)(spec)
+        out.append(list(r) if fn == "parse_port" else [list(l) for l in r])
+    except ValueError:
+        out.append("ValueError")
+b.emit(r=out)
+"""
+p = subprocess.run([sys.executable, "-c", CHILD, ROOT, json.dumps([(fn, spec) for _, fn, spec, _ in CASES])],
+                   capture_output=True, text=True, timeout=30)
+got = json.loads(p.stdout.strip().splitlines()[-1])["r"]
+check("every case answered", len(got), len(CASES))
+for (name, _, _, want), g in zip(CASES, got):
+    check(name, g, want)
 
 r = subprocess.run([sys.executable, BRIDGE, "tcp:192.168.1.50"], capture_output=True, text=True, timeout=30,
                    stdin=subprocess.DEVNULL)

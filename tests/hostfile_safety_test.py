@@ -1,10 +1,9 @@
-"""Host-file values can't break out of what they render into (modules plan M0b).
+"""Host-file values can't break out of what they render into.
 
-Review 2026-10-21 (Grok): host-file strings land on command lines. A Linux
-unit's ExecStart is one space-joined line, the hub's --mycall/--tnc are raw
-words, wait_audio quotes the sound card names inside sh -c '...', and install
-prints launchd labels into commands meant for pasting. Every attack it named
-must be refused by render.validate, and every real host file must still pass.
+Host-file strings land on command lines (a unit's space-joined ExecStart, the
+hub's raw --mycall/--tnc words, sound card names inside sh -c '...', launchd
+labels in commands meant for pasting). Every attack from the 2026-10-21 review
+must be refused by render.validate, and every example host file must pass.
 
     python3 tests/hostfile_safety_test.py
 """
@@ -13,20 +12,18 @@ import copy
 import io
 import json
 import shlex
+import os
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
 from pathlib import Path
 
+os.environ["RANCH_RADIO_HOSTS"] = ""     # never this machine's own host files
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import tnc_hub  # noqa: E402
 from ranch_radio import cli, render  # noqa: E402
-from ranch_radio import cli as _cli  # noqa: E402
-_cli.HOSTS = ROOT / "examples/hosts"            # the examples stand in for a host's files
 from ranch_radio.render import Artifact, HostError, sd_word, validate  # noqa: E402
+cli.HOSTS = ROOT / "examples/hosts"
 
 fails = 0
 
@@ -72,7 +69,6 @@ def setp(path, v):
     return m
 
 
-# The attacks from the review.
 refused("ardop_logs with a newline (a second unit directive)", station_h,
         setp(("winlink", "ardop_logs"), "/tmp/x\nExecStart=/bin/sh -c 'touch /tmp/pwned'\n#"))
 refused("mycall 'N0CALL --tx' (an extra hub argument)", station_h, setp(("packet", "mycall"), "N0CALL --tx"))
@@ -138,8 +134,8 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
         rc, msg = 1, str(e.code)
 check("--set a key the template lacks is refused", (rc, "has no field 'python'" in msg), (1, True))
 
-# packet.aprs and packet.igate.observe (APRS messaging plan 2026-11-07, 3.7):
-# render refuses what the hub would, and renders the rest onto its line.
+# packet.aprs and packet.igate.observe: render refuses what the hub would, and
+# renders the rest onto its line.
 aprs_h = copy.deepcopy(station_h)
 aprs_h["packet"]["igate"] = {"login": "N9ABC-10", "passcode": "~/.config/ranch-radio/aprs-is-passcode"}
 aprs_h["packet"]["aprs"] = {"messaging": "send", "owned_calls": ["N9ABC"], "firmware_acks": None,
@@ -153,7 +149,6 @@ check("a messaging block renders onto the hub's line", tail,
        "--aprs-path", "WIDE1-1,WIDE2-1", "--max-ui-total-per-min", "12", "--ack-reserve", "4", "--max-msg-per-min", "2",
        "--max-ack-per-min", "6", "--max-airtime-s-per-min", "15", "--ack-airtime-reserve-s", "3",
        "--aprs-txdelay-ms", "250", "--igate-observe"])
-import tnc_hub  # noqa: E402
 argv_no_ig = render.hub_argv({**aprs_h, "packet": {k: v for k, v in aprs_h["packet"].items() if k != "igate"}},
                              "/usr/bin/python3", "/r", lambda x: x)
 a = tnc_hub.parse_args(argv_no_ig[2:])
@@ -165,7 +160,6 @@ check("observe is off without messaging (today's hosts render as before)",
 check("  and an explicit observe: false wins",
       "--igate-observe" in render.hub_argv({**aprs_h, "packet": {**aprs_h["packet"], "igate": {**aprs_h["packet"]["igate"],
                                             "observe": False}}}, "p", "/r", lambda x: x), False)
-
 
 probe_h = copy.deepcopy(aprs_h)
 probe_h["packet"]["aprs"]["probe"] = {"target": "WXBOT", "text": "wx 85602"}

@@ -1,10 +1,7 @@
-"""W3: the codec's output level follows the Winlink session.
+"""W3: the codec's output level follows the Winlink session: arming sets
+--winlink-codec-db (ARDOP needs the codec well below its factory level),
+disarming restores what it was before.
 
-ARDOP needs the USB codec well below its factory level (-38 dB keeps ALC near
-0 on the IC-7300); voice from the page wants it back. Arming a session sets
---winlink-codec-db; disarming restores what the codec was at before.
-
-Checks:
   - codec_level.AlsaLevel reads and sets a control through amixer
   - the ALSA card is taken from --audio-device when no mixer is named
   - a session sets the data level while keyed and restores the old level after
@@ -35,11 +32,12 @@ import time
 
 import aiohttp
 
-os.environ["CODEC_LEVEL_BACKEND"] = "alsa"   # before codec_level is imported
+os.environ["CODEC_LEVEL_BACKEND"] = "alsa"   # the fake amixer, never CoreAudio; before the import
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import codec_level  # noqa: E402
 import testkit  # noqa: E402
+from testkit import wait_for  # noqa: E402
 
 APPS = 15000 + random.randrange(1000)
 LANE = 16000 + random.randrange(1000)
@@ -57,7 +55,6 @@ os.chmod(os.path.join(TMP, "amixer"), 0o755)
 os.environ["PATH"] = TMP + os.pathsep + os.environ["PATH"]
 os.environ["FAKE_AMIXER_STATE"] = STATE
 os.environ["FAKE_AMIXER_LOG"] = MIXLOG
-os.environ["CODEC_LEVEL_BACKEND"] = "alsa"   # the fake amixer, never CoreAudio (macOS too)
 
 
 def check(name, got, want):
@@ -67,6 +64,11 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'}  {name:56} got {got!r}" + ("" if ok else f" want {want!r}"))
 
 
+def expect(name, get, want, timeout=5):
+    wait_for(lambda: get() == want, timeout)
+    check(name, get(), want)
+
+
 def set_level(db):
     with open(STATE, "w") as f:
         f.write(str(db))
@@ -74,7 +76,7 @@ def set_level(db):
 
 def level():
     with open(STATE) as f:
-        return float(f.read())
+        return float(f.read() or "nan")     # empty mid-write by the fake amixer
 
 
 def mixer_calls():
@@ -224,33 +226,28 @@ try:
     check("idle: codec untouched", level(), -6.0)
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(armed, 5)
-    time.sleep(0.8)
-    check("session: radio keyed", ptt(), "1")
+    expect("session: radio keyed", ptt, "1")
     check("session: codec at the data level", level(), -38.0)
     check("session: status shows the level", page.status().get("codec_db"), -38.0)
     e = page.wait(ended, 15)
     check("session ended ok", e and e.get("ok"), True)
-    time.sleep(0.3)
-    check("after session: codec restored", level(), -6.0)
+    expect("after session: codec restored", level, -6.0)
 
     page.events.clear()
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(armed, 5)
-    time.sleep(0.6)
-    check("stop: codec at the data level first", level(), -38.0)
+    expect("stop: codec at the data level first", level, -38.0)
     page.send({"t": "winlink_stop"})
     page.wait(ended, 10)
-    time.sleep(0.3)
-    check("stop: codec restored", level(), -6.0)
+    expect("stop: codec restored", level, -6.0)
 
     set_level(-12)                      # the operator moved it between sessions
     page.events.clear()
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(armed, 5)
-    time.sleep(0.6)
+    expect("page close: codec at the data level first", level, -38.0)
     page.close()
-    time.sleep(1.5)
-    check("page closed: codec restored to the newer level", level(), -12.0)
+    expect("page closed: codec restored to the newer level", level, -12.0)
 finally:
     show(stop(server))
 
@@ -261,10 +258,9 @@ try:
     page = Page()
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(armed, 5)
-    time.sleep(0.8)
-    check("server stop: codec at the data level first", level(), -38.0)
+    expect("server stop: codec at the data level first", level, -38.0)
 finally:
-    out = stop(server)
+    stop(server)
 check("server stop: codec restored", level(), -6.0)
 
 # --- the codec refuses: no session ---
@@ -308,11 +304,9 @@ try:
     check("sim idle: 0 dB", page.status().get("codec_db"), 0.0)
     page.send({"t": "winlink_connect", "url": URL})
     page.wait(armed, 5)
-    time.sleep(0.6)
-    check("sim session: -38 dB", page.status().get("codec_db"), -38.0)
+    expect("sim session: -38 dB", lambda: page.status().get("codec_db"), -38.0)
     page.wait(ended, 15)
-    time.sleep(0.3)
-    check("sim after: 0 dB", page.status().get("codec_db"), 0.0)
+    expect("sim after: 0 dB", lambda: page.status().get("codec_db"), 0.0)
     check("sim: amixer never called", mixer_calls(), [])
     page.close()
 finally:

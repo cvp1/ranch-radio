@@ -1,18 +1,15 @@
 """OpenGD77 codeplug through qdmr's dmrconf (qdmr.py, addons/opengd77.py),
 against tests/fake_dmrconf.py and tests/fake_opengd77.py.
 
-  - qdmr YAML channels: FM and DMR, MHz with or without the unit, CTCSS/DCS
-  - read: a dated copy, its channels on the page, the YAML on request; the
-    add-on lets go of the port while dmrconf runs (no read of ours inside
-    a dmrconf call) and takes it back after
-  - write refused: without confirm; when dmrconf has no openuv380 driver
-    (0.11.3 would write with the command this radio ignores); when the radio
-    is not an MD-UV380/390; when dmrconf verify rejects the file. None of
-    these call dmrconf write.
-  - write: verify, a backup read, write, a read-back; the radio holds the
-    new codeplug, the backup holds the old one, and the page is told the
-    channels match
-  - a read-back that differs is reported, naming the backup
+  - qdmr YAML: channels, zones, rebuilding zones against the radio's slots,
+    what qdmr loses (power levels, the DMR ID override)
+  - read: a dated copy, channels on the page, the YAML on request; the
+    add-on lets go of the port while dmrconf runs
+  - write refused before dmrconf write: no confirm, no openuv380 driver,
+    not an MD-UV380/390, verify or encode rejects, a backup read with
+    problems, sparse slots, a power level qdmr can't keep
+  - write: verify, encode, backup read, write, read-back (waiting out the
+    radio's restart); a read-back that differs is reported, naming the backup
 
     python3 tests/opengd77_codeplug_test.py
 """
@@ -210,19 +207,15 @@ class Page:
         return e and json.dumps(e)
 
     def status(self):
-        """The add-on's status as the page last heard it (a status event, or
-        the snapshot sent when it was switched on)."""
+        """The last status heard: a status event, a switch-on snapshot, or hello."""
         for e in reversed(list(self.events)):
             if gd(e) and (e.get("status") or (e.get("snapshot") or {}).get("status")):
                 return e.get("status") or e["snapshot"]["status"]
         return ((self.hello.get("addons") or {}).get("opengd77") or {}).get("status") or {}
 
     def ready(self, what, timeout=20):
-        """What the page waits for before it enables Read and Write: the radio
-        connected and no job running (static/addons/opengd77.js). The LAST
-        status counts: a job's own status (connected: false) comes before its
-        notice, so a "connected" heard before the job started is never taken
-        for the watch being back after it."""
+        """Connected and not busy, as the page requires before Read/Write. Uses the
+        LAST status: a "connected" from before a job must not count as after it."""
         end = time.time() + timeout
         while time.time() < end:
             st = self.status()
@@ -356,10 +349,9 @@ try:
     with open(os.path.join(FD, "radio.yaml")) as f:
         check("the radio still holds its codeplug", f.read(), CODEPLUG)
 
-    # sparse channel slots (the real radio on mac-shack, 2026-10-17): slots 1, 2, 5;
-    # zone Home holds slots 1, 5, 2. qdmr reads the channels as ch1..ch3, takes
-    # the zone's slot numbers as channel numbers (5 is out of bounds, dropped,
-    # with its warning) and makes up an 'APRS Channel' for an unset APRS frequency.
+    # sparse slots as on a real radio (2026-10-17): slots 1, 2, 5; Home holds 1, 5, 2. qdmr
+    # takes slot numbers as channel numbers (5 dropped, with a warning) and makes up an
+    # 'APRS Channel' for an unset APRS frequency.
     fake.slots, fake.names = [1, 2, 5], {1: "2m Call", 2: "Rpt 147.000", 5: "BM 3104"}
     fake.zones = [{"name": "Home", "slots": [1, 5, 2]}]
     QDMR_SPARSE = CODEPLUG.replace("A: [ch1, ch2, ch3]", "A: [ch1, ch2]") + """  - fm:

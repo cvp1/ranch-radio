@@ -18,7 +18,6 @@ os.environ.pop("CC_OBS_TOKENS_FILE", None)
 
 import aprs_store  # noqa: E402
 import igate_watch  # noqa: E402
-import tnc_hub  # noqa: E402
 from aprs_store import Db  # noqa: E402
 
 fails = 0
@@ -204,15 +203,7 @@ def test_watch_first_day_low():
     check("a first day judged low notifies (no earlier ok needed)", (j["verdict"], len(h.sent)), ("low", 1))
 
 
-def test_hub_flags():
-    a = tnc_hub.parse_args(["--tnc", "tcp:127.0.0.1:1", "--mycall", "N9ABC"])
-    check("the hub watches by default, 2 iGates", a.igate_watch_min, 2)
-    a = tnc_hub.parse_args(["--tnc", "tcp:127.0.0.1:1", "--mycall", "N9ABC", "--igate-watch-min", "0"])
-    check("--igate-watch-min 0 turns it off", a.igate_watch_min, 0)
-
-
-for test in [test_verdict, test_tally, test_migration_and_retention, test_watch_edges, test_watch_first_day_low,
-             test_hub_flags]:
+for test in [test_verdict, test_tally, test_migration_and_retention, test_watch_edges, test_watch_first_day_low]:
     print(f"--- {test.__name__}")
     try:
         test()

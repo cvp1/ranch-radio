@@ -1,9 +1,6 @@
-"""ax25_link.Link against itself over a channel that drops chosen frames.
-
-Fast and deterministic: two Links in one event loop, a channel that can drop
-frames by rule (first UA, every REJ, the first copy of each I frame, ...) or
-at random with a fixed seed. Each case checks both byte streams arrive intact
-and in order, and that both ends end up disconnected.
+"""ax25_link.Link against itself over a channel that drops chosen frames (by
+rule, or at random with a fixed seed): both byte streams arrive intact and in
+order, and both ends end up disconnected.
 
     .venv/bin/python tests/ax25_link_test.py
 """
@@ -15,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ax25 import Frame  # noqa: E402
-from ax25_link import CONNECTED, DISCONNECTED, Link  # noqa: E402
+from ax25_link import DISCONNECTED, Link  # noqa: E402
 
 fails = 0
 
@@ -69,16 +66,15 @@ class Channel:
         return send
 
 
-async def run_case(name, drop=None, loss=0.0, seed=0, a_data=b"", b_data=b"", timeout=60,
-                   a_banner=b"", opts_a=None, opts_b=None, quiet=False):
+async def run_case(name, drop=None, loss=0.0, seed=0, a_data=b"", b_data=b"", timeout=60, a_banner=b""):
     ch = Channel(drop, loss, seed)
     ea, eb = End("A"), End("B")
     opts = dict(frack=0.05, baud=10_000_000, n2=30, ack_delay=0.01, t3=5.0)
-    a = Link("N9ABC-10", "W7TST-10", ch.sender("A"), ea, **{**opts, **(opts_a or {})})
+    a = Link("N9ABC-10", "W7TST-10", ch.sender("A"), ea, **opts)
     b_holder = {}
 
     def make_b(sabm):
-        b = Link("W7TST-10", "N9ABC-10", ch.sender("B"), eb, **{**opts, **(opts_b or {})})
+        b = Link("W7TST-10", "N9ABC-10", ch.sender("B"), eb, **opts)
         b_holder["b"] = b
         ch.ends["A"] = b
         b.accept(sabm)
@@ -114,10 +110,12 @@ async def run_case(name, drop=None, loss=0.0, seed=0, a_data=b"", b_data=b"", ti
             await asyncio.sleep(0.02)
         a.disconnect()
         await asyncio.wait_for(ea.closed.wait(), timeout)
-        await asyncio.sleep(0.3)
+        end = loop.time() + 3
+        while loop.time() < end and not (b_holder.get("b") and b_holder["b"].state == DISCONNECTED):
+            await asyncio.sleep(0.02)
         b = b_holder.get("b")
         ok = bytes(ea.rx) == want_a and bytes(eb.rx) == want_b
-        if not ok or not quiet:
+        if not ok:
             print(f"      {name}: A closed with {ea.events[-1:]}, B {eb.events[-1:]}")
         check(f"{name}: both streams intact", ok,
               f"A got {len(ea.rx)}/{len(want_a)}, B got {len(eb.rx)}/{len(want_b)}")

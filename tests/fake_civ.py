@@ -1,12 +1,9 @@
 """A fake CI-V radio on a pseudo-terminal, for testing the real CivRadio code.
 
-sim.py applies every set instantly inside the server, so it cannot show
-queueing, write-loss or shutdown bugs. This fake sits on the other end of a
-pty: the server opens the slave path as its serial port and talks CI-V to it,
-exactly as it would to a G90 or IC-7300. Every frame the server writes is
-recorded with a timestamp; that list is what the tests assert on.
-
-Never connects to real hardware. Library use:
+sim.py applies sets instantly inside the server, so it cannot show queueing,
+write-loss or shutdown bugs. The server opens this pty's slave as its serial
+port; every frame it writes is recorded with a timestamp. Never connects to
+real hardware.
 
     fake = FakeCiv("g90")            # or "ic7300"; address from rigs.py
     fake.start()
@@ -21,9 +18,9 @@ import os
 import select
 import sys
 import threading
+import queue
 import time
 import tty
-import queue
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -71,23 +68,17 @@ class FakeCiv:
         caps = rigs.get(rig)
         self.rig = rig
         self.addr = caps["addr"]
-        # Replies take wire time, as on the real CI-V link (10 bits a byte):
-        # an instant fake let the server poll ~25,000 frames/s and burn the
-        # CPU a CI runner needs for everything else.
+        # Replies take wire time (10 bits a byte): an instant fake let the
+        # server poll ~25,000 frames/s and starve a CI runner's CPU.
         self.byte_s = 10 / caps["baud"]
-        # A slow radio: commands that change something (answered OK) are
-        # acknowledged ack_delay_s late; reads are answered at once. Replies
-        # stay in order, so a read queued behind a slow command waits for it.
-        # (Delaying every reply made the fake answer ~4 frames/s against the
-        # server's ~17: an unbounded backlog of replies describing the past.)
+        # Only sets (answered OK) are acked late; delaying reads too built an
+        # unbounded backlog of replies describing the past.
         self.ack_delay_s = ack_delay_s
         self._capture = None            # the worker's replies, held back to apply the ack delay
         self.tune_s = tune_s            # None = the tune never finishes
-        self.ignore = set()             # cmd bytes or (cmd, sub) whose SETS are acked but not applied
-        # Real G90 (fw 1.81, linux-station 2026-10-14): a 1A 06 set is acked, the display
-        # stays in plain USB, and a 1A 06 read then reports the value set. (A
-        # front-panel mode change does clear that read to 00, 13:31:38; not
-        # modelled here.)
+        self.ignore = set()             # cmd bytes or (cmd, sub) whose sets are acked but not applied
+        # As a real G90 does: a 1A 06 set is acked but not applied, and a
+        # 1A 06 read then echoes the value set.
         self.g90_1a06_echo = g90_1a06_echo
         self._data_echo = None
         self.lock = threading.RLock()
@@ -97,9 +88,9 @@ class FakeCiv:
                       "att": 0, "data_off_mod": 0x02}   # IC-7300 default: MIC/ACC
         self.frames = []                # every frame the server wrote, in order
         self._stale_tx = 0
-        self._pending = 0               # frames received and not yet answered (or dropped)
-        self.answered = []              # (monotonic time the reply was computed, Frame), in order
-        self.tune_ended_at = None       # monotonic time the last tune finished
+        self._pending = 0               # received, not yet answered
+        self.answered = []              # (time the reply was computed, Frame), in order
+        self.tune_ended_at = None
         self._stop = threading.Event()
         self._work = queue.Queue()
         self.master, self._slave = os.openpty()
@@ -144,18 +135,14 @@ class FakeCiv:
         return time.monotonic()
 
     def status_replies_since(self, since, cmd=0x1C, data=b"\x00"):
-        """How many polls of one kind (default PTT status, 1C 00; 1C 01 the
-        tuner, 0F split, 26 00 mode) the fake answered after `since`. Each
-        reply carried the state as of its answer, so n of them after a
-        change means the server has been told about it n times."""
+        """How many polls of one kind (default PTT status) were answered after `since`."""
         with self.lock:
             return sum(1 for t, f in self.answered
                        if t >= since and f.cmd == cmd and f.data == data)
 
     def quiesce(self, quiet_s=0.3, timeout=10.0):
-        """Wait until nothing is left to read or answer and nothing new has
-        arrived for quiet_s: every frame the server wrote is recorded.
-        Use before a 'nothing was written' check, after the server stopped."""
+        """Wait until nothing is left to read or answer for quiet_s. Use
+        before a 'nothing was written' check, after the server stopped."""
         end = time.monotonic() + timeout
         last = (-1, -1)
         since = time.monotonic()
@@ -172,22 +159,17 @@ class FakeCiv:
 
     @property
     def state(self):
-        """The radio's state, as a test should see it: first waits until
-        every frame the server has written is answered, so a check made
-        right after a command sees it applied (as with an instant fake) and
-        a 'nothing changed' check covers everything sent. The worker (and
-        a stopped fake) read it directly."""
-        # Not while this thread holds the lock: answering needs it.
+        """The radio's state, once every frame written so far is answered
+        (so a check right after a command sees it applied). The worker, a
+        stopped fake, and a holder of the lock read it directly."""
         if (threading.current_thread() not in self._threads and not self._stop.is_set()
                 and not self.lock._is_owned()):
             self.caught_up()
         return self._state
 
     def caught_up(self, timeout=10.0):
-        """Wait until every frame the server has written so far is answered:
-        no reply describing the past is still queued to land later. (The
-        queue need not empty: a server that sends one frame per reply keeps
-        a few in flight for good once a slow ack has let them build up.)"""
+        """Wait until every frame written so far is answered (the queue need
+        not empty: a server sending one frame per reply keeps a few in flight)."""
         with self.lock:
             n = len(self.frames)
         end = time.monotonic() + timeout
@@ -208,11 +190,8 @@ class FakeCiv:
         return self
 
     def stop(self):
-        # Queued replies are dropped, not answered: with an ack delay a slow
-        # machine can hold a backlog longer than any join timeout, and a reply
-        # thread still running after the close below would write into the
-        # next fake, which gets the same fd numbers (a stale "transmitting"
-        # reply made civ_safety_test's F2 split check flaky on CI).
+        # Queued replies are dropped: a reply thread outliving the close would
+        # write into the next fake, which reuses these fd numbers.
         self._stop.set()
         self._work.put(None)
         for th in self._threads:
@@ -406,8 +385,7 @@ class FakeCiv:
             return self._send(OK)
 
     def end_tune(self):
-        """End a tune now (for tune_s=None: the test, not a timer, decides
-        when, so a slow check can't outlast it). Returns a mark after it."""
+        """End a tune now (for tune_s=None). Returns a mark after it."""
         self._tune_done()
         return time.monotonic()
 

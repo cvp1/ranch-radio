@@ -47,7 +47,7 @@ check("white text on a dark theme reads the same",
       [l["text"] for l in s.lines(s.pixels(render_screen([(2, 114, "font_6x8", "GMRS Ch:1")], fg=0xFFFF, bg=0x0000)))],
       ["GMRS Ch:1"])
 
-# The real radio, mac-shack, 2026-10-17 12:57: channel mode, SV DMR, All Channels.
+# a real MD-UV390 screen dump: channel mode, SV DMR, All Channels
 with open(os.path.join(ROOT, "tests/fixtures/opengd77-screen-all-channels.bin"), "rb") as f:
     real = s.pixels(f.read())
 st = s.state(real, {"slots": list(range(1, 32)), "names": {1: "SV DMR"}, "zones": [{"name": "AZ SV DMR", "slots": [1]}]})

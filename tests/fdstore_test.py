@@ -1,7 +1,7 @@
 """tnc_hub's systemd fd-store plumbing (keep the radio's link across restarts):
 sd_notify hands a socket to the notify socket under its name, stored_socket
 adopts the one named "radio" from LISTEN_FDS and closes the rest, and nothing
-happens outside systemd. The real Bluetooth adoption is checked on linux-station.
+happens outside systemd.
 
     python3 tests/fdstore_test.py
 """

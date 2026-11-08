@@ -1,42 +1,27 @@
-"""Winlink packet QSY: the UV-PRO add-on tunes the hub's radio for a session.
+"""Winlink packet QSY: the UV-PRO add-on tunes the hub's radio to a packet
+session's freq= before Pat dials and puts it back after, so APRS and the
+iGate resume untouched. Against server.py --sim, tests/fake_pat.py as Pat,
+tests/fake_uvpro_bridge.py as the radio and a stand-in hub whose
+/api/status lists the links the test sets.
 
-On a Mac mini the packet hub's radio (a UV-50PRO over Bluetooth) is also
-reached by the UV-PRO add-on through the hub's control port. When a packet
-session names the gateway's frequency (freq=), the add-on puts the radio on
-it before Pat dials and back on the channel it was on afterwards, so APRS
-and the iGate resume with nobody touching the radio. Against server.py --sim,
-tests/fake_pat.py as Pat, tests/fake_uvpro_bridge.py as the radio and a
-stand-in hub whose /api/status lists the links the test sets:
-
-  1  a channel already on the frequency (FM simplex, TX on) is selected:
-     one settings write, Pat gets the URL without freq=, the radio goes back
-     to its channel (and dual watch) after the session, the page is told
-  2  already on it, dual watch off: nothing is written either way
-  3  no channel on it, a radio with a VFO: VFO A is tuned and put back
-  4  no VFO (the UV-50PRO), "qsy_channel" set: that channel is written, used
-     and written back whole (name, tone, RX only)
-  5  no VFO, no qsy_channel: the connect is refused, nothing written, Pat
-     never asked (never dial on the old channel)
+  in process: a second connect while the first's lane is arming is refused;
+     Stop while arming undoes it; an arm that raises is refused
+  1  a channel already on the frequency: selected, Pat gets the URL without
+     freq=, the radio back on its channel (and dual watch) after
+  2  already on it, dual watch off: nothing written either way
+  3  no channel on it, a radio with a VFO: VFO A tuned and put back
+  4  no VFO, qsy_channel set: that channel written, used, written back whole
+  5  no VFO, no qsy_channel: refused, nothing written, Pat never asked
   6  the radio transmitting: refused, nothing written
-  7  a packet link still up when Pat returns: the radio stays put until the
-     link drops, then goes back, then the session ends
-  8  the link held past restore_wait_s: the page is warned, the record is
-     kept, and the radio goes back before anything is tuned again
-  9  the channel select failing after a scratch write: the scratch channel is
-     written back at once and the connect refused
+  7  a link still up when Pat returns: the radio stays until it drops
+  8  the link held past restore_wait_s: warned, record kept, restored first next time
+  9  the select failing after a scratch write: written back at once, refused
   10 a page edit while tuned is refused
   11 the add-on can't be switched off while tuned
-  12 the add-on off: the session runs as before (the radio must already be
-     on the frequency), no bridge contact
+  12 the add-on off: the session runs untuned, no bridge contact
   13 a session that succeeds still puts the radio back
-  14 the server stopping while the link is held: a bounded wait, a WARNING
-     that the radio may not be back, and the process exits
-  and on the station (station.py): the same, by the hub's name; an add-on
-  that borrows the radio (no "control") refuses, saying why. In process,
-  first: a second connect while the first one's lane is still arming is
-  refused, Stop while arming undoes it, an arm that raises is refused.
-
-    .venv/bin/python tests/winlink_qsy_test.py
+  14 the server stopping while the link is held: bounded, warns, exits
+  station.py: the same, by the hub's name; borrow mode (no "control") refuses
 """
 import asyncio
 import json
@@ -56,11 +41,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import winlink_test_lib as L  # noqa: E402
 import testkit  # noqa: E402
+from testkit import wait_for  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="wlqsy-")
 fails = 0
-HUB = {"links": []}            # what the stand-in hub's /api/status lists as links
-HOLDS = []                     # the stand-in hub's off-channel hold calls: (path, by), in order
+HUB = {"links": []}            # the links the stand-in hub's /api/status lists
+HOLDS = []                     # its APRS hold calls: (path, by), in order
 LINK = {"local": "N9ABC", "remote": "N0DAJ", "state": "connected"}
 
 
@@ -87,20 +73,11 @@ def free_ports(n):
 L.APPS, L.LANE, L.PATP, L.WEB, HUB_PORT, CONTROL = free_ports(6)
 
 
-def wait_for(pred, timeout=10, step=0.1):
-    end = time.time() + timeout
-    while time.time() < end:
-        if pred():
-            return True
-        time.sleep(step)
-    return bool(pred())
-
-
 async def hub_main(port, ready):
     async def status(request):
         return web.json_response({"radio": {"up": True, "last_rx": time.time()}, "tx": {"enabled": True},
                                   "links": list(HUB["links"])})
-    async def hold(request):           # the add-on holds APRS before it retunes (plan 2026-11-07, 3.2)
+    async def hold(request):
         HOLDS.append((request.path, (await request.json()).get("by")))
         return web.json_response({"holds": []})
     app = web.Application()
@@ -244,11 +221,11 @@ def radio_tx(r, want):
     return lambda: bool((r.uvpro().get("state") or {}).get("is_in_tx")) is want
 
 
-# --- in process: winlink.PatEngine admission while a lane's arm is awaited ------
+# --- in process: PatEngine admission while a lane's arm is awaited ------------
 sys.path.insert(0, L.ROOT)
 import winlink  # noqa: E402
 
-logging.getLogger().addHandler(logging.NullHandler())   # the arm that raises below is logged on purpose
+logging.getLogger().addHandler(logging.NullHandler())   # the arm that raises below logs
 
 
 async def admission():
@@ -288,19 +265,18 @@ async def admission():
     async def session(url, queued, pat_url, peer=False):
         started.append(pat_url)
     eng._ready, eng._listing, eng._session = yes, none_queued, session
-    # Pat has said it is idle (a Status on its WebSocket): without one its
-    # state is unknown, which counts as busy and refuses every connect (A4).
+    # Pat idle per its Status (unknown counts as busy and refuses every connect)
     eng.pat_ws, eng._status_live = object(), True
     eng.status = {"connected": False, "dialing": False, "active_listeners": [], "remote_addr": ""}
     url = "ax25:///N0DAJ?freq=145090"
     out = {}
 
-    async def bounded(coro):                 # never hang the test, whatever the engine does
+    async def bounded(coro):
         try:
             await asyncio.wait_for(coro, 5)
         except TimeoutError:
             notes.append(("test", "timed out"))
-        except Exception as e:               # noqa: BLE001 - an engine that lets the arm's error out
+        except Exception as e:               # noqa: BLE001 - the arm's error let out
             notes.append(("test", f"raised {e!r}"))
 
     slow = SlowLane()
@@ -335,7 +311,7 @@ async def admission():
     await bounded(eng.connect(None, url))
     out["arm raising: refused, undone, reservation released"] = (
         any(lvl == "warn" and "arming Slow failed" in m for lvl, m in notes), lanes[-1].ends, started,
-        getattr(eng, "_admitting", None)) == (True, ["arming failed: tuner broke"], [], False)
+        eng._admitting) == (True, ["arming failed: tuner broke"], [], False)
     return out
 
 
@@ -390,7 +366,7 @@ try:
     r.addon("refresh")
     check("  the radio done transmitting", wait_for(radio_tx(r, False), 10), True)
 
-    # 12: the add-on off: as before PR this, the operator tunes the radio
+    # 12: the add-on off: the operator tunes the radio
     r.addon("power", on=False)
     check("12 add-on off", wait_for(lambda: not (r.uvpro().get("on")), 10), True)
     b0, p0 = r.mark()
@@ -408,7 +384,7 @@ r = Run({"FAKE_UVPRO_NO_VFO": "1"})
 try:
     b0, p0 = r.mark()
     armed = r.connect("ax25:///N0DAJ?freq=145050")
-    time.sleep(1.0)                       # a quiet window: nothing may follow the refusal
+    time.sleep(1.0)                       # negative check: nothing may follow the refusal
     check("5 nothing to tune with: not armed", armed, None)
     check("  refused, saying why", has(r.notices("warn"), "Not connecting", "could not be tuned",
                                        "no FM simplex channel on 145.050 MHz"), True)
@@ -446,8 +422,8 @@ try:
           [(c, i, v if c == "settings" else None) for c, i, v in w[1:]],
           [("settings", None, {"channel_a": 3, "double_channel": 0}),
            ("settings", None, {"channel_a": 0, "double_channel": 1}), ("channel", 3, None)])
-    check("  channel 4 holds what it held before (NOAA, RX only)", memory(r, 3) == before, True)
-    check("  (it was NOAA, RX only)", (before or {}).get("Name"), "NOAA")
+    check("  channel 4 holds what it held before (NOAA, RX only)",
+          ((before or {}).get("Name"), memory(r, 3) == before), ("NOAA", True))
 finally:
     r.stop()
 
@@ -486,7 +462,7 @@ try:
     wait_for(pat_called(r, p0), 10, 0.05)
     HUB["links"] = [LINK]
     check("  Pat returned", wait_for(pat_returned(r), 15), True)
-    time.sleep(2.0)                       # a quiet window: the radio must not move yet
+    time.sleep(2.0)                       # negative check: the radio must not move yet
     check("  link still up: no restore yet, the session not ended",
           (r.writes(b0), r.ended()), ([("settings", None, {"channel_a": 2, "double_channel": 0})], None))
     check("  the add-on shows the radio tuned", (r.uvpro().get("qsy") or {}).get("on"), "channel 3")
@@ -537,7 +513,7 @@ try:
 finally:
     r.stop()
 
-# --- the station (station.py, the Linux station): the same lane, by the hub's name -----
+# --- station.py: the same lane, by the hub's name ------------------------------
 class StationRun(Run):
     """station.py with a packet hub, Pat and the UV-PRO add-on (no HF radios)."""
 

@@ -1,21 +1,11 @@
-"""APRS plan M2: the packet page's Stations, Map, Messages and Raw tabs, in
-headless Chromium, against the real hub on tests/fake_kiss_radio.py.
-
-The hub backfills the heard sample (tests/fixtures/aprs/rx-sample.jsonl),
-then a moving station and an object are injected on the fake radio. Checks:
-  - the station list fills; the filter and a chip narrow it; a row opens the
-    station's detail
-  - the map draws the stations with a position, and the selected station's
-    track with the right points; our own position is on it
-  - the object is on the map, and its owner's kill (a delta) takes it off
-  - Messages lists what was heard; Raw still shows the heard list and traffic
-  - nothing is transmitted
+"""The packet page's Stations, Map, Messages and Raw tabs, in headless
+Chromium, against the real hub on tests/fake_kiss_radio.py. The hub backfills
+the receive sample (tests/corpus.py), then a moving station and an object are
+injected on the fake radio.
 
     python3 tests/packet_page_test.py [screenshot.png]
 """
-import json
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -24,11 +14,12 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 sys.path.insert(0, ROOT)
+import corpus  # noqa: E402
 from cdp_browser import Browser  # noqa: E402
-from fake_kiss_radio import FakeKissRadio  # noqa: E402
 import tnc_hub_test as T  # noqa: E402
+from testkit import free_port  # noqa: E402
 
-CDP = 19000 + random.randrange(1000)
+CDP = free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 SHOT = sys.argv[1] if len(sys.argv) > 1 else None
 fails = 0
@@ -45,15 +36,13 @@ if not CHROME:
     raise SystemExit("no chromium found (set CHROME=)")
 
 COUNT = "(s) => document.querySelectorAll(s).length"
-sys.path.insert(0, os.path.join(ROOT, "tests"))
-import corpus  # noqa: E402
 SAMPLE = corpus.sample()
 if SAMPLE is None:
     print("skip  packet page: it is built on a receive sample (tests/corpus.py); none here")
     sys.exit(0)
 logdir = tempfile.mkdtemp(prefix="packetpage-")
 shutil.copy(SAMPLE, os.path.join(logdir, "rx.jsonl"))
-radio = FakeKissRadio().start()
+radio = T.FakeKissRadio().start()
 hub = T.HubProc(radio, tx=False, extra=("--log-dir", logdir, "--lat", "32.2", "--lon", "-105.9"))
 b = Browser(CHROME, CDP)
 try:

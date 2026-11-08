@@ -1,27 +1,17 @@
-"""M1: the Mesh panel's server side, against tests/fake_mesh_bridge.py.
+"""The Mesh panel's server side, against tests/fake_mesh_bridge.py.
 
 Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
-  - the page is told mesh is on, and gets the node's info, channels, nodes
-    and an incoming message
-  - the channel key check comes through as key_ok only; the key itself never
-    reaches a page; a wrong key shows as key_ok false
-  - a channel message and a direct message reach the bridge as sent, and each
-    goes sending -> sent -> delivered; a NAK and a failed write show as failed
-  - empty, too-long, unknown-channel and bad-node-id sends are refused with a
-    warning and never reach the bridge
-  - the node going away shows as disconnected, the bridge is started again
-    and a send waiting on it fails rather than hanging
-  - message history (with ACK states) survives a server restart, in a file
-    only the user can read
-  - the node's settings reach the page; a change is checked against the
-    schema (unknown section or field, wrong type, out of range, bad choice,
-    empty name) and refused with a warning before the bridge sees it; a good
-    one is written and the page gets the new values; a node refusal warns
-  - a favorite reaches the bridge and the node list shows the star
-  - a traceroute goes running -> done with the route and SNRs, a second one
-    while it runs or within 30 s is refused, a NAK ends it as failed, and the
-    result is in a later page's snapshot; packets heard show as rx activity
-  - without --mesh-port there is no mesh and mesh_send is refused
+  - the page gets the node's info, channels, nodes and an incoming message
+  - the channel key check comes through as key_ok only; the key never reaches
+    a page, the history file or the log; a wrong key shows as key_ok false
+  - channel and direct sends go sending -> sent -> delivered; a NAK and a
+    failed write show as failed; bad sends are refused before the bridge
+  - the node going away: disconnected, the bridge restarts, the send fails
+  - message history (with ACK states) survives a restart, mode 600
+  - settings are schema-checked before the bridge; a good change is written
+    and echoed; a node refusal warns
+  - favorites; traceroute (one at a time, 30 s apart, result in later snapshots)
+  - without --mesh-port, mesh commands are refused
 
     python3 tests/mesh_test.py
 """
@@ -279,7 +269,7 @@ try:
     alltext = "".join(page.raw)
     check("the channel key never reaches the page", FAKE_KEY in alltext, False)
 
-    # The node goes away: disconnected, a fresh bridge, connected again.
+    # the node goes away
     page.send({"t": "mesh_send", "text": "die", "ch": 1})
     check("node lost: page shows disconnected",
           bool(page.wait(lambda e: (e.get("status") or {}).get("connected") is False)), True)

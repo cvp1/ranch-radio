@@ -1,4 +1,4 @@
-"""The Modules tab in a real browser (modules plan M2-M4), headless Chromium.
+"""The Modules tab in headless Chromium.
 
 On a simulated Mac radio server (Mesh on its fake bridge) and a Linux station,
 both on scratch copies of the repo and home:
@@ -20,12 +20,10 @@ import shutil
 import socket
 import subprocess
 import sys
-import os as _os
-# Host files come from examples/hosts/ (or a scratch copy) only, never a
-# real ~/.config/ranch-radio/hosts on the machine running the tests.
-_os.environ["RANCH_RADIO_HOSTS"] = ""
 import tempfile
 import time
+
+os.environ["RANCH_RADIO_HOSTS"] = ""     # never this machine's own host files
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
@@ -111,10 +109,6 @@ def row(name):
     return f"document.querySelector('#modules .mod-row[data-name=\"{name}\"]')"
 
 
-def state(name):
-    return b.js(f"({row(name)}||{{}}).querySelector ? {row(name)}.querySelector('.mod-state').textContent : null")
-
-
 def click(sel):
     return b.js(f"(() => {{ const e = {sel}; if (!e) return 'missing'; e.click(); return 'ok'; }})()")
 
@@ -123,10 +117,9 @@ try:
     b.goto(f"http://127.0.0.1:{WEB}/#/modules")
     check("radio page: a Modules tab in the bar",
           b.wait("[...document.querySelectorAll('#rr-nav a')].some(a => a.textContent === 'Modules')"), True)
-    check("the Modules view shows rows", bool(b.wait(f"{row('mesh')} !== null", 15)), True)
-    check("the other panels are hidden on this view", b.js("getComputedStyle(document.querySelector('.panel.vfo')).display"), "none")
     check("Mesh reads On", b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'On'"), True)
-    check("radios and core come first: core row present", b.js(f"{row('core')} !== null"), True)
+    check("the other panels are hidden on this view", b.js("getComputedStyle(document.querySelector('.panel.vfo')).display"), "none")
+    check("the core row is listed", b.js(f"{row('core')} !== null"), True)
     check("omarchy-bar is folded under 'Not for this OS'",
           b.js(f"{row('omarchy-bar')}.closest('details') !== null"), True)
     check("uvpro is not: it runs on a Mac", b.js(f"{row('uvpro')}.closest('details') === null"), True)
@@ -147,7 +140,6 @@ try:
     check("  Mesh is back in the tab bar",
           b.wait(f"{NAV}.some(t => t.startsWith('Mesh')) && 'back'", 10), "back")
 
-    # Add Winlink: a bad sound card name first
     click(f"{row('winlink')}.querySelector('.mod-add')")
     check("Add… opens a form with the fields only you can give",
           b.wait("document.querySelectorAll('#modules .mod-form input').length === 2"), True)
@@ -158,7 +150,6 @@ try:
     check("a bad value shows its error under the field",
           bool(b.wait("document.querySelector('#modules .mod-err[data-err=\"ardopcf.audio_in\"]').textContent.length > 0")), True)
     check("  and writes nothing", json.dumps(read_host("testmac"), sort_keys=True), before)
-    # a server push (Refresh) must not wipe what's typed
     b.js("document.querySelector('#modules input[name=\"ardopcf.audio_in\"]').value = 'USB Audio CODEC'")
     click("document.querySelector('#modules .mod-refresh')")
     time.sleep(2.5)
@@ -174,7 +165,6 @@ try:
     check("  the host file has Winlink, and the radio a lane", ("winlink" in h, h["radios"][0].get("lane")), (True, 4537))
     check("  Winlink now reads 'Not running yet' (pending: install, restart)",
           b.wait(f"{row('winlink')}.querySelector('.mod-state').textContent === 'Not running yet'", 10), True)
-    b.screenshot(os.path.join(TMP, "..", "modules-page.png"))
 
     b.goto(f"http://127.0.0.1:{ST}/#/modules")
     check("station page: a Modules tab",

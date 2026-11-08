@@ -1,23 +1,10 @@
 """The UV-PRO add-on's Winlink QSY (qsy / restore), in process.
 
-UvproAddon is built with a stub host and a stand-in for the bridge (its
-_send_bridge answers through _on_bridge as the bridge would, or not at all,
-or raises), so each rule is checked without a radio server:
-  - the pick: the channel selected now first, then the lowest id; repeater,
-    RX-only, AM and DMR channels on the frequency are skipped; 1 Hz tolerance
-  - borrow mode ("hub", no "control") refuses, saying why, and writes nothing
-  - the scratch channel: refused with a clear reason under Channel edit lock
-  - VFO A is not used when it has a name or reads 0.0 (the UV-50PRO)
-  - the recovery record exists before the first write
-  - "No change." is success both ways (nothing written)
-  - a restore with no record is a no-op; a record left over is restored
-    before the next tune, and a restore that can't be done refuses the tune
-  - _write_wait: no answer -> ok False, no record left, a late done ignored,
-    no toast; _send_bridge raising -> ok False, record popped
-  - can_stop says why while tuned; page edits are refused while tuned
-  - a failed restore is retried until it works; stop() cancels the retry with
-    a WARNING
-  - a page's own write that gets no answer still says so (unchanged)
+UvproAddon runs with a stub host, a stand-in bridge (_send_bridge answers
+through _on_bridge, stays silent, or raises) and a fake packet hub hold API.
+Covers channel pick, refusals, the recovery record (in memory and on disk,
+before the first write), exact restore, the deferred retry, and the APRS
+hold set before tuning and released only after the restore.
 
     .venv/bin/python tests/uvpro_qsy_test.py
 """
@@ -27,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -72,9 +60,7 @@ class Host:
 
 
 class FakeHub:
-    """The packet hub's hold API as the add-on sees it: records each POST in
-    the shared event list (with the radio's writes), answers 200, or a code,
-    or raises as an unreachable hub does."""
+    """The hub's hold API: logs each POST into the shared event list; answers self.code or raises when down."""
 
     def __init__(self, events):
         self.events, self.code, self.up, self.holds = events, 200, True, []
@@ -92,7 +78,6 @@ class FakeHub:
 
 
 class Radio:
-    """The bridge's side: applies a write, sends it back, then done."""
 
     def __init__(self, a, mode="ok", events=None):
         self.a, self.mode, self.cmds, self.record_at_first = a, mode, [], "unset"
@@ -360,8 +345,7 @@ check("select fails after the scratch write: written back, refused, no record",
 
 
 async def rx_only_split_back():
-    """PR #19 loose end: an RX-only scratch channel with a split TX has no
-    CHIRP form (an "off" row drops its TX frequency); it must come back exactly."""
+    # PR #19: an RX-only split channel has no CHIRP form ("off" drops its TX), so restore must be exact
     chans = BASE[:3] + [ch(3, "WX RPT", 162.55, 162.40, tx_disable=True)]
     a, radio = addon(chans, qsy_channel=4)
     before = copy.deepcopy(next(c for c in a.channels if c["id"] == 3))
@@ -378,7 +362,6 @@ check("  put back exactly: its own TX frequency and RX only", got[1:], ((True, N
 
 
 async def legacy_record_back():
-    """A record an earlier version left holds a CHIRP memory: still put back."""
     a, radio = addon(qsy_channel=4)
     await a.qsy(145_050_000)
     cid, _ = a._qsy["written"]
@@ -435,10 +418,9 @@ check("a failed restore: retried until it works; stop() cancels it, warning",
       run(retry()), (False, True, True, None, True))
 
 
-# --- B-10: the record outlives the process (plan winlink-listen, F16) -------------
+# --- B-10: the record outlives the process ---------------------------------------
 
 async def record_on_disk_first():
-    import tempfile
     a, radio = addon(qsy_channel=4)
     a.state_dir = tempfile.mkdtemp(prefix="uvqsy-")
     path = os.path.join(a.state_dir, "uvpro-qsy.json")
@@ -459,10 +441,7 @@ check("B-10 the record is on disk before the first write, gone once back", run(r
 
 
 async def new_instance_restores():
-    """A server that dies mid-QSY (no restore, its bridge gone with it); a new
-    add-on instance, reading the record, puts the radio back (fake bridge
-    with a radio that keeps its state)."""
-    import tempfile
+    """A server dies mid-QSY; a new instance reads the record and puts the radio back."""
     d = tempfile.mkdtemp(prefix="uvqsy-")
     radio_file = os.path.join(d, "radio.json")
     os.environ.update(FAKE_UVPRO_STATE=radio_file, FAKE_UVPRO_CH3="145.09")
@@ -497,7 +476,6 @@ async def new_instance_restores():
     await until(lambda: a1._bridge_up() and a1.settings is not None and a1.channels)
     r = await a1.qsy(145_090_000)
     out["tuned"] = (r.ok, radio())
-    # The crash: the supervisor and bridge die with the process, no restore().
     a1._closing = True
     a1._task.cancel()
     a1.proc.kill()
@@ -519,7 +497,7 @@ check("B-10   the new instance re-asserts the hold before restoring, releases af
       r.get("hold"), [("/api/hold", "winlink-qsy"), ("/api/hold/release", "winlink-qsy")])
 
 
-# --- the off-channel hold (APRS messaging plan 2026-11-07, 3.2) -------------------
+# --- the off-channel APRS hold ----------------------------------------------------
 
 async def hold_before_first_write():
     a, radio = addon(qsy_channel=4)
@@ -604,7 +582,6 @@ check("a restore given up after QSY_RETRY_MAX_S keeps the hold, and says so", ru
 
 
 async def hold_reasserted_from_record():
-    import tempfile
     a, radio = addon()
     a.state_dir = tempfile.mkdtemp(prefix="uvqsy-")
     await a.qsy(144_390_000)                   # tuned, record on disk; then "the add-on restarts"
