@@ -26,7 +26,10 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
   flare class and solar flux, and a badge on each band with the decodes heard
   in the last hour. A Propagation tab explains them (below).
 - **Packet.** APRS and Winlink packet through Direwolf, a network KISS TNC or
-  a UV-PRO over Bluetooth, with transmit off until you allow it.
+  a UV-PRO over Bluetooth, with transmit off until you allow it. APRS
+  messaging with acks and retries, a probe that proves a reply can reach
+  the radio, and a watch on the local iGates that carry internet traffic
+  onto the air.
 - **Several radios, one page.** On Linux, a station page puts every radio,
   Winlink, Mesh and the packet hub behind one address, with a shared rigctl
   port as well as each radio's own.
@@ -324,6 +327,16 @@ still there.
   registration alone never makes the radio answer; a listen window is VHF/UHF
   packet only, in a data sub-band, bounded in time, and undone even after a
   crash.
+- **STOP TX.** An always-visible switch on the radio page ends the radio's
+  transmission and any tune, aborts Winlink, and latches until a page
+  presses Resume (it doesn't survive a server restart). The packet hub has
+  its own **Off**, which does survive a restart: it is written to disk before
+  the page is told it worked, and an unreadable state file starts the hub
+  with transmit off.
+- **Off-channel holds.** Before Winlink retunes a UV-PRO the packet hub is
+  asked to hold APRS, and the retune is refused if it can't; the hold is
+  released only after the radio is verified back on its channel, survives a
+  hub restart, and can be released from the packet page.
 - **LAN only.** The servers refuse requests from web pages on other sites
   (Host and Origin checks), so a page from the internet, open in a browser on
   your LAN, can't reach the radio. There is no login: run it on a network you
@@ -402,8 +415,13 @@ has connected. Received frames appear in the heard list and the APRS store.
   The hub itself sends what it hears to APRS-IS, so this works with a UV-PRO
   over Bluetooth or a serial or network TNC, not only with Direwolf. It skips
   packets with TCPIP, TCPXX, NOGATE or RFONLY in the path and queries, sends
-  each packet once however many digipeaters repeat it, and never sends
-  anything from APRS-IS on the air. `api/status` shows it under `"igate"`. A
+  each packet once however many digipeaters repeat it, marks each line
+  `qAO` (a receive-only iGate, per aprs-is.net), never gates our own calls'
+  frames (outer or inner), and never sends anything from APRS-IS on the
+  air. `"observe": true` (the default when messaging is on) also reads
+  APRS-IS for our own calls (`filter b/<call>* g/<call>*`); what comes back
+  is stored as `is` and shown "via internet", and is never acked or sent.
+  `api/status` shows it under `"igate"`. A
   host runs one iGate: the hub's, or Direwolf's (below), not both.
   `"beacon_min": 30` (10 to 120) adds the iGate's own position beacon, to
   APRS-IS only, never RF, with the receive-only iGate symbol `R&`; it needs
@@ -418,6 +436,34 @@ has connected. Received frames appear in the heard list and the APRS store.
   gaps. Each packet goes at most once per 30 s, through the transmit gate with
   its own `"max_per_min"` (default 6). `api/status` shows it under `"digi"`.
   With Direwolf as the modem, use Direwolf's own `DIGIPEAT` instead.
+- **APRS messaging:** add `"aprs": {"messaging": "send"}` to the `"packet"`
+  block (with `"tx": true`). The packet page's Messages tab gets threads and
+  a compose box, enabled once **TX ARMED** is switched on in that browser.
+  Messages go with a message number and retries at 0, 30, 90, 210, 450 and
+  930 s, one per slot (a slot missed during a pause is skipped, never caught
+  up), until acked or 1,410 s pass. `send` acks nothing it hears and puts no
+  reply-ack on its messages; `"messaging": "full"` also acks messages to
+  `"owned_calls"` (default: `mycall`) heard live on RF, and needs
+  `"firmware_acks": false`, set only once you know the radio's own firmware
+  doesn't ack them too (send it a numbered message in `send` mode and watch
+  its transmit light). Messages and acks pause while a KISS client, a
+  monitoring AGWPE client, a Winlink link, a listen window or an off-channel
+  hold is in the way, and the page says why. Acks have their own share of
+  the transmit gate's count and airtime, so app traffic can't starve them.
+- **The round-trip probe:** `"aprs": {"probe": {"target": "WXBOT", "text":
+  "CWOP"}}` puts a **Probe** button on the Messages tab. One press sends one
+  message and reports five legs separately: sent, digipeated copy heard,
+  reached APRS-IS through someone else's iGate, the target's ack back over
+  RF, and acked, each with its evidence. A leg the hub couldn't observe (the
+  radio off its channel, the observer down) reads *unknown*, never a pass.
+  One probe at a time, and not again until the last one's deadline passes.
+- **The iGate watch** (on unless `--igate-watch-min 0`): a receive-only
+  station gets internet messages only through other stations' transmitting
+  iGates. Each finished day is judged from every RF copy each iGate sent
+  onto the air: fewer than two iGates with 3 packets each is *low*, a day
+  with under 200 frames heard is *unknown*. A desktop notification goes out
+  only on a drop and on the recovery; `api/status` shows the last day under
+  `"aprs" "igate_watch"`.
 
 ### Direwolf on a USB sound card cable (AIOC), and an iGate
 
