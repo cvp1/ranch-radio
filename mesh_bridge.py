@@ -10,6 +10,7 @@ server starts it again.
     mesh_bridge.py /dev/meshtastic [--key NAME=PATH ...]
     mesh_bridge.py ble:NODEM_7720 [--key NAME=PATH ...]   (Bluetooth: name or address)
     mesh_bridge.py /dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560   (first that answers)
+    mesh_bridge.py ble:NODEM_7720 --feed mqtt://BROKER/PREFIX --feed-cred FILE [--feed-tx]
 
 Bluetooth needs the node bonded to this host once (its PIN) and the node's
 single BLE connection free: while a phone app holds it, this bridge can't
@@ -31,6 +32,10 @@ In (stdin):
     {"cmd": "set", "ref": n, "section": str, "values": {field: value}}
     {"cmd": "favorite", "ref": n, "to": "!xxxxxxxx", "fav": bool}
     {"cmd": "trace", "ref": n, "to": "!xxxxxxxx"}
+
+--feed: also publish what the node hears to an MQTT broker, so a bridge on
+another host can use this node (mesh_feed.py has the topics). --feed-tx lets
+that broker send text through the node too, checked and rate-limited.
 
 --key NAME=PATH: the channel called NAME should use the base64 PSK in PATH.
 The key is compared here and only the verdict (key_ok) leaves this process;
@@ -181,6 +186,7 @@ class Bridge:
         self.nodes_dirty = True
         self.lost = threading.Event()
         self.closing = False
+        self.feed = None              # mesh_feed.Feed with --feed
 
     # --- node -> server
 
@@ -228,6 +234,11 @@ class Bridge:
         emit(ev="nodes", nodes=out)
 
     def on_receive(self, packet, interface):
+        if self.feed is not None:
+            try:
+                self.feed.publish_packet(packet)
+            except Exception:
+                log.exception("feed packet")
         d = packet.get("decoded") or {}
         port = d.get("portnum")
         if packet.get("from") != self.my_num and packet.get("fromId"):
@@ -266,6 +277,8 @@ class Bridge:
                 self.nodes_dirty = False
                 try:
                     self.nodes()
+                    if self.feed is not None:
+                        self.feed.publish_nodes(dict(self.iface.nodes or {}))
                 except Exception:
                     log.exception("node list")
             self.lost.wait(NODES_EVERY_S)
@@ -308,17 +321,29 @@ class Bridge:
 
     # --- server -> node
 
-    def send(self, m):
+    def send(self, m, feed=False):
+        """feed=True: the MQTT feed asked (mesh_feed checked it); the answer goes
+        back there, and the page sees it as a message from this node."""
         from meshtastic import BROADCAST_ADDR
         ref = m.get("ref")
         try:
             pkt = self.iface.sendText(str(m["text"]), destinationId=m.get("to") or BROADCAST_ADDR,
                                       wantAck=True, channelIndex=int(m.get("ch", 0)))
         except Exception as e:
-            emit(ev="send_failed", ref=ref, error=str(e))
+            if feed:
+                self.feed.sent(False, error=str(e))
+            else:
+                emit(ev="send_failed", ref=ref, error=str(e))
             return
         self.pending.add(pkt.id)
-        emit(ev="sent", ref=ref, id=pkt.id)
+        if feed:
+            self.feed.sent(True, id=pkt.id)
+            emit(ev="msg", id=pkt.id, **{"from": self.iface.nodesByNum.get(self.my_num, {})
+                                         .get("user", {}).get("id")},
+                 to=m.get("to"), ch=int(m.get("ch", 0)), dm=False, text=str(m["text"]),
+                 snr=None, rssi=None, hops=None, via="feed")
+        else:
+            emit(ev="sent", ref=ref, id=pkt.id)
 
     def set_config(self, m):
         """Write one section's changed fields. The server has checked them
@@ -459,6 +484,26 @@ def close(iface, wait=CLOSE_WAIT_S):
     t.join(wait)
 
 
+def start_feed(args, iface, b):
+    """The MQTT feed, or None when its settings are wrong: a broker problem
+    must never take the Mesh tab down with it."""
+    import mesh_feed
+    try:
+        feed = mesh_feed.Feed(args.feed, cred=os.path.expanduser(args.feed_cred) if args.feed_cred else None,
+                              tx=args.feed_tx)
+    except ValueError as e:
+        log.error("feed off: %s", e)
+        return None
+    feed.send = b.send
+    feed.channels = lambda: [c.index for c in (iface.localNode.channels or []) if c.role != 0]
+    me = iface.nodesByNum.get(b.my_num, {}).get("user", {})
+    feed.publish_info({"num": b.my_num, "id": me.get("id"), "long": me.get("longName"),
+                       "short": me.get("shortName")})
+    feed.publish_nodes(dict(iface.nodes or {}), force=True)
+    feed.start()
+    return feed
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("port", help="serial device of the node, e.g. /dev/meshtastic, "
@@ -466,6 +511,11 @@ def main():
                                 "comma-separate several to try in order")
     p.add_argument("--key", action="append", default=[], metavar="NAME=PATH",
                    help="check that channel NAME uses the base64 PSK in PATH")
+    p.add_argument("--feed", metavar="mqtt://HOST[:PORT]/PREFIX",
+                   help="also publish the node's traffic to this MQTT broker (see mesh_feed.py)")
+    p.add_argument("--feed-cred", metavar="FILE", help="broker user and password, one per line")
+    p.add_argument("--feed-tx", action="store_true",
+                   help="let the broker send text through the node (PREFIX/send)")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, stream=sys.stderr,
@@ -496,6 +546,8 @@ def main():
     emit(ev="status", connected=True, error=None)
     b.info()
     b.config()
+    if args.feed:
+        b.feed = start_feed(args, iface, b)
     threading.Thread(target=b.nodes_loop, daemon=True).start()
 
     def stdin_loop():
@@ -521,6 +573,8 @@ def main():
 
     threading.Thread(target=stdin_loop, daemon=True).start()
     b.lost.wait()
+    if b.feed is not None:
+        b.feed.close()
     close(iface)
     _out.flush()
     os._exit(1)                   # the BLE library's own threads must not hold the exit

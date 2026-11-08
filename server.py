@@ -1607,6 +1607,13 @@ def main():
                         "warns if not (repeatable). The key never leaves the bridge")
     p.add_argument("--mesh-log", default="~/.local/state/radio-remote/mesh.jsonl",
                    help="message history kept across restarts (mode 600; '' = memory only)")
+    p.add_argument("--mesh-feed", metavar="mqtt://HOST[:PORT]/PREFIX",
+                   help="also publish the mesh node's traffic to this MQTT broker, so a bridge on "
+                        "another host can use the node (topics in mesh_feed.py). Unset = no feed")
+    p.add_argument("--mesh-feed-cred", metavar="FILE",
+                   help="the broker's user and password, one per line (read by the bridge only)")
+    p.add_argument("--mesh-feed-tx", action="store_true",
+                   help="let the broker send text through the node (checked and rate-limited)")
     p.add_argument("--addons", metavar="FILE",
                    help="JSON file of add-ons to run, {\"uvpro\": {\"enabled\": true, ...}} (see addons/). "
                         "Unset = none")
@@ -1675,7 +1682,8 @@ def main():
     if args.mesh_port:            # Mesh is an add-on (addons/mesh.py); --mesh-* configure it
         addon_cfg.setdefault("mesh", {"port": args.mesh_port, "python": args.mesh_python,
                                       "bridge": args.mesh_bridge, "keys": list(args.mesh_key),
-                                      "log": args.mesh_log})
+                                      "log": args.mesh_log, "feed": args.mesh_feed,
+                                      "feed_cred": args.mesh_feed_cred, "feed_tx": args.mesh_feed_tx})
     if addon_cfg:
         from addons import Addons
         station.addons = Addons(station, addon_cfg, args.addons_state or None)

@@ -10,7 +10,9 @@ across restarts like any add-on's.
 
 Config (station.json "mesh", or server.py --mesh-*, both become this):
     {"port": "/dev/meshtastic", "keys": ["HomeNet=~/.config/ranch-radio/keys/..."],
-     "python": "...", "bridge": "...", "log": "..."}
+     "python": "...", "bridge": "...", "log": "...",
+     "feed": "mqtt://BROKER/PREFIX", "feed_cred": "FILE", "feed_tx": false}
+"feed" also publishes the node's traffic to an MQTT broker (mesh_feed.py).
 
 Delete this file and the Mesh tab goes away; the radio page runs on.
 """
@@ -42,7 +44,9 @@ class MeshAddon(Addon):
             mesh_python=opts.get("python", "~/.local/share/venvs/meshtastic/bin/python"),
             mesh_bridge=os.path.expanduser(opts.get("bridge", str(HERE / "mesh_bridge.py"))),
             mesh_key=list(opts.get("keys", [])),          # the bridge expands each FILE
-            mesh_log=opts.get("log", "~/.local/state/radio-remote/mesh.jsonl"))
+            mesh_log=opts.get("log", "~/.local/state/radio-remote/mesh.jsonl"),
+            mesh_feed=opts.get("feed"), mesh_feed_cred=opts.get("feed_cred"),
+            mesh_feed_tx=bool(opts.get("feed_tx", False)))
         self.engine = None
         self._last = None             # the engine before the last switch-off
 
