@@ -71,7 +71,7 @@ jobs:
     steps:
       - run: test "${{ needs.shard.result }}" = success
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: durations-*
           path: ${{ runner.temp }}/durations

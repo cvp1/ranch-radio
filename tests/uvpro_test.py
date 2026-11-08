@@ -197,7 +197,7 @@ def connected_page():
     """A page once the bridge has reported everything."""
     pg = Page()
     snap = (pg.hello.get("addons") or {}).get("uvpro") or {}
-    if not (snap.get("status") or {}).get("connected") or not snap.get("channels"):
+    if not (snap.get("status") or {}).get("connected") or snap.get("battery") is None:
         pg.wait(lambda e: e.get("addon") == "uvpro" and "battery" in e)
     return pg
 
@@ -617,9 +617,9 @@ try:
     desc = {d["name"]: d for d in pg.hello["config"]["addons"]}
     check("broken add-on: not loaded, off", (desc["nosuch"]["on"], (desc["nosuch"]["error"] or "")[:10]),
           (False, "not loaded"))
-    e = pg.wait(lambda e: (e.get("status") or {}).get("connected") is False and (e.get("status") or {}).get("error"))
-    snap = pg.hello["addons"]["uvpro"]
-    got = e["status"]["error"] if e else (snap.get("status") or {}).get("error")
+    got = ((pg.hello["addons"]["uvpro"].get("status") or {}).get("error")
+           or ((pg.wait(lambda e: (e.get("status") or {}).get("connected") is False
+                        and (e.get("status") or {}).get("error")) or {}).get("status") or {}).get("error"))
     check("unreachable radio: not connected, with why", bool(got and "not found" in got), True)
     check("radio server still runs (hello has radio state)", "state" in pg.hello, True)
     pg.close()
