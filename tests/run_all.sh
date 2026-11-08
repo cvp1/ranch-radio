@@ -9,6 +9,10 @@
 #                                         tests/ci/shard.py; CI runs each
 #                                         shard on its own runner)
 #   RR_LIST=1 bash tests/run_all.sh      (print every run's name, run none)
+#   RR_TEST_TIMEOUT=600 bash tests/run_all.sh   (per-run cap, default 300 s;
+#                                         the slowest run takes ~150 s on CI)
+# Each finished run appends "name seconds" to $LOGDIR/durations.tsv, which
+# tests/ci/shard.py check reads.
 set -u
 cd "$(dirname "$0")/.."
 LOGDIR="${LOGDIR:-/tmp/rr-suite}"
@@ -50,12 +54,13 @@ run() {   # name, command...
   [[ -n "${RR_LIST:-}" ]] && { echo "$name"; return; }
   [[ -z "$pick" || $pick == *" $name "* ]] || return
   [[ " ${RR_SKIP:-} " == *" $name "* ]] && { echo "SKIP $name"; return; }
-  if isolated "$name" timeout 900 "$@" >"$LOGDIR/$name.log" 2>&1; then
+  if isolated "$name" timeout "${RR_TEST_TIMEOUT:-300}" "$@" >"$LOGDIR/$name.log" 2>&1; then
     echo "PASS $name ($((SECONDS - start))s)"; pass=$((pass + 1))
   else
     rc=$?
     echo "FAIL $name ($((SECONDS - start))s, rc $rc)"; fail=$((fail + 1)); failed+=("$name")
   fi
+  echo "$name $((SECONDS - start))" >>"$LOGDIR/durations.tsv"
 }
 
 for t in tests/*_test.py; do
