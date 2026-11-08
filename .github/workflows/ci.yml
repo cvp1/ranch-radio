@@ -43,6 +43,7 @@ jobs:
           CHROME: /usr/bin/google-chrome
           LOGDIR: ${{ runner.temp }}/rr-suite
           RR_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          RR_SENTINEL: 1   # decoy station state in the runner's HOME must survive the suite
         run: bash tests/run_all.sh
       - name: Logs of failed tests
         if: failure()

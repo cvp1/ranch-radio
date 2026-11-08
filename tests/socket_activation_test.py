@@ -8,12 +8,12 @@ next server starts.
     .venv/bin/python tests/socket_activation_test.py [rig]
 """
 import os
-import random
 import signal
 import socket
 import subprocess
 import sys
 import time
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
@@ -29,7 +29,7 @@ def check(name, got, want):
 
 def start(lsock, rport):
     """server.py with the listening socket as fd 3, like systemd does it."""
-    web = 18000 + random.randrange(2000)
+    web = testkit.free_port()
     fd = lsock.fileno()
     proc = subprocess.Popen(
         ["sh", "-c", 'LISTEN_PID=$$ LISTEN_FDS=1 LISTEN_FDNAMES=rigctl exec "$0" "$@"',

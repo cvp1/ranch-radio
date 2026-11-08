@@ -15,7 +15,6 @@ both on scratch copies of the repo and home:
 """
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -28,6 +27,7 @@ os.environ["RANCH_RADIO_HOSTS"] = ""     # never this machine's own host files
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from cdp_browser import Browser  # noqa: E402
+import testkit  # noqa: E402
 
 CHROME = (os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
           or next((p for p in ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -88,7 +88,7 @@ def stop(p):
 
 
 env = dict(os.environ, RANCH_RADIO_REPO=REPO, RANCH_RADIO_HOME=HOME)
-WEB = 19000 + random.randrange(900)
+WEB = testkit.free_port()
 srv = wait_port(subprocess.Popen(
     [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB), "--rigctl-port", "0",
      "--addons-state", os.path.join(TMP, "state.json"), "--mesh-port", MARK, "--mesh-python", sys.executable,

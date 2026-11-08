@@ -9,16 +9,16 @@ browser must not reach the radio's WebSocket (PTT, codec Save, add-ons).
 """
 import asyncio
 import os
-import random
 import socket
 import subprocess
 import sys
 import time
 
 import aiohttp
+import testkit  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WEB = 19000 + random.randrange(1000)
+WEB = testkit.free_port()
 fails = 0
 
 

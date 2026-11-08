@@ -17,7 +17,6 @@ tests/fake_kiss_radio.py.
 """
 import json
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -31,8 +30,9 @@ os.environ.pop("CC_OBS_TOKENS_FILE", None)
 from cdp_browser import Browser  # noqa: E402
 from ax25 import Frame  # noqa: E402
 import tnc_hub_test as T  # noqa: E402
+import testkit  # noqa: E402
 
-CDP = 19000 + random.randrange(1000)
+CDP = testkit.free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 SHOT = sys.argv[1] if len(sys.argv) > 1 else None
 fails = 0

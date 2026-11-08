@@ -14,7 +14,6 @@ The panel protocol and the lane are winlink_test.py's and winlink_lane_test.py's
 """
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess
@@ -164,7 +163,7 @@ if CHROME:
     TEXT = "(s) => (document.querySelector(s)?.textContent || '')"
     os.remove(STATE)                       # start on
     server, flog = start()
-    b = Browser(CHROME, 19000 + random.randrange(1000))
+    b = Browser(CHROME, testkit.free_port())
     try:
         b.goto(f"http://127.0.0.1:{L.WEB}/")
         b.wait("document.querySelector('#conn b')?.textContent === 'Connected'")

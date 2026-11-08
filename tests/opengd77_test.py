@@ -17,7 +17,6 @@ import asyncio
 import base64
 import json
 import os
-import random
 import socket
 import struct
 import subprocess
@@ -34,6 +33,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 import opengd77 as g  # noqa: E402
 from fake_opengd77 import FakeOpenGD77, channel  # noqa: E402
+import testkit  # noqa: E402
 
 fails = 0
 
@@ -161,7 +161,7 @@ r.close()
 fake.stop()
 
 # --- the add-on on a radio server
-WEB = 19000 + random.randrange(1000)
+WEB = testkit.free_port()
 TMP = tempfile.mkdtemp(prefix="opengd77-")
 STATE = os.path.join(TMP, "addons.json")
 fake = FakeOpenGD77().start()

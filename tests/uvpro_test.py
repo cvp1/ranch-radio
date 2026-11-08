@@ -16,7 +16,6 @@ import csv
 import io
 import json
 import os
-import random
 import socket
 import subprocess
 import sys
@@ -30,7 +29,8 @@ from aiohttp import web
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from testkit import wait_for  # noqa: E402
-WEB = 19000 + random.randrange(1000)
+import testkit  # noqa: E402
+WEB = testkit.free_port()
 HUB = WEB + 1000
 fails = 0
 TMP = tempfile.mkdtemp(prefix="uvprotest-")

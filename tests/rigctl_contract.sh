@@ -7,7 +7,8 @@ set -u
 cd "$(dirname "$0")/.."
 RIG="${1:-ic7300}"
 PY="${PYTHON:-.venv/bin/python}"; [[ -x "$PY" ]] || PY=python3
-PORT=$((14000 + RANDOM % 1000)); WEB=$((17000 + RANDOM % 1000))
+port() { "$PY" -c 'import sys; sys.path.insert(0, "tests"); import testkit; print(testkit.free_port())'; }
+PORT=$(port); WEB=$(port)
 LOG=$(mktemp)
 "$PY" server.py --sim --rig "$RIG" --no-audio --no-tx --listen "$WEB" --rigctl-port "$PORT" >"$LOG" 2>&1 &
 SP=$!

@@ -15,7 +15,6 @@ while getting correct VFO", 2026-10-14.)
 import asyncio
 import json
 import os
-import random
 import signal
 import socket
 import subprocess
@@ -99,7 +98,7 @@ class FakeSystemd:
         return asyncio.run(go())
 
     def start(self):
-        web = self.web = 18000 + random.randrange(2000)
+        web = self.web = testkit.free_port()
         with self.lock:
             stored = list(self.store.items())
         names = ["g90-remote.socket"] + [n for n, _ in stored]

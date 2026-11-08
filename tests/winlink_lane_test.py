@@ -17,7 +17,6 @@ The apps' port keeps its old behaviour (keys without any arming).
 import asyncio
 import json
 import os
-import random
 import socket
 import subprocess
 import sys
@@ -29,12 +28,13 @@ import aiohttp
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from rigctl_server import RIGCTL_KEEPALIVE_S, WINLINK_KEEPALIVE_S  # noqa: E402
+import testkit  # noqa: E402
 TX_OFF_CONFIRM = 1.0     # server.TX_OFF_CONFIRM_S: "not transmitting" must hold this long
 
 RIG = sys.argv[1] if len(sys.argv) > 1 else "ic7300"
-APPS = 15000 + random.randrange(1000)
-LANE = 16000 + random.randrange(1000)
-WEB = 18000 + random.randrange(1000)
+APPS = testkit.free_port()
+LANE = testkit.free_port()
+WEB = testkit.free_port()
 TX_TIMEOUT = 60
 fails = 0
 

@@ -728,7 +728,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--config", default="~/.config/radio-remote/station.json",
                    help="the station's radios, ports and services (see linux/station.example.json)")
-    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--host", default=os.environ.get("RANCH_RADIO_DEFAULT_HOST") or "0.0.0.0")
     p.add_argument("--listen", type=int, default=7300)
     p.add_argument("--https", action="store_true")
     p.add_argument("--tls-name", action="append", default=[])
@@ -736,7 +736,7 @@ def main():
                    help="a dotted host name browsers use for this station (IPs, single-label, .local, "
                         ".home.arpa and .ts.net names are always allowed)")
     p.add_argument("--token", default=os.environ.get("IC7300_TOKEN"))
-    p.add_argument("--rigctl-host", default="0.0.0.0")
+    p.add_argument("--rigctl-host", default=os.environ.get("RANCH_RADIO_DEFAULT_HOST") or "0.0.0.0")
     p.add_argument("--rigctl-port", type=int, default=4532,
                    help="the shared rigctl port: the radio connected longest (default 4532)")
     p.add_argument("-v", "--verbose", action="store_true")

@@ -10,7 +10,6 @@ the bridge; Switch on starts a fresh one; without addons/mesh.py there is no Mes
 import asyncio
 import json
 import os
-import random
 import socket
 import subprocess
 import sys
@@ -24,8 +23,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 from testkit import wait_for  # noqa: E402
+import testkit  # noqa: E402
 
-WEB = 19000 + random.randrange(1000)
+WEB = testkit.free_port()
 TMP = tempfile.mkdtemp(prefix="meshaddon-")
 STATE = os.path.join(TMP, "addons.json")
 CMD_LOG = os.path.join(TMP, "commands.jsonl")
