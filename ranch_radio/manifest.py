@@ -48,6 +48,7 @@ RULES = {
     "serial_or_ble": (str, re.compile(r"(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40})"
                                       r"(,(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40})){0,3}")),
     "audio_name": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")),
+    "http_url": (str, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]{0,200})?")),
 }
 
 
@@ -221,6 +222,18 @@ MANIFESTS = {
         "os": ["macos", "linux"],
         # NOAA needs nothing; a skywatch InfluxDB is optional ("skywatch": {"url", "db"}).
         "template": {"macos": {"enabled": True}, "linux": {"enabled": True}},
+        "needs": [],
+    },
+    "logbook": {
+        "label": "Logbook (Wavelog in a tab)",
+        "family": "addon",
+        "block": ("addons", "logbook"),
+        "os": ["macos", "linux"],
+        # Or, by hand, "port" (+ "scheme", "path") for a logbook on the radio's
+        # own machine, framed under the page's own name (addons/logbook.py).
+        "template": {"any": {"enabled": True, "url": ASK}},
+        "rules": {"url": "http_url"},
+        "ask": {"url": "the logbook's address, e.g. https://192.168.1.20:8087/"},
         "needs": [],
     },
     "macos-widget": {
