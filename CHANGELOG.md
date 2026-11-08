@@ -118,6 +118,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **CI runs the suite on four runners at once.** The split comes from
+  measured test durations, so a pull request's check takes about a quarter
+  of the time it did. Each result line now shows how long that test ran.
+
 - **rigctl `T 0` releases only the sender's own PTT**, on every port.
   From a client that isn't keying it answers `RPRT 0` and changes nothing;
   before, any client's `T 0` (or one sent while the radio was keyed at its

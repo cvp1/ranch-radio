@@ -32,6 +32,15 @@ bash tests/run_all.sh                  # the full suite, one test at a time
 The page tests need Chromium or Chrome (`CHROME=/path/to/chrome` if it isn't
 on `PATH`). The rigctl contract tests need Hamlib's `rigctld`.
 
+CI splits the suite across four runners by measured duration
+(`tests/ci/shard.py`), and the `tests` check passes only when every shard does.
+`RR_SHARD=2/4 bash tests/run_all.sh` runs one shard locally. When a test gets
+much slower or faster, refresh the durations from a green CI run:
+
+```sh
+gh run view <run-id> --log | python3 tests/ci/shard.py refresh
+```
+
 ### Tests that pass on every machine
 
 CI runs on small, busy runners, so a test that only passes on a fast laptop
