@@ -7,6 +7,30 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **APRS message management on the packet page's Messages tab.**
+  - **Cancel** stops one of your messages that is still queued or retrying. It
+    is never sent again, and the next message queued to that station starts.
+  - **Resend** puts a failed, rejected or cancelled message back in compose.
+    Send, with TX armed, sends it under a new message number.
+  - **Delete** removes one message or a whole conversation, after a
+    confirmation. The hub refuses either while one of yours in it is still
+    being sent.
+  - **Read marks and archive live in the hub's store** (schema 4,
+    `thread_state`), so every browser shows the same unread badge. The badge
+    now counts unread messages, not threads. Opening a conversation marks it
+    read. **Mark unread** and **Mark all read** sit beside it.
+  - **Archive** hides a conversation until a new message arrives, and
+    **Archived (n)** lists the hidden ones.
+  - **Export** downloads a conversation as text.
+  - **Search:** the conversation list filters by call, and the heard list
+    searches message text.
+  - **Retention:** heard messages between other stations now go after 30
+    days. Messages from or to any SSID of an owned call stay until you
+    delete them. The table previously grew without limit.
+  - On upgrade, every message already stored counts as read. The old
+    per-browser marks are not carried over.
+  - Cancelling a round-trip probe's message before it is sent ends the probe
+    at once.
 - **STOP TX: an always-visible kill switch on the radio page.** One press,
   in every view, ends this radio's transmission and any ATU tune, aborts a
   running Winlink session and listen window, and disarms both Winlink lanes

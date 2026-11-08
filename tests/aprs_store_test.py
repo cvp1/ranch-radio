@@ -324,8 +324,136 @@ def test_review_round2():
         store.stop()
 
 
+# ---------- message management (2026-11-08): read marks, archive, delete, search, retention
+
+OWN = ["N9ABC"]
+
+
+def hear_msg(db, t, src, text, msgno, to="N9ABC"):
+    db.ingest(t, "rf", f"{src}>APRS::{to:<9}:{text}{{{msgno}")
+
+
+def out_msg(db, t, dst, text, state="acked", msgno="AA"):
+    return db.msg_insert({"t": t, "port": "rf", "src": "N9ABC", "dst": dst, "text": text, "msgno": msgno,
+                          "state": state, "tries": 1, "first_sent": t, "deadline": t + 1410})
+
+
+def threads(db, archived=False):
+    return {e["call"]: (e["unread"], e["received"], e["sent"]) for e in db.correspondents(OWN, archived=archived)}
+
+
+def test_manage():
+    db = fresh("manage")
+    db.set_owned(OWN)
+    check("a new file: read_floor 0 (nothing pre-read)", db.meta("read_floor"), "0")
+    hear_msg(db, T0, "K7XYZ", "hello", "1")
+    hear_msg(db, T0 + 10, "K7XYZ", "you there", "2")
+    out_msg(db, T0 + 20, "K7XYZ", "yes")
+    hear_msg(db, T0 + 30, "W7TST", "cq", "1")
+    hear_msg(db, T0 + 40, "N0CALL", "not for us", "1", to="N0CALL-5")
+    check("threads: unread, received, sent; others' traffic is no thread", threads(db),
+          {"K7XYZ": (2, 2, 1), "W7TST": (1, 1, 0)})
+    c = db.correspondents(OWN)
+    check("  newest first, with the last message", [(e["call"], e["last_text"], e["last_dir"]) for e in c],
+          [("W7TST", "cq", "in"), ("K7XYZ", "yes", "out")])
+    check("  counts for the badge", db.thread_counts(OWN), {"unread": 3, "total": 2, "archived": 0})
+
+    check("read: the thread's unread goes to 0", db.thread_read("K7XYZ", OWN), 0)
+    check("  the other thread keeps its unread", threads(db)["W7TST"][0], 1)
+    check("unread: the newest received one is unread again", db.thread_read("K7XYZ", OWN, read=False), 1)
+    hear_msg(db, T0 + 50, "K7XYZ", "hello?", "3")
+    check("  a new message adds to it", db.thread_meta("K7XYZ", OWN), {"unread": 2, "archived": False})
+    db.thread_read_all(OWN)
+    check("read all: nothing unread anywhere", db.thread_counts(OWN)["unread"], 0)
+
+    db.thread_archive("W7TST", OWN)
+    check("archive: out of the list", list(threads(db)), ["K7XYZ"])
+    check("  in the archived list", list(threads(db, archived=True)), ["W7TST"])
+    check("  meta says archived", db.thread_meta("W7TST", OWN)["archived"], True)
+    hear_msg(db, T0 + 60, "W7TST", "again", "2")
+    check("a new message brings it back, unread", (list(threads(db)), threads(db)["W7TST"][0]), (["W7TST", "K7XYZ"], 1))
+    db.thread_archive("W7TST", OWN)
+    db.thread_archive("W7TST", OWN, archived=False)
+    check("unarchive: back without a new message", "W7TST" in threads(db), True)
+    try:
+        db.thread_archive("NOBODY", OWN)
+        check("archiving no thread is refused", False, True)
+    except ValueError:
+        check("archiving no thread is refused", True, True)
+
+    busy = out_msg(db, T0 + 70, "K7XYZ", "still going", state="pending", msgno="AB")
+    for name, fn in (("one message still being sent", lambda: db.msg_delete(busy, OWN)),
+                     ("its whole thread", lambda: db.thread_delete("K7XYZ", OWN))):
+        try:
+            fn()
+            check(f"delete refused: {name}", False, True)
+        except ValueError as e:
+            check(f"delete refused: {name}", "cancel" in str(e), True)
+    other = db.db.execute("SELECT id FROM messages WHERE src='N0CALL'").fetchone()[0]
+    try:
+        db.msg_delete(other, OWN)
+        check("delete refused: a message not in one of our threads", False, True)
+    except ValueError:
+        check("delete refused: a message not in one of our threads", True, True)
+    first = db.db.execute("SELECT id FROM messages WHERE src='K7XYZ' AND msgno='1'").fetchone()[0]
+    db.msg_delete(first, OWN)
+    check("delete one: gone, the rest stay", [m["text"] for m in db.thread("K7XYZ", OWN)],
+          ["you there", "yes", "hello?", "still going"])
+    db.msg_update(busy, {"state": "cancelled"})
+    check("delete the thread once nothing is being sent: 4 rows", db.thread_delete("K7XYZ", OWN), 4)
+    check("  no thread, no marks left", ("K7XYZ" in threads(db),
+          db.db.execute("SELECT COUNT(*) FROM thread_state WHERE call='K7XYZ'").fetchone()[0]), (False, 0))
+    check("  other stations untouched", len(db.messages(with_call="N0CALL")), 1)
+
+    hear_msg(db, T0 + 80, "W7TST", "100% sure_thing", "3")
+    check("search: a substring, any case", [m["text"] for m in db.messages(q="AGAIN")], ["again"])
+    check("  % and _ are literal", ([m["text"] for m in db.messages(q="0% s")], db.messages(q="u_e"),
+                                    [m["text"] for m in db.messages(q="u_e", with_call="W7TST")]),
+          (["100% sure_thing"], [], []))
+    check("  with a call", [m["text"] for m in db.messages(q="o", with_call="N0CALL")], ["not for us"])
+
+
+def test_manage_retention():
+    db = fresh("manage-ret")
+    db.set_owned(["N9ABC-7"])
+    old = T0 - 40 * 86400
+    hear_msg(db, old, "N0CALL", "old, others", "1", to="N0CALL-5")
+    hear_msg(db, old, "K7XYZ", "old, to us", "1", to="N9ABC-7")
+    hear_msg(db, old, "K7XYZ", "old, to another of our SSIDs", "2", to="N9ABC-9")
+    hear_msg(db, old, "N9ABC-5", "old, from our base call", "3", to="K7XYZ")
+    out_msg(db, old, "K7XYZ", "old, ours out")
+    hear_msg(db, T0 - 86400, "N0CALL", "new, others", "2", to="N0CALL-5")
+    r = db.retain(now=T0)
+    check("retention: only others' messages past 30 days go", r["messages"], 1)
+    check("  ours (any SSID of an owned base) and recent ones stay",
+          sorted(m["text"] for m in db.messages()),
+          sorted(["old, to us", "old, to another of our SSIDs", "old, from our base call", "old, ours out", "new, others"]))
+    db2 = fresh("manage-ret-off")
+    hear_msg(db2, old, "N0CALL", "old, others", "1", to="N0CALL-5")
+    check("  no owned calls (messaging never started): nothing goes", db2.retain(now=T0)["messages"], 0)
+
+
+def test_manage_migration():
+    db = fresh("v3")
+    db.db.execute("DROP TABLE thread_state")
+    db.db.execute("DELETE FROM meta WHERE k='read_floor'")
+    db.db.execute("PRAGMA user_version=3")
+    hear_msg(db, T0, "K7XYZ", "before the upgrade", "1")
+    db.close()
+    db = Db(db.path, clock=lambda: T0 + 100)
+    db.set_owned(OWN)
+    check("version 3 -> 4", db.db.execute("PRAGMA user_version").fetchone()[0], 4)
+    check("  read_floor is the upgrade time", db.meta("read_floor"), str(T0 + 100))
+    check("  what was there counts as read", threads(db), {"K7XYZ": (0, 1, 0)})
+    hear_msg(db, T0 + 200, "K7XYZ", "after", "2")
+    check("  a message after it is unread", threads(db)["K7XYZ"][0], 1)
+    check("  mark unread reaches under the floor", (db.thread_read("K7XYZ", OWN), db.thread_read("K7XYZ", OWN, False)),
+          (0, 1))
+
+
 for test in [test_schema, test_dups, test_paths, test_positions, test_objects, test_retention, test_backfill,
-             test_reload, test_worker_under_load, test_queue_full_drops, test_corpus, test_review_round2]:
+             test_reload, test_worker_under_load, test_queue_full_drops, test_corpus, test_review_round2,
+             test_manage, test_manage_retention, test_manage_migration]:
     print(f"--- {test.__name__}")
     try:
         test()

@@ -119,7 +119,8 @@ def test_migration_and_retention():
     c.close()
     now = 1794100000.0
     db = Db(p, clock=lambda: now)
-    check("a version 2 file migrates to 3", db.db.execute("PRAGMA user_version").fetchone()[0], 3)
+    check("a version 2 file migrates (to the current version)", db.db.execute("PRAGMA user_version").fetchone()[0],
+          aprs_store.SCHEMA_VERSION)
     check("  and starts the tally now (no partial day judged)", db.igate_day("2026-11-01")["since"], now)
     db.close()
     new = fresh("v0")

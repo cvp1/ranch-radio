@@ -83,9 +83,18 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
 #msg-arm.on { border-color: var(--tx); color: var(--tx); }
 #msg-threads tr[data-call] { cursor: pointer; }
 #msg-threads tr.sel td { background: rgba(255,255,255,.05); }
+#msg-threads tr.unread td.mono { font-weight: 600; }
+#msg-threads .thr-prev { font-family: inherit; font-weight: 400; font-size: 12px; opacity: .65; white-space: nowrap; }
+.thr-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.thr-head h2 { margin-right: auto; }
+#thr-tools button, .thr-bar button, .m-act button { font-size: 12px; padding: 2px 8px; }
+.m-act { white-space: nowrap; text-align: right; }
+.m-act button + button { margin-left: 4px; }
+button.danger { color: #f88; }
 .msg-hold { border: 1px solid var(--warm); color: var(--warm); border-radius: 10px; padding: 8px 12px; margin: 0 0 10px;
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .st-acked { color: var(--accent); } .st-failed, .st-rejected { color: var(--tx); } .st-pending, .st-queued { color: var(--warm); }
+.st-cancelled { color: var(--muted); }
 .leg { display: inline-block; min-width: 54px; padding: 1px 6px; border-radius: 7px; font-size: 11.5px; text-align: center;
   border: 1px solid var(--line); }
 .leg.v-yes { color: var(--accent); border-color: var(--accent); }
@@ -130,9 +139,20 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
   </div>
   <div id="msg-holds"></div>
   <div class="msg-split">
-    <section><h2>Threads</h2><table id="msg-threads"></table></section>
+    <section><h2>Threads</h2>
+      <div class="aprs-bar thr-bar"><input id="thr-filter" type="search" placeholder="Find a call" size="10">
+        <button id="thr-readall" title="Mark every conversation read">Mark all read</button>
+        <button id="thr-archived" hidden>Archived</button></div>
+      <table id="msg-threads"></table></section>
     <section>
-      <h2 id="msg-with-h">New message</h2>
+      <div class="thr-head"><h2 id="msg-with-h">New message</h2>
+        <span class="aprs-bar" id="thr-tools" hidden>
+          <button id="thr-new" title="Close this conversation and start a new message">New</button>
+          <button id="thr-unread" title="Mark the newest received message unread">Mark unread</button>
+          <button id="thr-archive" title="Hide this conversation until a new message arrives">Archive</button>
+          <button id="thr-export" title="Download this conversation as text">Export</button>
+          <button id="thr-delete" class="danger" title="Delete every message in this conversation">Delete</button>
+        </span></div>
       <form id="msg-compose" class="aprs-bar" autocomplete="off">
         <input id="msg-to" placeholder="To (callsign)" maxlength="9" size="10">
         <input id="msg-text" placeholder="Message (67 characters, no | ~ { })" class="msg-text">
@@ -151,7 +171,8 @@ nav.tabs button.cur { border-color: var(--accent); color: var(--accent); }
       <b>unknown</b> means this station couldn't see (off channel, observer down), not "no".</p>
     <table id="probe-table"></table></section>
   <h2 style="margin-top:14px">Heard messages</h2>
-  <div class="aprs-bar"><input id="msg-with" type="search" placeholder="With a station (call)"></div>
+  <div class="aprs-bar"><input id="msg-with" type="search" placeholder="With a station (call)">
+    <input id="msg-q" type="search" placeholder="Containing text"></div>
   <section><table id="msg-table"></table></section>
 </div>
 <aside id="aprs-detail" hidden></aside>

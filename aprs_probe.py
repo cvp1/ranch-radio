@@ -198,6 +198,9 @@ class Probe:
             return
         if row["state"] == "acked" and p.get("t_first") is not None:
             self._yes("L5", row.get("acked_t") or self.clock(), "the engine matched an ack to this msgno")
+        elif row["state"] == "cancelled":
+            self._note("its message was cancelled from the page")
+            p["cancelled"] = True
 
     def on_rf(self, t, f, d):
         ours = self._ours()
@@ -271,7 +274,7 @@ class Probe:
         elif ok and gaps and gaps[-1][1] is None:
             gaps[-1][1] = now
             self._dirty = True
-        if p.get("t_first") is None and now - p["t"] > aprs_msg.DEADLINE_S:
+        if p.get("t_first") is None and (p.get("cancelled") or now - p["t"] > aprs_msg.DEADLINE_S):
             await self._finish()
             return
         if p.get("window_end") is not None and now >= p["window_end"]:

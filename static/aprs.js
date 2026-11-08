@@ -10,6 +10,11 @@
 // (never remembered across a reload), and compose stays disabled while
 // transmit is off or stopped, a hold is on, or messaging is paused. The hub
 // checks all of it again; the page only saves a refused click.
+//
+// Management (2026-11-08): read marks and archive live in the hub's store, so
+// every browser agrees. Cancel stops one of ours still being sent; Resend puts
+// a finished one back in compose (Send, armed, sends it); Delete, per message
+// or per thread, is confirmed and refused by the hub while one is being sent.
 
 (() => {
   const POLL_MS = 5000;
@@ -27,6 +32,14 @@
   };
   const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
   const getJSON = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); };
+  // A POST to the hub: {ok, d} with the hub's reason in d.error when refused.
+  const postJSON = async (url, body) => {
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "X-Ranch-Radio": "1" },
+      body: JSON.stringify(body || {}) });
+    let d = {};
+    try { d = await r.clone().json(); } catch (e) { d = { error: (await r.text()) || String(r.status) }; }
+    return { ok: r.ok, d };
+  };
 
   // A text glyph per APRS symbol (no sprite set yet: its licence is unchecked).
   const GLYPHS = { "-": "⌂", ">": "C", "#": "D", "&": "G", "_": "W", "k": "T", "v": "V", "u": "T", "b": "B",
@@ -277,9 +290,10 @@
       `</table>`;
   }
   async function loadMessages() {
-    const w = $("msg-with").value.trim();
+    const w = $("msg-with").value.trim(), q = $("msg-q").value.trim();
+    const qs = new URLSearchParams(); if (w) qs.set("with", w); if (q) qs.set("q", q);
     try {
-      const m = await getJSON("api/aprs/messages" + (w ? `?with=${encodeURIComponent(w)}` : ""));
+      const m = await getJSON("api/aprs/messages" + (qs.toString() ? "?" + qs : ""));
       $("msg-table").innerHTML = m.messages.length ? msgTable(m.messages.slice().reverse()).replace(/^<table>|<\/table>$/g, "")
         : `<tr><td class="empty">no messages heard</td></tr>`;
     } catch (e) {
@@ -288,10 +302,11 @@
     loadThreads();
   }
   $("msg-with").addEventListener("change", loadMessages);
+  $("msg-q").addEventListener("change", loadMessages);
 
   let armed = false, peer = null, mst = null;     // armed: this browser only, never stored
-  const SEEN = "aprs-msg-seen";
-  const seen = () => { try { return JSON.parse(localStorage.getItem(SEEN) || "{}"); } catch (e) { return {}; } };
+  let showArchived = false, threadRows = [], threadArchived = false;
+  const ACTIVE = ["queued", "pending", "sending"];
   const BAD = /[|~{}]|[^\x20-\x7e]/;
 
   function stateText(m) {
@@ -300,6 +315,7 @@
     if (m.state === "pending") return m.slot ? `pending · slot ${m.slot}` : `pending · not sent yet${why}`;
     if (m.state === "sending") return "sending";
     if (m.state === "queued") return "queued (one at a time per station)";
+    if (m.state === "cancelled") return "cancelled";
     return m.state + (m.state === "failed" || m.state === "rejected" ? why : "");
   }
   function why() {
@@ -370,34 +386,116 @@
   });
   async function loadThreads() {
     try {
-      const d = await getJSON("api/aprs/thread");
-      const s = seen();
-      let unread = 0;
-      const rows = d.threads.map((t) => {
-        const n = t.last > (s[t.call] || 0) && t.received ? 1 : 0;
-        unread += n;
-        return `<tr data-call="${esc(t.call)}" class="${t.call === peer ? "sel" : ""}"><td class="mono">${esc(t.call)}${n ? '<span class="badge">new</span>' : ""}</td>` +
+      const d = await getJSON("api/aprs/thread" + (showArchived ? "?archived=1" : ""));
+      const f = $("thr-filter").value.trim().toUpperCase();
+      const list = d.threads.filter((t) => !f || t.call.includes(f));
+      const rows = list.map((t) => {
+        const prev = (t.last_dir === "out" ? "you: " : "") + (t.last_text || "");
+        return `<tr data-call="${esc(t.call)}" class="${t.call === peer ? "sel" : ""}${t.unread ? " unread" : ""}">` +
+          `<td class="mono">${esc(t.call)}${t.unread ? `<span class="badge">${t.unread}</span>` : ""}` +
+          `<div class="thr-prev">${esc(prev.length > 40 ? prev.slice(0, 39) + "…" : prev)}</div></td>` +
           `<td>${ago(t.last)}</td></tr>`;
       });
-      $("msg-threads").innerHTML = rows.length ? rows.join("") : `<tr><td class="empty">no conversations yet</td></tr>`;
+      $("msg-threads").innerHTML = rows.length ? rows.join("")
+        : `<tr><td class="empty">${showArchived ? "no archived conversations" : f ? "no match" : "no conversations yet"}</td></tr>`;
+      $("thr-archived").textContent = showArchived ? "Back to conversations" : `Archived (${d.archived})`;
+      $("thr-archived").hidden = !showArchived && !d.archived;
+      $("thr-readall").disabled = !d.unread;
       const tab = document.querySelector('nav.tabs button[data-tab="messages"]');
-      tab.innerHTML = "Messages" + (unread ? `<span class="badge" id="msg-unread">${unread}</span>` : "");
+      tab.innerHTML = "Messages" + (d.unread ? `<span class="badge" id="msg-unread">${d.unread}</span>` : "");
     } catch (e) { /* the store isn't answering: the heard list says so */ }
   }
-  $("msg-threads").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-call]"); if (tr) openThread(tr.dataset.call); });
-  async function openThread(call) {
-    peer = call; $("msg-to").value = call; $("msg-with-h").textContent = `With ${call}`;
+  $("msg-threads").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-call]"); if (tr) openThread(tr.dataset.call, true); });
+  $("thr-filter").addEventListener("input", loadThreads);
+  $("thr-archived").onclick = () => { showArchived = !showArchived; loadThreads(); };
+  $("thr-readall").onclick = async () => { await postJSON("api/aprs/thread/read-all"); loadThreads(); };
+
+  function actions(m) {
+    const b = [];
+    if (m.dir === "out" && ACTIVE.includes(m.state)) b.push(`<button class="m-cancel" title="No more tries">Cancel</button>`);
+    if (m.dir === "out" && ["failed", "rejected", "cancelled"].includes(m.state))
+      b.push(`<button class="m-resend" title="Back into compose; Send sends it again">Resend</button>`);
+    if (!(m.dir === "out" && ACTIVE.includes(m.state))) b.push(`<button class="m-del" title="Delete this message">✕</button>`);
+    return b.join("");
+  }
+  async function openThread(call, user) {
+    if (call !== peer) $("msg-to").value = call;
+    peer = call; $("msg-with-h").textContent = `With ${call}`;
+    $("thr-tools").hidden = false;
     try {
       const d = await getJSON(`api/aprs/thread?with=${encodeURIComponent(call)}`);
-      $("msg-thread").innerHTML = d.messages.length ? "<tr><th>time</th><th></th><th>message</th><th>state</th></tr>" +
+      threadRows = d.messages;
+      $("msg-thread").innerHTML = d.messages.length ? "<tr><th>time</th><th></th><th>message</th><th>state</th><th></th></tr>" +
         d.messages.slice().reverse().map((m) => `<tr class="msg-row" data-id="${m.id}" data-state="${esc(m.state || "")}">` +
           `<td>${when(m.t)}</td><td>${m.dir === "out" ? "→ " + esc(m.dst) : "← " + esc(m.src)}${m.via === "internet" ? ' <span class="muted">via internet</span>' : ""}</td>` +
-          `<td>${esc(m.text)}</td><td class="st-${esc(m.state || "")}">${esc(stateText(m))}</td></tr>`).join("")
+          `<td>${esc(m.text)}</td><td class="st-${esc(m.state || "")}">${esc(stateText(m))}</td><td class="m-act">${actions(m)}</td></tr>`).join("")
         : `<tr><td class="empty">nothing yet</td></tr>`;
-      const s = seen(); s[call] = Date.now() / 1000; localStorage.setItem(SEEN, JSON.stringify(s));
+      // Seen: a thread open on a visible page is read (only when something is unread).
+      if (d.unread && (user || document.visibilityState === "visible")) {
+        await postJSON("api/aprs/thread/read", { with: call, read: true });
+      }
+      threadArchived = !!d.archived;
+      $("thr-archive").textContent = threadArchived ? "Unarchive" : "Archive";
     } catch (e) { $("msg-thread").innerHTML = `<tr><td class="empty">APRS store not answering</td></tr>`; }
     loadThreads(); drawCompose();
   }
+  function closeThread() {
+    peer = null; threadRows = [];
+    $("msg-with-h").textContent = "New message"; $("thr-tools").hidden = true;
+    $("msg-thread").innerHTML = ""; $("msg-to").value = "";
+    loadThreads(); drawCompose();
+  }
+  $("msg-thread").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button"); if (!btn) return;
+    const id = Number(btn.closest("tr").dataset.id), m = threadRows.find((x) => x.id === id);
+    if (!m) return;
+    let r = null;
+    if (btn.classList.contains("m-cancel")) {
+      if (!confirm(`Stop sending "${m.text}" to ${m.dst}? It is not sent again.`)) return;
+      r = await postJSON("api/aprs/message/cancel", { id });
+    } else if (btn.classList.contains("m-resend")) {
+      $("msg-to").value = m.dst; $("msg-text").value = m.text; drawCompose(); $("msg-text").focus();
+      $("msg-note").textContent = "back in compose: Send sends it again (a new message number)";
+      return;
+    } else if (btn.classList.contains("m-del")) {
+      if (!confirm(`Delete this message from the log? "${m.text}"`)) return;
+      r = await postJSON("api/aprs/message/delete", { id });
+    }
+    if (r && !r.ok) $("msg-note").textContent = r.d.error || "refused";
+    openThread(peer);
+  });
+  $("thr-unread").onclick = async () => {
+    if (!peer) return;
+    const r = await postJSON("api/aprs/thread/read", { with: peer, read: false });
+    if (!r.ok) { $("msg-note").textContent = r.d.error || "refused"; return; }
+    if (r.d.unread === 0) { $("msg-note").textContent = "nothing received in this thread to mark unread"; return; }
+    closeThread();
+  };
+  $("thr-archive").onclick = async () => {
+    if (!peer) return;
+    const r = await postJSON("api/aprs/thread/archive", { with: peer, archived: !threadArchived });
+    if (!r.ok) { $("msg-note").textContent = r.d.error || "refused"; return; }
+    closeThread();
+  };
+  $("thr-delete").onclick = async () => {
+    if (!peer) return;
+    const n = threadRows.length;
+    if (!confirm(`Delete the whole conversation with ${peer} (${n} message${n === 1 ? "" : "s"})? This can't be undone.`)) return;
+    const r = await postJSON("api/aprs/thread/delete", { with: peer });
+    if (!r.ok) { $("msg-note").textContent = r.d.error || "refused"; return; }
+    closeThread();
+  };
+  $("thr-export").onclick = () => {
+    if (!peer || !threadRows.length) return;
+    const lines = [`APRS conversation with ${peer}, exported ${new Date().toISOString()}`, ""].concat(threadRows.map((m) =>
+      `${new Date(m.t * 1000).toISOString()}\t${m.dir === "out" ? "to " + m.dst : "from " + m.src}\t${m.text}\t${stateText(m)}`));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/plain" }));
+    a.download = `aprs-${peer.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $("thr-new").onclick = closeThread;
   async function msgStatus() {
     try { mst = await getJSON("api/status"); } catch (e) { mst = null; }
     drawCompose();
@@ -442,7 +540,7 @@
 
   // ---------- start
 
-  window.aprsPage = { poll, openDetail, stations, objects, showTab, openThread, msgStatus };   // for the page tests
+  window.aprsPage = { poll, openDetail, stations, objects, showTab, openThread, closeThread, msgStatus, loadThreads };   // for the page tests
   loadMe().then(() => { showTab(location.hash.slice(1)); poll(); msgStatus(); loadThreads(); });
   setInterval(poll, POLL_MS);
   setInterval(() => { if (!$("aprs-messages").hidden) loadMessages(); else loadThreads(); }, 15000);

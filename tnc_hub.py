@@ -1699,7 +1699,8 @@ def make_web(hub):
         return web.json_response(s)
 
     async def aprs_messages(req):
-        return web.json_response({"messages": await from_store("messages", req.query.get("with", "")[:12] or None)})
+        return web.json_response({"messages": await from_store("messages", req.query.get("with", "")[:12] or None,
+                                                               200, req.query.get("q", "")[:67] or None)})
 
     # APRS messaging (plan 2026-11-07, 3.5): a page sends like radio PTT.
     async def aprs_message(req):
@@ -1718,11 +1719,17 @@ def make_web(hub):
         log.warning("APRS message %s to %s from the page (%s)", row["msgno"], row["dst"], req.remote)
         return web.json_response({"id": row["id"], "state": row["state"], "msgno": row["msgno"]})
 
+    def thread_owned():
+        return hub.aprs_msg.owned if hub.aprs_msg else [hub.args.mycall]
+
     async def aprs_thread(req):
         call = req.query.get("with", "")[:12]
-        owned = hub.aprs_msg.owned if hub.aprs_msg else [hub.args.mycall]
+        owned = thread_owned()
         if not call:
-            return web.json_response({"with": None, "threads": await from_store("correspondents", owned)})
+            archived = req.query.get("archived") == "1"
+            return web.json_response({"with": None, "archived": archived,
+                                      "threads": await from_store("correspondents", owned, 200, archived),
+                                      **await from_store("thread_counts", owned)})
         rows = await from_store("thread", call, owned)
         active = {r["id"]: r for r in (hub.aprs_msg.out.values() if hub.aprs_msg else ())}
         out = []
@@ -1733,7 +1740,80 @@ def make_web(hub):
             else:
                 r = {**r, "via": "internet" if r["port"] == "is" else "rf"}
             out.append(r)
-        return web.json_response({"with": aprs.norm_call(call), "messages": out})
+        return web.json_response({"with": aprs.norm_call(call), "messages": out,
+                                  **await from_store("thread_meta", call, owned)})
+
+    # Message management (2026-11-08): cancel, delete, read marks, archive.
+    # Local bookkeeping, so none of it needs TX armed; Cancel only ever stops
+    # transmissions. Every one is a POST behind the cross-site guard.
+    async def body_of(req, *keys):
+        try:
+            body = await req.json()
+            if not isinstance(body, dict):
+                raise ValueError
+        except ValueError:
+            raise web.HTTPBadRequest(text=f"expected a JSON object with {', '.join(keys)}")
+        return body
+
+    def call_of(body):
+        c = body.get("with")
+        if not isinstance(c, str) or not c.strip() or len(c) > 12:
+            raise web.HTTPBadRequest(text="with: a callsign")
+        return aprs.norm_call(c)
+
+    def id_of(body):
+        mid = body.get("id")
+        if not isinstance(mid, int) or isinstance(mid, bool):
+            raise web.HTTPBadRequest(text="id: a message id")
+        return mid
+
+    async def managed(name, *args):
+        try:
+            return await from_store(name, *args)
+        except ValueError as e:
+            raise web.HTTPConflict(text=json.dumps({"error": str(e)}), content_type="application/json")
+
+    async def aprs_message_cancel(req):
+        mid = id_of(await body_of(req, "id"))
+        if not hub.aprs_msg:
+            return web.json_response({"error": "messaging is off"}, status=409)
+        try:
+            row = await hub.aprs_msg.cancel(mid)
+        except aprs_msg.MsgError as e:
+            return web.json_response({"error": str(e)}, status=409)
+        log.warning("APRS message %s to %s cancelled from the page (%s)", row["msgno"], row["dst"], req.remote)
+        return web.json_response({"id": mid, "state": row["state"]})
+
+    async def aprs_message_delete(req):
+        mid = id_of(await body_of(req, "id"))
+        await managed("msg_delete", mid, thread_owned())
+        log.info("APRS message %d deleted from the page (%s)", mid, req.remote)
+        return web.json_response({"id": mid, "deleted": True})
+
+    async def aprs_thread_delete(req):
+        call = call_of(await body_of(req, "with"))
+        n = await managed("thread_delete", call, thread_owned())
+        log.warning("APRS thread with %s deleted from the page: %d message%s (%s)", call, n, "" if n == 1 else "s",
+                    req.remote)
+        return web.json_response({"with": call, "deleted": n})
+
+    async def aprs_thread_read(req):
+        body = await body_of(req, "with", "read")
+        call = call_of(body)
+        unread = await managed("thread_read", call, thread_owned(), body.get("read", True) is not False)
+        return web.json_response({"with": call, "unread": unread})
+
+    async def aprs_thread_read_all(req):
+        await body_of(req)
+        await managed("thread_read_all", thread_owned())
+        return web.json_response({"ok": True})
+
+    async def aprs_thread_archive(req):
+        body = await body_of(req, "with", "archived")
+        call = call_of(body)
+        archived = body.get("archived", True) is not False
+        await managed("thread_archive", call, thread_owned(), archived)
+        return web.json_response({"with": call, "archived": archived})
 
     # The round-trip probe (aprs_probe.py; plan 2026-11-07, section 4).
     async def aprs_probe_start(req):
@@ -1760,6 +1840,12 @@ def make_web(hub):
     app.router.add_get("/api/aprs/probes", aprs_probes)
     app.router.add_post("/api/aprs/message", aprs_message)
     app.router.add_get("/api/aprs/thread", aprs_thread)
+    app.router.add_post("/api/aprs/message/cancel", aprs_message_cancel)
+    app.router.add_post("/api/aprs/message/delete", aprs_message_delete)
+    app.router.add_post("/api/aprs/thread/delete", aprs_thread_delete)
+    app.router.add_post("/api/aprs/thread/read", aprs_thread_read)
+    app.router.add_post("/api/aprs/thread/read-all", aprs_thread_read_all)
+    app.router.add_post("/api/aprs/thread/archive", aprs_thread_archive)
     app.router.add_get("/api/aprs/stations", aprs_stations)
     app.router.add_get("/api/aprs/objects", aprs_objects)
     app.router.add_get("/api/aprs/station/{call}", aprs_station)

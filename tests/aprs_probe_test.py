@@ -365,8 +365,34 @@ async def t_schema_and_restart():
         await r2.close()
 
 
+async def t_cancelled():
+    r = await rig()
+    try:
+        p = await r.probe.begin(armed=True)
+        await r.eng.cancel(p["msg_id"])
+        await r.tick()
+        done = await r.stored(p["id"])
+        check("its message cancelled before sending: the probe ends at once", (done["state"], len(r.radio.frames)),
+              ("done", 0))
+        check("  L1 not seen, saying why", (legs(done)["L1"], "cancelled" in done["legs"]["L1"]["why"]), ("not seen", True))
+    finally:
+        await r.close()
+    r = await rig()
+    try:
+        p, t1 = await r.launch()
+        await r.eng.cancel(p["msg_id"])
+        await r.tick()
+        check("cancelled after sending: the window still runs (evidence may come)",
+              (await r.stored(p["id"]))["state"], "running")
+        await r.run_until(t1 + aprs_probe.WINDOW_S + 1, step=30)
+        done = await r.stored(p["id"])
+        check("  then done, the cancel noted", (done["state"], any("cancelled" in n for n in done["notes"])), ("done", True))
+    finally:
+        await r.close()
+
+
 async def main():
-    for t in (t_happy, t_direct_igate, t_wrong_evidence, t_coverage, t_late_replies, t_refusals, t_schema_and_restart):
+    for t in (t_happy, t_direct_igate, t_wrong_evidence, t_coverage, t_late_replies, t_refusals, t_schema_and_restart, t_cancelled):
         if os.environ.get("ONLY") and os.environ["ONLY"] not in t.__name__:
             continue
         print(f"--- {t.__name__}")

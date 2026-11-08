@@ -742,10 +742,55 @@ async def t_msgno():
         await r.close()
 
 
+async def t_cancel():
+    r = await rig()
+    try:
+        a = await compose_sent(r, "W7TST", "first")
+        b = await r.eng.compose("W7TST", "second")
+        check("cancel: sent once, the next one to W7TST queued", ((await r.row(a["id"]))["tries"],
+              (await r.row(b["id"]))["state"]), (1, "queued"))
+        await r.eng.cancel(a["id"])
+        got = await r.row(a["id"])
+        check("  the row reads cancelled, with why", (got["state"], got["why"]), ("cancelled", "cancelled from the page"))
+        check("  the queued one starts", (await r.row(b["id"]))["state"], "pending")
+        n = len(r.radio.frames)
+        await r.run_until(clock.t + 1500, step=5)
+        texts = [t.split("::")[1] for t in r.radio.texts(n)]
+        check("  never sent again; only the next one goes", {t.split(":", 1)[1].split("{")[0] for t in texts}, {"second"})
+        check("  its msgno stays reserved to its deadline",
+              a["msgno"] in await r.hub.aprs.call("msgnos_busy", got["first_sent"] + 100), True)
+        unmatched = r.eng.counts["acks_unmatched"]
+        r.hear("W7TST", f":N9ABC    :ack{a['msgno']}")
+        await r.tick()
+        check("  a late ack for it matches nothing", ((await r.row(a["id"]))["state"],
+              r.eng.counts["acks_unmatched"] - unmatched), ("cancelled", 1))
+        for name, mid in (("one already finished", b["id"]), ("no such id", 999999)):
+            try:
+                await r.eng.cancel(mid)
+                check(f"cancel refused: {name}", False, True)
+            except aprs_msg.MsgError as e:
+                check(f"cancel refused: {name}", bool(str(e)), True)
+    finally:
+        await r.close()
+    r = await rig()
+    try:
+        c = await r.eng.compose("K7XYZ", "never sent")
+        r.hub.kiss_clients.add(Named("other-owner"))
+        await r.run_until(clock.t + 20)
+        check("cancel an unsent one (paused): no frame, cancelled", (len(r.radio.frames),
+              (await r.eng.cancel(c["id"]))["state"]), (0, "cancelled"))
+        r.hub.kiss_clients.clear()
+        await r.run_until(clock.t + 60)
+        check("  the pause ends: still nothing goes", len(r.radio.frames), 0)
+        check("  the engine holds nothing active", r.eng.status()["active"], [])
+    finally:
+        await r.close()
+
+
 async def main():
     for t in (t_acking, t_not_acked, t_matching, t_retry_slots, t_hold_skips_slots, t_blocked_slot_later,
               t_t0_is_first_send, t_one_per_addressee, t_gate_reserves, t_pauses, t_races, t_restart_mid_retry,
-              t_restart_cooldown, t_modes, t_firmware_readout, t_is_never_acked, t_contract, t_msgno):
+              t_restart_cooldown, t_modes, t_firmware_readout, t_is_never_acked, t_contract, t_msgno, t_cancel):
         if os.environ.get("ONLY") and os.environ["ONLY"] not in t.__name__:
             continue
         print(f"--- {t.__name__}")

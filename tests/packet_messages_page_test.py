@@ -82,7 +82,7 @@ try:
           [f"N9ABC>APZRR0,WIDE1-1,WIDE2-1::W7TST    :hello from the page{{{msgno}}}"])
     check("  the thread shows it pending, slot 1/6",
           b.wait("(t => t.includes('slot') && t)([...document.querySelectorAll('#msg-thread tr.msg-row')]"
-                 ".map((r) => r.lastElementChild.textContent).join('|'))", 10),
+                 ".map((r) => r.children[3].textContent).join('|'))", 10),
           "pending · slot 1/6")
     radio.inject(T.aprs("W7TST", f":N9ABC    :ack{msgno}"))
     check("  a heard ack: the thread shows acked",

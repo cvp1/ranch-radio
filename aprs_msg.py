@@ -30,6 +30,10 @@ Pauses, rechecked immediately before every transmit: an off-channel hold
 the radio lent or not linked, any KISS client, an AGWPE client with monitor
 or raw on, a packet link up, an inbound window open, and the start cooldown.
 
+Cancel (Engine.cancel, the page's Cancel): a queued or pending message ends
+"cancelled" at once and is never sent again; the next one queued to that
+station starts.
+
 Crash safety: before a message's frame is handed to the radio its row reads
 "sending" with the slot already used (next_try past it); after, "pending" with
 the try counted. A restart that finds "sending" counts that slot as tried, so
@@ -227,6 +231,24 @@ class Engine:
             self.out[row["id"]] = row
         log.info("message %s to %s composed (%s): %s", msgno, peer, row["state"], text)
         self._emit("on_state", row)
+        return row
+
+    async def cancel(self, mid, why="cancelled from the page"):
+        """Stop sending one of our messages: no further tries. Under the pass's
+        lock, so it never lands between a frame's "sending" record and its
+        transmit. A late ack for it matches nothing; its msgno stays reserved
+        to its deadline. The next message queued to the same station starts."""
+        async with self._lock:
+            row = self.out.get(mid)
+            if row is None:
+                stored = await self.hub.aprs.call("msg_get", mid)
+                if stored is None or stored["dir"] != "out":
+                    raise MsgError("no such outbound message")
+                raise MsgError(f"it is already {stored['state']}: nothing to cancel")
+            if row["state"] not in ACTIVE:    # an ack matched a moment ago; its finish is on the way
+                raise MsgError(f"it is already {row['state']}: nothing to cancel")
+            await self._finish(row, "cancelled", why=why)
+        log.warning("message %s to %s cancelled", row["msgno"], row["dst"])
         return row
 
     async def _msgno(self):
