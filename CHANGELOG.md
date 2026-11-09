@@ -7,6 +7,14 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Developer tools, for working on Ranch Radio itself.** `CLAUDE.md` is the
+  map of the tree and the rules that bite (the two servers, no transmitting
+  in tests, nothing personal in the repo), for anyone or any agent starting
+  cold. `python3 tests/affected.py` names the test runs a change touches,
+  from the import graph and the files each test spawns, and `--run` runs
+  just those (`RR_ONLY` in `tests/run_all.sh`). `ranch-radio new-addon NAME`
+  writes a new add-on's module, page script and test, and prints the catalog
+  and manifest entries to add; the test fails until they are.
 - **A Logbook tab beside Propagation.** The `logbook` add-on frames your web
   logbook (Wavelog, Cloudlog), loaded only when the tab is opened, with a link
   to open it in its own tab. Configure a `url`, or a `port` for a logbook on

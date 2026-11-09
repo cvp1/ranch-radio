@@ -8,6 +8,8 @@
 #   RR_SHARD=2/4 bash tests/run_all.sh   (only shard 2 of 4, split by
 #                                         tests/ci/shard.py; CI runs each
 #                                         shard on its own runner)
+#   RR_ONLY="a_test b_test" bash tests/run_all.sh   (only those runs; what
+#                                         tests/affected.py --run sets)
 #   RR_LIST=1 bash tests/run_all.sh      (print every run's name, run none)
 #   RR_TEST_TIMEOUT=600 bash tests/run_all.sh   (per-run cap, default 300 s;
 #                                         the slowest run takes ~150 s on CI)
@@ -43,6 +45,11 @@ if [[ -n "${RR_SHARD:-}" && -z "${RR_LIST:-}" ]]; then
   pick=" $(RR_LIST=1 bash "$0" | python3 tests/ci/shard.py pick "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" | tr '\n' ' ')"
   [[ -n "${pick// /}" ]] || { echo "shard $RR_SHARD has no runs"; exit 2; }
   echo "shard $RR_SHARD:$pick"
+fi
+
+if [[ -n "${RR_ONLY:-}" && -z "${RR_LIST:-}" ]]; then
+  pick=" $RR_ONLY "
+  echo "only:$pick"
 fi
 
 if [[ -n "${RR_SENTINEL:-}" && -z "${RR_LIST:-}" ]]; then
