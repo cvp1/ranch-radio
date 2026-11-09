@@ -26,8 +26,18 @@ push again.
 
 ```sh
 python3 tests/public_hygiene_test.py   # quick, required
+python3 tests/affected.py --run        # the runs your change touches (vs main)
 bash tests/run_all.sh                  # the full suite, one test at a time
 ```
+
+`tests/affected.py` picks runs from the import graph and the files each test
+spawns; `--why` shows which changed file picked each run, `--trace RUN` the
+chain. A change to the runner or `requirements.txt` picks everything. Run the
+full suite before opening the pull request anyway; CI does.
+
+`CLAUDE.md` is the map of the tree and the rules that bite. Read it first.
+Starting an add-on: `ranch-radio new-addon NAME --label "Label" --title "What it does"`
+writes its module, page script and test and prints the rest of the checklist.
 
 The page tests need Chromium or Chrome (`CHROME=/path/to/chrome` if it isn't
 on `PATH`). The rigctl contract tests need Hamlib's `rigctld`.

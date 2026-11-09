@@ -337,6 +337,19 @@ def cmd_remove(a):
 
 # ---------------------------------------------------------------- init / start / update
 
+def cmd_new_addon(a):
+    from . import scaffold
+    try:
+        written = scaffold.create(ROOT, a.name, a.label or a.name.replace("_", " ").title(),
+                                  a.title or a.label or a.name, group=a.group, css=a.css)
+    except ValueError as e:
+        print(f"new-addon: {e}")
+        return 1
+    print("wrote " + ", ".join(written))
+    print(scaffold.snippets(a.name, a.label or a.name.replace("_", " ").title(), a.title or a.label or a.name))
+    return 0
+
+
 def cmd_init(a):
     from . import init
     return init.run(a, ROOT)
@@ -713,6 +726,12 @@ def main(argv=None):
     it.add_argument("--host", help="the host file's name (default: this machine's)")
     it.add_argument("--force", action="store_true", help="write even if this host has a host file")
     it.add_argument("--dry-run", action="store_true", help="show it, write nothing")
+    na = sub.add_parser("new-addon", help="start a new add-on: its module, page script and test, plus what to add by hand")
+    na.add_argument("name", help="lowercase, digits and _, e.g. rotator")
+    na.add_argument("--label", help="its short name on the page (default: from the name)")
+    na.add_argument("--title", help="what it does, one line")
+    na.add_argument("--group", default="tools", choices=["radios", "messaging", "mesh", "tools"], help="its tab group")
+    na.add_argument("--css", action="store_true", help="also a static/addons/NAME.css")
     w = sub.add_parser("where", help="the host file this machine uses (exit 1 if none)")
     w.add_argument("host", nargs="?")
     st = sub.add_parser("start", help="enable and start everything the host file renders (after install)")
@@ -747,4 +766,4 @@ def main(argv=None):
     return {"modules": cmd_modules, "hosts": cmd_hosts, "render": cmd_render, "radios": cmd_radios,
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
-            "start": cmd_start, "update": cmd_update}[a.cmd](a) or 0
+            "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon}[a.cmd](a) or 0
