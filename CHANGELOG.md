@@ -5,6 +5,23 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **One station on every host.** A Mac now runs the station (`station.py`)
+  in front of its radio, as Linux always has: the page at 7300 with
+  Winlink, Mesh, the packet tab, the add-ons and the Modules tab is the
+  station's, and the radio's own server is behind it on loopback (7301).
+  Pat, Mesh and the add-ons are no longer flags on the radio's agent.
+  **Host file:** add `"station": {"https": true, "tls_names": [...]}`, give
+  the radio `"web": 7301`, and move `https` and `tls_names` off the radio;
+  `ranch-radio install` says exactly this until it is done. A station of
+  one radio opens on that radio. The shared rigctl port stays off on a Mac
+  unless the host file sets `station.rigctl_port`: JTDX keeps the radio's
+  own port. ardopcf stays a launchd agent on a Mac; the station only checks
+  it is there. VARA HF sessions arm the radio's lane through the station,
+  which checks Pat's varahf settings as the radio's server did. One radio
+  per Mac is no longer a limit.
+
 ### Added
 
 - **Developer tools, for working on Ranch Radio itself.** `CLAUDE.md` is the

@@ -92,14 +92,17 @@ if picked("B-1"):
             return f"HostError naming {field}" if f": {field}:" in str(e) else f"HostError: {e}"
 
     mac, station = host("mac-shack"), host("linux-station")
+    # The station runs Pat on both OSes now: the block reaches it in station.json,
+    # never as a flag on the radio's server.
+    sj_mac = render.station_json(with_listen(mac, {"ax25+agwpe": {"mhz": 145.09, "max_hours": 2}}))
+    check("B-1 Mac: the listen block reaches the station's station.json",
+          sj_mac["winlink"].get("listen"), {"ax25+agwpe": {"mhz": 145.09, "max_hours": 2}})
     argv = server_argv(with_listen(mac, {"ax25+agwpe": {"mhz": 145.09, "max_hours": 2}}))
-    check("B-1 Mac: the listen block -> --winlink-listen ax25+agwpe=145.09",
-          [after(a, "--winlink-listen") for a in argv], ["ax25+agwpe=145.09"])
-    check("B-1   and --winlink-listen-max-h 2", [after(a, "--winlink-listen-max-h") for a in argv], ["2"])
-    argv = server_argv(with_listen(mac, {"ax25+agwpe": {"mhz": 145.09}}))
-    check("B-1   max_hours absent -> 4", [after(a, "--winlink-listen-max-h") for a in argv], ["4"])
-    check("B-1 Mac: no listen block -> neither flag",
-          [("--winlink-listen" in a, "--winlink-listen-max-h" in a) for a in server_argv(mac)], [(False, False)])
+    check("B-1   and never the radio's server",
+          [("--winlink-listen" in a, "--winlink-listen-max-h" in a, "--winlink-pat" in a) for a in argv],
+          [(False, False, False)])
+    check("B-1 Mac: no listen block -> station.json has none",
+          "listen" in render.station_json(mac)["winlink"], False)
     sj = render.station_json(with_listen(station, {"ax25+agwpe": {"mhz": 145.09, "max_hours": 2}}))
     check("B-1 Linux: station.json keeps the block (station.py runs Pat)",
           sj["winlink"].get("listen"), {"ax25+agwpe": {"mhz": 145.09, "max_hours": 2}})

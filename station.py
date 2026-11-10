@@ -75,13 +75,20 @@ class Radio:
         self.lane = int(cfg["lane"]) if cfg.get("lane") else None
         self.audio_in = cfg.get("audio_in")
         self.audio_out = cfg.get("audio_out")
+        # The HF modems its lane has (station.json "modems": ARDOP, and VARA HF
+        # where xara is set up), and xara's command port for Pat's check.
+        self.modems = tuple(cfg.get("modems") or ("ardop",))
+        self.vara_port = cfg.get("vara_port")
+        # Winlink can use it: the station can put ardopcf on its sound card, or
+        # ardopcf is already there (a Mac's launchd agent; Station sets this).
+        self.audio_ok = bool(self.audio_in and self.audio_out)
         self.present = False
         self.since = None              # when it became present (orders the shared port)
 
     def info(self, primary):
         return {"id": self.id, "name": self.name, "present": self.present,
                 "rigctl": self.rigctl, "shared": primary is self,
-                "winlink": bool(self.lane and self.audio_in and self.audio_out)}
+                "winlink": bool(self.lane and self.audio_ok), "modems": list(self.modems)}
 
 
 class RemoteLane:
@@ -108,14 +115,17 @@ class RemoteLane:
 
     async def arm(self, ws, url):
         st = self.station
+        scheme = urlsplit(url).scheme
+        self.scheme = scheme if scheme in winlink.HF_MODEMS else "ardop"
         if not self.radio.present:
             st.notice(f"The {self.radio.name} is not connected.", "warn", ws)
             return False
-        try:
-            await st.ardop.use(self.radio)
-        except (OSError, RuntimeError) as e:
-            st.notice(f"Could not start the ARDOP modem for the {self.radio.name}: {e}", "warn", ws)
-            return False
+        if self.scheme == "ardop":           # VARA's modem (xara) is its own agent on the radio's lane
+            try:
+                await st.ardop.use(self.radio)
+            except (OSError, RuntimeError) as e:
+                st.notice(f"Could not start the ARDOP modem for the {self.radio.name}: {e}", "warn", ws)
+                return False
         if not await st.winlink._ready():
             st.notice("The Winlink engine (Pat) is not answering; not connecting.", "warn", ws)
             return False
@@ -125,11 +135,15 @@ class RemoteLane:
                                                  + (f"?token={st.token}" if st.token else ""),
                                                  heartbeat=5)
             hello = json.loads((await self.ws.receive(timeout=5)).data)
-            self._take(hello.get("winlink") or {})
+            wl = hello.get("winlink") or {}
+            self._take(wl)
             if self.armed:
                 raise RuntimeError("its Winlink lane is already armed by someone else")
+            modems = wl.get("modems")
+            if modems and self.scheme not in modems:       # the radio's server says what it has
+                raise RuntimeError(f"its server has no {self.scheme} lane")
             self._reader = asyncio.ensure_future(self._read())
-            await self.ws.send_str(json.dumps({"t": "winlink_arm", "v": True,
+            await self.ws.send_str(json.dumps({"t": "winlink_arm", "v": True, "scheme": self.scheme,
                                                "freq": winlink.url_freq_hz(url),
                                                "qsy": winlink.url_hz(url)}))
             await asyncio.wait_for(self._armed.wait(), ARM_WAIT_S)
@@ -204,11 +218,24 @@ class Ardop:
 
     def __init__(self, station, cfg):
         self.station = station
-        self.cmd = [_expand(w) for w in shlex.split(cfg.get("ardopcf", "~/.local/bin/ardopcf"))]
-        self.port = int(cfg.get("ardop_port", 8515))
+        a = cfg.get("ardopcf", "~/.local/bin/ardopcf")
+        # A Mac's ardopcf is a launchd agent of its own, on one radio's sound
+        # card (the host file's dict: label, bin, port, audio_in, audio_out).
+        # The station never starts or stops it; a session only checks its port.
+        self.external = isinstance(a, dict)
+        self.cmd = [] if self.external else [_expand(w) for w in shlex.split(str(a))]
+        self.port = int(a.get("port", 8515) if self.external else cfg.get("ardop_port", 8515))
         self.logs = pathlib.Path(_expand(cfg.get("ardop_logs", "~/.local/state/radio-remote/ardop")))
         self.radio = None
         self.proc = None
+
+    async def _listening(self):
+        try:
+            _, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", self.port), 1.0)
+            w.close()
+            return True
+        except (TimeoutError, OSError):
+            return False
 
     def logdir(self, radio):
         d = self.logs / radio.id
@@ -216,6 +243,11 @@ class Ardop:
         return d
 
     async def use(self, radio):
+        if self.external:
+            if not await self._listening():
+                raise RuntimeError(f"ardopcf is not listening on 127.0.0.1:{self.port} (its own agent runs it)")
+            self.radio = radio
+            return
         if self.radio is radio and self.proc and self.proc.returncode is None:
             return
         await self.stop()
@@ -241,6 +273,9 @@ class Ardop:
         await self.station.winlink.restart_pat(f"ARDOP now on the {radio.name}")
 
     async def stop(self):
+        if self.external:
+            self.radio = None
+            return
         if self.proc and self.proc.returncode is None:
             self.proc.terminate()
             try:
@@ -260,6 +295,10 @@ class Station:
         self.radios = [Radio(r) for r in cfg.get("radios", [])]
         self.clients = set()
         self.ardop = Ardop(self, cfg.get("winlink", {}))
+        if self.ardop.external:
+            for r in self.radios:
+                if r.lane:
+                    r.audio_ok = True
         self.packet_cfg = cfg.get("packet") or {}
         self.packet_url = self.packet_cfg.get("url")
         self.packet_agwpe = self.packet_cfg.get("agwpe")
@@ -431,16 +470,36 @@ class Station:
             # the hub's radio (control-port mode; borrow mode refuses, saying why).
             uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
             return (winlink.TunedLane(name, uv, self.notice) if uv else winlink.NoLane(name, self.notice)), None
-        if scheme != "ardop":
+        if scheme not in winlink.HF_MODEMS:
             return None, f"{scheme} is not set up on this station."
-        able = [r for r in self.radios if r.present and r.info(None)["winlink"]]
+        what = "VARA HF" if scheme == "varahf" else "Winlink"
+        able = [r for r in self.radios if r.present and r.info(None)["winlink"] and scheme in r.modems]
         r = self.radio(via) if via else (able[0] if len(able) == 1 else None)
         if r is None:
-            return None, ("No HF radio with Winlink is connected." if not able
+            return None, (f"No HF radio with {what} is connected." if not able
                           else "Pick the radio for this session.")
         if r not in able:
-            return None, f"The {r.name} is not connected or has no Winlink set up."
+            return None, f"The {r.name} is not connected or has no {what} set up."
+        if scheme == "varahf":
+            why = self.vara_pat_refusal(r)
+            if why:
+                return None, why
         return RemoteLane(self, r), None
+
+    def vara_pat_refusal(self, r):
+        """Why Pat's config would let a VARA session key or tune outside the
+        radio's lanes, or None: the modem must be xara on this machine (its
+        command port) and Pat's QSY must go through that radio's lane; Pat
+        never keys (pat_config.vara_refusal). Read at every arm, through
+        pat_config.py only (the file holds the password)."""
+        import pat_config
+        path = getattr(self.winlink, "config_path", None)
+        if not path:
+            return "VARA HF: Pat's config file is not known here; not connecting."
+        if not r.vara_port:
+            return f"VARA HF: the {r.name} has no xara port in the station's config; not connecting."
+        why = pat_config.vara_refusal(path, r.vara_port, r.lane)
+        return f"VARA HF not ready: {why}." if why else None
 
     # --- pages
 
@@ -748,10 +807,15 @@ def main():
     station = Station(cfg, args)
 
     addon_cfg = dict(cfg.get("addons") or {})
+    if addon_cfg.pop("packet", None) is not None:
+        # The station has its own Packet tab (/packet/, from the "packet" block);
+        # the add-on is for a radio's own page and would double the route here.
+        log.info("addons: \"packet\" is the station's own tab; its add-on entry is ignored here")
     wl = cfg.get("winlink") or {}
     from listen_plan import ListenPlan
     if wl.get("pat"):             # Winlink (Pat) is an add-on (addons/winlink.py); the lanes are not
-        addon_cfg.setdefault("winlink", {"lane_for": station.lane_for, "engine_args": SimpleNamespace(
+        modems = [m for m in winlink.HF_MODEMS if any(m in r.modems for r in station.radios)]
+        addon_cfg.setdefault("winlink", {"lane_for": station.lane_for, "hf_modems": modems, "engine_args": SimpleNamespace(
             winlink_pat=" ".join(shlex.quote(_expand(w)) for w in shlex.split(wl["pat"])), winlink_pat_port=int(wl.get("pat_port", 8095)),
             winlink_pat_config=_expand(wl["pat_config"]) if wl.get("pat_config") else None,
             winlink_session_max=float(wl.get("session_max", 900)),

@@ -9,16 +9,18 @@ The README is for operators; CONTRIBUTING.md is the pull-request flow.
 A browser control panel for amateur radio transceivers on a LAN, plus optional
 modules (Winlink, Meshtastic, MeshCore, APRS packet, handheld control). Python
 3.12+, aiohttp, plain JS, no build step. Two hosts in the wild: a Mac with one
-radio, a Linux station with several. Changes reach a radio only when the
-operator runs `ranch-radio update --apply` there; nothing pulls on its own.
+radio, a Linux station with several; both run the same two processes: one
+`server.py` per radio (loopback, behind the station) and one `station.py` (the
+page at 7300). Changes reach a radio only when the operator runs
+`ranch-radio update --apply` there; nothing pulls on its own.
 
 ## The map
 
 | Layer | Files | Role |
 |---|---|---|
 | Rig control | `radio.py` `rigs.py` `civ.py` `qmx.py` `hamlib_rig.py` `sim.py` | state model, rig profiles (`rigs.PROFILES`), CAT backends, the simulator |
-| Radio server | `server.py` (`Station`) `rigctl_server.py` `audio.py` `tx_audio.py` `codec_level.py` `station_id.py` `webguard.py` | one process per radio: page, WebSocket, audio, rigctl lanes, TX gates |
-| Station | `station.py` (`Station`) | Linux: every radio behind one page and a shared rigctl port |
+| Radio server | `server.py` (`Station`) `rigctl_server.py` `audio.py` `tx_audio.py` `codec_level.py` `station_id.py` `webguard.py` | one process per radio: its page, WebSocket, audio, rigctl port, the Winlink lane and TX gates |
+| Station | `station.py` (`Station`) | one per host, both OSes: the page, Pat (sessions arm a radio's lane over its WebSocket: `RemoteLane`), Mesh, packet tab, add-ons, Modules; Linux adds a shared rigctl port |
 | Packet | `tnc_hub.py` `ax25*.py` `aprs*.py` `digi.py` `igate*.py` `bt_rfcomm.py` `direwolf_tnc.py` | the APRS/Winlink packet hub and its TNCs |
 | Winlink | `winlink.py` `pat_config.py` `listen_plan.py` | runs Pat; the lane and codec level above are core |
 | Mesh | `mesh.py` `mesh_bridge.py` `mesh_feed.py` `meshcore_bridge.py` | Meshtastic and MeshCore bridges (own venvs) |
@@ -39,11 +41,16 @@ file by hand. Example host files: `examples/hosts/`.
 
 ## Rules that bite
 
-- **Two servers, one feature.** `server.py` and `station.py` each carry a `Station`
-  class with the same hooks (`winlink`, `winlink_hub_links`, `winlink_listen_target`,
-  `config`, `handle`, `ws_control`...). Anything touching Winlink, the packet hub or
-  the UV-PRO tuner lands in **both**, and both need a test. Grep the other file
-  before you call a change done.
+- **The station orchestrates; the radio server keys.** Winlink sessions, Mesh,
+  the packet tab, add-ons and Modules are the station's, on both OSes. The radio
+  server owns everything that touches the transmitter: the lane, arming, codec
+  level, station ID, STOP TX. `server.py` still accepts the old Pat/Mesh flags
+  (nothing renders them any more; they go next). Do not add orchestration to
+  `server.py`; do not move a TX gate into `station.py`.
+- **Render is the only way a host gets its processes.** `render.py` emits the
+  station agent/unit, `station.json` and one agent/unit per radio from the host
+  file; `tests/fixtures/render-golden.json` pins the examples' output and
+  `tools/render_golden.py` refreshes it on a deliberate change only.
 - **No transmitting in tests.** The suite drives fakes (`tests/fake_*.py`). Anything
   that changes how or when a radio keys needs a test proving it stays safe
   (`civ_safety_test`, `tx_stop_test`, `tx_state_test`, `winlink_lane_test`).

@@ -30,9 +30,10 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
   messaging with acks and retries, a probe that proves a reply can reach
   the radio, and a watch on the local iGates that carry internet traffic
   onto the air.
-- **Several radios, one page.** On Linux, a station page puts every radio,
-  Winlink, Mesh and the packet hub behind one address, with a shared rigctl
-  port as well as each radio's own.
+- **One page for the station.** Every radio, Winlink, Mesh, the packet hub
+  and the add-ons behind one address, on a Mac or on Linux. A station of one
+  radio opens on that radio. On Linux a shared rigctl port follows the radio
+  connected longest, as well as each radio's own.
 - **Updates that don't interrupt you.** A radio that is transmitting, in a
   Winlink session or driven by JTDX or WSJT-X is left alone until it's free.
 - **Modules** you switch on per machine, from a **Modules** tab on the page or
@@ -533,8 +534,11 @@ host file. `ranch-radio doctor` checks that Direwolf is installed.
 
 ## How it fits together
 
-- `server.py` runs one radio: its page, audio, rigctl port and add-ons.
-- `station.py` (Linux) puts every radio on one page, with a shared rigctl port.
+- `server.py` runs one radio: its page, audio, rigctl port and Winlink lane,
+  on loopback behind the station.
+- `station.py` is the page (7300) on every host: the radios, Winlink (Pat),
+  Mesh, the packet tab, the add-ons and the Modules tab, and on Linux a
+  shared rigctl port.
 - `ranch_radio/` is the shipping layer. Each machine's radios, services and
   modules are declared in one host file, and `ranch-radio install` renders the
   launchd agents or systemd units from it. `examples/hosts/` has a Mac with

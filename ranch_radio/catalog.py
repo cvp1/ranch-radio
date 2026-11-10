@@ -22,22 +22,23 @@ MODULES = [
      "ships": "as any radio, with rigctld running for the rig"},
 
     # --- services the station or a radio server runs
-    {"name": "station", "kind": "service", "title": "Every radio on one page, shared rigctl 4532",
-     "code": "station.py", "platforms": ["linux"],
-     "ships": "Linux: station.service + station.json, rendered from the host file"},
+    {"name": "station", "kind": "service", "title": "The page: every radio, Winlink, Mesh, packet, the add-ons and "
+                                                    "Modules; a shared rigctl port when asked (4532)",
+     "code": "station.py", "platforms": ["macos", "linux"],
+     "ships": "Linux: station.service + station.json; macOS: a launchd agent + station.json, both rendered from the host file"},
     {"name": "winlink", "kind": "addon", "title": "Winlink over ARDOP (Pat + ardopcf); on/off switch",
      "code": "addons/winlink.py runs Pat (winlink.py); the lane (codec_level.py, station_id.py) is core; "
              "ardop/ builds ardopcf", "platforms": ["macos", "linux"],
-     "ships": "flags on the radio's server (macOS, plus an ardopcf agent) or the station's winlink block (Linux), rendered; Pat and ardopcf via doctor --fix"},
+     "ships": "the station's winlink block (station.json), both OSes; each radio's lane is a flag on its server; macOS adds an ardopcf agent; Pat and ardopcf via doctor --fix"},
     {"name": "vara", "kind": "service", "title": "Winlink over VARA HF (xara, unregistered), beside ARDOP",
      "code": "station_id.py VaraLogTail (xara's CW ID), the VARA lane in server.py / rigctl_server.py, "
              "pat_config.py vara_refusal; xara itself is built by the operator (doctor prints how)",
      "platforms": ["macos"],
-     "ships": "macOS: a xara launchd agent and three --winlink-vara-* flags on the radio's server, rendered "
+     "ships": "macOS: a xara launchd agent and three --winlink-vara-* flags on the radio's server, with the station arming VARA sessions over its lane, rendered "
               "from the host file's winlink.xara block"},
     {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, DMs, nodes, map); on/off switch",
      "code": "addons/mesh.py over mesh.py, mesh_bridge.py (runs in the meshtastic venv)", "platforms": ["macos", "linux"],
-     "ships": "macOS: --mesh-port on the radio's agent; Linux: the station's mesh block; the meshtastic venv via doctor --fix"},
+     "ships": "the station's mesh block (station.json), both OSes; the meshtastic venv via doctor --fix"},
     {"name": "packet", "kind": "service", "title": "Packet hub (APRS + Winlink: Bluetooth KISS, network KISS, "
                                                    "or Direwolf on a USB sound card cable, with an optional iGate)",
      "code": "tnc_hub.py, ax25.py, ax25_link.py, bt_rfcomm.py, aprs.py, aprs_store.py, static/aprs.js; "
@@ -56,13 +57,13 @@ MODULES = [
     # --- add-ons (addons/<name>.py + static/addons/<name>.js)
     {"name": "uvpro", "kind": "addon", "title": "UV-PRO / UV-50PRO control (channels CHIRP's way, settings, beacon)",
      "code": "addons/uvpro.py, addons/uvpro_bridge.py, addons/chirp.py (benlink venv)", "platforms": ["macos", "linux"],
-     "ships": "Linux: the station's addons block; macOS: addons.json on the radio's agent; "
+     "ships": "the station's addons block (station.json), both OSes; "
               "through the packet hub's control port when there is one, else borrows the radio from it"},
     {"name": "opengd77", "kind": "addon", "title": "TYT MD-UV390 on OpenGD77: front panel, channels, VFOs and Options menus "
                                                   "(written to its memory and restarted on, no CAT exists); CPS-style codeplug editor via qdmr",
      "code": "addons/opengd77.py over opengd77.py (allowlisted link), opengd77_mem.py, qdmr.py (dmrconf) and qdmr_yaml.py; "
              "linux/udev/99-opengd77.rules", "platforms": ["macos", "linux"],
-     "ships": "the host file's addons block (macOS: addons.json + --addons on the radio's agent); dmrconf from qdmr"},
+     "ships": "the host file's addons block, run by the station; dmrconf from qdmr"},
     {"name": "propagation", "kind": "addon", "title": "Space weather (NOAA K index, X-ray, solar flux) and what the station "
                                                      "heard per band and the next forecast openings, as badges on the band buttons and a Propagation tab",
      "code": "addons/propagation.py, static/addons/propagation.js (NOAA SWPC JSON; optional skywatch InfluxDB)",

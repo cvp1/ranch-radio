@@ -62,11 +62,9 @@ def run(argv, out):
 
 
 def _url(h, r=None):
-    if r is None:                                   # the Linux station
+    if r is None:                                   # the station (both OSes)
         return f"{'wss' if (h.get('station') or {}).get('https') else 'ws'}://127.0.0.1:7300/ws"
-    if h["os"] == "macos":
-        return f"{'wss' if r.get('https') else 'ws'}://127.0.0.1:7300/ws"
-    return f"ws://127.0.0.1:{r['web']}/ws"
+    return f"ws://127.0.0.1:{r['web']}/ws"          # a radio's own page, on loopback behind it
 
 
 def probe(h, r=None):
@@ -84,10 +82,8 @@ def probe(h, r=None):
 
 
 def servers(h):
-    """{key: (h, r)} for every server this host runs that answers a probe:
-    a Mac's radio servers, a Linux host's station and radios with a web port."""
-    if h["os"] == "macos":
-        return {r["id"]: r for r in h["radios"]}
+    """{key: r} for every server this host runs that answers a probe: the
+    station (key "station", r None) and each radio with a web port."""
     out = {"station": None} if h.get("station") else {}
     out.update({r["id"]: r for r in h["radios"] if r.get("web")})
     return out
@@ -203,6 +199,11 @@ def force_start(h, keys):
     failed or stopped, which a try-restart leaves alone."""
     out = []
     if h["os"] == "macos":
+        st = h.get("station")
+        if st is not None and "station" in keys:
+            label = st.get("label", render.STATION_LABEL)
+            _mac_down(label, out)
+            _mac_up(label, f"{render.AGENTS}/{label}.plist", out)
         for r in h["radios"]:
             if r["id"] in keys:
                 path = f"{render.AGENTS}/{r['label']}.plist"
@@ -230,19 +231,19 @@ def restart(h, changed, check_idle=idle, held=None, new=(), skip=()):
     changed = [a for a in changed if a.module not in skip]
     manual = h.get("manual_restart") or {}
     if h["os"] == "macos":
+        st_label = (h.get("station") or {}).get("label", render.STATION_LABEL)
         labels = {}
         for a in changed:
             if a.fmt == "plist":
                 labels[a.content["Label"]] = (a.path, _radio_of(h, a))
-            elif a.path == render.MAC_ADDONS:           # the radio server reads it at start
-                for r in h["radios"]:
-                    labels.setdefault(r["label"], (f"{render.AGENTS}/{r['label']}.plist", r))
+            elif a.path == render.STATION_JSON:         # the station reads it at start
+                labels.setdefault(st_label, (f"{render.AGENTS}/{st_label}.plist", None))
         for label, (path, r) in labels.items():
-            if r is not None:
+            if r is not None or label == st_label:      # a radio, or the station (r None): in use?
                 ok, why = check_idle(h, r)
                 if not ok:
                     deferred.append(f"{label}: {why}; restart it later")
-                    held.append(r["id"])
+                    held.append(r["id"] if r is not None else "station")
                     continue
             if path not in new and not _loaded(label):
                 # Stopped on purpose (the widget's Off): written, left stopped.

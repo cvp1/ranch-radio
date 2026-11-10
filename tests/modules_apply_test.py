@@ -67,7 +67,8 @@ write_host("testlinux", {"host": "testlinux", "os": "linux", "repo": "~/ranch-ra
                          "radios": [], "station": {"https": False}})
 write_host("testmac", {"host": "testmac", "os": "macos", "repo": "~/ranch-radio", "python": sys.executable,
                        "radios": [{"id": "ic7300", "name": "IC-7300", "label": "t.radio", "device": "/dev/null",
-                                   "codec_db": "default=-38", "codec_save": True}],
+                                   "web": 7301, "codec_db": "default=-38", "codec_save": True}],
+                       "station": {"https": False},
                        "addons": {"opengd77": {"enabled": True, "port": "auto", "label": "MD-UV390", "poll": 2,
                                                "dmrconf": "/opt/homebrew/bin/dmrconf"}}})
 
@@ -261,8 +262,9 @@ async def mac_server(port):
 def lock_and_save_race():
     """No codec table lost when Save runs second; the one lock keeps them apart."""
     write_host("racemac", {"host": "racemac", "os": "macos", "repo": "~/ranch-radio", "python": sys.executable,
-                           "radios": [{"id": "ic7300", "name": "IC-7300", "label": "t.radio",
-                                       "device": "/dev/null", "codec_db": "default=-38", "codec_save": True}]})
+                           "radios": [{"id": "ic7300", "name": "IC-7300", "label": "t.radio", "web": 7301,
+                                       "device": "/dev/null", "codec_db": "default=-38", "codec_save": True}],
+                           "station": {"https": False}})
     with open(hpath("racemac")) as f:
         text = f.read()
     plan = modules.plan_add(text, "mesh", {"port": "ble:NODEM_7720"}, source="page")

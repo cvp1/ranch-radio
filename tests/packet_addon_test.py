@@ -38,18 +38,19 @@ def check(name, got, want):
 mac = json.loads((ROOT / "examples/hosts/mac-shack.json").read_text())
 mac["packet"] = {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000", "tnc": "direwolf", "mycall": "N9ABC",
                  "name": "Direwolf", "direwolf": {"usb": "1209:7388", "audio": "AIOC Audio"}}
-adds = render.mac_addons(mac)
-check("a Mac with a packet hub runs the Packet add-on, on, pointed at the hub",
-      adds.get("packet"), {"enabled": True, "url": "http://127.0.0.1:7310", "name": "Direwolf"})
-check("  beside its own add-ons", "opengd77" in adds, True)
 arts = {a.path: a for a in render.artifacts(mac, home="/H")}
-check("  addons.json carries it", "packet" in arts[render.MAC_ADDONS].content, True)
+sj = arts[render.STATION_JSON].content
+check("a Mac with a packet hub: the station shows it (its packet block, named)",
+      sj.get("packet"), {"url": "http://127.0.0.1:7310", "agwpe": "127.0.0.1:8000", "name": "Direwolf"})
+check("  beside the host's own add-ons", "opengd77" in sj["addons"], True)
 radio = next(a for a in arts.values() if a.module == "ic7300")
-check("  and the radio server is given addons.json", "--addons" in radio.content["ProgramArguments"], True)
+check("  the radio's server runs no add-ons (the station does)", "--addons" in radio.content["ProgramArguments"], False)
 hub_only = json.loads((ROOT / "examples/hosts/mac-aioc.json").read_text())
-check("a hub-only Mac (no radio server to show it): no add-on", "packet" in render.mac_addons(hub_only), False)
+check("a hub-only Mac (no radios, no station): no station.json; the hub's own page is the page",
+      render.STATION_JSON in {a.path for a in render.artifacts(hub_only, home="/H")}, False)
 own = dict(mac, addons=dict(mac["addons"], packet={"enabled": False, "url": "http://127.0.0.1:7399"}))
-check("a host file's own packet entry is kept", render.mac_addons(own)["packet"]["url"], "http://127.0.0.1:7399")
+check("a host file's own packet add-on entry is kept in the addons block (the station ignores it: the tab is its own)",
+      render.station_json(own)["addons"]["packet"]["url"], "http://127.0.0.1:7399")
 
 
 # ---------------------------------------------------------------- against a stand-in hub

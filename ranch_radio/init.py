@@ -143,8 +143,11 @@ def host_file(os_name, host, repo, rig, device, call=None, name=None, audio=(Non
         radio["tx"] = False                    # receive only until there's a callsign
     if os_name == "macos":
         # The certificate names this machine as browsers reach it, whatever the host file is called.
-        radio.update(label=f"org.ranch-radio.{rid}", https=True, tls_names=[this_host()], path=MAC_PATH)
+        # The radio's own page is on loopback behind the station; the station
+        # serves https under this machine's name as browsers reach it.
+        radio.update(label=f"org.ranch-radio.{rid}", web=7301, path=MAC_PATH)
         h["radios"] = [radio]
+        h["station"] = {"https": True, "tls_names": [this_host()]}
     else:
         radio.update(description=f"Ranch Radio: {short}", web=7301, rigctl=4533)
         if audio[0] and audio[1]:

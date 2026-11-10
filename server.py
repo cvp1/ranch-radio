@@ -1077,7 +1077,9 @@ class Station(TxAudio):
                                                   if self.addons and self.addons.get("winlink")
                                                   else {"armed": self.winlink_armed,
                                                         "codec_db": self.codec and self.codec.current,
-                                                        "id": self.id_ledger.snapshot()}),
+                                                        "id": self.id_ledger.snapshot(),
+                                                        # the station's RemoteLane: which modems may arm here
+                                                        "modems": list(self.hf_modems)}),
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {}}))
         try:
