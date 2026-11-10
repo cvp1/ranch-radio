@@ -155,6 +155,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **A station of one radio answers `/audio`.** A remote listener that took
+  audio from the radio's own server at `/audio` got 404 once the station
+  stood in front of the radio. The station now hands `/audio` to its only
+  radio's audio, the same backend `/r/<id>/audio` reaches. With more than one
+  radio it answers 404 and names each radio's `/r/<id>/audio`.
 - **A rollback puts back the files it replaced.** It used to run the old
   code's update, which re-rendered the host file; a host file already edited
   for the new code then rendered files that had never run (2026-11-10: the

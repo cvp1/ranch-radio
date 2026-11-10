@@ -864,6 +864,18 @@ def make_app(station, args):
         # Transmit on/off: any page on the LAN, as on the hub's own page (D7).
         return await proxy(request, station.packet_url.rstrip("/"), tail)
 
+    async def lone_audio(request):
+        """/audio, where a radio's own server had it before the station stood
+        in front of it: a remote listener still asks there (2026-11-10,
+        every 5 s since the deploy). A station of one radio hands it that
+        radio's /audio, the same backend /r/<id>/audio reaches. With more
+        than one radio there is no telling which, so it says where each is."""
+        if len(station.radios) != 1:
+            where = ", ".join(f"/r/{r.id}/audio" for r in station.radios) or "no radio here"
+            return web.json_response({"error": f"more than one radio: ask for one of {where}"}, status=404)
+        r = station.radios[0]
+        return await proxy(request, f"http://127.0.0.1:{r.web}", "audio")
+
     def slash(prefix):
         async def h(request):
             raise web.HTTPFound(f"{prefix}{request.match_info.get('rid', '')}/" +
@@ -873,6 +885,7 @@ def make_app(station, args):
     r = app.router
     r.add_get("/", index)
     r.add_get("/ws", ws_control)
+    r.add_get("/audio", lone_audio)
     r.add_get("/r/{rid}", slash("/r/"))
     r.add_route("*", "/r/{rid}/{tail:.*}", radio_page)
     r.add_get("/packet", slash("/packet"))
