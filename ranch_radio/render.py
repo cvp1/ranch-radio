@@ -853,6 +853,7 @@ def station_json(h):
         for k in ("web", "rigctl", "lane", "audio_in", "audio_out", "jtdx_profile"):
             if k in r:
                 e[k] = r[k]
+        e.setdefault("rigctl", 4532)        # server.py's default when the host file names none
         if r.get("lane"):
             e["modems"] = ["ardop"] + (["varahf"] if isinstance(x, dict) else [])
             if isinstance(x, dict):

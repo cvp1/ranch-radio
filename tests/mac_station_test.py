@@ -20,6 +20,7 @@ and the radio's lane has ARDOP and VARA HF.
 import asyncio
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -208,6 +209,18 @@ finally:
 
 # --- lane_for and the external Ardop, without processes
 import station as S  # noqa: E402
+from ranch_radio import render  # noqa: E402
+
+# Every example host's rendered station.json builds a Station (the first Mac host's radio
+# had no "rigctl" and the station died on it at deploy, 2026-11-10).
+for f in sorted((pathlib.Path(ROOT) / "examples/hosts").glob("[!._]*.json")):
+    h = render.load(f)
+    if not h.get("station"):
+        continue
+    sj = render.station_json(h)
+    st = S.Station(sj, types.SimpleNamespace(token=None, rigctl_port=0))
+    check(f"{h['host']}: the rendered station.json builds a Station",
+          [(r.id, r.web, r.rigctl) for r in st.radios], [(r["id"], r["web"], r.get("rigctl", 4532)) for r in h["radios"]])
 
 bad_cfg = testkit.pat_config(os.path.join(TMP, "pat-novara.json"))          # no varahf block
 

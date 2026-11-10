@@ -100,7 +100,7 @@ cfg = os.path.join(TMP, "station.json")
 with open(cfg, "w") as f:
     json.dump({"name": "Test", "radios": [], "host_file": "testlinux",
                "addons_state": os.path.join(TMP, "st-state.json")}, f)
-ST = WEB + 1
+ST = testkit.free_port()        # from the OS, not WEB + 1: the browser or an add-on may hold that one (CI 2026-11-10)
 st = wait_port(subprocess.Popen([sys.executable, "station.py", "--config", cfg, "--listen", str(ST),
                                  "--rigctl-port", "0"], cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True), ST)
