@@ -32,7 +32,7 @@ sys.path.insert(0, ROOT)
 from ax25 import Address, Frame, KissDecoder, U_DISC, U_DM, U_SABM, kiss_wrap  # noqa: E402
 from ax25_link import Link  # noqa: E402
 from fake_kiss_radio import FakeKissRadio as _FakeKissRadio  # noqa: E402
-from testkit import free_port, pat_config, real_pat_env  # noqa: E402
+from testkit import free_port, lan_address, pat_config, real_pat_env  # noqa: E402
 
 AGW_HDR = struct.Struct("<B3xcxBx10s10sI4x")
 fails = 0
@@ -671,19 +671,6 @@ def scenario_radio_drop_ends_link():
         a.close()
     finally:
         hub.stop(); sim.stop()
-
-
-def lan_address():
-    """This machine's address on its network (not loopback), or None."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("192.0.2.1", 9))
-        a = s.getsockname()[0]
-        return None if a.startswith("127.") else a
-    except OSError:
-        return None
-    finally:
-        s.close()
 
 
 def scenario_lend_radio():
