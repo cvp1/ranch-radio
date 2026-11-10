@@ -298,6 +298,13 @@
           <button class="chip wl-connect" id="wl-listen-btn">Listen</button>
           <button class="chip" id="wl-listen-stop" hidden>Stop listening</button>
         </div>
+        <div class="wl-row wl-listen" id="wl-listen-hf" hidden
+             title="Answer HF peer calls while you are here (attended): it ends when this page closes, when nobody answers Still there?, or at its time limit">
+          <select id="wl-listen-hf-ch" title="The HF channel to answer on (centre frequency)"></select>
+          <button class="chip wl-connect" id="wl-listen-hf-btn">Listen on HF (attended)</button>
+          <button class="chip wl-confirm" id="wl-listen-here" hidden>I'm here</button>
+          <button class="chip" id="wl-listen-hf-stop" hidden>Stop listening</button>
+        </div>
         <div class="wl-prompt" id="wl-prompt" hidden>
           <span id="wl-prompt-msg"></span>
           <button class="chip" data-v="continue">Send anyway</button>

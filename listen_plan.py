@@ -126,3 +126,124 @@ class ListenPlan:
         if isinstance(spec, ListenPlan):
             return spec
         return cls.from_flags(spec, getattr(args, "winlink_listen_max_h", None))
+
+
+# --------------------------------------------------------------- attended HF
+#
+# winlink.listen_hf: answer HF peer calls while the OPERATOR IS AT THE PAGE.
+# That is local control (47 CFR 97.109(b)), not automatic control, so it is
+# not limited to the 97.221(b) segments; each channel still says whether it
+# sits inside one (the segments are where an unattended window could go
+# later). Attended is enforced by the engine, not trusted from the page: the
+# window ends when the page that opened it closes, when nobody answers
+# "still there?" every presence_minutes, and at max_minutes.
+#
+#   "winlink": {"listen_hf": {"channels": [{"khz": 7102.5, "modem": "ardop"},
+#                                          {"khz": 10145, "modem": "ardop"}],
+#                             "max_minutes": 60, "presence_minutes": 15}}
+#
+# khz is the CENTRE frequency (as the P2P directory publishes it); the radio
+# is put on the dial, 1.5 kHz below (Pat v1.0.0 app/freq.go:68-92).
+
+HF_MODEMS = ("ardop", "varahf")
+HF_DIAL_OFFSET_KHZ = -1.5
+# The RTTY/data sub-bands at General-class privileges (97.305(c), 97.301(d)),
+# kHz. The whole signal (centre +- HF_HALF_WIDTH_KHZ) must fit. 60 m is left
+# out: data there is channelised and narrower than these modems.
+HF_DATA_KHZ = (("160 m", 1800, 2000), ("80 m", 3525, 3600), ("40 m", 7025, 7125),
+               ("30 m", 10100, 10150), ("20 m", 14025, 14150), ("17 m", 18068, 18110),
+               ("15 m", 21025, 21200), ("12 m", 24890, 24930), ("10 m", 28000, 28300))
+HF_HALF_WIDTH_KHZ = 1.5               # the widest these modems send (VARA HF 2750 Hz ~ +-1.4 kHz)
+# 47 CFR 97.221(b): the HF segments where automatic control of data is allowed.
+AUTO_SEGMENTS_KHZ = ((3585.0, 3600.0), (7100.0, 7105.0), (10140.0, 10150.0), (14095.0, 14099.5),
+                     (14100.5, 14112.0), (18105.0, 18110.0), (21090.0, 21100.0), (24925.0, 24930.0),
+                     (28120.0, 28189.0))
+SEGMENT_HALF_WIDTH_KHZ = 0.25         # a 500 Hz signal, the width that fits these segments
+MAX_CHANNELS = 6
+HF_MAX_MINUTES = (5, 120)
+HF_DEFAULT_MINUTES = 60
+HF_PRESENCE_MINUTES = (5, 30)
+HF_DEFAULT_PRESENCE = 15
+HF_KEYS = {"channels", "max_minutes", "presence_minutes"}
+CHANNEL_KEYS = {"khz", "modem"}
+
+
+def hf_data_band_of(khz):
+    """The data sub-band a whole HF signal centred on khz fits in, or None."""
+    return next((n for n, lo, hi in HF_DATA_KHZ
+                 if lo <= khz - HF_HALF_WIDTH_KHZ and khz + HF_HALF_WIDTH_KHZ <= hi), None)
+
+
+def in_auto_segment(khz):
+    """Does a 500 Hz signal centred on khz sit wholly inside a 97.221(b) segment?"""
+    return any(lo <= khz - SEGMENT_HALF_WIDTH_KHZ and khz + SEGMENT_HALF_WIDTH_KHZ <= hi
+               for lo, hi in AUTO_SEGMENTS_KHZ)
+
+
+@dataclass(frozen=True)
+class HfChannel:
+    khz: float                         # centre
+    modem: str
+
+    @property
+    def dial_khz(self):
+        return round(self.khz + HF_DIAL_OFFSET_KHZ, 3)
+
+    def describe(self):
+        return {"khz": self.khz, "dial_khz": self.dial_khz, "modem": self.modem,
+                "band": hf_data_band_of(self.khz), "segment": in_auto_segment(self.khz)}
+
+
+@dataclass(frozen=True)
+class HfListenPlan:
+    channels: tuple
+    max_minutes: float = HF_DEFAULT_MINUTES
+    presence_minutes: float = HF_DEFAULT_PRESENCE
+
+    def describe(self):
+        return {"channels": [c.describe() for c in self.channels], "max_minutes": self.max_minutes,
+                "presence_minutes": self.presence_minutes, "attended": True}
+
+    @classmethod
+    def from_block(cls, block, where="winlink.listen_hf"):
+        if not isinstance(block, dict):
+            raise ListenError(where, 'an object: {"channels": [{"khz": 7102.5, "modem": "ardop"}]}')
+        extra = sorted(set(block) - HF_KEYS)
+        if extra:
+            raise ListenError(f"{where}.{extra[0]}", f"not a setting (use {', '.join(sorted(HF_KEYS))})")
+        chans = block.get("channels")
+        if not isinstance(chans, list) or not 1 <= len(chans) <= MAX_CHANNELS:
+            raise ListenError(f"{where}.channels", f"a list of 1 to {MAX_CHANNELS} channels")
+        out = []
+        for i, c in enumerate(chans):
+            f = f"{where}.channels[{i}]"
+            if not isinstance(c, dict):
+                raise ListenError(f, 'an object: {"khz": 7102.5, "modem": "ardop"}')
+            extra = sorted(set(c) - CHANNEL_KEYS)
+            if extra:
+                raise ListenError(f"{f}.{extra[0]}", "not a channel setting (use khz, modem)")
+            khz, modem = c.get("khz"), c.get("modem")
+            if modem not in HF_MODEMS:
+                raise ListenError(f"{f}.modem", f"{modem!r}: one of {', '.join(HF_MODEMS)}")
+            if not _number(khz) or hf_data_band_of(float(khz)) is None:
+                raise ListenError(f"{f}.khz", f"{khz!r}: a centre frequency in kHz whose whole signal "
+                                  f"(+-{HF_HALF_WIDTH_KHZ:g} kHz) is inside an HF data sub-band at General "
+                                  "privileges (e.g. 7102.5)")
+            ch = HfChannel(float(khz), modem)
+            if ch in out:
+                raise ListenError(f, "listed twice")
+            out.append(ch)
+        mx = block.get("max_minutes", HF_DEFAULT_MINUTES)
+        lo, hi = HF_MAX_MINUTES
+        if not _number(mx) or not lo <= mx <= hi:
+            raise ListenError(f"{where}.max_minutes", f"{mx!r}: minutes, {lo} to {hi}")
+        pr = block.get("presence_minutes", HF_DEFAULT_PRESENCE)
+        lo, hi = HF_PRESENCE_MINUTES
+        if not _number(pr) or not lo <= pr <= hi or pr > mx:
+            raise ListenError(f"{where}.presence_minutes", f"{pr!r}: minutes, {lo} to {hi}, and no more than max_minutes")
+        return cls(tuple(out), float(mx), float(pr))
+
+    @classmethod
+    def from_args(cls, args):
+        plan = getattr(args, "winlink_listen_hf", None)
+        return plan if isinstance(plan, HfListenPlan) or plan is None else cls.from_block(plan)

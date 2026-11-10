@@ -417,6 +417,7 @@ def validate(h):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
     _validate_xara(h, ports)
     listen_plan(h)
+    listen_hf_plan(h)
     _validate_directory(h)
 
 
@@ -488,6 +489,25 @@ def listen_plan(h):
         return ListenPlan.from_block(w["listen"])
     except ListenError as e:
         raise HostError(f"{h['host']}: {e}") from None
+
+
+def listen_hf_plan(h):
+    """The host's attended HF listen plan (winlink.listen_hf), checked:
+    ARDOP or VARA HF channels whose whole signal is in an HF data sub-band,
+    on a host whose radio has that modem. None when the block is absent."""
+    w = h.get("winlink") or {}
+    if "listen_hf" not in w:
+        return None
+    from listen_plan import HfListenPlan, ListenError   # the repo root (as listen_plan)
+    try:
+        plan = HfListenPlan.from_block(w["listen_hf"])
+    except ListenError as e:
+        raise HostError(f"{h['host']}: {e}") from None
+    if not any(r.get("lane") for r in h.get("radios", [])):
+        raise HostError(f"{h['host']}: winlink.listen_hf needs a radio with a Winlink lane")
+    if any(c.modem == "varahf" for c in plan.channels) and not isinstance(w.get("xara"), dict):
+        raise HostError(f"{h['host']}: winlink.listen_hf has a VARA HF channel but winlink.xara is not set up")
+    return plan
 
 
 # ---------------------------------------------------------------- paths

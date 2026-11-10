@@ -261,6 +261,24 @@ the APRS channel, 144.390 MHz. Another station calling yours is shown as
 "Answering CALL"; the outbox is Pat's until it ends, and it is capped like
 your own sessions.
 
+**Attended HF listening.** To be callable on HF while you are at the radio,
+list channels in the host file and use **Listen on HF (attended)** in the
+Winlink panel:
+
+```json
+"winlink": {"listen_hf": {"channels": [{"khz": 7102.5, "modem": "ardop"},
+                                       {"khz": 10145, "modem": "ardop"}],
+                          "max_minutes": 60, "presence_minutes": 15}}
+```
+
+`khz` is the centre frequency (as the P2P directory lists it); the radio goes
+to the dial, 1.5 kHz below. The window is local control, so it is held to you
+being there: closing the page ends it, so does leaving **I'm here** unanswered
+for 2 minutes when asked, the time limit, or STOP TX. The radio's lane is
+armed only for the window, and disarms by itself if the station stops.
+Channels must fit an HF data sub-band at General privileges; ones inside a
+47 CFR 97.221(b) segment are marked. Unattended HF listening is not offered.
+
 **P2P directory.** In Peer mode the panel lists stations that asked to be
 listed for P2P Winlink (a public directory; spec and "get listed" at
 [cvp1.github.io/p2p-directory](https://cvp1.github.io/p2p-directory/)). Rows

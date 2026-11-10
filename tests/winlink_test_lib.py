@@ -36,9 +36,10 @@ STATION_VALUE_FLAGS = {"--winlink-pat": ("winlink", "pat"), "--winlink-pat-confi
                        "--mesh-port": ("mesh", "port"), "--mesh-python": ("mesh", "python"), "--mesh-bridge": ("mesh", "bridge"),
                        "--mesh-key": ("mesh", "_key"), "--mesh-log": ("mesh", "log"), "--mesh-feed": ("mesh", "feed"),
                        "--mesh-feed-cred": ("mesh", "feed_cred"),
-                       "--p2pdir-url": ("winlink", "_p2pdir_url")}
+                       "--p2pdir-url": ("winlink", "_p2pdir_url"),
+                       "--winlink-listen-hf": ("winlink", "listen_hf")}
 STATION_BARE_FLAGS = {"--mesh-feed-tx": ("mesh", "feed_tx")}
-NUMERIC = {"pat_port": int, "session_max": float, "_listen_max_h": float}
+NUMERIC = {"pat_port": int, "session_max": float, "_listen_max_h": float, "listen_hf": json.loads}
 
 
 def split_flags(extra):

@@ -646,9 +646,10 @@ const winlink = (() => {
     if (off) setState("Switched off · Pat isn't running", "warn");
     else if (blocked) setState(`Off · ${blocked}`, "warn");
     else if (inbound && !session) setState(`Answering ${inbound.call} · a station called this one`, "on");
-    else if (listen?.busy === "starting") setState(`Starting to listen on ${mhzText(listen.plan)} MHz…`, "on");
+    else if (listen?.busy === "starting") setState(`Starting to listen on ${listenWhere(w)}…`, "on");
     else if (listen?.busy === "ending") setState("Ending the listen window…", "on");
-    else if (w) setState(`Listening on ${mhzText(listen.plan)} MHz until ${clock(w.until)} · answering calls to ${w.call}`, "on");
+    else if (w?.kind === "hf" && w.ask_until) setState(`Still there? Press I'm here before ${clock(w.ask_until)} or HF listening ends`, "warn");
+    else if (w) setState(`Listening${w.kind === "hf" ? " (attended)" : ""} on ${listenWhere(w)} until ${clock(w.until)} · answering calls to ${w.call}`, "on");
     else setState(session ? `Armed · session to ${session}` : armed ? "Armed" : "Idle", armed ? "on" : "");
   }
 
@@ -671,11 +672,18 @@ const winlink = (() => {
   const mhzText = (plan) => (plan.hz / 1e6).toFixed(3);
   const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const hoursText = (h) => (h < 1 ? `${Math.round(h * 60)} min` : `${h} h`);
+  // Where a window answers: an HF window by its centre and modem, a packet one by the plan's frequency.
+  function listenWhere(w) {
+    if (w?.kind === "hf") return `${(w.centre_hz / 1e6).toFixed(4)} MHz (${MODEM_LABEL[w.method] || w.method})`;
+    if (w?.hz) return `${(w.hz / 1e6).toFixed(3)} MHz`;
+    return listen?.plan ? `${mhzText(listen.plan)} MHz` : "HF";
+  }
 
   function renderListen() {
+    renderListenHf();
     const row = $("#wl-listen");
-    row.hidden = !listen || off;
-    if (!listen) return;
+    row.hidden = !listen?.plan || off;
+    if (!listen?.plan) return;
     const w = listen.window, busy = listen.busy, sel = $("#wl-listen-hours");
     const max = listen.plan.max_hours;
     if (sel.dataset.max !== String(max)) {          // the choices, once per plan
@@ -685,8 +693,9 @@ const winlink = (() => {
       sel.value = String(max);
       sel.dataset.max = String(max);
     }
+    const mine = !w || w.kind !== "hf";        // the HF row has its own Stop
     $("#wl-listen-btn").hidden = !!w || busy === "ending";
-    $("#wl-listen-stop").hidden = !w && busy !== "starting";
+    $("#wl-listen-stop").hidden = !mine || (!w && busy !== "starting");
     $("#wl-listen-btn").disabled = !!session || !!inbound || !!blocked || !!busy || armed;
     sel.disabled = !!w || !!busy;
     if ((w || busy) && listenTimer) resetListenConfirm();
@@ -702,7 +711,7 @@ const winlink = (() => {
   // Two clicks, like Connect: the confirm names the frequency, the hours, and
   // that APRS and the iGate are off-frequency for the window.
   function listenClick() {
-    if (!listen) return;
+    if (!listen?.plan) return;
     const h = Number($("#wl-listen-hours").value);
     if (!listenTimer) {
       const b = $("#wl-listen-btn");
@@ -714,6 +723,63 @@ const winlink = (() => {
     }
     resetListenConfirm();
     send({ t: "winlink_listen", hours: h });
+  }
+
+  // ---------- attended HF listening (winlink.listen_hf): answer HF peer calls
+  // while you are here. The server holds it to that: the window ends when this
+  // page closes, when nobody presses I'm here, or at its time limit.
+
+  let hfTimer = null;
+  const hfLabel = (c) => `${c.band} · ${c.khz} kHz ${MODEM_LABEL[c.modem] || c.modem}` +
+    (c.segment ? " · 97.221(b) segment" : "");
+
+  function renderListenHf() {
+    const row = $("#wl-listen-hf");
+    const hf = listen?.hf;
+    row.hidden = !hf || off;
+    if (!hf) return;
+    const w = listen.window, busy = listen.busy, sel = $("#wl-listen-hf-ch");
+    const key = JSON.stringify(hf.channels);
+    if (sel.dataset.key !== key) {
+      sel.replaceChildren(...hf.channels.map((c, i) => Object.assign(document.createElement("option"),
+        { value: String(i), textContent: hfLabel(c) })));
+      sel.value = String(Math.min(Number(store.get("wl.listen.hf", 0)) || 0, hf.channels.length - 1));
+      sel.dataset.key = key;
+    }
+    const ours = w?.kind === "hf";
+    $("#wl-listen-hf-btn").hidden = !!w || busy === "ending";
+    $("#wl-listen-hf-btn").disabled = !!session || !!inbound || !!blocked || !!busy || armed;
+    $("#wl-listen-hf-stop").hidden = !ours && !(busy === "starting" && !w);
+    $("#wl-listen-here").hidden = !(ours && w.ask_until);
+    sel.disabled = !!w || !!busy;
+    if ((w || busy) && hfTimer) resetHfConfirm();
+  }
+
+  function resetHfConfirm() {
+    clearTimeout(hfTimer);
+    hfTimer = null;
+    $("#wl-listen-hf-btn").textContent = "Listen on HF (attended)";
+    $("#wl-listen-hf-btn").classList.remove("wl-confirm");
+  }
+
+  // Two clicks: the confirm says what it is (attended, this page must stay open).
+  function listenHfClick() {
+    const hf = listen?.hf;
+    if (!hf) return;
+    const i = Number($("#wl-listen-hf-ch").value);
+    const c = hf.channels[i];
+    if (!c) return;
+    if (!hfTimer) {
+      const b = $("#wl-listen-hf-btn");
+      b.textContent = `Confirm: answer calls on ${c.khz} kHz ${MODEM_LABEL[c.modem] || c.modem} for up to ` +
+        `${hf.max_minutes} min · keep this page open, I'm here every ${hf.presence_minutes} min`;
+      b.classList.add("wl-confirm");
+      hfTimer = setTimeout(resetHfConfirm, CONFIRM_MS);
+      return;
+    }
+    resetHfConfirm();
+    store.set("wl.listen.hf", i);
+    send({ t: "winlink_listen", hf: i });
   }
 
   // The add-on registry's on/off switch (addons/winlink.py). Off stops Pat. The
@@ -893,6 +959,9 @@ const winlink = (() => {
   $("#wl-stop").onclick = () => send({ t: "winlink_stop" });
   $("#wl-listen-btn").onclick = listenClick;
   $("#wl-listen-stop").onclick = () => send({ t: "winlink_listen_stop" });
+  $("#wl-listen-hf-btn").onclick = listenHfClick;
+  $("#wl-listen-hf-stop").onclick = () => send({ t: "winlink_listen_stop" });
+  $("#wl-listen-here").onclick = () => send({ t: "winlink_listen_here" });
   if (viaSel()) viaSel().onchange = () => viaChanged();
   fillBands();
   renderActions();
