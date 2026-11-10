@@ -17,6 +17,7 @@
 
 const modules = (() => {
   let el = null, on = false, data = null, plan = null, applied = null, form = null;
+  let errors = {};                  // a plan's field errors, kept across re-renders like typed values
   let host = { changed: () => {}, visible: () => true };
   const GROUPS = [
     ["attention", "Needs attention"],
@@ -155,6 +156,9 @@ const modules = (() => {
       if (inp.name in typed) inp.value = typed[inp.name];
       if (inp.name === focused) inp.focus();
     }
+    // The errors a plan refused with stay under their fields until the form
+    // closes: a refresh (doctor's machine check landing) re-renders meanwhile.
+    for (const e of body.querySelectorAll(".mod-err")) e.textContent = errors[e.dataset.err] || "";
     host.changed();
   }
 
@@ -180,11 +184,11 @@ const modules = (() => {
       if (!want && !confirm(`Switch ${b.dataset.name} off? Its link to the device is closed until you switch it on again.`)) return;
       send({ t: "addon", addon: b.dataset.name, do: "power", on: want });
     } else if (b.classList.contains("mod-add")) {
-      form = b.dataset.name; plan = null; applied = null; render();
+      form = b.dataset.name; plan = null; applied = null; errors = {}; render();
       const first = el.querySelector(".mod-form input");
       if (first) first.focus();
     } else if (b.classList.contains("mod-remove")) {
-      form = null; applied = null;
+      form = null; applied = null; errors = {};
       send({ t: "module_plan", do: "remove", module: b.dataset.name, set: {} });
     } else if (b.classList.contains("mod-plan")) {
       const f = b.closest(".mod-form");
@@ -193,7 +197,7 @@ const modules = (() => {
       b.disabled = true;
       send({ t: "module_apply", plan: plan.id });
     } else if (b.classList.contains("mod-cancel")) {
-      form = null; plan = null; applied = null; render();
+      form = null; plan = null; applied = null; errors = {}; render();
     }
   }
 
@@ -223,9 +227,11 @@ const modules = (() => {
         data = m;
       } else if (m.t === "module_plan") {
         if (m.errors && Object.keys(m.errors).length) {
-          for (const e of el.querySelectorAll(".mod-err")) e.textContent = m.errors[e.dataset.err] || "";
+          errors = m.errors;
+          for (const e of el.querySelectorAll(".mod-err")) e.textContent = errors[e.dataset.err] || "";
           return;
         }
+        errors = {};
         plan = m; form = null; applied = null;
       } else if (m.t === "module_applied") {
         applied = m; plan = null;
