@@ -807,6 +807,10 @@ def main():
     station = Station(cfg, args)
 
     addon_cfg = dict(cfg.get("addons") or {})
+    if addon_cfg.pop("packet", None) is not None:
+        # The station has its own Packet tab (/packet/, from the "packet" block);
+        # the add-on is for a radio's own page and would double the route here.
+        log.info("addons: \"packet\" is the station's own tab; its add-on entry is ignored here")
     wl = cfg.get("winlink") or {}
     from listen_plan import ListenPlan
     if wl.get("pat"):             # Winlink (Pat) is an add-on (addons/winlink.py); the lanes are not
