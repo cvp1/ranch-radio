@@ -97,12 +97,19 @@ class Pair:
         return self.station.returncode
 
     def wait(self, timeout=None):
-        self.station.wait(timeout)
-        return self.radio.wait(timeout)
+        rc = self.station.wait(timeout)
+        if self.radio.poll() is None:            # the radio was never signalled: it goes when the station has
+            self.radio.terminate()
+        self.radio.wait(timeout)
+        return rc
 
     def communicate(self, timeout=None):
-        r = self.radio.communicate(timeout=timeout)[0] or ""
+        # The station first (it is what a caller signalled: it ends the session
+        # and disarms the radio); then the radio and the modem's stand-in.
         s = self.station.communicate(timeout=timeout)[0] or ""
+        if self.radio.poll() is None:
+            self.radio.terminate()
+        r = self.radio.communicate(timeout=timeout)[0] or ""
         if self.ardop is not None and self.ardop.poll() is None:
             self.ardop.kill()
             self.ardop.wait(5)

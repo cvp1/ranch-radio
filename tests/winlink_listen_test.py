@@ -577,12 +577,8 @@ if picked("B-4"):
             f.write(good)
         # a window longer than the plan allows
         nothing(s, s.mark(), "hours over max_hours", "0.25 to 4 hours", lambda: s.listen_on(5))
-        # the Packet add-on off
-        s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
-        wait_for(lambda: not (s.addon_snap().get("packet") or {}).get("on"), 10)
-        nothing(s, s.mark(), "the Packet add-on off", "Packet add-on is switched off")
-        s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": True})
-        wait_for(lambda: (s.addon_snap().get("packet") or {}).get("up"), 15)
+        # (the station shows the hub itself: there is no Packet add-on to switch off;
+        # the hub going away is B-8/B-11's ground)
         # the UV-PRO add-on off: nothing could tune the radio and put it back
         s.page.send({"t": "addon", "addon": "uvpro", "do": "power", "on": False})
         wait_for(lambda: not (s.addon_snap().get("uvpro") or {}).get("on"), 10)
