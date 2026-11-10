@@ -183,9 +183,9 @@ def cmd_install(a):
 def reload_commands(h, arts):
     if h["os"] == "macos":
         labels = {art.content["Label"]: art.path for art in arts if art.fmt == "plist"}
-        if any(art.path == render.MAC_ADDONS for art in arts):   # the server reads it at start
-            for r in h["radios"]:
-                labels.setdefault(r["label"], f"{render.AGENTS}/{r['label']}.plist")
+        if any(art.path == render.STATION_JSON for art in arts):   # the station reads it at start
+            st_label = (h.get("station") or {}).get("label", render.STATION_LABEL)
+            labels.setdefault(st_label, f"{render.AGENTS}/{st_label}.plist")
         out = []
         for label, path in labels.items():
             # Quoted: these lines are meant to be pasted into a shell.
@@ -374,8 +374,7 @@ def cmd_start(a):
     _guard(h, a)
     lines = service.start(h)
     _show_service(lines)
-    url = f"https://{this_host()}:7300/" if (h["radios"] and h["radios"][0].get("https")) or \
-        (h.get("station") or {}).get("https") else f"http://{this_host()}:7300/"
+    url = f"https://{this_host()}:7300/" if (h.get("station") or {}).get("https") else f"http://{this_host()}:7300/"
     bad = [x for x in lines if x[1]]
     # On a Mac a failed bootstrap or a no-op load is recovered by the next
     # step; only the final verdict ("NOT RUNNING ...") is a failure.

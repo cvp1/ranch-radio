@@ -237,6 +237,8 @@ const station = (() => {
 
   // ---------- link
 
+  let landed = false;             // the first radios message has picked the opening view
+
   function applyRadios(m) {
     radios = m.radios || [];
     sharedPort = (m.shared_port !== undefined && m.shared_port !== null) ? m.shared_port : sharedPort;
@@ -245,6 +247,10 @@ const station = (() => {
     syncLive();
     viaOptions();
     renderCards();
+    // A station of one radio opens on that radio (a Mac with one rig: the page
+    // is the radio's, as it always was); every other station opens on Overview.
+    if (!landed && !location.hash && present().length === 1) location.hash = `#/${present()[0].id}`;
+    landed = true;
     show();
   }
 

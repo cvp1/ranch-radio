@@ -23,8 +23,11 @@ WIREPLUMBER_CONF = ".config/wireplumber/wireplumber.conf.d/51-ranch-radio-audio.
 # card never wins the desktop default, even from WirePlumber's history of
 # past defaults (stored priority + 20000 - position).
 RADIO_AUDIO_PRIORITY = 100
-# A Mac has one radio server, and it runs the host's add-ons (server.py --addons).
-MAC_ADDONS = ".config/radio-remote/addons.json"
+# The station (station.py) fronts every radio on both OSes: the page, Pat, Mesh,
+# the packet tab, the add-ons and the Modules tab. On a Mac it is a launchd agent.
+STATION_LABEL = "org.ranch-radio.station"
+STATION_LOG = "~/Library/Logs/ranch-radio-station.log"
+MAC_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 ARDOP_STATE = "~/.local/state/radio-remote/ardop"
 # The daily update check (ranch-radio update --scheduled). On unless the host
 # file says "updates": false; it applies updates only with "apply": true.
@@ -118,6 +121,7 @@ RULES = [
     (("mesh", "port"), TOKEN), (("mesh", "keys", "*"), TOKEN), (("mesh", "python"), TOKEN),
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("mesh", "feed"), TOKEN), (("mesh", "feed_cred"), TOKEN),
+    (("station", "tls_names", "*"), TOKEN), (("station", "label"), LABEL), (("station", "path"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
     (("updates", "at"), CLOCK), (("updates", "label"), LABEL),
     (("addons", "*"), None),     # add-on names: checked below
@@ -347,10 +351,18 @@ def validate(h):
                 if hi is not None and db > hi:
                     raise HostError(f"{h['host']}: {r['id']}.{key} {part.strip()!r} is above "
                                     f"codec_max_db {hi} (the radio's ceiling)")
-    if h["os"] == "linux" and len(h["radios"]) > 0 and "station" not in h:
-        raise HostError(f"{h['host']}: a Linux host serves its radios through the station; add \"station\"")
-    if h["os"] == "macos" and len(h["radios"]) > 1:
-        raise HostError(f"{h['host']}: one radio per Mac (station.py is Linux-only)")
+    if h["radios"] and "station" not in h:
+        raise HostError(f"{h['host']}: a host's radios are served through the station; add "
+                        f"\"station\": {{\"https\": true}}")
+    for r in h["radios"]:
+        if "web" not in r:
+            raise HostError(f"{h['host']}: {r['id']} needs \"web\", its page's port on this machine behind "
+                            f"the station (7301 for the first radio)")
+        if r["web"] == 7300:
+            raise HostError(f"{h['host']}: {r['id']}.web 7300 is the station's port")
+        if r.get("https") or r.get("tls_names"):
+            raise HostError(f"{h['host']}: {r['id']}: https and tls_names belong to \"station\" now (it serves "
+                            f"the page; the radio's own page is on loopback)")
     for u in (h.get("manual_restart") or {}):
         if not isinstance(h["manual_restart"][u], str) or not h["manual_restart"][u].strip():
             raise HostError(f"{h['host']}: manual_restart {u!r} needs the reason")
@@ -500,18 +512,6 @@ def updates(h):
     return {"at": u.get("at", UPDATE_AT), "apply": bool(u.get("apply", False)), "label": u.get("label", UPDATE_LABEL)}
 
 
-def mac_addons(h):
-    """The add-ons a Mac's radio server runs: the host file's, plus the Packet
-    tab when the host runs a packet hub (a Mac has no station page to show
-    it). A host file that lists "packet" itself keeps its own entry."""
-    out = dict(h.get("addons") or {})
-    p = h.get("packet")
-    if p and p.get("tnc") and h["radios"] and "packet" not in out:
-        out["packet"] = {"enabled": True, "url": p.get("url", "http://127.0.0.1:7310"),
-                         **{k: p[k] for k in ("name", "title") if k in p}}
-    return out
-
-
 def hub_argv(h, py, repo, pth):
     """The packet hub's command line (tnc_hub.py), either OS."""
     p = h["packet"]
@@ -586,7 +586,11 @@ def direwolf_argv(h, py, repo, pth):
 
 
 def server_args(h, r, pth):
-    """The server.py arguments for radio r; pth maps a ~ path for this OS."""
+    """The server.py arguments for radio r: the radio alone, behind the
+    station (its page on loopback at r["web"]), with its rigctl port and its
+    Winlink lane (the lane, codec level and station ID are the radio's). Pat,
+    Mesh, the packet tab, the add-ons and the Modules tab are the station's
+    (station_json), on both OSes."""
     a = []
     linux = h["os"] == "linux"
     if r.get("rig"):
@@ -598,35 +602,24 @@ def server_args(h, r, pth):
         a += ["--audio-device", f"pipewire:{r['audio_in']},{r['audio_out']}"]
     elif r.get("audio_device"):
         a += ["--audio-device", r["audio_device"]]
-    if r.get("https"):
-        a += ["--https"]
     if r.get("tx_timeout"):
         a += ["--tx-timeout", str(r["tx_timeout"])]
     if r.get("tx") is False:                    # receive only (init, until there's a callsign)
         a += ["--no-tx"]
     if r.get("auto_tune"):
         a += ["--auto-tune"]
-    if linux:                                   # behind the station: page on loopback
-        a += ["--host", "127.0.0.1", "--listen", str(r["web"])]
+    a += ["--host", "127.0.0.1", "--listen", str(r["web"])]      # behind the station: page on loopback
+    if linux:
         a += ["--rigctl-host", r.get("rigctl_host", "0.0.0.0")]
     elif r.get("rigctl_host"):
         a += ["--rigctl-host", r["rigctl_host"]]
     if r.get("rigctl") is not None:
         a += ["--rigctl-port", str(r["rigctl"])]
-    for n in r.get("tls_names", []):
-        a += ["--tls-name", n]
     w = h.get("winlink")
     if r.get("lane"):
-        if not linux and w:                     # a Mac's server runs Pat itself
-            a += ["--winlink-pat", w["pat"]]
-            if w.get("pat_config"):
-                a += ["--winlink-pat-config", pth(w["pat_config"])]
-            plan = listen_plan(h)
-            if plan:
-                a += plan.flags()
         a += ["--winlink-rigctl-port", str(r["lane"])]
         x = (w or {}).get("xara")
-        if isinstance(x, dict) and not linux:       # VARA HF: xara's own lane and log
+        if isinstance(x, dict):                     # VARA HF: xara's own lane and log
             a += ["--winlink-vara-log", pth(x["log"]), "--winlink-vara-rigctl-port", str(x["lane_port"]),
                   "--winlink-vara-port", str(x["port"])]
         if r.get("codec_db"):
@@ -645,22 +638,6 @@ def server_args(h, r, pth):
         a += ["--winlink-ardop-log", pth(logs + f"/{r['id']}" if linux else logs)]
         if r.get("winlink_mode"):
             a += ["--winlink-mode", r["winlink_mode"]]
-    m = h.get("mesh")
-    if m and not linux:                         # on Linux the station owns the node
-        a += ["--mesh-port", m["port"]]
-        for k in m.get("keys", []):
-            ch, _, f = k.partition("=")
-            a += ["--mesh-key", f"{ch}={pth(f)}"]
-        if m.get("feed"):                       # the node's traffic on an MQTT broker (mesh_feed.py)
-            a += ["--mesh-feed", m["feed"]]
-            if m.get("feed_cred"):
-                a += ["--mesh-feed-cred", pth(m["feed_cred"])]
-            if m.get("feed_tx"):
-                a += ["--mesh-feed-tx"]
-    if mac_addons(h) and not linux:             # on Linux the station runs them
-        a += ["--addons", pth("~/" + MAC_ADDONS)]
-    if not linux:                               # the Modules tab (on Linux: the station's)
-        a += ["--host-file", h["host"]]
     return a
 
 
@@ -744,6 +721,8 @@ def _linux(h):
     argv = [py, f"{repo}/station.py", "--config", f"%h/{STATION_JSON}"]
     if st.get("https"):
         argv += ["--https", "--tls-name", "%l"]
+        for n in st.get("tls_names", []):
+            argv += ["--tls-name", n]
     if st.get("rigctl_port") is not None:
         argv += ["--rigctl-port", str(st["rigctl_port"])]
     arts.append(Artifact("station", f"{UNIT_DIR}/station.service", "systemd", unit(host, [
@@ -860,12 +839,24 @@ def wireplumber_rules(h):
 
 
 def station_json(h):
+    """The station's config (station.py --config), both OSes. A radio's
+    "modems" says which HF modems its lane has (ARDOP; VARA HF when xara is
+    set up on the host), and "vara_port" xara's command port, which Pat's
+    varahf.addr must name before a VARA session is let through."""
+    linux = h["os"] == "linux"
+    x = (h.get("winlink") or {}).get("xara")
     radios = []
     for r in h["radios"]:
-        e = {"id": r["id"], "name": r["name"], "device": r["device"], "unit": f"{r['id']}-remote.service"}
+        e = {"id": r["id"], "name": r["name"], "device": r["device"]}
+        if linux:
+            e["unit"] = f"{r['id']}-remote.service"
         for k in ("web", "rigctl", "lane", "audio_in", "audio_out", "jtdx_profile"):
             if k in r:
                 e[k] = r[k]
+        if r.get("lane"):
+            e["modems"] = ["ardop"] + (["varahf"] if isinstance(x, dict) else [])
+            if isinstance(x, dict):
+                e["vara_port"] = x["port"]
         radios.append(e)
     d = {"name": h["host"], "radios": radios}
     if h.get("packet"):
@@ -899,9 +890,24 @@ def _macos(h, home):
             d["EnvironmentVariables"] = {"PATH": r["path"]}
         arts.append(Artifact(r["id"], f"{AGENTS}/{r['label']}.plist", "plist", d))
 
-    adds = mac_addons(h)
-    if adds:
-        arts.append(Artifact(",".join(adds), MAC_ADDONS, "json", adds))
+    st = h.get("station")
+    if st is not None:
+        label = st.get("label", STATION_LABEL)
+        log = pth(STATION_LOG)
+        argv = [py, f"{repo}/station.py", "--config", pth("~/" + STATION_JSON)]
+        if st.get("https"):
+            argv += ["--https"]
+            for n in st.get("tls_names", []):
+                argv += ["--tls-name", n]
+        # The shared rigctl port is off unless the host file asks: on a Mac the
+        # radio's own port is what JTDX has always used, with no relay to restart.
+        argv += ["--rigctl-port", str(st.get("rigctl_port", 0))]
+        arts.append(Artifact("station", f"{AGENTS}/{label}.plist", "plist", {
+            "KeepAlive": True, "Label": label, "ProcessType": "Interactive",
+            "ProgramArguments": argv, "RunAtLoad": True,
+            "StandardErrorPath": log, "StandardOutPath": log, "WorkingDirectory": repo,
+            "EnvironmentVariables": {"PATH": st.get("path", MAC_PATH)}}))
+        arts.append(Artifact("station", STATION_JSON, "json", station_json(h)))
 
     w = h.get("winlink") or {}
     a = w.get("ardopcf")

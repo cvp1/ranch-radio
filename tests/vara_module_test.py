@@ -1,7 +1,8 @@
 """The `vara` module (Winlink over VARA HF, xara; plan winlink-vara 2.4, A5, A6).
 
-  - golden: every example host renders exactly as main did before VARA
-    (tests/fixtures/render-golden.json, rendered at the merge base)
+  - golden: every example host renders exactly as the fixture says
+    (tests/fixtures/render-golden.json; tools/render_golden.py refreshes it on
+    a deliberate render change, never to make this pass)
   - vara on (mac-shack): the xara agent's exact argv, KeepAlive, throttle;
     the server's argv gains the three --winlink-vara-* flags
   - add then remove: back to the golden render, and remove names the
@@ -60,7 +61,7 @@ def host(name):
 golden = json.loads((ROOT / "tests/fixtures/render-golden.json").read_text())
 for f in sorted((ROOT / "examples/hosts").glob("[!._]*.json")):
     h = render.load(f)
-    check(f"golden: {h['host']} renders as before VARA", rendered(h), golden[h["host"]])
+    check(f"golden: {h['host']} renders as the fixture says", rendered(h), golden[h["host"]])
 
 # ---------------------------------------------------------------- vara on
 XARA = {"audio_in": "USB Audio CODEC", "audio_out": "USB Audio CODEC", "call": "N0CALL"}

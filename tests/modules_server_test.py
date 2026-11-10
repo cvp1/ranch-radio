@@ -54,8 +54,8 @@ def write_host(name, h):
 
 
 write_host("testmac", {"host": "testmac", "os": "macos", "repo": "~/ranch-radio", "python": SLOWPY,
-                       "radios": [{"id": "ic7300", "name": "IC-7300", "label": "t.radio", "device": "/dev/null"}],
-                       "mesh": {"port": MARK, "keys": []}})
+                       "radios": [{"id": "ic7300", "name": "IC-7300", "label": "t.radio", "device": "/dev/null", "web": 7301}],
+                       "station": {"https": False}, "mesh": {"port": MARK, "keys": []}})
 write_host("testlinux", {"host": "testlinux", "os": "linux", "repo": "~/ranch-radio", "python": sys.executable,
                          "radios": [], "station": {"https": False}})
 
