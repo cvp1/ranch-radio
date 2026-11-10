@@ -38,10 +38,10 @@ import codec_level  # noqa: E402
 import testkit  # noqa: E402
 from testkit import wait_for  # noqa: E402
 
-APPS = testkit.free_port()
-LANE = testkit.free_port()
-PATP = testkit.free_port()
-WEB = testkit.free_port()
+import winlink_test_lib as L  # noqa: E402
+
+# The radio behind the station (winlink_test_lib): the page is the station's.
+APPS, LANE, PATP, WEB = L.APPS, L.LANE, L.PATP, L.WEB
 URL = "ardop:///N0DAJ?bw=2000MAX&freq=3588.5"
 TMP = tempfile.mkdtemp(prefix="codec-level-")
 STATE = os.path.join(TMP, "level")
@@ -161,39 +161,11 @@ def fake_log(path):
 
 
 def start(env_extra=None, *extra):
-    logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, FAKE_PAT_TX_S="2")
-    env.update(env_extra or {})
-    p = subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-         "--rigctl-port", str(APPS), "--winlink-rigctl-port", str(LANE),
-         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(PATP),
-         "--addons-state", "",   # never the live add-on state or listen record
-         *extra],
-        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for _ in range(100):
-        if p.poll() is not None:     # died (a port taken?): another listener is not this server
-            break
-        try:
-            for port in (WEB, LANE, PATP):
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            time.sleep(0.5)          # Radio Remote's websocket to Pat
-            if p.poll() is None:
-                return p, logf
-        except OSError:
-            time.sleep(0.1)
-    p.kill()
-    print(p.stdout.read())
-    raise SystemExit("server did not start")
+    env = {"FAKE_PAT_TX_S": "2", **(env_extra or {})}
+    return L.start(env, *extra)
 
 
-def stop(p):
-    p.terminate()
-    try:
-        return p.communicate(timeout=10)[0]
-    except subprocess.TimeoutExpired:
-        p.kill()
-        return p.communicate()[0]
+stop = L.stop
 
 
 def show(out):

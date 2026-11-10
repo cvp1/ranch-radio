@@ -23,7 +23,7 @@ LANE = testkit.free_port()
 PATP = testkit.free_port()
 WEB = testkit.free_port()            # the station's page
 RWEB = testkit.free_port()           # the radio's own page, behind it
-ARDOP = testkit.pair_port({APPS, LANE, PATP, WEB, RWEB})   # ardopcf's stand-in (a Mac's agent)
+ARDOP = None                         # ardopcf's stand-in (a Mac's agent); picked at start(), see there
 URL = "ardop:///N0DAJ?bw=2000MAX&freq=3588.5"
 
 # Flags that are the station's (station.json), with their field; everything
@@ -88,6 +88,13 @@ class Pair:
         for p in (self.station, self.radio, self.ardop):
             if p is not None:
                 p.kill()
+
+    def send_signal(self, sig):
+        self.station.send_signal(sig)          # the station owns Pat and the session
+
+    @property
+    def returncode(self):
+        return self.station.returncode
 
     def wait(self, timeout=None):
         self.station.wait(timeout)
@@ -187,29 +194,45 @@ def _open(port):
         return False
 
 
-def start(env_extra=None, *extra):
+def start(env_extra=None, *extra, winlink=True, wait_pat=True):
+    """The radio and the station. winlink=False: a station with no Pat at
+    all (no Winlink panel); wait_pat=False: don't wait for Pat's port (a Pat
+    that is meant to fail to start)."""
+    global ARDOP
+    # Picked now, not at import: a test's own listeners (a stand-in hub) are
+    # bound by now, so a pair that is really free can be found.
+    ARDOP = testkit.pair_port({APPS, LANE, PATP, WEB, RWEB})
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, **(env_extra or {}))
+    env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf)
+    env.update(env_extra or {})              # a caller's own FAKE_PAT_LOG (or anything) wins
+    logf = env["FAKE_PAT_LOG"]
     radio_extra, cfg = split_flags(extra)
     wl = cfg.setdefault("winlink", {})
-    wl.setdefault("pat", testkit.fake_pat_cmd())
-    wl.setdefault("pat_port", PATP)
+    if winlink:
+        wl.setdefault("pat", testkit.fake_pat_cmd())
+        wl.setdefault("pat_port", PATP)
     listen = wl.pop("_listen", None)
     max_h = wl.pop("_listen_max_h", None)
     if listen:                                   # METHOD=MHZ -> the host file's block
         method, _, mhz = listen.partition("=")
         wl["listen"] = {method: {"mhz": float(mhz), **({"max_hours": max_h} if max_h is not None else {})}}
     vara = "--winlink-vara-port" in radio_extra
+
+    def radio_flag(name):
+        return radio_extra[radio_extra.index(name) + 1] if name in radio_extra else None
     cfg["name"] = "Test"
     cfg["radios"] = [{"id": "ic7300", "name": "IC-7300", "web": RWEB, "rigctl": APPS, "lane": LANE,
                       "modems": ["ardop", "varahf"] if vara else ["ardop"],
-                      **({"vara_port": int(radio_extra[radio_extra.index("--winlink-vara-port") + 1])} if vara else {})}]
+                      **({"vara_port": int(radio_flag("--winlink-vara-port")),
+                          "vara_log": radio_flag("--winlink-vara-log")} if vara else {})}]
     # ardopcf: external, as a Mac's agent is; its stand-in listens so the station finds it
     wl.setdefault("ardopcf", {"label": "test.ardopcf", "bin": "/nonexistent/ardopcf", "port": ARDOP,
                               "audio_in": "x", "audio_out": "x", "hostcommands": ""})
     ardop = subprocess.Popen([sys.executable, "tests/fake_ardopcf.py", str(ARDOP), "x", "x", "--logdir",
                               tempfile.mkdtemp(prefix="ardop-")], cwd=ROOT,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not winlink:
+        cfg.pop("winlink")
     wl.setdefault("ardop_logs", tempfile.mkdtemp(prefix="ardoplogs-"))
     cfg.setdefault("addons_state", "")
     addons_file = cfg.pop("_addons_file", None)
@@ -258,7 +281,7 @@ def start(env_extra=None, *extra):
             if pair.poll() is not None:
                 break
             try:
-                for port in (WEB, PATP):
+                for port in (WEB,) + ((PATP,) if winlink and wait_pat else ()):
                     socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
                 time.sleep(1.2)          # the station's presence poll sees the radio; Pat's event link
                 if pair.poll() is None:

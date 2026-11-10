@@ -410,6 +410,32 @@ def xara_wall(y, mo, d, hh, mm, ss, ms):
     return calendar.timegm((int(y), int(mo), int(d), int(hh), int(mm), int(ss), 0, 0, 0)) + int(ms) / 1000
 
 
+def vara_levels(path):
+    """Every speed level xara's --log reports, [(wall, level, "TX"|"RX")], read
+    whole: the station reads a radio's xara log this way for the session
+    record (the radio's server tails it live, VaraLogTail). Missing: []."""
+    out = []
+    try:
+        with open(os.path.expanduser(path), "rb") as f:
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return out
+    for line in text.split("\n"):
+        m = _XARA_LINE.match(line.rstrip("\r"))
+        if not m:
+            continue
+        r = _XARA_RATE.search(m.group(8))
+        if r:
+            out.append((xara_wall(*m.groups()[:7]), int(r.group(1)), r.group(3)))
+    return out
+
+
+def max_level(levels, since, until=None):
+    """The highest level in levels between since and until (None: none seen)."""
+    lv = [lvl for t, lvl, _ in levels if t >= since - SLOP_S and (until is None or t <= until + SLOP_S)]
+    return max(lv) if lv else None
+
+
 class VaraLogTail:
     """Follows xara's --log file (one append-only file, read only) and feeds
     the ledger: each "tx cw" line starts a xara ID, which the ledger matches
@@ -436,8 +462,7 @@ class VaraLogTail:
 
     def max_level(self, since, until=None):
         """The highest speed level xara reported between since and until (None: none seen)."""
-        lv = [lvl for t, lvl, _ in self.levels if t >= since - SLOP_S and (until is None or t <= until + SLOP_S)]
-        return max(lv) if lv else None
+        return max_level(self.levels, since, until)
 
     def poll(self, first=False):
         try:

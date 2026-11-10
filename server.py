@@ -7,8 +7,12 @@
     python3 server.py --rig qmx --port /dev/ttyACM0     # QRP Labs QMX / QMX+
     python3 server.py --rig hamlib --hamlib-model 1035 --port /dev/ttyUSB0   # any Hamlib rig
     python3 server.py --list-rigs
-    python3 server.py ... --mesh-port /dev/meshtastic  # add a Meshtastic node's messages
     python3 server.py --https                          # needed for the browser mic off-localhost
+
+One process per radio: its page, audio, rigctl port and Winlink lane. Pat,
+Mesh, the packet tab and the Modules tab are the station's (station.py),
+which arms this radio's lane over its WebSocket for a session. Panel
+add-ons may still run on a radio's own page (--addons).
 
 Transmit safety: the transmitter is only keyed while the client holding PTT
 keeps sending keep-alives. It unkeys if that client disconnects, goes quiet
@@ -171,8 +175,7 @@ class Station(TxAudio):
         self.vara_tail = None            # station_id.VaraLogTail while xara is set up here
         self._lane_refused_warned = {}   # modem -> monotonic time of its last refusal WARNING
         self.codec = None                # codec_level.CodecProfile when --winlink-codec-db is set
-        self.addons = None               # addons.Addons: --addons and/or --mesh-port (UV-PRO, Mesh, ...)
-        self.modules = None              # ranch_radio.pageapi.ModulesService with --host-file
+        self.addons = None               # addons.Addons: --addons (panel add-ons on this radio's page)
         # Station ID (47 CFR 97.119): which of the modems' IDs went on air,
         # and whether one is owed. Tracked per modem from its log:
         # --winlink-ardop-log (ardopcf), --winlink-vara-log (xara).
@@ -184,22 +187,14 @@ class Station(TxAudio):
         if hasattr(radio, "on_caps"):   # Hamlib learns capabilities after connecting
             radio.on_caps(lambda caps: self._broadcast(json.dumps({"t": "config", "config": self.config()})))
 
-    @property
-    def winlink(self):
-        """winlink.PatEngine while the Winlink add-on (addons/winlink.py) is
-        switched on, else None: off reads exactly like "no Pat here", so every
-        lane and safety path below is unchanged."""
-        return self.addons.engine("winlink") if self.addons else None
-
     def config(self):
         return {"name": self.radio.name, "tx_allowed": not self.args.no_tx,
                 "auto_tune": self.auto_tune, "tx_stopped": self.tx_stopped,
-                # The Winlink panel: only where this server runs Pat. A lane
-                # without Pat here is driven by the station page's Pat.
-                "winlink": bool(self.addons and self.addons.get("winlink")),
+                # No Winlink panel or Modules tab here: both are the station's.
+                "winlink": False,
                 "mesh": bool(self.addons and self.addons.get("mesh")),
                 "addons": self.addons.describe() if self.addons else [],
-                "modules": self.modules is not None,
+                "modules": False,
                 "tx_timeout": self.args.tx_timeout, "sim": self.args.sim,
                 "audio": self.audio is not None, "caps": rigs.caps_for_client(self.radio.caps),
                 "codec": ({"uses": [u for u in codec_level.USES if self.codec.has(u)],
@@ -545,79 +540,6 @@ class Station(TxAudio):
                         "ardopcf keys only to send its station ID (end-of-session or 10-minute "
                         "ID): this station ID is NOT going on air%s", peer, tail)
 
-    # --- Winlink session routing (what station.Station.lane_for does for a station)
-
-    def winlink_lane_for(self, url, via):
-        """Which lane a Winlink session keys on this host: this radio for
-        ARDOP (the lane, codec and station ID above), the packet hub's radio
-        for packet (ax25*: through the Packet add-on, the hub's own transmit
-        gate applies, this radio stays idle), none for telnet. `via` is the
-        page's choice; the URL's transport decides, as on the station page.
-        Returns (lane, None) or (None, why)."""
-        import winlink
-        from urllib.parse import urlsplit
-        scheme = urlsplit(url).scheme
-        if scheme == "telnet":
-            return winlink.NoLane("telnet", self.notice), None
-        if scheme.startswith("ax25"):
-            packet = self.addons.get("packet") if self.addons else None
-            if packet is None:
-                return None, "No packet radio is set up on this station."
-            if not self.addons.is_on("packet"):
-                return None, "The Packet add-on is switched off."
-            if not packet.state.get("up"):
-                return None, f"The {packet.hub_name} packet hub is not running."
-            # The UV-PRO add-on, on, tunes the hub's radio to the gateway's
-            # frequency and back (addons/uvpro.py qsy/restore); without it the
-            # operator tunes the radio and the page says so.
-            uv = self.addons.get("uvpro") if self.addons.is_on("uvpro") else None
-            name = packet.hub_name
-            return (winlink.TunedLane(name, uv, self.notice) if uv else winlink.NoLane(name, self.notice)), None
-        if scheme not in self.hf_modems:
-            return None, f"{scheme} is not set up on this station."
-        if scheme == "varahf":
-            why = self.vara_pat_refusal()
-            if why:
-                return None, why
-        return winlink.LocalLane(self), None
-
-    def vara_pat_refusal(self):
-        """Why Pat's config would let a VARA session key or tune outside this
-        server's lanes (plan winlink-vara A5), or None. Read at every arm,
-        through pat_config.py only (the file holds the password)."""
-        import pat_config
-        eng = self.winlink
-        path = getattr(eng, "config_path", None)
-        if not path:
-            return "VARA HF: Pat's config file is not known here; not connecting."
-        why = pat_config.vara_refusal(path, self.args.winlink_vara_port, self.args.winlink_rigctl_port)
-        return f"VARA HF not ready: {why}." if why else None
-
-    def winlink_listen_target(self, need_hub=True, need_up=True):
-        """What a Winlink listen window uses here: ({"hub": its URL, "name",
-        "tuner": the UV-PRO add-on or None}, None), or (None, why not).
-        need_hub=False (crash recovery): just the tuner, whatever the hub;
-        need_up=False (a window's watcher, which asks the hub itself): not
-        the Packet add-on's last poll of the hub."""
-        packet = self.addons.get("packet") if self.addons else None
-        uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
-        if not need_hub:
-            return {"hub": packet.url if packet else None, "name": packet.hub_name if packet else "radio",
-                    "tuner": uv}, None
-        if packet is None:
-            return None, "No packet radio is set up on this station."
-        if not self.addons.is_on("packet"):
-            return None, "The Packet add-on is switched off."
-        if need_up and not packet.state.get("up"):
-            return None, f"The {packet.hub_name} packet hub is not running."
-        return {"hub": packet.url, "name": packet.hub_name, "tuner": uv}, None
-
-    async def winlink_hub_links(self):
-        """The packet hub's links, or None (no hub here, or it can't be asked):
-        how Winlink tells a packet session it did not start has really ended."""
-        packet = self.addons.get("packet") if self.addons and self.addons.is_on("packet") else None
-        return await packet.links() if packet else None
-
     async def winlink_arm(self, ws, on, freq_hz=None, scheme="ardop", qsy_hz=None):
         """freq_hz: the session's target frequency (connect URL), which sets
         the codec's band; without one, the radio's current frequency.
@@ -814,8 +736,6 @@ class Station(TxAudio):
         self.winlink_scheme = None
         self.id_ledger.new_generation()          # disarmed: no later key belongs to that session
         log.info("winlink: disarmed%s", f" ({reason})" if reason else "")
-        if self.winlink is not None and reason:
-            await self.winlink.abort(reason)   # no-op unless a session is still running
         if self._winlink_keying():
             await self.unkey(f"Winlink disarmed{f' ({reason})' if reason else ''}")
         await self._winlink_mode_leave()         # after unkeying, as the codec level
@@ -1021,13 +941,8 @@ class Station(TxAudio):
             # The unkey cuts a tune (as the F7 watchdog does); tuner 1 (ATU
             # on, not tuning) says so too, for a radio that ignores the unkey.
             steps.append(("ATU tune", lambda: self.radio.set("tuner", 1)))
-        eng = self.winlink
-        if eng is not None:
-            if getattr(eng, "_admitting", False):
-                eng._admit_stop = True             # still arming: undone, never dialed
-            steps.append(("Winlink session", lambda: eng.abort(why)))
-            if getattr(eng, "listening", None) or getattr(eng, "_listen_busy", None):
-                steps.append(("Winlink listen window", lambda: eng.listen_stop(ws)))
+        # Pat is the station's: disarming here ends its session through the
+        # lane socket (RemoteLane), and the station's watch sees the latch.
         steps.append(("Winlink lanes", lambda: self.winlink_disarm(why)))
         failed = []
         for name, step in steps:
@@ -1086,13 +1001,12 @@ class Station(TxAudio):
         await ws.send_str(json.dumps({"t": "hello", "state": self.radio.state,
                                       "config": self.config(),
                                       "rigctl_clients": self.rigctl_clients,
-                                      "winlink": (self.addons.own_snapshot("winlink")
-                                                  if self.addons and self.addons.get("winlink")
-                                                  else {"armed": self.winlink_armed,
-                                                        "codec_db": self.codec and self.codec.current,
-                                                        "id": self.id_ledger.snapshot(),
-                                                        # the station's RemoteLane: which modems may arm here
-                                                        "modems": list(self.hf_modems)}),
+                                      # the lane's state: the station's RemoteLane and its
+                                      # RadioWatch read it (modems: which may arm here)
+                                      "winlink": {"armed": self.winlink_armed,
+                                                  "codec_db": self.codec and self.codec.current,
+                                                  "id": self.id_ledger.snapshot(),
+                                                  "modems": list(self.hf_modems)},
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {}}))
         try:
@@ -1202,11 +1116,8 @@ class Station(TxAudio):
             if self.winlink_owner is ws:
                 asyncio.ensure_future(self._winlink_end(ws, float(m["started"]), bool(m.get("ok")),
                                                         m.get("reason")))
-        elif t in ("winlink_connect", "winlink_stop", "winlink_prompt"):
-            if self.addons and self.addons.route(t):
-                await self.addons.command(ws, m)          # the Winlink add-on (on, or says it's off)
-            elif t == "winlink_connect":
-                self.notice("Winlink is not enabled on this server.", "warn", ws)
+        elif t in ("winlink_connect", "winlink_stop", "winlink_prompt", "winlink_listen", "winlink_listen_stop"):
+            self.notice("Winlink sessions are the station's: use the station page.", "warn", ws)
         elif t.startswith("mesh_") and not (self.addons and self.addons.route(t)):
             self.notice("Mesh is not enabled on this server.", "warn", ws)
         elif self.addons and self.addons.route(t):     # an add-on's own page (Mesh)
@@ -1219,11 +1130,7 @@ class Station(TxAudio):
         elif t in ("codec_get", "codec_step", "codec_save"):
             await self.codec_command(ws, m)
         elif t in ("modules", "modules_check", "module_plan", "module_apply"):
-            if self.modules is None:
-                self.notice("Modules: this server doesn't know its host file (--host-file). On a "
-                            "station host they are on the station page.", "warn", ws)
-            else:
-                self.modules.handle(ws, m)
+            self.notice("Modules are the station's: use the station page.", "warn", ws)
         elif t == "page_log":
             # Diagnosis from a page (the LAN is trusted; capped, one line).
             peer = getattr(getattr(ws, "_req", None), "remote", None) or "page"
@@ -1531,9 +1438,6 @@ def main():
                    help="serve over TLS with a self-signed cert (browsers only allow the mic on https)")
     p.add_argument("--tls-name", action="append", default=[],
                    help="extra hostname for the --https certificate (repeatable)")
-    p.add_argument("--host-file", metavar="HOST",
-                   help="this host's hosts/HOST.json: turns on the page's Modules tab "
-                        "(rendered by ranch-radio; never inferred from the machine's name)")
     p.add_argument("--allow-host", action="append", default=[], metavar="NAME",
                    help="another host name this page may be opened by (IPs, single-label and "
                         ".local-style names are always allowed)")
@@ -1550,26 +1454,7 @@ def main():
                    help="address for the rigctl listener (default: this machine only)")
     p.add_argument("--winlink-rigctl-port", type=int, default=0,
                    help="rigctl port for Pat (Winlink) on 127.0.0.1; it may key only while a "
-                        "Winlink session is armed from the page. 0 = off")
-    p.add_argument("--winlink-pat", metavar="CMD",
-                   help="run Pat (Winlink engine) with this command, e.g. 'pat'; needs "
-                        "--winlink-rigctl-port, and Pat's hamlib rig pointed at it")
-    p.add_argument("--winlink-pat-config", metavar="FILE",
-                   help="Pat's config file, read (listen, schedule, ax25.beacon.every only) before "
-                        "every start: Pat is not launched while it would listen, beacon or run "
-                        "scheduled connects on its own (default: a --config in --winlink-pat, else "
-                        "Pat's own default for this OS)")
-    p.add_argument("--winlink-pat-port", type=int, default=8095,
-                   help="port for Pat's API on 127.0.0.1 (never exposed; default 8095)")
-    p.add_argument("--winlink-session-max", type=float, default=900,
-                   help="seconds a Winlink session may run before it is cut (default 900)")
-    p.add_argument("--winlink-listen", metavar="METHOD=MHZ",
-                   help="offer a listen window on the page: Pat answers stations that call this one "
-                        "on this frequency, through the packet hub, for a bounded time. Only "
-                        "ax25+agwpe, in a VHF/UHF packet data sub-band, never 144.390 "
-                        "(e.g. ax25+agwpe=145.090). Unset = no listening (the host file's winlink.listen)")
-    p.add_argument("--winlink-listen-max-h", type=float, default=4.0, metavar="HOURS",
-                   help="the longest listen window, 0.25 to 12 hours (default 4)")
+                        "Winlink session is armed (by the station for a session, or from the page). 0 = off")
     p.add_argument("--winlink-ardop-log", metavar="DIR",
                    help="ardopcf's log directory (its --logdir), read only: tells which station "
                         "IDs went on air through the lane and whether one is owed; a session "
@@ -1609,29 +1494,9 @@ def main():
     p.add_argument("--codec-save", metavar="HOST:RADIO",
                    help="let the page save its levels into hosts/HOST.json for RADIO (and install "
                         "that radio's unit); unset = levels can be stepped but not saved")
-    p.add_argument("--mesh-port", metavar="DEV",
-                   help="serial device of a Meshtastic node (e.g. /dev/meshtastic), or ble:NAME for "
-                        "Bluetooth (e.g. ble:NODEM_7720): adds the Mesh "
-                        "panel (messages, channels, node list). Unset = no mesh")
-    p.add_argument("--mesh-python", default="~/.local/share/venvs/meshtastic/bin/python",
-                   help="Python with the meshtastic package, which runs mesh_bridge.py "
-                        "(default: %(default)s)")
-    p.add_argument("--mesh-bridge", default=str(HERE / "mesh_bridge.py"), help=argparse.SUPPRESS)
-    p.add_argument("--mesh-key", action="append", default=[], metavar="CHANNEL=FILE",
-                   help="check that the node's CHANNEL uses the base64 key in FILE; the page "
-                        "warns if not (repeatable). The key never leaves the bridge")
-    p.add_argument("--mesh-log", default="~/.local/state/radio-remote/mesh.jsonl",
-                   help="message history kept across restarts (mode 600; '' = memory only)")
-    p.add_argument("--mesh-feed", metavar="mqtt://HOST[:PORT]/PREFIX",
-                   help="also publish the mesh node's traffic to this MQTT broker, so a bridge on "
-                        "another host can use the node (topics in mesh_feed.py). Unset = no feed")
-    p.add_argument("--mesh-feed-cred", metavar="FILE",
-                   help="the broker's user and password, one per line (read by the bridge only)")
-    p.add_argument("--mesh-feed-tx", action="store_true",
-                   help="let the broker send text through the node (checked and rate-limited)")
     p.add_argument("--addons", metavar="FILE",
-                   help="JSON file of add-ons to run, {\"uvpro\": {\"enabled\": true, ...}} (see addons/). "
-                        "Unset = none")
+                   help="JSON file of panel add-ons to run on this radio's page, {\"uvpro\": {\"enabled\": true, ...}} "
+                        "(see addons/). On a station host the station runs them instead. Unset = none")
     p.add_argument("--addons-state", default="~/.local/state/radio-remote/addons.json",
                    help="where the page's add-on on/off choices are kept (default: %(default)s)")
     p.add_argument("--tune-timeout", type=float, default=20,
@@ -1665,15 +1530,6 @@ def main():
 
     audio = None if args.no_audio else AudioBridge(args.audio_device, sim=radio if args.sim else None)
     station = Station(radio, audio, args)
-    if args.winlink_pat:
-        if not args.winlink_rigctl_port:
-            p.error("--winlink-pat needs --winlink-rigctl-port (Pat keys only through that lane)")
-    if args.winlink_listen:
-        from listen_plan import ListenError, ListenPlan
-        try:
-            ListenPlan.from_args(args)
-        except ListenError as e:
-            p.error(str(e))
     saver = None
     if args.codec_save:
         host, _, rid = args.codec_save.partition(":")
@@ -1691,25 +1547,12 @@ def main():
     if args.addons:
         with open(os.path.expanduser(args.addons)) as f:
             addon_cfg = json.load(f)
-    if args.winlink_pat:          # Winlink (Pat) is an add-on (addons/winlink.py); the lane is not
-        addon_cfg.setdefault("winlink", {"engine_args": args, "lane_for": station.winlink_lane_for,
-                                         "hf_modems": station.hf_modems})
-    if args.mesh_port:            # Mesh is an add-on (addons/mesh.py); --mesh-* configure it
-        addon_cfg.setdefault("mesh", {"port": args.mesh_port, "python": args.mesh_python,
-                                      "bridge": args.mesh_bridge, "keys": list(args.mesh_key),
-                                      "log": args.mesh_log, "feed": args.mesh_feed,
-                                      "feed_cred": args.mesh_feed_cred, "feed_tx": args.mesh_feed_tx})
+    if "winlink" in addon_cfg:    # Pat is the station's (station.py runs it, arming this lane for a session)
+        log.warning("add-on \"winlink\" is the station's; ignored on a radio's server")
+        addon_cfg.pop("winlink")
     if addon_cfg:
         from addons import Addons
         station.addons = Addons(station, addon_cfg, args.addons_state or None)
-    if args.host_file:
-        from ranch_radio import pageapi
-        # RANCH_RADIO_REPO / RANCH_RADIO_HOME: tests point these at scratch copies.
-        repo = os.environ.get("RANCH_RADIO_REPO") or os.path.dirname(os.path.abspath(__file__))
-        station.modules = pageapi.ModulesService(args.host_file, repo, lambda: station.addons,
-                                                 station._send, station._broadcast,
-                                                 home=os.environ.get("RANCH_RADIO_HOME"),
-                                                 state_path=args.addons_state or None)
     ctx = tls_context(HERE / "certs", args.tls_name) if args.https else None
     scheme = "https" if ctx else "http"
     print(f"\n  {caps['name']} Remote on {scheme}://<this-machine>:{args.listen}/"

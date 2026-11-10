@@ -46,8 +46,15 @@ const station = (() => {
     for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
     const end = modules.enabled() ? [{ id: "modules", label: "Modules", title: "Every module: what's on, what it needs, add or remove" }] : [];
     const nav = $("#st-nav");
-    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Overview" }], items, end });
-    if (tucked.length) nav.firstChild.title = `Off or not connected: ${tucked.join(", ")} (their cards are here)`;
+    // With a Modules tab to reach them from, off or disconnected members leave
+    // the bar (as on a radio's page); the Modules tab and Overview name them.
+    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Overview" }], items, end,
+                                           tuck: modules.enabled() });
+    if (tucked.length) {
+      nav.firstChild.title = `Off or not connected: ${tucked.join(", ")} (their cards are here)`;
+      const mods = nav.querySelector('a[href="#/modules"]');
+      if (mods) mods.title += `\nOff or not connected: ${tucked.join(", ")}`;
+    }
   }
 
   // ---------- views
@@ -126,6 +133,7 @@ const station = (() => {
         const w = new WebSocket(withToken(`r/${encodeURIComponent(r.id)}/ws`));
         l.ws = w;
         w.onmessage = (e) => {
+          if (typeof e.data !== "string") return;   // a scope frame (binary): not for the strip
           const m = JSON.parse(e.data);
           if (m.t === "hello") Object.assign(l.S, m.state);
           else if (m.t === "state") Object.assign(l.S, m.d);
@@ -227,8 +235,13 @@ const station = (() => {
   }
 
   function viaOptions() {
-    const list = present().filter((r) => r.winlink)
-      .map((r) => ({ id: r.id, name: r.name, kind: "ardop", label: `HF · ${r.name} (ARDOP)` }));
+    // One via per HF modem a radio's lane has (station.json "modems"): the id
+    // carries the modem after a colon, so a radio with both is two options.
+    const list = [];
+    for (const r of present().filter((r) => r.winlink)) {
+      list.push({ id: r.id, name: r.name, kind: "ardop", label: `HF · ${r.name} (ARDOP)` });
+      if ((r.modems || []).includes("varahf")) list.push({ id: `${r.id}:varahf`, name: r.name, kind: "varahf", label: `HF · ${r.name} (VARA HF)` });
+    }
     const packetLabel = packetName();
     if (packet.present) list.push({ id: "packet", name: packetLabel, kind: "packet", label: `VHF · ${packetLabel} (packet)` });
     list.push({ id: "telnet", name: "internet", kind: "telnet", label: "Telnet (internet, no radio)" });

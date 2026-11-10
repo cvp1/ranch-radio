@@ -80,6 +80,7 @@ class Radio:
         # where xara is set up), and xara's command port for Pat's check.
         self.modems = tuple(cfg.get("modems") or ("ardop",))
         self.vara_port = cfg.get("vara_port")
+        self.vara_log = _expand(cfg.get("vara_log"))
         # Winlink can use it: the station can put ardopcf on its sound card, or
         # ardopcf is already there (a Mac's launchd agent; Station sets this).
         self.audio_ok = bool(self.audio_in and self.audio_out)
@@ -106,16 +107,26 @@ class RemoteLane:
         self._refusal = None
         self._reader = None
         self._ending = False
+        self.page = None
 
     @property
     def armed(self):
         return bool(self.radio_state.get("armed"))
 
     def state(self):
-        return dict(self.radio_state)
+        return {**self.radio_state, "scheme": getattr(self, "scheme", "ardop")}
+
+    def max_level(self, since, until=None):
+        """xara's highest speed level in the session, from the radio's xara log
+        (station.json "vara_log"); None without one."""
+        if not self.radio.vara_log:
+            return None
+        import station_id
+        return station_id.max_level(station_id.vara_levels(self.radio.vara_log), since, until)
 
     async def arm(self, ws, url):
         st = self.station
+        self.page = ws                     # the session's page: the radio's notices are relayed to it
         scheme = urlsplit(url).scheme
         self.scheme = scheme if scheme in winlink.HF_MODEMS else "ardop"
         if not self.radio.present:
@@ -182,9 +193,12 @@ class RemoteLane:
                     elif m.get("armed") is False:
                         self._disarmed.set()
                     # the station-ID ledger reaches the pages through the radio's watch
-                elif m.get("t") == "notice" and m.get("level") == "warn" and not self._armed.is_set():
-                    self._refusal = m.get("msg")
-                    self._disarmed.set()                  # a refusal: arm() stops waiting
+                elif m.get("t") == "notice":
+                    if m.get("level") == "warn" and not self._armed.is_set():
+                        self._refusal = m.get("msg")      # a refusal: arm() reports it and stops waiting
+                        self._disarmed.set()
+                    else:                                 # the radio talking (tuning, holds): to the session's page
+                        self.station.notice(m.get("msg", ""), m.get("level", "info"), getattr(self, "page", None))
         except (aiohttp.ClientError, OSError, ValueError) as e:
             log.info("winlink: %s lane socket: %s", self.radio.name, e)
         finally:
@@ -261,6 +275,8 @@ class RadioWatch:
                             m = json.loads(msg.data)
                             if m.get("t") == "winlink":
                                 self._take(m)
+                            elif m.get("t") == "codec" and "current" in m:      # the codec level moved
+                                self._take({"codec_db": m["current"]})
             except (aiohttp.ClientError, OSError, ValueError, TimeoutError, AttributeError) as e:
                 log.debug("watch %s: %s", self.radio.name, e)
             await asyncio.sleep(WATCH_RETRY_S)
@@ -571,11 +587,16 @@ class Station:
             # the hub's radio (control-port mode; borrow mode refuses, saying why).
             uv = self.addons.get("uvpro") if self.addons and self.addons.is_on("uvpro") else None
             return (winlink.TunedLane(name, uv, self.notice) if uv else winlink.NoLane(name, self.notice)), None
-        if scheme not in winlink.HF_MODEMS:
+        if scheme not in winlink.HF_MODEMS or not any(scheme in r.modems for r in self.radios):
             return None, f"{scheme} is not set up on this station."
         what = "VARA HF" if scheme == "varahf" else "Winlink"
         able = [r for r in self.radios if r.present and r.info(None)["winlink"] and scheme in r.modems]
-        r = self.radio(via) if via else (able[0] if len(able) == 1 else None)
+        # via: the page's radio id, with the modem after a colon when the page
+        # offers one via per modem ("ic7300:varahf"; the URL's scheme decides);
+        # a name that is no radio of ours ("radio", from a page that knows one)
+        # means the one radio that could take it.
+        rid = str(via).partition(":")[0] if via else ""
+        r = self.radio(rid) if rid and self.radio(rid) else (able[0] if len(able) == 1 else None)
         if r is None:
             return None, (f"No HF radio with {what} is connected." if not able
                           else "Pick the radio for this session.")

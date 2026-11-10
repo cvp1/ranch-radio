@@ -10,7 +10,7 @@ data sub-bands of 97.305(c), never on the APRS channel. HF listening is not
 offered (plan winlink-listen, phase C).
 
 One parser for every place the plan comes from: render.py checks the host
-file with it (and renders --winlink-listen METHOD=MHZ --winlink-listen-max-h
+file with it (station.json keeps the block; flags() is the one-line form
 H for a Mac's server.py), station.py reads station.json's copy of the block,
 and winlink.PatEngine reads the flags. Stdlib only (render imports it).
 """
@@ -108,7 +108,7 @@ class ListenPlan:
 
     @classmethod
     def from_flags(cls, spec, max_hours=None):
-        """server.py's --winlink-listen METHOD=MHZ and --winlink-listen-max-h H."""
+        """The one-line form, METHOD=MHZ and H (the flags a radio's server once took)."""
         method, sep, mhz = str(spec).partition("=")
         try:
             mhz = float(mhz) if sep else None

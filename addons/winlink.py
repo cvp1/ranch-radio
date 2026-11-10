@@ -8,17 +8,16 @@ is Pat's API passed through under /winlink/api/ (registered once, answering
 
 What stays OUT of this add-on, on purpose: the transmit lane. Arming,
 "winlink_arm" / "winlink_end", the codec level, the station-ID wait and
-unkeying are the radio server's (server.py) and the station's (station.py)
-safety core, unchanged. The add-on only runs Pat.
+unkeying are the radio server's (server.py); a session reaches them over the
+station's RemoteLane (station.py). The add-on only runs Pat, on the station.
 
 Off = the shutdown path: the session (if any) is aborted, which disarms and
 unkeys through the core, then Pat is stopped. Switching off is refused while
 a session runs; stop the session first.
 
-Config: built by the host from its flags (server.py --winlink-pat ...) or its
-station.json "winlink" block, as {"engine_args": namespace, "lane_for": fn}.
-Delete this file and the Winlink panel goes away; the radio page runs on,
-and the lane still answers a station's Pat.
+Config: built by the station from its station.json "winlink" block, as
+{"engine_args": namespace, "lane_for": fn, "hf_modems": [...]}. Delete this
+file and the Winlink panel goes away; the radios run on, their lanes idle.
 """
 
 from addons import Addon

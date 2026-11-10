@@ -47,7 +47,7 @@ def _flag(argv, *names):
 
 def pat_config_path(args, pat_cmd):
     """The config file the Pat this engine launches will read: the host's
-    --winlink-pat-config, else a --config in the Pat command, else Pat's
+    winlink_pat_config (station.json pat_config), else a --config in the Pat command, else Pat's
     own default."""
     explicit = getattr(args, "winlink_pat_config", None)
     if explicit:

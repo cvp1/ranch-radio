@@ -96,10 +96,13 @@ def station(port):
 
 
 def server(port):
+    """The Mac host's station (the Modules tab is the station's on every host)."""
     env = dict(os.environ, RANCH_RADIO_REPO=REPO, RANCH_RADIO_HOME=HOME)
+    cfg = os.path.join(TMP, f"station-{port}.json")
+    with open(cfg, "w") as f:
+        json.dump({"name": "testmac", "radios": [], "host_file": "testmac", "addons_state": STATE}, f)
     return wait_port(subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(port), "--rigctl-port", "0",
-         "--addons-state", STATE, "--host-file", "testmac"],
+        [sys.executable, "station.py", "--config", cfg, "--listen", str(port), "--rigctl-port", "0"],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True), port)
 
 

@@ -41,12 +41,19 @@ file by hand. Example host files: `examples/hosts/`.
 
 ## Rules that bite
 
-- **The station orchestrates; the radio server keys.** Winlink sessions, Mesh,
-  the packet tab, add-ons and Modules are the station's, on both OSes. The radio
-  server owns everything that touches the transmitter: the lane, arming, codec
-  level, station ID, STOP TX. `server.py` still accepts the old Pat/Mesh flags
-  (nothing renders them any more; they go next). Do not add orchestration to
-  `server.py`; do not move a TX gate into `station.py`.
+- **The station orchestrates; the radio server keys.** Winlink sessions (Pat),
+  listen windows, Mesh, the packet tab, the Modules tab and the host's add-ons are
+  the station's, on both OSes. The radio server owns everything that touches the
+  transmitter: the lane, arming, codec level, station ID, STOP TX. A session
+  reaches a radio over `station.RemoteLane` (its WebSocket: `winlink_arm` with
+  the scheme and QSY, `winlink_end`); between sessions `station.RadioWatch` reads
+  the radio's lane state for the panel. Do not add orchestration to `server.py`
+  (its `--addons` is for panel add-ons on a radio's own page only); do not move a
+  TX gate into `station.py`.
+- **Tests that need Pat use `tests/winlink_test_lib.start()`**, which runs a
+  simulated radio behind a station and routes server.py-style flags to the right
+  process (`split_flags`). Radio-side messages (`winlink_arm`, `tx_stop`) go to
+  the radio's page (`L.RWEB`); sessions and the mailbox to the station's (`L.WEB`).
 - **Render is the only way a host gets its processes.** `render.py` emits the
   station agent/unit, `station.json` and one agent/unit per radio from the host
   file; `tests/fixtures/render-golden.json` pins the examples' output and

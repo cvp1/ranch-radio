@@ -709,9 +709,11 @@ const winlink = (() => {
   }
 
   function event(m) {
+    // The codec level comes with an arm/disarm, or on its own: the station
+    // relays the radio's codec moves between sessions (its RadioWatch).
+    if ("codec_db" in m) codec(m.codec_db);
     if ("armed" in m) {
       armed = m.armed;
-      if ("codec_db" in m) codec(m.codec_db);
       if (armed) setState(session ? `Armed · session to ${session}` : "Armed", "on");
       renderSession();
     }

@@ -11,7 +11,7 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - settings are schema-checked before the bridge; a good change is written
     and echoed; a node refusal warns
   - favorites; traceroute (one at a time, 30 s apart, result in later snapshots)
-  - without --mesh-port, mesh commands are refused
+  - without the Mesh add-on, mesh commands are refused
 
     python3 tests/mesh_test.py
 """
@@ -120,9 +120,12 @@ def start(*extra, mesh=True, key=GOOD_KEY):
     args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
             "--rigctl-port", "0", "--addons-state", os.path.join(TMP, "addons.json"), *extra]
     if mesh:
-        args += ["--mesh-port", "/dev/null", "--mesh-python", sys.executable,
-                 "--mesh-bridge", "tests/fake_mesh_bridge.py",
-                 "--mesh-key", f"HomeNet={key}", "--mesh-log", MESH_LOG]
+        # Mesh is an add-on (addons/mesh.py); the radio's server takes add-ons from a file.
+        adds = os.path.join(TMP, f"addons-{len(os.listdir(TMP))}.json")
+        with open(adds, "w") as f:
+            json.dump({"mesh": {"port": "/dev/null", "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py",
+                                "keys": [f"HomeNet={key}"], "log": MESH_LOG}}, f)
+        args += ["--addons", adds]
     p = subprocess.Popen(args, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
@@ -307,16 +310,16 @@ finally:
 server = start(mesh=False)
 try:
     page = Page()
-    check("no --mesh-port: config.mesh false", page.hello["config"].get("mesh"), False)
+    check("no Mesh add-on: config.mesh false", page.hello["config"].get("mesh"), False)
     n = len(page.events)
     page.send({"t": "mesh_send", "text": "hi", "ch": 0})
-    check("no --mesh-port: mesh_send refused", page.warned(n), True)
+    check("no Mesh add-on: mesh_send refused", page.warned(n), True)
     n = len(page.events)
     page.send({"t": "mesh_config", "section": "lora", "values": {"hop_limit": 4}})
-    check("no --mesh-port: mesh_config refused", page.warned(n), True)
+    check("no Mesh add-on: mesh_config refused", page.warned(n), True)
     n = len(page.events)
     page.send({"t": "mesh_trace", "to": "!0000beef"})
-    check("no --mesh-port: mesh_trace refused", page.warned(n), True)
+    check("no Mesh add-on: mesh_trace refused", page.warned(n), True)
     page.close()
 finally:
     stop(server)

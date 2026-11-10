@@ -284,52 +284,6 @@ async def id_tail(station, started, closing=lambda: False, notify=None, scheme="
         await asyncio.sleep(0.1)
 
 
-class LocalLane:
-    """The radio this process drives: its Winlink rigctl lane, codec level
-    and station-ID ledger, in-process (Radio Remote with --winlink-pat)."""
-
-    name = "local"
-
-    def __init__(self, station):
-        self.station = station
-
-    @property
-    def armed(self):
-        return self.station.winlink_armed
-
-    def state(self):
-        st = self.station
-        return {"armed": st.winlink_armed, "codec_db": st.codec and st.codec.current,
-                "id": st.id_ledger.snapshot()}
-
-    async def arm(self, ws, url):
-        """True once armed for this session; False if refused (the page was told why).
-        The URL's scheme (ardop, varahf) is the only modem whose lane may key."""
-        st = self.station
-        scheme = urlsplit(url).scheme
-        self.scheme = scheme if scheme in HF_MODEMS else "ardop"
-        await st.winlink_arm(ws, True, url_freq_hz(url), scheme=self.scheme)
-        if not st.winlink_armed:
-            return False
-        st.winlink_qsy_hz = url_hz(url)
-        # Pat QSYs inside /api/connect and the modem keys at once: a band
-        # change's auto-tune then ran under the modem's first key, which was
-        # refused, and xara exits on a refused key (2026-11-07). The radio
-        # goes to the session's frequency here and its tune ends first.
-        wait = getattr(st, "winlink_qsy_and_settle", None)
-        if wait is not None:
-            why = await wait(url_hz(url))
-            if why:
-                st.notice(f"Not connecting: {why}", "warn", ws)
-                await st.winlink_disarm(why)
-                return False
-        return True
-
-    async def end(self, started, ok, reason, closing, notify):
-        await id_tail(self.station, started, closing, notify, scheme=getattr(self, "scheme", "ardop"))
-        await self.station.winlink_disarm(None if ok else reason)
-
-
 class NoLane:
     """A session that keys no radio of ours: telnet, or packet through the
     hub (whose own transmit gate applies). notice: the host's
@@ -418,9 +372,10 @@ class PatEngine:
         passes it."""
         self.station = station
         self.args = args
-        local = LocalLane(station) if hasattr(station, "winlink_arm") else None
-        self.lane_for = lane_for or (lambda url, via: (local, None))
-        self.idle_lane = local          # whose state the page shows between sessions
+        # lane_for: the station's (which radio a session keys). Without one no
+        # HF session can start; packet and telnet still can (NoLane).
+        self.lane_for = lane_for or (lambda url, via: (None, "No radio lane here: this Pat runs without a station."))
+        self.idle_lane = None           # whose state the page shows between sessions (station.IdleLane)
         self.lane = None                # the running session's lane
         self.port = args.winlink_pat_port
         self.base = f"http://127.0.0.1:{self.port}"
@@ -907,8 +862,7 @@ class PatEngine:
             await self._end_unstarted(lane, busy)
             return
         self.lane = lane
-        if not isinstance(lane, LocalLane):  # a local radio's arming told the pages itself
-            self._send({**lane.state(), "armed": True, "via": lane.name})
+        self._send({**lane.state(), "armed": True, "via": lane.name})     # the lane's state: armed, scheme, codec, ID
         self.session_owner = ws
         self._stop_asked = False
         self.session_url = redact(url)
@@ -1024,7 +978,7 @@ class PatEngine:
         msgs = await self._listing(box)
         return None if msgs is None else {m["MID"]: msg_bytes(m) for m in msgs}
 
-    async def _record(self, url, started, ok, reason, queued, sent_mids, received, peer):
+    async def _record(self, url, started, ok, reason, queued, sent_mids, received, peer, lane=None):
         """The session's one structured line (plan winlink-vara A8): the trial's
         keep-or-drop data, appended to the server log. No password: the
         gateway is the URL's path, never its netloc."""
@@ -1043,8 +997,14 @@ class PatEngine:
             if after is not None:
                 new = [b for m, b in after.items() if m not in before]
                 bytes_received = None if any(b is None for b in new) else sum(new)
+        # xara's highest speed level: the lane knows where its log is (a
+        # station's RemoteLane reads the radio's), else this process's tail.
         tail = getattr(self.station, "vara_tail", None)
-        level = tail.max_level(started, end) if tail is not None and u.scheme == "varahf" else None
+        lane_level = getattr(lane, "max_level", None)      # the session's lane (self.lane is cleared by now)
+        level = None
+        if u.scheme == "varahf":
+            level = lane_level(started, end) if lane_level is not None else (
+                tail.max_level(started, end) if tail is not None else None)
         if ok:
             outcome = "ok"
         elif reason and str(reason).startswith("stopped after the"):
@@ -1129,8 +1089,7 @@ class PatEngine:
             except Exception:              # never leave the session looking alive
                 log.exception("winlink: ending the session on %s", lane.name)
             self.lane = self.session_owner = None
-            if not isinstance(lane, LocalLane):
-                self._send({"armed": False, "via": None})
+            self._send({"armed": False, "via": None})
             try:                            # after disarm: never holds the radio armed
                 sent, left, unsent = await self._sent_count(queued)
             except asyncio.CancelledError:
@@ -1140,7 +1099,7 @@ class PatEngine:
                      f" ({reason})" if reason else "")
             try:
                 await self._record(url, started, ok, reason, queued, getattr(self, "_sent_mids", None),
-                                   received, peer)
+                                   received, peer, lane=lane)
             except asyncio.CancelledError:
                 pass
             except Exception:              # the record is for the trial; never breaks a session

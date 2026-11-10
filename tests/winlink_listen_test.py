@@ -164,6 +164,7 @@ from datetime import datetime                  # noqa: E402
 import aiohttp                                 # noqa: E402
 import testkit                                 # noqa: E402
 from testkit import free_port, wait_for        # noqa: E402
+import winlink_test_lib as lib                 # noqa: E402
 from winlink_test_lib import WebPage           # noqa: E402
 
 LISTEN_MHZ = 145.09                            # channel 3 of the fake radio (FAKE_UVPRO_CH3)
@@ -288,18 +289,14 @@ class Stack:
         self.start(wait)
 
     def start(self, wait=True):
+        """The radio behind the station running Pat (winlink_test_lib.start),
+        the hub shown by the station itself and the UV-PRO add-on on it."""
         extra = ["--winlink-listen", self.listen, "--winlink-listen-max-h", "4"] if self.listen else []
         state = os.path.join(self.state_dir, "addons.json") if self.use_state else ""
-        self.p = subprocess.Popen(
-            [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(self.web),
-             "--rigctl-port", str(self.apps), "--winlink-rigctl-port", str(self.lane),
-             "--winlink-pat", self.pat_cmd, "--winlink-pat-port", str(self.patp),
-             "--addons", self.addons, "--addons-state", state, *extra],
-            cwd=ROOT, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        lib.WEB, lib.APPS, lib.LANE, lib.PATP, lib.RWEB = self.web, self.apps, self.lane, self.patp, free_port()
+        self.p, _ = lib.start(self.env, "--winlink-pat", self.pat_cmd, "--winlink-pat-port", str(self.patp),
+                              "--addons", self.addons, "--addons-state", state, *extra)
         self.out = None
-        if not wait_for(lambda: self._open(self.web), 30):
-            self.p.kill()
-            raise SystemExit("server did not start:\n" + self.p.stdout.read()[-3000:])
         self.page = WebPage(self.web)
         if wait and not wait_for(self.ready, 40, 0.3):
             print("      snapshot:", self.snap())
@@ -328,9 +325,13 @@ class Stack:
         s = self.snap()
         if s.get("pat_busy") is not False or not s.get("mycall"):
             return False
-        a = self.addon_snap()
-        uv, pk = a.get("uvpro") or {}, a.get("packet") or {}
-        return bool(pk.get("up") and (uv.get("status") or {}).get("connected") and uv.get("settings")
+        p = WebPage(self.web)
+        try:
+            uv = (p.hello.get("addons") or {}).get("uvpro") or {}
+            hub = p.hello.get("packet") or {}            # the station's own packet tab: the hub's presence
+        finally:
+            p.close()
+        return bool(hub.get("present") and (uv.get("status") or {}).get("connected") and uv.get("settings")
                     and uv.get("memories"))
 
     def radio(self):

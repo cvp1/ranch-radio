@@ -857,6 +857,7 @@ def station_json(h):
             e["modems"] = ["ardop"] + (["varahf"] if isinstance(x, dict) else [])
             if isinstance(x, dict):
                 e["vara_port"] = x["port"]
+                e["vara_log"] = x["log"]           # the session record's speed level is read from it
         radios.append(e)
     d = {"name": h["host"], "radios": radios}
     if h.get("packet"):

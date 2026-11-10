@@ -83,10 +83,11 @@ class Page:
 
 def start():
     env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS)
+    adds = os.path.join(os.path.dirname(STATE), "addons-cfg.json")   # not STATE (the on/off file)
+    with open(adds, "w") as f:                     # Mesh is an add-on: the server takes it from a file
+        json.dump({"mesh": {"port": MARK, "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py", "log": ""}}, f)
     p = subprocess.Popen([sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-                          "--rigctl-port", "0", "--addons-state", STATE,
-                          "--mesh-port", MARK, "--mesh-python", sys.executable,
-                          "--mesh-bridge", "tests/fake_mesh_bridge.py", "--mesh-log", ""],
+                          "--rigctl-port", "0", "--addons-state", STATE, "--addons", adds],
                          cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(100):
         try:
