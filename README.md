@@ -126,8 +126,11 @@ any time:
   Winlink session. A radio you switched off stays off.
 - **Checked, and rolled back.** After restarting, every server that was serving
   must serve again within a minute. If one doesn't, the code goes back to the
-  commit it came from, the old code is restarted, and the update confirms
-  those servers serve again. The same happens if the new code crashes before
+  commit it came from, every file the update replaced is put back exactly as
+  it was (files it added are moved aside and their agents stopped), the old
+  code is restarted on them, and the update confirms those servers serve
+  again. A rollback never re-renders: a host file edited for the new code
+  isn't read by the old one. The same happens if the new code crashes before
   it can check itself. That commit is not tried again until a newer one lands
   (`--force` tries it anyway).
 - **It knows what the servers run.** If the checkout moves without an update,

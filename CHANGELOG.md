@@ -155,6 +155,17 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **A rollback puts back the files it replaced.** It used to run the old
+  code's update, which re-rendered the host file; a host file already edited
+  for the new code then rendered files that had never run (2026-11-10: the
+  radio page came back on plain http, and the station agent stayed loaded,
+  crash-looping). An update now writes a journal
+  (`~/.local/state/ranch-radio/update-journal.json`) before it writes a file
+  or restarts a server. The rollback restores each replaced file byte for
+  byte from the backup tree, moves each added file into
+  `backups/<time>-rolled-back/`, restarts what the update restarted on the
+  restored files, and boots out (on Linux, disables and stops) whatever the
+  update added. It never re-renders.
 - **A second server no longer ends a running server's listen window.** The
   listen record (`winlink-listen.json`, beside `--addons-state`) now names the
   server that wrote it (`server_pid`). At start, a server finds a record from
