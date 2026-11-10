@@ -618,10 +618,13 @@ class Station(TxAudio):
         packet = self.addons.get("packet") if self.addons and self.addons.is_on("packet") else None
         return await packet.links() if packet else None
 
-    async def winlink_arm(self, ws, on, freq_hz=None, scheme="ardop"):
+    async def winlink_arm(self, ws, on, freq_hz=None, scheme="ardop", qsy_hz=None):
         """freq_hz: the session's target frequency (connect URL), which sets
         the codec's band; without one, the radio's current frequency.
-        scheme: the session's HF modem; only its lane may key while armed."""
+        scheme: the session's HF modem; only its lane may key while armed.
+        qsy_hz: the dial frequency Pat will set (the station's RemoteLane
+        sends it): the radio goes there and any ATU tune ends BEFORE armed is
+        reported, so Pat never dials under a tune (as the local lane did)."""
         if on:
             if scheme not in self.hf_modems:
                 self.notice(f"Winlink not armed: {scheme} is not set up on this station.", "warn", ws)
@@ -643,7 +646,7 @@ class Station(TxAudio):
                 return
             self._winlink_arming = ws
             try:
-                await self._winlink_arm_prepare(ws, freq_hz, scheme)
+                await self._winlink_arm_prepare(ws, freq_hz, scheme, qsy_hz)
             finally:
                 self._winlink_arming = None
         else:
@@ -663,7 +666,7 @@ class Station(TxAudio):
             return "a session is already being armed."
         return None
 
-    async def _winlink_arm_prepare(self, ws, freq_hz, scheme="ardop"):
+    async def _winlink_arm_prepare(self, ws, freq_hz, scheme="ardop", qsy_hz=None):
         if self.codec is not None:
             hz = freq_hz if freq_hz is not None else self.radio.state.get("freq")
             try:
@@ -680,6 +683,16 @@ class Station(TxAudio):
         self.winlink_scheme = scheme
         self.id_ledger.new_generation()          # a new session: its keys are its own
         self.winlink_owner = ws
+        if qsy_hz is not None:
+            # A station's session: Pat dials next. The radio goes to the
+            # session's frequency now and its tune ends before the station hears
+            # "armed" (the local lane did the same after arming).
+            self.winlink_qsy_hz = qsy_hz
+            why = await self.winlink_qsy_and_settle(qsy_hz)
+            if why:
+                self.notice(f"Winlink not armed: {why}", "warn", ws)
+                await self.winlink_disarm(why)
+                return
         log.info("winlink: session armed (%s)", rigctl_server.MODEM_NAMES.get(scheme, scheme))
         self._codec_broadcast("winlink")
         self._broadcast(json.dumps({"t": "winlink", "armed": True, "scheme": scheme,
@@ -1179,7 +1192,7 @@ class Station(TxAudio):
             # scheme: the session's modem (station.py's RemoteLane sends it
             # from PR B on); absent, ARDOP, as before.
             scheme = str(m.get("scheme") or "ardop")
-            await self.winlink_arm(ws, bool(m["v"]), freq, scheme)
+            await self.winlink_arm(ws, bool(m["v"]), freq, scheme, int(qsy) if qsy is not None else None)
             if m["v"] and self.winlink_owner is ws:
                 self.winlink_qsy_hz = int(qsy) if qsy is not None else None
         elif t == "winlink_end":

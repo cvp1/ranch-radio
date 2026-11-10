@@ -53,7 +53,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 log = logging.getLogger("station")
 
 PRESENCE_EVERY_S = 1.0
-ARM_WAIT_S = 6.0               # a radio server answers an arm within this
+ARM_WAIT_S = 30.0              # an arm may wait for the radio's ATU tune (server.py WINLINK_TUNE_WAIT_S)
+WATCH_RETRY_S = 2.0            # a radio's watch socket, after it drops
 END_WAIT_S = winlink.ID_GRACE_S + 10
 HOP = webguard.HOP
 
@@ -146,7 +147,15 @@ class RemoteLane:
             await self.ws.send_str(json.dumps({"t": "winlink_arm", "v": True, "scheme": self.scheme,
                                                "freq": winlink.url_freq_hz(url),
                                                "qsy": winlink.url_hz(url)}))
-            await asyncio.wait_for(self._armed.wait(), ARM_WAIT_S)
+            # Armed, or refused (a warning notice, or a disarm) as soon as the radio says.
+            waits = [asyncio.ensure_future(self._armed.wait()), asyncio.ensure_future(self._disarmed.wait())]
+            try:
+                await asyncio.wait_for(asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED), ARM_WAIT_S)
+            finally:
+                for w in waits:
+                    w.cancel()
+            if not self._armed.is_set():
+                raise RuntimeError(self._refusal or "the radio refused")
         except (TimeoutError, aiohttp.ClientError, OSError, ValueError, RuntimeError) as e:
             why = self._refusal or f"the {self.radio.name}'s server did not arm ({e or 'no answer'})"
             st.notice(f"Winlink not started: {why}", "warn", ws)
@@ -172,10 +181,10 @@ class RemoteLane:
                         self._armed.set()
                     elif m.get("armed") is False:
                         self._disarmed.set()
-                    if "id" in m:
-                        self.station.winlink._send({"id": m["id"]})
+                    # the station-ID ledger reaches the pages through the radio's watch
                 elif m.get("t") == "notice" and m.get("level") == "warn" and not self._armed.is_set():
                     self._refusal = m.get("msg")
+                    self._disarmed.set()                  # a refusal: arm() stops waiting
         except (aiohttp.ClientError, OSError, ValueError) as e:
             log.info("winlink: %s lane socket: %s", self.radio.name, e)
         finally:
@@ -208,6 +217,79 @@ class RemoteLane:
         if self.http:
             await self.http.close()
         self.ws = self.http = self._reader = None
+
+
+class RadioWatch:
+    """A standing, read-only WebSocket to one radio's server while it is
+    present: its hello and every {"t": "winlink"} it sends (armed, codec_db,
+    the station-ID ledger) are kept as the radio's lane state, and changes
+    to the ledger and codec level are relayed to the station's pages when
+    this is the radio the Winlink panel shows. A session has its own socket
+    (RemoteLane); this one never arms or ends anything."""
+
+    KEYS = ("armed", "codec_db", "id")
+
+    def __init__(self, station, radio):
+        self.station, self.radio = station, radio
+        self.state = {"armed": False, "codec_db": None, "id": None}
+        self.seen = False              # a hello has been read since the radio appeared
+        self._task = None
+
+    def start(self):
+        if self._task is None or self._task.done():
+            self.seen = False
+            self._task = asyncio.ensure_future(self._run())
+
+    async def stop(self):
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+        self.seen = False
+
+    async def _run(self):
+        st = self.station
+        while True:
+            try:
+                async with aiohttp.ClientSession() as s, \
+                        s.ws_connect(f"http://127.0.0.1:{self.radio.web}/ws" + (f"?token={st.token}" if st.token else ""),
+                                     heartbeat=5) as ws:
+                    hello = json.loads((await ws.receive(timeout=5)).data)
+                    self._take(hello.get("winlink") or {}, first=True)
+                    async for msg in ws:
+                        if msg.type == WSMsgType.TEXT:
+                            m = json.loads(msg.data)
+                            if m.get("t") == "winlink":
+                                self._take(m)
+            except (aiohttp.ClientError, OSError, ValueError, TimeoutError, AttributeError) as e:
+                log.debug("watch %s: %s", self.radio.name, e)
+            await asyncio.sleep(WATCH_RETRY_S)
+
+    def _take(self, d, first=False):
+        changed = {k: d[k] for k in self.KEYS if k in d and d[k] != self.state.get(k)}
+        self.state.update({k: d[k] for k in self.KEYS if k in d})
+        self.seen = True
+        eng = self.station.winlink
+        if changed and not first and eng is not None and self.station.panel_radio() is self.radio:
+            relay = {k: v for k, v in changed.items() if k in ("id", "codec_db")}
+            if relay:
+                eng._send(relay)
+
+
+class IdleLane:
+    """What the Winlink panel shows between sessions: the lane state of the
+    radio a session would use (PatEngine.idle_lane)."""
+
+    name = "idle"
+    armed = False
+
+    def __init__(self, station):
+        self.station = station
+
+    def state(self):
+        r = self.station.panel_radio()
+        w = self.station.watches.get(r.id) if r else None
+        return dict(w.state) if w else {"armed": False, "codec_db": None, "id": None}
 
 
 class Ardop:
@@ -299,6 +381,7 @@ class Station:
             for r in self.radios:
                 if r.lane:
                     r.audio_ok = True
+        self.watches = {r.id: RadioWatch(self, r) for r in self.radios if r.lane}
         self.packet_cfg = cfg.get("packet") or {}
         self.packet_url = self.packet_cfg.get("url")
         self.packet_agwpe = self.packet_cfg.get("agwpe")
@@ -323,6 +406,18 @@ class Station:
 
     def radio(self, rid):
         return next((r for r in self.radios if r.id == rid), None)
+
+    def panel_radio(self):
+        """The radio the Winlink panel's lane state and ID ledger are about:
+        the one ARDOP is on, else the only Winlink-able radio present, else
+        the shared port's radio."""
+        if self.ardop.radio is not None and self.ardop.radio.present:
+            return self.ardop.radio
+        able = [r for r in self.radios if r.present and r.lane and r.audio_ok]
+        if len(able) == 1:
+            return able[0]
+        p = self.primary()
+        return p if p in able else (able[0] if able else None)
 
     def _unit_since(self, r):
         """When the radio's server started (orders the shared port across a
@@ -358,6 +453,12 @@ class Station:
                     log.info("radio %s %s", r.name, "connected" if up else "gone")
                     if not up and self.ardop.radio is r:
                         await self.ardop.stop()
+                    w = self.watches.get(r.id)
+                    if w is not None:
+                        if up:
+                            w.start()
+                        else:
+                            await w.stop()
             if self.packet_url:
                 hub = urlsplit(self.packet_url)
                 up = await self._up(hub.port or 80)
@@ -608,6 +709,8 @@ class Station:
     async def stop(self):
         for t in self._tasks:
             t.cancel()
+        for w in self.watches.values():
+            await w.stop()
         if self.addons:
             await self.addons.stop()
         await self.ardop.stop()
@@ -828,6 +931,9 @@ def main():
     if addon_cfg:
         from addons import Addons
         station.addons = Addons(station, addon_cfg, cfg.get("addons_state", "~/.local/state/radio-remote/addons.json"))
+        wa = station.addons.get("winlink")
+        if wa is not None:                   # between sessions the panel shows the radio's own lane state
+            wa.engine.idle_lane = IdleLane(station)
     if cfg.get("host_file"):
         from ranch_radio import pageapi
         # RANCH_RADIO_REPO / RANCH_RADIO_HOME: tests point these at scratch copies.

@@ -11,6 +11,24 @@ def free_port():
         return s.getsockname()[1]
 
 
+def pair_port(taken=()):
+    """A port whose next one up is free too, neither in `taken`: ardopcf and
+    xara (and their stand-ins) listen on PORT and PORT+1. The OS hands ports
+    out in a run, so a stand-in's second port once landed on a station's web
+    port, which looked exactly like a hung station (2026-11-09)."""
+    taken = set(taken)
+    while True:
+        p = free_port()
+        if p in taken or p + 1 in taken:
+            continue
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", p + 1))
+            except OSError:
+                continue
+        return p
+
+
 def wait_for(pred, timeout=4.0, step=0.05):
     """True as soon as pred() holds, False if it still doesn't after timeout."""
     end = time.monotonic() + timeout

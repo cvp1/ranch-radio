@@ -38,26 +38,9 @@ RWEB, RRIG, LANE, VLANE, PAT, WEB = (testkit.free_port() for _ in range(6))
 TAKEN = {RWEB, RRIG, LANE, VLANE, PAT, WEB}
 
 
-def pair_port():
-    """A port whose next one up is free too: ardopcf and xara (and their
-    stand-ins) listen on PORT and PORT+1. The OS hands ports out in a run, so
-    a stand-in's second port landed on the station's web port once (a hung
-    station, to look at)."""
-    import socket
-    while True:
-        p = testkit.free_port()
-        if p in TAKEN or p + 1 in TAKEN:
-            continue
-        with socket.socket() as s:
-            try:
-                s.bind(("127.0.0.1", p + 1))
-            except OSError:
-                continue
-        TAKEN.update({p, p + 1})
-        return p
-
-
-ARDOP, VPORT = pair_port(), pair_port()
+ARDOP = testkit.pair_port(TAKEN)
+TAKEN.update({ARDOP, ARDOP + 1})
+VPORT = testkit.pair_port(TAKEN)
 XARA_EVENTS = None
 TMP = tempfile.mkdtemp(prefix="mac-station-test-")
 ARDOP_STARTS = os.path.join(TMP, "ardop-starts.jsonl")
