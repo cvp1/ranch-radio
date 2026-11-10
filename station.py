@@ -72,7 +72,9 @@ class Radio:
         self.device = cfg.get("device")
         self.unit = cfg.get("unit")
         self.web = int(cfg["web"])
-        self.rigctl = int(cfg["rigctl"])
+        # A radio with no "rigctl" in its host file listens on server.py's
+        # default (4532): the first Mac host's did, and the station died on it (2026-11-10).
+        self.rigctl = int(cfg["rigctl"]) if cfg.get("rigctl") is not None else 4532
         self.lane = int(cfg["lane"]) if cfg.get("lane") else None
         self.audio_in = cfg.get("audio_in")
         self.audio_out = cfg.get("audio_out")
