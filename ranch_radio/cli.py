@@ -129,18 +129,26 @@ def _diff(art: Artifact, p: Path):
     sys.stdout.writelines(difflib.unified_diff(old, new, f"installed {p}", f"rendered {art.path}"))
 
 
-def write_installed(h, home, todo):
+def backup_dir(home, suffix=""):
+    return Path(home) / ".local/state/ranch-radio/backups" / (time.strftime("%Y-%m-%d_%H%M%S") + suffix)
+
+
+def _had(p):
+    return p.is_symlink() or p.exists()
+
+
+def write_installed(h, home, todo, backups=None):
     """Write the files in todo [(art, path, state)]; old ones go to a backup
     tree, never beside the live ones (launchd and systemd scan those
     directories, and a stray copy could be loaded). Returns (changed, backups):
     the artifacts whose meaning changed (a linked unit rendering the same only
     becomes a file: a daemon-reload, not a restart)."""
-    backups = Path(home) / ".local/state/ranch-radio/backups" / time.strftime("%Y-%m-%d_%H%M%S")
+    backups = backups or backup_dir(home)
     changed = [art for art, p, s in todo
                if s != "linked" or not p.exists() or not same(art, p.read_bytes())]
     for art, p, s in todo:
         p.parent.mkdir(parents=True, exist_ok=True)
-        if p.is_symlink() or p.exists():
+        if _had(p):
             # A unit linked from the repo (systemctl --user link) is a symlink:
             # move the link itself, never write through it into the repo.
             b = backups / art.path
@@ -384,14 +392,12 @@ def cmd_start(a):
     return 1 if bad else 0
 
 
-def _reexec(h, a, *flags, plain=False, wait=False):
-    """Run update again under the code now on disk. plain: only the flags
-    every update has ever had (a rollback may land on code older than
-    --scheduled and --from). wait: as a child, returning its exit code
-    (otherwise this process becomes it)."""
+def _reexec(h, a, *flags, wait=False):
+    """Run update again under the code now on disk. wait: as a child,
+    returning its exit code (otherwise this process becomes it)."""
     argv = [sys.executable, str(ROOT / "ranch-radio"), "update", h["host"], "--no-pull", *flags]
     argv += ["--apply"] if a.apply else []
-    argv += ["--scheduled"] if a.scheduled and not plain else []
+    argv += ["--scheduled"] if a.scheduled else []
     argv += ["--home", a.home] if a.home else []
     argv += ["--drop-rigctl"] if getattr(a, "drop_rigctl", False) else []
     sys.stdout.flush()
@@ -437,10 +443,17 @@ def cmd_update_check(h, a, st):
 
 
 def _rollback(h, a, home, before, bad, was_up, why):
-    """Put the code back on before, restart on it, and make sure every server
-    in was_up serves again (starting any the restart left down: systemd's
-    try-restart leaves a failed unit failed). Always returns 1: the update
-    didn't happen."""
+    """Put the code back on before, put back every file the update to bad
+    replaced (from its journal, byte for byte) and take out what it added,
+    restart on them, and make sure every server in was_up serves again
+    (starting any the restart left down: systemd's try-restart leaves a
+    failed unit failed). Always returns 1: the update didn't happen.
+
+    Never re-renders. It used to run the old code's update, which installed
+    the old code's reading of the host file; a host file edited for the new
+    code then rendered something that had never run (2026-11-10: the radio
+    page came back on plain http, and the station agent the old code doesn't
+    render stayed loaded, crash-looping)."""
     print(f"\n{h['host']}: {why}. Rolling back to {updater.short(before)}.")
     st = updater.load_state(home)
     st["failed"][bad] = f"{why} ({time.strftime('%Y-%m-%d %H:%M')})"
@@ -450,21 +463,44 @@ def _rollback(h, a, home, before, bad, was_up, why):
         _say(h, a, "update broke a radio",
              f"{why}, and the rollback failed: {err}. Fix the checkout, then: ranch-radio update --apply")
         return 1
-    a.apply = True
-    rc = _reexec(h, a, "--code-changed", plain=True, wait=True)    # the old code restarts on itself
-    down = updater.wait_serving(h, was_up)
+    held, failed = [], False
+    j = updater.load_journal(home, bad)
+    if j is None:
+        # The update died before writing a file or restarting a server.
+        print("the update wrote no file and restarted nothing; nothing to put back")
+    else:
+        aside = backup_dir(home, "-rolled-back")
+        restored, removed = updater.restore_files(home, j, aside)
+        print(f"files: put back {len(restored)} as they were before the update"
+              + (f"; took out {len(removed)} the update added (moved to {aside})" if removed else ""))
+        for rel in restored:
+            print(f"  restored {rel}")
+        for rel in removed:
+            print(f"  took out {rel}")
+        check = functools.partial(service.idle, drop_rigctl=bool(getattr(a, "drop_rigctl", False)))
+        # (The update job's own agent is never in it when the job is what runs.)
+        lines, deferred = service.roll_back(h, j["agents"], home=home, check_idle=check, held=held, restored=restored)
+        _show_service(lines)
+        failed = any(rc for _, rc, _ in lines)
+        for d in deferred:
+            print(f"  not restarted: {d}")
+        updater.clear_journal(home, keep_in=aside if removed else None)
+    down = updater.wait_serving(h, [k for k in was_up if k not in held])
     if down:
         _show_service(service.force_start(h, down))
         down = updater.wait_serving(h, down)
-    st = updater.load_state(home)                                    # the restart above wrote it
+    st = updater.load_state(home)
     st["running"] = before
+    st["pending"] = sorted(set(held))          # in use, not restarted: restarted at the next update
     updater.save_state(home, st)
     tail = (f"every server that was serving is serving again" if not down else
             f"STILL NOT SERVING: {', '.join(down)}; check the server's log")
+    if held:
+        tail += f"; not restarted (in use), restarted at the next update: {', '.join(sorted(set(held)))}"
     _say(h, a, "update rolled back" if not down else "update rolled back; a radio is still down",
          f"{updater.short(bad)}: {why}. Back on {updater.short(before)}; {tail}. "
          f"{updater.short(bad)} won't be tried again until a newer commit lands"
-         + ("" if rc == 0 else f" (the rollback's restart exited {rc})") + ".")
+         + ("" if not failed else " (a step of the rollback's restart failed; see above)") + ".")
     return 1
 
 
@@ -621,7 +657,12 @@ def cmd_update(a):
     was_up = [k for k, up in updater.serving(h).items() if up]
     changed, backups = [], None
     if todo:
-        changed, backups = write_installed(h, home, todo)
+        backups = backup_dir(home)
+        if code:
+            # Before anything is written: what a rollback has to put back.
+            updater.journal_files(home, head_now, [(art.path, str(backups / art.path) if _had(p) else "")
+                                                   for art, p, s in todo])
+        changed, backups = write_installed(h, home, todo, backups=backups)
         print(f"written; old files in {backups}")
     restart_ids = ({r["id"] for r in h["radios"]} | {"station", "packet"}) if code else set(pending)
     if restart_ids:
@@ -634,8 +675,10 @@ def cmd_update(a):
                     and (art.fmt == "plist" or art.path.endswith((".service", "station.json")))]
     held = []
     check = functools.partial(service.idle, drop_rigctl=bool(getattr(a, "drop_rigctl", False)))
-    lines, deferred = service.restart(h, changed, check_idle=check, held=held, new=new,
-                                      skip={"updates"} if job else ())
+    skip = {"updates"} if job else ()
+    if code:
+        updater.journal_agents(home, head_now, service.touched(h, changed, new=new, skip=skip))
+    lines, deferred = service.restart(h, changed, check_idle=check, held=held, new=new, skip=skip)
     _show_service(lines)
     for d in deferred:
         print(f"  not restarted: {d}")
@@ -646,6 +689,7 @@ def cmd_update(a):
     if not down:
         st["running"] = head_now
         updater.save_state(home, st)
+        updater.clear_journal(home)
         msg = (f"updated to {updater.short(head_now)}" if code else "installed") + \
               "; every server that was serving is serving"
         if st["pending"]:

@@ -25,6 +25,7 @@ import os
 import shlex
 import subprocess
 import time
+from pathlib import Path
 
 from . import render
 
@@ -282,6 +283,101 @@ def restart(h, changed, check_idle=idle, held=None, new=(), skip=()):
         if not ok:
             deferred.append(f"{unit}: {why}; restart it later")
             held.append(module[unit])
+            continue
+        run([sc, "--user", "try-restart", unit], out)
+    return out, deferred
+
+
+def touched(h, changed, new=(), skip=()):
+    """What restart(h, changed, new=new, skip=skip) may restart or start, as
+    JSON for the update's journal, with what a rollback needs to put each
+    back: Mac {"label", "path", "radio", "station", "loaded" (before), "new"};
+    Linux {"unit", "radio", "module", "new"}. new: paths installed for the first time."""
+    changed = [a for a in changed if a.module not in skip]
+    if h["os"] == "macos":
+        st_label = (h.get("station") or {}).get("label", render.STATION_LABEL)
+        out = {}
+        for a in changed:
+            if a.fmt == "plist":
+                r = _radio_of(h, a)
+                out.setdefault(a.content["Label"], (a.path, r["id"] if r else None, a.path in new))
+            elif a.path == render.STATION_JSON:
+                out.setdefault(st_label, (f"{render.AGENTS}/{st_label}.plist", None, False))
+        return [{"label": label, "path": path, "radio": rid, "station": label == st_label,
+                 "loaded": _loaded(label), "new": is_new} for label, (path, rid, is_new) in out.items()]
+    out = {}
+    for a in changed:
+        if a.path.endswith("station.json"):
+            out.setdefault("station.service", (None, "station", False))
+        elif a.fmt == "systemd":
+            name = a.path.rsplit("/", 1)[-1]
+            dropin = name.endswith(".conf")
+            unit = a.path.rsplit("/", 2)[-2][:-2] if dropin else name
+            r = _radio_of(h, a)
+            # A new drop-in for a unit that was there already doesn't make the unit new.
+            out.setdefault(unit, (r["id"] if r else None, a.module, a.path in new and not dropin))
+    return [{"unit": u, "radio": rid, "module": mod, "new": is_new} for u, (rid, mod, is_new) in out.items()]
+
+
+def roll_back(h, agents, home=None, check_idle=idle, held=None, restored=()):
+    """After a rollback has put the files back (updater.restore_files): bring
+    what the update restarted back up on them, and stop what it added. Works
+    from the journal, never from a render: the old code's reading of an
+    edited host file is not what ran before. Returns (done, deferred) like
+    restart(); held gets the id of each server left alone because it is in
+    use (transmitting, in a Winlink session)."""
+    out, deferred = [], []
+    held = [] if held is None else held
+    home = Path(home or os.path.expanduser("~"))
+    radios = {r["id"]: r for r in h["radios"]}
+    manual = h.get("manual_restart") or {}
+    if h["os"] == "macos":
+        for e in agents:
+            label, path = e["label"], e["path"]
+            if not (home / path).exists():
+                # Added by the update: nothing of it is left to run.
+                if _loaded(label):
+                    _mac_down(label, out)
+                    out.append((f"{label}: added by the update; booted out", 0, ""))
+                continue
+            if not e.get("loaded"):
+                if _loaded(label):                      # stopped before: stopped again
+                    _mac_down(label, out)
+                continue
+            r = radios.get(e.get("radio"))
+            if r is not None or e.get("station"):
+                ok, why = check_idle(h, r)
+                if not ok:
+                    deferred.append(f"{label}: {why}; restart it later")
+                    held.append(r["id"] if r is not None else "station")
+                    continue
+            if _loaded(label):
+                _mac_down(label, out)
+            _mac_up(label, path, out)
+        return out, deferred
+    sc = _cmd("systemctl")
+    run([sc, "--user", "daemon-reload"], out)
+    if render.WIREPLUMBER_CONF in set(restored):
+        deferred.append("wireplumber: its file is back as before the update; restart it yourself when no "
+                        "radio is in use (systemctl --user restart wireplumber)")
+    for e in agents:
+        unit = e["unit"]
+        if e.get("new") and not (home / render.UNIT_DIR / unit).exists():
+            run([sc, "--user", "disable", "--now", unit], out)   # added by the update
+            continue
+        if unit in manual:
+            deferred.append(f"{unit}: {manual[unit]}")
+            continue
+        if unit.endswith(".socket") or unit == render.UPDATE_SERVICE:
+            continue
+        if unit == render.UPDATE_TIMER:
+            run([sc, "--user", "restart", unit], out)
+            continue
+        r = radios.get(e.get("radio"))
+        ok, why = check_idle(h, r)
+        if not ok:
+            deferred.append(f"{unit}: {why}; restart it later")
+            held.append(e.get("module") or "station")
             continue
         run([sc, "--user", "try-restart", unit], out)
     return out, deferred

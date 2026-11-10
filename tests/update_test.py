@@ -275,6 +275,76 @@ uncrash = push("cli fixed")
 rc, out = rr("update", host, "--apply")
 check("  the fix lands", (rc, head()), (0, uncrash))
 
+# ---------------------------------------------------------------- a rollback puts back the files it replaced
+# The host file is edited for the new code before the update (2026-11-10, the
+# one-station deploy). A rollback that re-renders under the old code installs
+# the old code's reading of the NEW host file: the radio page came back on
+# plain http, and the agent only the new code renders stayed loaded and
+# crash-looped. A rollback restores the files the update replaced, byte for
+# byte, and takes out (and stops) what the update added.
+def installed_files():
+    return {str(p.relative_to(home)): p.read_bytes()
+            for d in ("Library/LaunchAgents", ".config") for p in sorted((home / d).rglob("*"))
+            if p.is_file() or p.is_symlink()}
+
+
+EXTRA_LABEL, EXTRA_UNIT = "org.ranch-radio.extra", "ranch-radio-extra.service"
+EXTRA_RENDER = f'''
+
+_ARTIFACTS_BEFORE_EXTRA = artifacts
+
+
+def artifacts(h, home=None):
+    out = list(_ARTIFACTS_BEFORE_EXTRA(h, home=home))
+    if h["os"] == "linux":
+        return out + [Artifact("station", UNIT_DIR + "/{EXTRA_UNIT}", "systemd", "[Service]\\nExecStart=/bin/true\\n")]
+    return out + [Artifact("station", AGENTS + "/{EXTRA_LABEL}.plist", "plist",
+                           {{"Label": "{EXTRA_LABEL}", "ProgramArguments": ["/usr/bin/true"]}})]
+'''
+
+# The new code dies before it can check itself (the KeyError of 2026-11-10).
+before_files = installed_files()
+hf["radios"][0]["web"] += 5                      # changes the radio's agent/unit
+(hosts / f"{host}.json").write_text(json.dumps(hf))
+crash_base = head()
+cli_text = (dev / "ranch_radio/cli.py").read_text()
+(dev / "ranch_radio/cli.py").write_text('raise RuntimeError("broken on purpose")\n' + cli_text)
+crash2 = push("host file edited for it; the new code can't start")
+rc, out = rr("update", host, "--apply")
+check("host file edited, new code crashes: rolled back", (rc, head()), (1, crash_base))
+check("  every installed file is the one from before the update", installed_files() == before_files, True)
+check("  the servers serve on the old code", "every server that was serving is serving again" in out, True)
+(dev / "ranch_radio/cli.py").write_text(cli_text)
+uncrash2 = push("cli fixed again")
+rc, out = rr("update", host, "--apply")
+check("  the fix lands, and installs the edited host file", (rc, head(), installed_files() != before_files),
+      (0, uncrash2, True))
+
+# The new code renders differently (one file more), installs, and a server
+# doesn't come back.
+before_files = installed_files()
+hf["radios"][0]["web"] += 5
+(hosts / f"{host}.json").write_text(json.dumps(hf))
+base = head()
+render_text = (dev / "ranch_radio/render.py").read_text()
+(dev / "ranch_radio/render.py").write_text(render_text + EXTRA_RENDER)
+extra = push("renders one more agent, and crashes the server", mark="bad")
+rc, out = rr("update", host, "--apply")
+check("renders differently, server down: rolled back", (rc, head()), (1, base))
+check("  every installed file is the one from before the update (the added one gone)",
+      installed_files() == before_files, True)
+if MAC:
+    check("  the agent only the new code renders is booted out", (LOADED / EXTRA_LABEL).exists(), False)
+else:
+    check("  the unit only the new code renders is stopped",
+          any(EXTRA_UNIT in x and "--now" in x and "disable" in x for x in calls()), True)
+check("  the servers serve on the old code", "every server that was serving is serving again" in out, True)
+check("  says where the files it took out went", "rolled-back" in out, True)
+(dev / "ranch_radio/render.py").write_text(render_text)
+unextra = push("render as before", mark="good")
+rc, out = rr("update", host, "--apply")
+check("  the fix lands", (rc, head()), (0, unextra))
+
 # ---------------------------------------------------------------- the checkout moved without an update
 manual = push("pulled by hand")
 sh("git", "-C", str(co), "pull", "-q", "--ff-only")

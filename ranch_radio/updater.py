@@ -6,6 +6,8 @@
                               installs them when that Python is this checkout's own .venv
     wait_serving(h, keys)     did every server that was serving before come back?
     load_state / save_state   ~/.local/state/ranch-radio/update.json
+    journal_files / _agents   what an update is about to write and restart (update-journal.json)
+    restore_files(home, j)    a rollback: the replaced files back byte for byte, added ones aside
     notify(title, text)       a desktop notification, best effort
 
 Why each exists (2026-10-28): both radio hosts sat 8 commits behind main with
@@ -290,6 +292,112 @@ def save_state(home, st):
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(st, indent=2, sort_keys=True) + "\n")
     tmp.replace(p)
+
+
+# ---------------------------------------------------------------- what an update changed, to undo it
+
+JOURNAL = ".local/state/ranch-radio/update-journal.json"
+
+
+def journal_path(home):
+    return Path(home) / JOURNAL
+
+
+def load_journal(home, rev, log=print):
+    """The journal of the update to rev: {"rev", "files": [{"path", "backup"}],
+    "agents": [...]}; None when there is none for rev (the update never got
+    as far as writing a file or restarting a server)."""
+    p = journal_path(home)
+    if not p.exists():
+        return None
+    try:
+        j = json.loads(p.read_text())
+        if not isinstance(j, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError) as e:
+        log(f"warning: {p}: unreadable ({e}); the rollback can't put files back")
+        return None
+    if j.get("rev") != rev:
+        return None
+    return {"rev": rev, "files": list(j.get("files") or []), "agents": list(j.get("agents") or [])}
+
+
+def _save_journal(home, j):
+    p = journal_path(home)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(j, indent=2, sort_keys=True) + "\n")
+    tmp.replace(p)
+
+
+def journal_files(home, rev, entries):
+    """Before the update to rev writes its files: [(path relative to home,
+    where its old file goes, "" when there is none)]. Written first, so an
+    update that dies halfway can still be undone. A retry of the same rev
+    keeps the first backup of each file: that one is what ran before."""
+    j = load_journal(home, rev, log=lambda *_: None) or {"rev": rev, "files": [], "agents": []}
+    have = {f["path"] for f in j["files"]}
+    j["files"] += [{"path": path, "backup": backup} for path, backup in entries if path not in have]
+    _save_journal(home, j)
+
+
+def journal_agents(home, rev, agents):
+    """Before the update to rev restarts anything: the agents (Mac) or units
+    (Linux) it may restart or start, as service.touched() lists them."""
+    j = load_journal(home, rev, log=lambda *_: None) or {"rev": rev, "files": [], "agents": []}
+    key = lambda e: e.get("label") or e.get("unit")
+    have = {key(e) for e in j["agents"]}
+    j["agents"] += [e for e in agents if key(e) not in have]
+    _save_journal(home, j)
+
+
+def clear_journal(home, keep_in=None):
+    """The update landed (or was undone): drop its journal, or keep it in
+    keep_in beside the files it describes."""
+    p = journal_path(home)
+    if not p.exists():
+        return
+    if keep_in:
+        Path(keep_in).mkdir(parents=True, exist_ok=True)
+        p.rename(Path(keep_in) / "update-journal.json")
+    else:
+        p.unlink()
+
+
+def _there(p):
+    return p.is_symlink() or p.exists()
+
+
+def restore_files(home, j, aside):
+    """Put every file the update replaced back as it was, byte for byte (a
+    symlink as the link it was), and move every file it added into aside.
+    Never re-renders: the host file may have been edited for the new code,
+    and the old code's reading of it is not what ran before (2026-11-10).
+    Returns (restored, removed): paths relative to home."""
+    home, aside = Path(home), Path(aside)
+    restored, removed = [], []
+
+    def move_aside(p, rel):
+        a = aside / rel
+        a.parent.mkdir(parents=True, exist_ok=True)
+        p.rename(a)
+
+    for f in j["files"]:
+        rel = f["path"]
+        p = home / rel
+        if f.get("backup"):
+            b = Path(f["backup"])
+            if not _there(b):
+                continue          # the update died before moving it: p is still the old file
+            if _there(p):
+                move_aside(p, rel)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            b.rename(p)
+            restored.append(rel)
+        elif _there(p):
+            move_aside(p, rel)
+            removed.append(rel)
+    return restored, removed
 
 
 def lock(home):
