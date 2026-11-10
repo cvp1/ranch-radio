@@ -38,26 +38,9 @@ RWEB, RRIG, LANE, VLANE, PAT, WEB = (testkit.free_port() for _ in range(6))
 TAKEN = {RWEB, RRIG, LANE, VLANE, PAT, WEB}
 
 
-def pair_port():
-    """A port whose next one up is free too: ardopcf and xara (and their
-    stand-ins) listen on PORT and PORT+1. The OS hands ports out in a run, so
-    a stand-in's second port landed on the station's web port once (a hung
-    station, to look at)."""
-    import socket
-    while True:
-        p = testkit.free_port()
-        if p in TAKEN or p + 1 in TAKEN:
-            continue
-        with socket.socket() as s:
-            try:
-                s.bind(("127.0.0.1", p + 1))
-            except OSError:
-                continue
-        TAKEN.update({p, p + 1})
-        return p
-
-
-ARDOP, VPORT = pair_port(), pair_port()
+ARDOP = testkit.pair_port(TAKEN)
+TAKEN.update({ARDOP, ARDOP + 1})
+VPORT = testkit.pair_port(TAKEN)
 XARA_EVENTS = None
 TMP = tempfile.mkdtemp(prefix="mac-station-test-")
 ARDOP_STARTS = os.path.join(TMP, "ardop-starts.jsonl")
@@ -125,7 +108,7 @@ def radio_log_has(needle):
 radio = subprocess.Popen(
     [sys.executable, "server.py", "--sim", "--rig", "ic7300", "--no-audio", "--host", "127.0.0.1",
      "--listen", str(RWEB), "--rigctl-host", "127.0.0.1", "--rigctl-port", str(RRIG),
-     "--winlink-rigctl-port", str(LANE), "--winlink-mode", "USB",
+     "--winlink-rigctl-port", str(LANE), "--winlink-mode", "USB", "--winlink-codec-db", "-38",
      "--winlink-vara-log", VLOG, "--winlink-vara-rigctl-port", str(VLANE), "--winlink-vara-port", str(VPORT),
      "--addons-state", ""],
     cwd=ROOT, stdout=open(os.path.join(TMP, "radio.log"), "w"), stderr=subprocess.STDOUT)
@@ -177,13 +160,22 @@ try:
     st, body = page.http("GET", "/r/ic7300/")
     check("the radio's page comes through /r/<id>/", (st, "<html" in body.lower()), (200, True))
 
+    check("between sessions the panel shows the radio's lane state (codec idle, ID tracked: xara's log)",
+          (page.hello["winlink"].get("codec_db"), (page.hello["winlink"].get("id") or {}).get("tracked")), (0.0, True))
+
     # --- ARDOP over the remote lane, ardopcf external
     page.send({"t": "winlink_connect", "url": "ardop:///N0DAJ?bw=2000MAX&freq=3588.5"})
     check("ARDOP: the radio's lane arms", testkit.wait_for(armed_on_radio, 10), True)
+    check("  the panel is told the codec is at the data level",
+          page.wait(lambda e: e.get("t") == "winlink" and e.get("codec_db") == -38.0, 5) is not None, True)
     check("  the station started no ardopcf of its own", ardop_starts(), our_ardop_start)
     e = page.wait(ended, 30)
     check("  the session ends", e is not None and e.get("session"), "ended")
     check("  and the radio disarms", testkit.wait_for(lambda: not armed_on_radio(), 15), True)
+    check("  the panel is told the codec is back to idle",
+          page.wait(lambda e: e.get("t") == "winlink" and e.get("codec_db") == 0.0, 10) is not None, True)
+    check("  a fresh page sees the idle codec and the ID ledger",
+          (lambda h: (h["winlink"].get("codec_db"), (h["winlink"].get("id") or {}).get("tracked")))(WebPage(WEB).hello), (0.0, True))
     keyed = [json.loads(l) for l in open(PAT_LOG) if '"ptt_on"' in l]
     check("  Pat keyed through the radio's lane", [k.get("reply") for k in keyed], ["RPRT 0"])
 
@@ -235,8 +227,8 @@ def make(modems, pat_path):
 
 
 st = make(["ardop"], bad_cfg)
-check("lane_for: VARA on a lane without VARA is refused", st.lane_for("varahf:///N0DAJ", None),
-      (None, "No HF radio with VARA HF is connected."))
+check("lane_for: VARA when no radio's lane has it is refused", st.lane_for("varahf:///N0DAJ", None),
+      (None, "varahf is not set up on this station."))
 check("  ARDOP there is fine", type(st.lane_for("ardop:///N0DAJ", None)[0]).__name__, "RemoteLane")
 st = make(["ardop", "varahf"], bad_cfg)
 lane, why = st.lane_for("varahf:///N0DAJ", None)

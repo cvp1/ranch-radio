@@ -20,13 +20,12 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cdp_browser  # noqa: E402
 import testkit  # noqa: E402
+import winlink_test_lib as L  # noqa: E402
 from winlink_test_lib import fake_log, stop  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APPS = testkit.free_port()
-LANE = testkit.free_port()
-PATP = testkit.free_port()
-WEB = testkit.free_port()
+# The page under test is the station's (WEB); the radio's own page is behind it (L.RWEB).
+APPS, LANE, PATP, WEB = L.APPS, L.LANE, L.PATP, L.WEB
 CDP = testkit.free_port()
 CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
 fails = 0
@@ -63,30 +62,14 @@ def api_get(path):
         return f"error: {e}"
 
 
-def start(env_extra=None, *extra, winlink=True):
-    logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    env = dict(os.environ, FAKE_PAT_RIGCTL=str(LANE), FAKE_PAT_LOG=logf, FAKE_PAT_TX_S="2")
-    env.update(env_extra or {})
-    wl = ["--winlink-rigctl-port", str(LANE), "--winlink-pat", testkit.fake_pat_cmd(),
-          "--winlink-pat-port", str(PATP)] if winlink else []
+def start(env_extra=None, *extra, winlink=True, wait_pat=True):
+    """The radio behind the station, Pat = fake_pat (winlink_test_lib.start);
+    winlink=False: a station with no Pat, so no Winlink panel; wait_pat=False:
+    a Pat that must not come up (its config would listen)."""
+    env = {"FAKE_PAT_TX_S": "2", **(env_extra or {})}
     # P13 switches Winlink off: never in the user's own add-on state
     state = os.path.join(tempfile.mkdtemp(prefix="wlpage-"), "addons.json")
-    p = subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
-         "--rigctl-port", str(APPS), "--addons-state", state, *wl, *extra],
-        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    ports = (WEB, LANE, PATP) if winlink else (WEB,)
-    for _ in range(100):
-        try:
-            for port in ports:
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            time.sleep(0.5)
-            return p, logf
-        except OSError:
-            time.sleep(0.1)
-    p.kill()
-    print(p.stdout.read())
-    raise SystemExit("server did not start")
+    return L.start(env, "--addons-state", state, *extra, winlink=winlink, wait_pat=wait_pat)
 
 
 Browser = cdp_browser.Browser
@@ -106,8 +89,8 @@ try:
         b.goto(f"http://127.0.0.1:{WEB}/")
         b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
         check("no Winlink: panel hidden", b.js(f"({VISIBLE})('#winlink')"), False)
-        check("no Winlink or Mesh: no tab bar", b.js(f"({VISIBLE})('#rr-nav')"), False)
-        check("no tab bar: radio panels shown", b.js(f"({VISIBLE})('.vfo')"), True)
+        check("no Winlink: no Winlink in the nav", b.js("!!document.querySelector('#st-nav a[href=\"#/winlink\"]')"), False)
+        check("a station of one radio opens on the radio's page", bool(b.wait(f"({VISIBLE})('#view-radio')")), True)
     finally:
         stop(server)
 
@@ -118,15 +101,16 @@ try:
     try:
         b.goto(f"http://127.0.0.1:{WEB}/?v=tabs")
         b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
-        check("tab bar shown", bool(b.wait(f"({VISIBLE})('#rr-nav')")), True)
-        check("tabs: radio and Winlink", b.js("[...document.querySelectorAll('#rr-nav .st-tab')].map((a) => a.textContent.trim())"),
-              ["IC-7300", "Winlink"])
+        check("tab bar shown", bool(b.wait(f"({VISIBLE})('#st-nav')")), True)
+        check("tabs: Overview, the radio and Winlink",
+              b.js("[...document.querySelectorAll('#st-nav .st-tab')].map((a) => a.querySelector('span').textContent.trim())"),
+              ["Overview", "IC-7300", "Winlink"])
         check("radio tab first: Winlink panel not shown", b.js(f"({VISIBLE})('#winlink')"), False)
-        check("radio tab first: VFO shown", b.js(f"({VISIBLE})('.vfo')"), True)
-        b.js("document.querySelector('#rr-nav a[href=\"#/winlink\"]').click()")
+        check("radio tab first: the radio's page shown", b.js(f"({VISIBLE})('#view-radio')"), True)
+        b.js("document.querySelector('#st-nav a[href=\"#/winlink\"]').click()")
         check("panel shown", bool(b.wait(f"({VISIBLE})('#winlink')")), True)
-        check("Winlink tab: VFO not shown", b.js(f"({VISIBLE})('.vfo')"), False)
-        check("Winlink tab marked on", b.js("document.querySelector('#rr-nav .st-tab.on')?.getAttribute('href')"), "#/winlink")
+        check("Winlink tab: the radio's page not shown", b.js(f"({VISIBLE})('#view-radio')"), False)
+        check("Winlink tab marked on", b.js("document.querySelector('#st-nav .st-tab.on')?.getAttribute('href')"), "#/winlink")
         check("my call shown", bool(b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")), True)
         check("codec level shown (idle 0 dB)", bool(b.wait(f"({TEXT})('#wl-codec').includes('0 dB')")), True)
 
@@ -159,7 +143,7 @@ try:
         check("  telnet fills the URL and hides the gateways",
               (b.js("document.querySelector('#wl-url').value.startsWith('telnet://')"), b.js("document.querySelector('#wl-gateways').hidden")),
               (True, True))
-        b.js("(() => { const s = document.querySelector('#wl-via'); s.value = 'radio'; s.dispatchEvent(new Event('change')); })()")
+        b.js("(() => { const s = document.querySelector('#wl-via'); s.value = 'ic7300'; s.dispatchEvent(new Event('change')); })()")
         check("  back to the radio: gateways shown", b.js("document.querySelector('#wl-gateways').hidden"), False)
 
         b.js("document.querySelector('#wl-gw-refresh').click()")
@@ -448,7 +432,14 @@ try:
         b.js(f"(() => {{ const e = document.querySelector({json.dumps(sel)}); e.value = {json.dumps(text)};"
              " e.dispatchEvent(new Event('input')); })()")
 
-    server, flog = start({"FAKE_PAT_TX_S": "0.5", "FAKE_PAT_P2P": "N0XYZ", "FAKE_PAT_NO_PTT": "1"})
+    # A packet hub for the station to show (its presence is a listening port): the packet via.
+    hub_sock = socket.socket()
+    hub_sock.bind(("127.0.0.1", 0))
+    hub_sock.listen()
+    hub_addons = os.path.join(tempfile.mkdtemp(prefix="wlpage-hub-"), "addons.json")
+    with open(hub_addons, "w") as f:
+        json.dump({"packet": {"enabled": True, "url": f"http://127.0.0.1:{hub_sock.getsockname()[1]}", "name": "UV-PRO"}}, f)
+    server, flog = start({"FAKE_PAT_TX_S": "0.5", "FAKE_PAT_P2P": "N0XYZ", "FAKE_PAT_NO_PTT": "1"}, "--addons", hub_addons)
     try:
         b.goto(f"http://127.0.0.1:{WEB}/?v=p2p#/winlink")
         b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
@@ -482,13 +473,13 @@ try:
         b.js("document.querySelector('#wl-mode [data-v=peer]').click()")
         check("A-3 peer mode: the callsign field shows, the gateway list doesn't",
               (b.js(f"({VISIBLE})('#wl-peer-call')"), b.js(f"({VISIBLE})('#wl-gateways')")), (True, False))
-        set_via("radio")
+        set_via("ic7300")
         type_in("#wl-peer-call", "n0xyz")
         type_in("#wl-peer-freq", "7101.5")
         check("A-3 HF (ARDOP): ardop:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
               "ardop:///N0XYZ?freq=7101.5")
         check("A-3   one modem: no modem picker", b.js(f"({VISIBLE})('#wl-peer-modem')"), False)
-        b.js("winlink.setPacket({hub_name: 'UV-PRO', up: true})")      # as addons/packet.js does
+        check("A-3 the hub's radio is a via", bool(b.wait("!!document.querySelector('#wl-via option[value=packet]')", 10)), True)
         set_via("packet")
         type_in("#wl-peer-freq", "145010")
         check("A-3 packet hub: ax25+agwpe:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
@@ -562,7 +553,7 @@ try:
               isinstance(vias, list) and [v.split(" (")[-1] for v in vias],
               ["ARDOP)", "VARA HF)", "internet, no radio)"])
         b.js("document.querySelector('#wl-mode [data-v=gateway]').click()")   # the P2P cases left peer mode stored
-        set_via("radio-vara")
+        set_via("ic7300:varahf")
         check("VARA: the URL's placeholder follows the via",
               b.js("document.querySelector('#wl-url').placeholder"), "varahf:///CALL?bw=500&freq=kHz")
         got = b.wait(f"({TEXT})('#wl-gateways').includes('N0CALL')")
@@ -582,13 +573,13 @@ try:
               (bool(b.wait(f"({TEXT})('#wl-id').startsWith('ID sent')", 5)),
                b.js("document.querySelector('#wl-id').title")), (True, "xara: CW ID (Closing)"))
         b.js("document.querySelector('#wl-mode [data-v=peer]').click()")
-        set_via("radio-vara")
+        set_via("ic7300:varahf")
         type_in("#wl-peer-call", "n0xyz")
         type_in("#wl-peer-freq", "3588.5")
         check("VARA peer from the VARA via: varahf:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
               "varahf:///N0XYZ?freq=3588.5")
         check("VARA peer: no separate modem picker (the via decides)", b.js(f"({VISIBLE})('#wl-peer-modem')"), False)
-        set_via("radio")
+        set_via("ic7300")
         check("VARA peer from the ARDOP via: ardop:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
               "ardop:///N0XYZ?freq=3588.5")
         b.js("document.querySelector('#wl-mode [data-v=gateway]').click()")
@@ -599,13 +590,8 @@ try:
         xara.wait(5)
 
     # --- A-11 on the page: Pat's config would listen, so Pat is not launched ---
-    logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    state = os.path.join(tempfile.mkdtemp(prefix="wlpage-"), "addons.json")
-    server = subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB), "--rigctl-port", str(APPS),
-         "--addons-state", state, "--winlink-rigctl-port", str(LANE),
-         "--winlink-pat", testkit.fake_pat_cmd(listen=["telnet"]), "--winlink-pat-port", str(PATP)],
-        cwd=ROOT, env=dict(os.environ, FAKE_PAT_LOG=logf), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # Pat's config would listen: the station does not launch it, and the panel says so.
+    server, logf = start({}, "--winlink-pat", testkit.fake_pat_cmd(listen=["telnet"]), wait_pat=False)
     try:
         wait_for(lambda: not isinstance(api_get("/winlink/api/status"), str), 20)
         b.goto(f"http://127.0.0.1:{WEB}/?v=blocked#/winlink")

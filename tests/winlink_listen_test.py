@@ -16,7 +16,6 @@ E-2/E-3 run a real Pat (PATH, /opt/homebrew/bin/pat or PAT=) and skip without on
   B-3   Pat's listener never comes up: everything undone, the page told
   B-4   refusals change nothing (no QSY, no restart, no hub call)
   B-5   end at `until` (in process, a 3 s window), in order
-  B-5b  the Packet add-on switched off mid-window: the same end path
   B-7   while listening: connect, outbox changes, UV-PRO writes, a second Listen refused
   B-8   a clean server stop while listening: everything undone within grace
   B-11  the server SIGKILLed mid-window: the next start undoes it before Pat runs
@@ -164,6 +163,7 @@ from datetime import datetime                  # noqa: E402
 import aiohttp                                 # noqa: E402
 import testkit                                 # noqa: E402
 from testkit import free_port, wait_for        # noqa: E402
+import winlink_test_lib as lib                 # noqa: E402
 from winlink_test_lib import WebPage           # noqa: E402
 
 LISTEN_MHZ = 145.09                            # channel 3 of the fake radio (FAKE_UVPRO_CH3)
@@ -288,18 +288,14 @@ class Stack:
         self.start(wait)
 
     def start(self, wait=True):
+        """The radio behind the station running Pat (winlink_test_lib.start),
+        the hub shown by the station itself and the UV-PRO add-on on it."""
         extra = ["--winlink-listen", self.listen, "--winlink-listen-max-h", "4"] if self.listen else []
         state = os.path.join(self.state_dir, "addons.json") if self.use_state else ""
-        self.p = subprocess.Popen(
-            [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(self.web),
-             "--rigctl-port", str(self.apps), "--winlink-rigctl-port", str(self.lane),
-             "--winlink-pat", self.pat_cmd, "--winlink-pat-port", str(self.patp),
-             "--addons", self.addons, "--addons-state", state, *extra],
-            cwd=ROOT, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        lib.WEB, lib.APPS, lib.LANE, lib.PATP, lib.RWEB = self.web, self.apps, self.lane, self.patp, free_port()
+        self.p, _ = lib.start(self.env, "--winlink-pat", self.pat_cmd, "--winlink-pat-port", str(self.patp),
+                              "--addons", self.addons, "--addons-state", state, *extra)
         self.out = None
-        if not wait_for(lambda: self._open(self.web), 30):
-            self.p.kill()
-            raise SystemExit("server did not start:\n" + self.p.stdout.read()[-3000:])
         self.page = WebPage(self.web)
         if wait and not wait_for(self.ready, 40, 0.3):
             print("      snapshot:", self.snap())
@@ -328,9 +324,13 @@ class Stack:
         s = self.snap()
         if s.get("pat_busy") is not False or not s.get("mycall"):
             return False
-        a = self.addon_snap()
-        uv, pk = a.get("uvpro") or {}, a.get("packet") or {}
-        return bool(pk.get("up") and (uv.get("status") or {}).get("connected") and uv.get("settings")
+        p = WebPage(self.web)
+        try:
+            uv = (p.hello.get("addons") or {}).get("uvpro") or {}
+            hub = p.hello.get("packet") or {}            # the station's own packet tab: the hub's presence
+        finally:
+            p.close()
+        return bool(hub.get("present") and (uv.get("status") or {}).get("connected") and uv.get("settings")
                     and uv.get("memories"))
 
     def radio(self):
@@ -512,9 +512,9 @@ if picked("B-3"):
         s.close()
 
 
-# ------------------------------------------------------------ B-2b: Stop while starting; B-5b: Packet off mid-window
+# ------------------------------------------------------------ B-2b: Stop while starting
 
-if picked("B-2b") or picked("B-5b"):
+if picked("B-2b"):
     s = Stack()
     try:
         if picked("B-2b"):
@@ -528,21 +528,6 @@ if picked("B-2b") or picked("B-5b"):
                    os.path.exists(s.record), os.path.exists(s.qsy_record)), (None, [False], (0, 1), False, False))
             time.sleep(2.0)            # negative check: nothing reopens it
             check("B-2b   still idle 2 s later", (s.window(), s.hub.inbound()), (None, None))
-        if picked("B-5b"):
-            wait_for(s.ready, 40, 0.3)
-            b0, p0, _ = s.mark()
-            hc0 = len(s.hub.closed())
-            s.listen_on(0.25)
-            check("B-5b precondition: listening", bool(s.listening()), True)
-            s.page.events.clear()
-            s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
-            check("B-5b the Packet add-on switched off: the window ends, saying why",
-                  bool(s.page.wait(lambda e: e.get("t") == "notice" and "Listening ended" in e.get("msg", "")
-                                   and "Packet add-on" in e.get("msg", ""), 20)), True)
-            check("B-5b   idle, hub window closed, Pat without the flag, radio back, no records",
-                  (bool(s.idle()), s.hub.inbound(), ["--listen" in r["argv"] for r in s.starts(p0)][-1:], s.radio(),
-                   os.path.exists(s.record)), (True, None, [False], (0, 1), False))
-            check("B-5b   in order: hub window, Pat, radio", in_order(end_order(s, b0, p0, hc0)), True)
     finally:
         s.stop()
         s.close()
@@ -592,12 +577,8 @@ if picked("B-4"):
             f.write(good)
         # a window longer than the plan allows
         nothing(s, s.mark(), "hours over max_hours", "0.25 to 4 hours", lambda: s.listen_on(5))
-        # the Packet add-on off
-        s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
-        wait_for(lambda: not (s.addon_snap().get("packet") or {}).get("on"), 10)
-        nothing(s, s.mark(), "the Packet add-on off", "Packet add-on is switched off")
-        s.page.send({"t": "addon", "addon": "packet", "do": "power", "on": True})
-        wait_for(lambda: (s.addon_snap().get("packet") or {}).get("up"), 15)
+        # (the station shows the hub itself: there is no Packet add-on to switch off;
+        # the hub going away is B-8/B-11's ground)
         # the UV-PRO add-on off: nothing could tune the radio and put it back
         s.page.send({"t": "addon", "addon": "uvpro", "do": "power", "on": False})
         wait_for(lambda: not (s.addon_snap().get("uvpro") or {}).get("on"), 10)

@@ -1,15 +1,15 @@
-"""Winlink on a radio's own page (server.py) reaches the packet hub.
+"""Winlink packet sessions reach the hub through the station.
 
-A host with no station page runs the Packet add-on in its one radio server;
-its Winlink panel must offer the hub's radio for packet. Against server.py
---sim with tests/fake_pat.py as Pat, a stand-in hub and the Packet add-on:
+The station shows the hub (its "packet" block) and its Winlink panel offers
+the hub's radio for packet. Against a simulated radio behind the station
+(winlink_test_lib), tests/fake_pat.py as Pat and a stand-in hub:
   - an ax25 connect while the hub is up runs through the hub (via the hub's
-    name, freq= dropped for Pat), and this radio's own lane stays unarmed:
+    name, freq= dropped for Pat), and the radio's own lane stays unarmed:
     Pat's PTT through it is refused, so the radio never keys
-  - the hub down: the connect is refused, saying so
-  - the Packet add-on switched off: refused, saying so
-  - telnet keys no radio either; ardop still arms this radio as before
-  - a server without the Packet add-on refuses ax25: no packet radio here
+  - the hub down (nothing listening): the connect is refused, saying so; back
+    up, the next one runs
+  - telnet keys no radio either; ardop still arms the radio as before
+  - a station without a packet block refuses ax25: no packet radio here
 
     python3 tests/winlink_packet_lane_test.py
 """
@@ -43,23 +43,32 @@ def check(name, got, want):
 
 
 async def hub_main(port, ready):
+    """A stand-in hub that listens while HUB["up"] and not at all otherwise:
+    the station's presence poll (a TCP connect) is what "running" means."""
     async def status(request):
-        return web.json_response({"radio": {"up": HUB["up"], "last_rx": time.time()}, "tx": {"enabled": True}})
+        return web.json_response({"radio": {"up": True, "last_rx": time.time()}, "tx": {"enabled": True}})
     app = web.Application()
     app.router.add_get("/api/status", status)
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", port).start()
-    ready.set()
-    await asyncio.Event().wait()
+    site = None
+    while True:
+        if HUB["up"] and site is None:
+            site = web.TCPSite(runner, "127.0.0.1", port)
+            await site.start()
+            ready.set()
+        elif not HUB["up"] and site is not None:
+            await site.stop()
+            site = None
+        await asyncio.sleep(0.2)
 
 
 def hub_seen_up(want):
-    """The Packet add-on's view of the hub, as a fresh page's hello carries it."""
+    """The station's view of the hub, as a fresh page's hello carries it."""
     def pred():
         p = L.Page()
         try:
-            return bool(((p.hello.get("addons") or {}).get("packet") or {}).get("up")) is want
+            return bool((p.hello.get("packet") or {}).get("present")) is want
         finally:
             p.close()
     return pred
@@ -95,10 +104,10 @@ with open(addons, "w") as f:
 
 srv, flog = L.start(None, "--addons", addons, "--addons-state", "")
 try:
-    check("the Packet add-on polled the hub up", testkit.wait_for(hub_seen_up(True), 15, 0.2), True)
+    check("the station sees the hub up", testkit.wait_for(hub_seen_up(True), 15, 0.2), True)
     page = L.Page()
-    check("hello: the radio server runs the Packet add-on",
-          "packet" in [a["name"] for a in page.hello["config"]["addons"]], True)
+    check("hello: the station shows the hub, by its name",
+          (page.hello["packet"].get("configured"), page.hello["packet"].get("name")), (True, "Direwolf"))
 
     armed, notices, urls, ptt = session(page, flog, AX25, "packet")
     check("ax25, hub up: the session runs via the hub, by its name", armed and armed.get("via"), "Direwolf")
@@ -116,18 +125,16 @@ try:
     check("  and is disarmed after the session", L.lane_ptt_refused(), True)
 
     HUB["up"] = False
-    check("the hub goes down: the add-on notices", testkit.wait_for(hub_seen_up(False), 25, 0.2), True)
+    check("the hub goes down: the station notices", testkit.wait_for(hub_seen_up(False), 25, 0.2), True)
     armed, notices, urls, ptt = session(page, flog, AX25, "packet")
     check("ax25, hub down: refused, saying so",
           (armed, [m for m in notices if "not running" in m]), (None, ["The Direwolf packet hub is not running."]))
     check("  Pat was not asked", urls, [])
 
     HUB["up"] = True
-    page.send({"t": "addon", "addon": "packet", "do": "power", "on": False})
-    time.sleep(0.5)
+    check("the hub comes back: the station notices", testkit.wait_for(hub_seen_up(True), 25, 0.2), True)
     armed, notices, urls, ptt = session(page, flog, AX25, "packet")
-    check("Packet add-on off: refused, saying so",
-          (armed, [m for m in notices if "switched off" in m]), (None, ["The Packet add-on is switched off."]))
+    check("ax25 again: the session runs via the hub", armed and armed.get("via"), "Direwolf")
     page.close()
 finally:
     srv.terminate()
@@ -137,7 +144,7 @@ srv, flog = L.start(None, "--addons-state", "")       # never the user's own add
 try:
     page = L.Page()
     armed, notices, urls, ptt = session(page, flog, AX25, "packet")
-    check("no Packet add-on: ax25 is refused, no packet radio here",
+    check("no packet block: ax25 is refused, no packet radio here",
           (armed, [m for m in notices if "packet radio" in m]), (None, ["No packet radio is set up on this station."]))
     page.close()
 finally:

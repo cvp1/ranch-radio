@@ -61,25 +61,9 @@ def start(env=None, *extra):
 
 
 def start_off(env=None):
-    """L.start for a server with Winlink off: waits for the page and lane, not Pat's port."""
-    logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
-    e = dict(os.environ, FAKE_PAT_RIGCTL=str(L.LANE), FAKE_PAT_LOG=logf, **(env or {}))
-    p = subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(L.WEB),
-         "--rigctl-port", str(L.APPS), "--winlink-rigctl-port", str(L.LANE),
-         "--winlink-pat", testkit.fake_pat_cmd(), "--winlink-pat-port", str(L.PATP),
-         "--addons-state", STATE],
-        cwd=L.ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for _ in range(100):
-        try:
-            for port in (L.WEB, L.LANE):
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            return p, logf
-        except OSError:
-            time.sleep(0.1)
-    p.kill()
-    print(p.stdout.read())
-    raise SystemExit("server did not start")
+    """The radio behind the station with Winlink switched off in the add-on
+    state: Pat is not started, so wait for the page and lane, not Pat's port."""
+    return L.start(env, "--addons-state", STATE, wait_pat=False)
 
 
 Page = L.Page

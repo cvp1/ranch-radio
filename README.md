@@ -535,10 +535,11 @@ host file. `ranch-radio doctor` checks that Direwolf is installed.
 ## How it fits together
 
 - `server.py` runs one radio: its page, audio, rigctl port and Winlink lane,
-  on loopback behind the station.
-- `station.py` is the page (7300) on every host: the radios, Winlink (Pat),
-  Mesh, the packet tab, the add-ons and the Modules tab, and on Linux a
-  shared rigctl port.
+  on loopback behind the station. It never runs Pat or decides a session.
+- `station.py` is the page (7300) on every host: the radios, Winlink (Pat,
+  arming a radio's lane over its WebSocket for each session), Mesh, the
+  packet tab, the add-ons and the Modules tab, and on Linux a shared rigctl
+  port.
 - `ranch_radio/` is the shipping layer. Each machine's radios, services and
   modules are declared in one host file, and `ranch-radio install` renders the
   launchd agents or systemd units from it. `examples/hosts/` has a Mac with

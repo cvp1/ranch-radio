@@ -73,14 +73,16 @@ def wait_port(p, port):
 
 
 def server(port, host_file=True):
+    """The Mac host's station (the Modules tab is the station's on every host):
+    Mesh on the fake bridge, and the host file unless host_file is False."""
     env = dict(os.environ, RANCH_RADIO_REPO=REPO, RANCH_RADIO_HOME=HOME)
-    argv = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(port), "--rigctl-port", "0",
-            "--addons-state", os.path.join(TMP, f"state-{port}.json"),
-            "--mesh-port", MARK, "--mesh-python", sys.executable,
-            "--mesh-bridge", "tests/fake_mesh_bridge.py", "--mesh-log", ""]
-    if host_file:
-        argv += ["--host-file", "testmac"]
-    return wait_port(subprocess.Popen(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+    cfg = os.path.join(TMP, f"station-{port}.json")
+    with open(cfg, "w") as f:
+        json.dump({"name": "testmac", "radios": [], "addons_state": os.path.join(TMP, f"state-{port}.json"),
+                   "mesh": {"port": MARK, "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py", "log": ""},
+                   **({"host_file": "testmac"} if host_file else {})}, f)
+    return wait_port(subprocess.Popen([sys.executable, "station.py", "--config", cfg, "--listen", str(port),
+                                       "--rigctl-port", "0"], cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                       stderr=subprocess.STDOUT, text=True), port)
 
 

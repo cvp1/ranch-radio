@@ -82,34 +82,26 @@ def pat_cfg(path, **varahf):
 
 
 def start(vara=True, env=None, extra=(), cfg_over=None):
+    """The radio (with xara's lane when vara) behind the station running Pat
+    (winlink_test_lib.start): Pat's config here is the one the station checks."""
     cfg = pat_cfg(tempfile.NamedTemporaryFile(prefix="patcfg-", suffix=".json", delete=False).name,
                   **(cfg_over or {}))
     logf = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
     xlog = tempfile.NamedTemporaryFile(prefix="xara-", suffix=".log", delete=False).name
     state = os.path.join(tempfile.mkdtemp(prefix="wlvara-"), "addons.json")
-    e = dict(os.environ, FAKE_PAT_RIGCTL=str(lib.LANE), FAKE_PAT_LOG=logf, **(env or {}))
-    e.pop("CC_OBS_TOKENS_FILE", None)
+    e = {"FAKE_PAT_LOG": logf, **(env or {})}
     pat = f"{shlex.quote(sys.executable)} tests/fake_pat.py --config {shlex.quote(cfg)}"
     v = ["--winlink-vara-log", xlog, "--winlink-vara-rigctl-port", str(VLANE),
          "--winlink-vara-port", str(XPORT)] if vara else []
-    p = subprocess.Popen(
-        [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(lib.WEB),
-         "--rigctl-port", str(lib.APPS), "--winlink-rigctl-port", str(lib.LANE),
-         "--winlink-pat", pat, "--winlink-pat-config", cfg, "--winlink-pat-port", str(lib.PATP),
-         "--addons-state", state, *v, *extra],
-        cwd=ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    ports = (lib.WEB, lib.LANE, lib.PATP) + ((VLANE,) if vara else ())
-    for _ in range(120):
-        try:
-            for port in ports:
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            time.sleep(0.5)
-            return p, {"cfg": cfg, "pat": logf, "xlog": xlog}
-        except OSError:
-            time.sleep(0.1)
-    p.kill()
-    print(p.stdout.read())
-    raise SystemExit("server did not start")
+    p, _ = lib.start(e, "--winlink-pat", pat, "--winlink-pat-config", cfg, "--addons-state", state, *v, *extra)
+    if vara:
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", VLANE), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+    return p, {"cfg": cfg, "pat": logf, "xlog": xlog}
 
 
 def xara(f, env=None):
@@ -200,9 +192,11 @@ try:
     page.send({"t": "winlink_connect", "url": VURL})
     n = page.wait(lambda e: e.get("t") == "notice" and "not set up" in e.get("msg", ""), 5)
     check("VARA off: a varahf connect is refused", n and n["msg"], "varahf is not set up on this station.")
-    page.send({"t": "winlink_arm", "v": True, "scheme": "varahf"})
-    n = page.wait(lambda e: e.get("t") == "notice" and "not armed" in e.get("msg", ""), 5)
+    rpage = lib.WebPage(lib.RWEB)                    # a manual arm is the radio's own page's
+    rpage.send({"t": "winlink_arm", "v": True, "scheme": "varahf"})
+    n = rpage.wait(lambda e: e.get("t") == "notice" and "not armed" in e.get("msg", ""), 5)
     check("VARA off: arming for varahf refused", bool(n), True)
+    rpage.close()
     page.close()
 finally:
     lib.stop(server)
@@ -316,7 +310,7 @@ check("session record: three sessions, each with seconds and message counts",
 
 server, f = start()
 try:
-    page = lib.WebPage(lib.WEB)
+    page = lib.WebPage(lib.RWEB)                     # manual arms: the radio's own page
     check("VARA keepalive outlasts ARDOP's", WINLINK_VARA_KEEPALIVE_S > WINLINK_KEEPALIVE_S, True)
     page.send({"t": "winlink_arm", "v": True})                       # ARDOP (no scheme, as before)
     time.sleep(0.3)
@@ -483,11 +477,12 @@ server, f = start()
 xp = xara(f, {"FAKE_XARA_BURST_S": "1.5", "FAKE_XARA_BURSTS": "6"})
 try:
     page = lib.WebPage(lib.WEB)
+    rpage = lib.WebPage(lib.RWEB)                    # STOP TX and a manual arm: the radio's own page
     page.send({"t": "winlink_connect", "url": VURL})
     page.wait(lambda e: e.get("t") == "winlink" and e.get("armed"), 8)
     time.sleep(1.5)
     page.events.clear()
-    page.send({"t": "tx_stop"})
+    rpage.send({"t": "tx_stop"})
     e = ended(page, 15)
     check("STOP: the VARA session ends, not ok", bool(e) and e.get("ok") is False, True)
     time.sleep(0.5)
@@ -497,10 +492,10 @@ try:
     n = page.wait(lambda x: x.get("t") == "notice" and "STOP TX" in x.get("msg", ""), 5)
     check("STOP: a new connect is refused, saying why", bool(n), True)
     check("STOP: ...and never armed", any(x.get("armed") for x in page.events if x.get("t") == "winlink"), False)
-    page.send({"t": "winlink_arm", "v": True, "scheme": "varahf"})
-    n = page.wait(lambda x: x.get("t") == "notice" and "not armed" in x.get("msg", ""), 5)
+    rpage.send({"t": "winlink_arm", "v": True, "scheme": "varahf"})
+    n = rpage.wait(lambda x: x.get("t") == "notice" and "not armed" in x.get("msg", ""), 5)
     check("STOP: a manual arm is refused", bool(n), True)
-    page.send({"t": "tx_resume"})
+    rpage.send({"t": "tx_resume"})
     time.sleep(0.3)
     if xp.poll() is not None:                         # xara exits on a refused key; launchd restarts it
         xp = xara(f)

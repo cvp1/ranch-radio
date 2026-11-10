@@ -58,7 +58,7 @@ jobs:
         run: |
           for f in "$RUNNER_TEMP"/rr-suite/*.log; do
             grep -qE '^FAIL|FAILED|Traceback' "$f" || continue
-            echo "::group::$(basename "$f")"; grep -nE -B3 -A6 '^FAIL|Traceback' "$f" | head -120; echo "::endgroup::"
+            echo "::group::$(basename "$f")"; grep -nE -B3 -A14 '^FAIL|Traceback' "$f" | head -200; echo "::endgroup::"
           done
   # The one required check: green only when every shard passed and every
   # run reported a time. Warns (never fails) on a run that got much slower,

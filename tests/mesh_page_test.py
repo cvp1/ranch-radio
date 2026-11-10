@@ -46,9 +46,11 @@ def start(mesh=True):
     args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB), "--rigctl-port", "0",
             "--addons-state", os.path.join(TMP, "addons.json")]   # never the real ~/.local/state one
     if mesh:
-        args += ["--mesh-port", "/dev/null", "--mesh-python", sys.executable,
-                 "--mesh-bridge", "tests/fake_mesh_bridge.py", "--mesh-key", f"HomeNet={KEY}",
-                 "--mesh-log", ""]
+        adds = os.path.join(TMP, "addons.json")
+        with open(adds, "w") as f:                 # Mesh is an add-on: the server takes it from a file
+            json.dump({"mesh": {"port": "/dev/null", "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py",
+                                "keys": [f"HomeNet={KEY}"], "log": ""}}, f)
+        args += ["--addons", adds]
     p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):

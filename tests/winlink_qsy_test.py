@@ -136,9 +136,10 @@ class Run:
         p = L.Page()
         try:
             a = p.hello.get("addons") or {}
-            uv, pk = a.get("uvpro") or {}, a.get("packet") or {}
+            uv = a.get("uvpro") or {}
+            hub = p.hello.get("packet") or {}           # the station's own packet tab: the hub's presence
             return bool((uv.get("status") or {}).get("connected") and uv.get("settings")
-                        and uv.get("memories") and pk.get("up"))
+                        and uv.get("memories") and hub.get("present"))
         finally:
             p.close()
 

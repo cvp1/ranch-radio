@@ -36,6 +36,7 @@ os.chdir(ROOT)
 os.environ.pop("FAKE_PAT_LOG", None)
 
 import testkit  # noqa: E402
+import winlink_test_lib as lib  # noqa: E402
 from testkit import free_port, wait_for  # noqa: E402
 from winlink_test_lib import WebPage as Page  # noqa: E402
 
@@ -84,21 +85,17 @@ def alive(pid):
 # ------------------------------------------------------------ server harness
 
 class Server:
+    """The radio behind a station running Pat (winlink_test_lib.start), on
+    fresh ports each time."""
+
     def __init__(self, env=None, extra=(), pat_cmd=None, wait_pat=True):
-        self.web, self.apps, self.lane, self.patp = free_port(), free_port(), free_port(), free_port()
+        lib.APPS, lib.LANE, lib.PATP, lib.WEB, lib.RWEB = (free_port() for _ in range(5))
+        self.web, self.apps, self.lane, self.patp = lib.WEB, lib.APPS, lib.LANE, lib.PATP
         self.flog = tempfile.NamedTemporaryFile(prefix="fakepat-", suffix=".jsonl", delete=False).name
         state = os.path.join(tempfile.mkdtemp(prefix="wlp2p-"), "addons.json")
-        env = dict(os.environ, FAKE_PAT_RIGCTL=str(self.lane), FAKE_PAT_LOG=self.flog, **(env or {}))
-        self.p = subprocess.Popen(
-            [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(self.web),
-             "--rigctl-port", str(self.apps), "--winlink-rigctl-port", str(self.lane),
-             "--winlink-pat", pat_cmd or testkit.fake_pat_cmd(), "--winlink-pat-port", str(self.patp),
-             "--addons-state", state, *extra],
-            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        ports = (self.web, self.patp) if wait_pat else (self.web,)
-        if not wait_for(lambda: all(self._open(p) for p in ports), 30):
-            self.p.kill()
-            raise SystemExit("server did not start:\n" + self.p.stdout.read()[-3000:])
+        e = {"FAKE_PAT_LOG": self.flog, **(env or {})}
+        self.p, _ = lib.start(e, "--addons-state", state, *(["--winlink-pat", pat_cmd] if pat_cmd else []),
+                              *extra, wait_pat=wait_pat)
         self.page = Page(self.web)
         if wait_pat:
             wait_for(lambda: self.page.snapshot().get("pat_busy") is False, 10)

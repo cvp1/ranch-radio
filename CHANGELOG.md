@@ -21,6 +21,18 @@ All notable changes to Ranch Radio are recorded here. The format follows
   it is there. VARA HF sessions arm the radio's lane through the station,
   which checks Pat's varahf settings as the radio's server did. One radio
   per Mac is no longer a limit.
+- **The radio's server is radio-only.** `server.py` no longer takes
+  `--winlink-pat*`, `--winlink-listen*`, `--winlink-session-max`, `--mesh-*`
+  or `--host-file`: Pat, listen windows, Mesh and the Modules tab are the
+  station's on every host, and the station arms a radio's lane for a session
+  over the radio's own WebSocket (the radio settles on the session's
+  frequency and finishes any ATU tune before it reports armed, as before).
+  Between sessions the station's Winlink panel shows the radio's own lane
+  state: codec level and station-ID ledger, through a standing read-only
+  watch on each radio. The station page offers one via per HF modem a
+  radio has (ARDOP, VARA HF), and the radio's own page no longer shows a
+  Winlink panel or Modules tab. `--addons` stays: panel add-ons may run on
+  a radio's own page.
 
 ### Added
 

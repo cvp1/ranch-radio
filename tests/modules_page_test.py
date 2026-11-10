@@ -89,10 +89,12 @@ def stop(p):
 
 env = dict(os.environ, RANCH_RADIO_REPO=REPO, RANCH_RADIO_HOME=HOME)
 WEB = testkit.free_port()
+mac_cfg = os.path.join(TMP, "station-mac.json")        # the Mac host's station: Modules + Mesh
+with open(mac_cfg, "w") as f:
+    json.dump({"name": "testmac", "radios": [], "host_file": "testmac", "addons_state": os.path.join(TMP, "state.json"),
+               "mesh": {"port": MARK, "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py", "log": ""}}, f)
 srv = wait_port(subprocess.Popen(
-    [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB), "--rigctl-port", "0",
-     "--addons-state", os.path.join(TMP, "state.json"), "--mesh-port", MARK, "--mesh-python", sys.executable,
-     "--mesh-bridge", "tests/fake_mesh_bridge.py", "--mesh-log", "", "--host-file", "testmac"],
+    [sys.executable, "station.py", "--config", mac_cfg, "--listen", str(WEB), "--rigctl-port", "0"],
     cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True), WEB)
 cfg = os.path.join(TMP, "station.json")
 with open(cfg, "w") as f:
@@ -115,10 +117,10 @@ def click(sel):
 
 try:
     b.goto(f"http://127.0.0.1:{WEB}/#/modules")
-    check("radio page: a Modules tab in the bar",
-          b.wait("[...document.querySelectorAll('#rr-nav a')].some(a => a.textContent === 'Modules')"), True)
+    check("station page: a Modules tab in the bar",
+          b.wait("[...document.querySelectorAll('#st-nav a')].some(a => a.textContent === 'Modules')"), True)
     check("Mesh reads On", b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'On'"), True)
-    check("the other panels are hidden on this view", b.js("getComputedStyle(document.querySelector('.panel.vfo')).display"), "none")
+    check("the other views are hidden on this one", b.js("document.querySelector('#view-radio').hidden && document.querySelector('#view-home').hidden"), True)
     check("the core row is listed", b.js(f"{row('core')} !== null"), True)
     check("omarchy-bar is folded under 'Not for this OS'",
           b.js(f"{row('omarchy-bar')}.closest('details') !== null"), True)
@@ -130,11 +132,11 @@ try:
           b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'Off'", 10), True)
     check("  and Mesh's own switch flipped too (one switch path)",
           b.wait("document.querySelector('#mesh-power').textContent.includes('Switch on')", 5), True)
-    NAV = "[...document.querySelectorAll('#rr-nav .st-tab')].map(a => a.textContent)"
+    NAV = "[...document.querySelectorAll('#st-nav .st-tab')].map(a => a.textContent)"
     check("  Mesh leaves the tab bar while it is off",
           b.wait(f"!{NAV}.some(t => t.startsWith('Mesh')) && 'gone'", 5), "gone")
     check("  the Modules tab names it",
-          b.js("[...document.querySelectorAll('#rr-nav a')].find(a => a.textContent === 'Modules').title.includes('Mesh')"), True)
+          b.js("[...document.querySelectorAll('#st-nav a')].find(a => a.textContent === 'Modules').title.includes('Mesh')"), True)
     click(f"{row('mesh')}.querySelector('.mod-power')")
     check("  and on again", b.wait(f"{row('mesh')}.querySelector('.mod-state').textContent === 'On'", 10), True)
     check("  Mesh is back in the tab bar",
@@ -148,7 +150,7 @@ try:
     before = json.dumps(read_host("testmac"), sort_keys=True)
     click("document.querySelector('#modules .mod-plan')")
     check("a bad value shows its error under the field",
-          bool(b.wait("document.querySelector('#modules .mod-err[data-err=\"ardopcf.audio_in\"]').textContent.length > 0")), True)
+          bool(b.wait("document.querySelector('#modules .mod-err[data-err=\"ardopcf.audio_in\"]')?.textContent.length > 0", 20)), True)
     check("  and writes nothing", json.dumps(read_host("testmac"), sort_keys=True), before)
     b.js("document.querySelector('#modules input[name=\"ardopcf.audio_in\"]').value = 'USB Audio CODEC'")
     click("document.querySelector('#modules .mod-refresh')")

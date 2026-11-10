@@ -27,6 +27,7 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 import testkit  # noqa: E402
+import winlink_test_lib as lib  # noqa: E402
 from testkit import free_port, real_pat_env, wait_for  # noqa: E402
 
 PAT = os.environ.get("PAT") or shutil.which("pat")
@@ -92,16 +93,14 @@ class StationA:
 
     def __init__(self):
         self.home = tempfile.mkdtemp(prefix="patA-")
-        self.web, self.apps, self.lane, self.patp = free_port(), free_port(), free_port(), free_port()
+        lib.APPS, lib.LANE, lib.PATP, lib.WEB, lib.RWEB = (free_port() for _ in range(5))
+        self.web, self.apps, self.lane, self.patp = lib.WEB, lib.APPS, lib.LANE, lib.PATP
         cfg = testkit.pat_config(os.path.join(self.home, "config.json"), mycall="N9ABC")
         pat = f"{PAT} --config {cfg} --mbox {os.path.join(self.home, 'mbox')} --log {os.path.join(self.home, 'pat.log')}"
         env = real_pat_env(self.home, "N9ABC")
-        self.p = subprocess.Popen(
-            [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(self.web),
-             "--rigctl-port", str(self.apps), "--winlink-rigctl-port", str(self.lane),
-             "--winlink-pat", pat, "--winlink-pat-port", str(self.patp),
-             "--addons-state", os.path.join(self.home, "addons.json")],
-            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # The radio behind a station running the real Pat (winlink_test_lib.start).
+        self.p, _ = lib.start(env, "--winlink-pat", pat, "--addons-state", os.path.join(self.home, "addons.json"),
+                              wait_pat=False)
         self.page = None
         up = wait_for(lambda: self._snap().get("pat_busy") is False, 30)
         check("E-1 A (Radio Remote + real Pat N9ABC) is up", up, True)
