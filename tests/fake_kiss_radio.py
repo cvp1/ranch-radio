@@ -21,6 +21,7 @@ Never connects to real hardware.
 import os
 import random
 import select
+import subprocess
 import sys
 import threading
 import time
@@ -29,6 +30,44 @@ import tty
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ax25 import KissDecoder, kiss_wrap  # noqa: E402
+
+
+def bound_elsewhere(path):
+    """PIDs of other processes started on this port: `path` is a word of their
+    command line. A hub left behind by a killed run keeps reopening its --tnc
+    by name; the system hands a freed pty name to the next pty, so that hub
+    reads frames meant for a later run's hub (three suites failing on a
+    machine where CI was green, 2026-11-10)."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit() and int(pid) != os.getpid() and path in cmd.split():
+            pids.append(int(pid))
+    return pids
+
+
+def open_pty(bound=bound_elsewhere, tries=8):
+    """(master, slave, parked): a pty whose name no other process is started
+    on. A name someone holds is parked (kept open, so the next pty gets
+    another name and the stray only ever reads silence) and said aloud."""
+    parked = []
+    for _ in range(tries):
+        master, slave = os.openpty()
+        pids = bound(os.ttyname(slave))
+        if not pids:
+            return master, slave, parked
+        print(f"fake radio: {os.ttyname(slave)} is the port of a process left by an earlier "
+              f"run (pid {', '.join(map(str, pids))}); taking another. Stop that process.",
+              file=sys.stderr, flush=True)
+        parked += [master, slave]
+    for fd in parked:
+        os.close(fd)
+    raise RuntimeError(f"fake radio: {tries} ptys in a row belong to leftover processes")
 
 
 class FakeKissRadio:
@@ -46,7 +85,7 @@ class FakeKissRadio:
         self.tx = []               # (t, raw) frames the hub transmitted
         self.cmds = []             # non-data KISS commands the hub sent
         self.raw_in = bytearray()
-        self.master, self._slave = os.openpty()
+        self.master, self._slave, self._parked = open_pty()
         tty.setraw(self._slave)
         os.set_blocking(self.master, False)
         self.path = os.ttyname(self._slave)
@@ -69,6 +108,7 @@ class FakeKissRadio:
                 raise RuntimeError("fake radio reader did not stop")
         with self.lock:
             fds, self.master, self._slave = (self.master, self._slave), None, None
+            fds, self._parked = (*fds, *self._parked), []
         for fd in fds:
             if fd is not None:
                 try:

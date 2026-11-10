@@ -29,34 +29,7 @@ from winlink_test_lib import APPS, PATP, ROOT, URL, ended, fake_log, lane_ptt_re
 fails = 0
 
 
-def lan_address():
-    """A non-loopback address on which a 0.0.0.0 listener answers, or None.
-    The hostname may resolve to 127.0.0.1 and the default route may be a VPN,
-    so try several and keep the first the control can reach."""
-    cands = []
-    try:
-        cands += socket.gethostbyname_ex(socket.gethostname())[2]
-    except OSError:
-        pass
-    for target in ("192.168.1.1", "10.0.0.1", "192.0.2.1"):  # ranch-radio: allow (generic test addresses)
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:
-                u.connect((target, 9))       # routing lookup only; nothing is sent
-                cands.append(u.getsockname()[0])
-        except OSError:
-            pass
-    for ip in dict.fromkeys(cands):
-        if ip.startswith("127.") or ip == "0.0.0.0":
-            continue
-        with socket.socket() as ctl:
-            ctl.bind(("0.0.0.0", 0))
-            ctl.listen()
-            try:
-                socket.create_connection((ip, ctl.getsockname()[1]), timeout=1).close()
-                return ip
-            except OSError:
-                continue
-    return None
+lan_address = testkit.lan_address
 
 
 def check(name, got, want):
