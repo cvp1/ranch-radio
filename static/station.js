@@ -46,10 +46,9 @@ const station = (() => {
     for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
     const end = modules.enabled() ? [{ id: "modules", label: "Modules", title: "Every module: what's on, what it needs, add or remove" }] : [];
     const nav = $("#st-nav");
-    // With a Modules tab to reach them from, off or disconnected members leave
-    // the bar (as on a radio's page); the Modules tab and Overview name them.
-    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Overview" }], items, end,
-                                           tuck: modules.enabled() });
+    // Off or disconnected members leave the bar (nav.js tucks them); Overview
+    // and, when there is one, the Modules tab name them.
+    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Overview" }], items, end });
     if (tucked.length) {
       nav.firstChild.title = `Off or not connected: ${tucked.join(", ")} (their cards are here)`;
       const mods = nav.querySelector('a[href="#/modules"]');

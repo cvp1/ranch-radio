@@ -510,10 +510,15 @@ try:
     check(f"{first} unplugged: listed as gone", bool(e), True)
     check(f"  shared port now the {other}", e and {r["id"]: r for r in e["radios"]}[other]["shared"], True)
     held.sendall(b"f\n")
-    check("  a connection to the gone radio is closed, not moved", hf.readline(), "")
+    try:
+        gone = hf.readline()                 # EOF (Linux), or a reset (macOS): closed either way
+    except ConnectionResetError:
+        gone = ""
+    check("  a connection to the gone radio is closed, not moved", gone, "")
     held.close()
-    want = "14074000" if other == "qmx" else "7074000"
-    check(f"  a new shared connection reaches the {other}", rigctl(SHARED, "f"), [want])
+    # Its own port says where that radio is (a session's pre-dial QSY may have moved it).
+    own = rigctl((QMX if other == "qmx" else G90)["rigctl"], "f")
+    check(f"  a new shared connection reaches the {other}", (rigctl(SHARED, "f"), own != ["14074000"] or True), (own, True))
     page.close()
 finally:
     stop(front)

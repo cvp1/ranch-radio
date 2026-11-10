@@ -255,7 +255,8 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
          "--addons-state", "", *radio_extra],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     station = None
-    for _ in range(100):
+    # Ceilings, not guesses: CI's two-CPU runners start a Python process slowly.
+    for _ in range(400):
         if radio.poll() is not None:
             break
         try:
@@ -266,10 +267,12 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
             time.sleep(0.1)
     else:
         radio.kill()
-        print(radio.stdout.read())
+        print("FAIL  the radio's server did not start; its log:\n" + (radio.stdout.read() or "")[-3000:])
         raise SystemExit("the radio's server did not start")
-    if radio.poll() is None and not testkit.wait_for(lambda: _open(ARDOP), 10):
+    if radio.poll() is None and not testkit.wait_for(lambda: _open(ARDOP), 30):
         ardop.kill()
+        radio.kill()
+        print("FAIL  ardopcf's stand-in did not start (port %d)" % ARDOP)
         raise SystemExit("ardopcf's stand-in did not start")
     if radio.poll() is None:
         station = subprocess.Popen(
@@ -277,7 +280,7 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
              "--rigctl-port", "0"],
             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         pair = Pair(radio, station, cfg_path, ardop)
-        for _ in range(150):
+        for _ in range(600):
             if pair.poll() is not None:
                 break
             try:
@@ -289,9 +292,9 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
             except OSError:
                 time.sleep(0.1)
         pair.kill()
-        print(pair.read())
+        print("FAIL  the station did not start; the logs:\n" + (pair.read() or "")[-4000:])
         raise SystemExit("the station did not start")
-    print(radio.stdout.read())
+    print("FAIL  the radio's server died at start; its log:\n" + (radio.stdout.read() or "")[-3000:])
     raise SystemExit("the radio's server did not start")
 
 
