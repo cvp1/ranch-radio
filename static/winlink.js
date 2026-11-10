@@ -383,6 +383,7 @@ const winlink = (() => {
         ms.dataset.list = modems.join();
       }
       peerChanged();
+      renderDirectory();
       return;
     }
     if ($("#wl-url").readOnly === false && $("#wl-url").dataset.peer) { $("#wl-url").value = ""; delete $("#wl-url").dataset.peer; }
@@ -437,6 +438,113 @@ const winlink = (() => {
     $("#wl-url").value = peerUrl(true);
     $("#wl-url").dataset.peer = "1";
     resetConfirm();
+  }
+
+  // ---------- the P2P directory (plan winlink-directory, phase 1)
+  // Stations that asked to be listed for peer-to-peer Winlink, read through
+  // /winlink/api/p2pdir (the server fetches, checks and caches the public
+  // file). A click on a row fills the Peer fields: call, the DIAL frequency
+  // and the via/modem. It never connects: Connect and its confirm stay the
+  // operator's, and the server checks the URL exactly as if it were typed.
+  let dir = null, dirAt = 0, dirLoading = false, picked = null;
+  const DIR_KIND = { VARA_HF: "varahf", ARDOP: "ardop", PACKET: "packet" };
+  const DIR_MODE = { VARA_HF: "VARA HF", VARA_FM: "VARA FM", ARDOP: "ARDOP", PACTOR: "PACTOR",
+                     PACKET: "Packet", ROBUST_PACKET: "Robust Packet" };
+  const DIR_FLAG = { "hf-auto-outside-97.221b": "auto on HF outside 97.221(b) segments" };
+  const DIR_REFRESH_MS = 10 * 60 * 1000;
+  const keyOf = (s, e) => `${s.call}|${e.mode}|${e.centre_khz}`;
+  const ago = (s) => s == null ? "" : s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago`
+    : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+  const daysSince = (iso) => Math.max(0, Math.floor((Date.now() - Date.parse(`${iso}T00:00:00Z`)) / 86400000));
+
+  // Why this station can't call an entry (null = it can).
+  function cannotCall(s, e) {
+    if (s.self) return "this station";
+    const kind = DIR_KIND[e.mode];
+    if (!kind) return `${DIR_MODE[e.mode] || e.mode} isn't a mode this station runs`;
+    if (e.dial_khz == null) return "no dial frequency for it";
+    if (kind === "packet") {
+      if (!vias.some((v) => v.kind === "packet")) return "no packet radio here";
+      if (e.centre_khz < 144000) return "packet here is VHF/UHF only";
+      return null;
+    }
+    if (!vias.some((v) => isHF(v.kind))) return "no HF radio here";
+    if (!modems.includes(kind)) return `no ${MODEM_LABEL[kind]} here`;
+    return null;
+  }
+
+  async function loadDirectory(force = false) {
+    if (dirLoading || (!force && dir && Date.now() - dirAt < DIR_REFRESH_MS)) return;
+    dirLoading = true;
+    if (!dir) $("#wl-p2pdir").innerHTML = `<div class="wl-empty">Loading the P2P directory…</div>`;
+    try {
+      dir = await (await api(`${BASE}winlink/api/p2pdir${force ? "?refresh=1" : ""}`)).json();
+    } catch (e) {
+      dir = { enabled: true, rows: [], reason: `P2P directory unavailable: ${e.message}` };
+    } finally {
+      dirLoading = false;
+      dirAt = Date.now();
+    }
+    renderDirectory();
+  }
+
+  function renderDirectory() {
+    const el = $("#wl-p2pdir");
+    if (!el) return;
+    if (mode !== "peer") { el.hidden = true; return; }
+    if (!dir || Date.now() - dirAt >= DIR_REFRESH_MS) loadDirectory();
+    if (!dir) return;
+    el.hidden = dir.enabled === false;
+    if (dir.enabled === false) return;
+    const items = [];
+    for (const s of dir.rows || []) for (const e of s.entries) items.push({ s, e, why: cannotCall(s, e) });
+    items.sort((a, b) => (!!a.why - !!b.why) || ((a.s.distance_km ?? 1e9) - (b.s.distance_km ?? 1e9))
+      || a.s.call.localeCompare(b.s.call));
+    const spec = String(dir.url || "").replace(/v1\/directory\.json$/, "");
+    const head = [`P2P directory · ${(dir.rows || []).length} stations`];
+    if (dir.age_s != null) head.push(`fetched ${ago(dir.age_s)}`);
+    if (dir.error && dir.age_s != null) head.push(`couldn't refresh (${dir.error}), showing the last copy`);
+    el.innerHTML = `<div class="wl-dir-head"><span class="wl-dim">${esc(head.join(" · "))}</span>` +
+      (/^https?:\/\//.test(spec) ? `<a href="${esc(spec)}" target="_blank" rel="noopener">Get listed</a>` : "") +
+      `</div>` + (dir.reason && !items.length ? `<div class="wl-empty">${esc(dir.reason)}</div>` : "")
+      + (!dir.reason && !items.length ? `<div class="wl-empty">No stations listed yet</div>` : "");
+    for (const { s, e, why } of items) {
+      const row = document.createElement(why ? "div" : "button");
+      row.className = "wl-gw wl-dir" + (why ? " wl-dir-off" : "") + (picked === keyOf(s, e) ? " on" : "");
+      const width = "bw_hz" in e ? `${e.bw_hz} Hz` : `${e.baud} bd`;
+      const age = daysSince(s.confirmed);
+      const notes = [e.control, e.hours, `confirmed ${age} d ago${s.stale ? " (stale)" : ""}`]
+        .concat((e.flags || []).map((f) => `⚑ ${DIR_FLAG[f] || f}`));
+      if (why) notes.unshift(`can't call: ${why}`);
+      row.title = [`centre ${e.centre_khz} kHz`, s.grid, s.note].filter(Boolean).join(" · ");
+      row.innerHTML = `<span class="wl-who">${esc(s.call)}</span>` +
+        `<span>${esc(e.dial_khz ?? e.centre_khz)} kHz</span>` +
+        `<span>${esc(DIR_MODE[e.mode] || e.mode)} ${esc(width)}</span>` +
+        `<span class="wl-dim">${s.distance_km != null ? `${esc(s.distance_km)} km · ` : ""}${esc(notes.join(" · "))}</span>`;
+      row.dataset.call = s.call;
+      if (!why) row.onclick = () => pickDirectory(s, e);
+      el.append(row);
+    }
+  }
+
+  // Fill the Peer fields from a row. Never connects.
+  function pickDirectory(s, e) {
+    const kind = DIR_KIND[e.mode];
+    const cur = viaKind();
+    let target = null;
+    if (kind === "packet") target = cur === "packet" ? null : vias.find((v) => v.kind === "packet");
+    else if (perModem()) target = cur === kind ? null : vias.find((v) => v.kind === kind);
+    else target = isHF(cur) ? null : vias.find((v) => isHF(v.kind));
+    picked = keyOf(s, e);
+    if (target) {
+      viaSel().value = target.id;
+      viaChanged(true);
+    }
+    if (kind !== "packet" && !perModem()) $("#wl-peer-modem").value = kind;
+    $("#wl-peer-call").value = s.call;
+    $("#wl-peer-freq").value = String(e.dial_khz);
+    peerChanged();
+    renderDirectory();
   }
 
   function setMode(v) {

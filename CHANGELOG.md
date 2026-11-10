@@ -36,6 +36,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **P2P directory in Winlink's Peer mode.** A list of stations that asked to
+  be listed for peer-to-peer Winlink; a click fills the callsign, dial
+  frequency and via, and never connects. On by default where Winlink is on
+  (one public read every 6 hours, the last copy kept); `"directory": false`
+  in the `winlink` block turns it off.
+
 - **Developer tools, for working on Ranch Radio itself.** `CLAUDE.md` is the
   map of the tree and the rules that bite (the two servers, no transmitting
   in tests, nothing personal in the repo), for anyone or any agent starting

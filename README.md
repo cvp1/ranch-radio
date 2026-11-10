@@ -261,6 +261,18 @@ the APRS channel, 144.390 MHz. Another station calling yours is shown as
 "Answering CALL"; the outbox is Pat's until it ends, and it is capped like
 your own sessions.
 
+**P2P directory.** In Peer mode the panel lists stations that asked to be
+listed for P2P Winlink (a public directory; spec and "get listed" at
+[cvp1.github.io/p2p-directory](https://cvp1.github.io/p2p-directory/)). Rows
+this station can call come first, nearest first when Pat's config has a
+`locator`; the rest are dimmed with the reason. A click fills the callsign,
+the **dial** frequency (the directory publishes centre; VARA HF, ARDOP and
+PACTOR dial 1.5 kHz below) and the via. It never connects: you still press
+Connect and confirm. The station fetches the file at most every 6 hours and
+keeps the last good copy, shown with its age when the directory can't be
+reached. Turn it off with `"directory": false` in the host file's `winlink`
+block, or point it elsewhere with `{"url": "https://…", "refresh_hours": 6}`.
+
 **Listening for calls (a listen window).** So that others can leave mail
 at your station when the internet or the gateways are down, the Winlink
 panel can answer stations that call yours, on one VHF/UHF packet

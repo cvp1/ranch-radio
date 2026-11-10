@@ -35,7 +35,8 @@ STATION_VALUE_FLAGS = {"--winlink-pat": ("winlink", "pat"), "--winlink-pat-confi
                        "--host-file": (None, "host_file"),
                        "--mesh-port": ("mesh", "port"), "--mesh-python": ("mesh", "python"), "--mesh-bridge": ("mesh", "bridge"),
                        "--mesh-key": ("mesh", "_key"), "--mesh-log": ("mesh", "log"), "--mesh-feed": ("mesh", "feed"),
-                       "--mesh-feed-cred": ("mesh", "feed_cred")}
+                       "--mesh-feed-cred": ("mesh", "feed_cred"),
+                       "--p2pdir-url": ("winlink", "_p2pdir_url")}
 STATION_BARE_FLAGS = {"--mesh-feed-tx": ("mesh", "feed_tx")}
 NUMERIC = {"pat_port": int, "session_max": float, "_listen_max_h": float}
 
@@ -218,6 +219,10 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
     if winlink:
         wl.setdefault("pat", testkit.fake_pat_cmd())
         wl.setdefault("pat_port", PATP)
+    # The P2P directory: off unless a test names its own (local) URL, so no
+    # test ever fetches the real public file.
+    p2pdir_url = wl.pop("_p2pdir_url", None)
+    wl.setdefault("directory", {"url": p2pdir_url} if p2pdir_url else False)
     listen = wl.pop("_listen", None)
     max_h = wl.pop("_listen_max_h", None)
     if listen:                                   # METHOD=MHZ -> the host file's block

@@ -194,5 +194,23 @@ refused("aprs.probe.text with a {", aprs_h, aprs_set("probe", {"target": "WXBOT"
 refused("aprs.probe.target not a call", aprs_h, aprs_set("probe", {"target": "WX BOT", "text": "x"}))
 refused("igate.observe not a bool", aprs_h, lambda h: h["packet"]["igate"].__setitem__("observe", "yes"))
 
+# winlink.directory (the P2P directory the Peer picker reads): false, or an
+# https URL and a refresh of 1 to 168 hours. Positive controls first.
+for ok_block in (False, {"url": "https://example.org/v1/directory.json", "refresh_hours": 12}, {}):
+    h = copy.deepcopy(station_h)
+    h["winlink"]["directory"] = ok_block
+    try:
+        validate(h)
+        check(f"winlink.directory {ok_block!r} accepted", True, True)
+    except HostError as e:
+        check(f"winlink.directory {ok_block!r} accepted", str(e), True)
+refused("winlink.directory plain http off this machine", station_h,
+        setp(("winlink", "directory"), {"url": "http://example.org/v1/directory.json"}))
+refused("winlink.directory a file URL", station_h, setp(("winlink", "directory"), {"url": "file:///etc/passwd"}))
+refused("winlink.directory a URL with a space", station_h,
+        setp(("winlink", "directory"), {"url": "https://example.org/x --evil"}))
+refused("winlink.directory refresh 0 h", station_h, setp(("winlink", "directory"), {"refresh_hours": 0}))
+refused("winlink.directory 'yes'", station_h, setp(("winlink", "directory"), "yes"))
+
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

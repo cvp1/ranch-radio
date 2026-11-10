@@ -29,7 +29,8 @@ MODULES = [
     {"name": "winlink", "kind": "addon", "title": "Winlink over ARDOP (Pat + ardopcf); on/off switch",
      "code": "addons/winlink.py runs Pat (winlink.py); the lane (codec_level.py, station_id.py) is core; "
              "ardop/ builds ardopcf", "platforms": ["macos", "linux"],
-     "ships": "the station's winlink block (station.json), both OSes; each radio's lane is a flag on its server; macOS adds an ardopcf agent; Pat and ardopcf via doctor --fix"},
+     "ships": "the station's winlink block (station.json), both OSes; each radio's lane is a flag on its server; macOS adds an ardopcf agent; Pat and ardopcf via doctor --fix; "
+              "winlink.directory: the P2P directory the Peer picker reads (p2p_directory.py), on unless false"},
     {"name": "vara", "kind": "service", "title": "Winlink over VARA HF (xara, unregistered), beside ARDOP",
      "code": "station_id.py VaraLogTail (xara's CW ID), the VARA lane in server.py / rigctl_server.py, "
              "pat_config.py vara_refusal; xara itself is built by the operator (doctor prints how)",

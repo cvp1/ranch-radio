@@ -163,6 +163,35 @@ if picked("A-4"):
     for url in ("ax25:///N0DAJ?freq=144395", "ax25+agwpe:///N0DAJ?freq=144050"):
         check(f"A-4 refused: {url}", W.check_url(url, band_of) is not None, True)
 
+    # A URL built from a P2P directory row (static/winlink.js pickDirectory ->
+    # peerUrl) gets exactly the verdicts of the same URL typed by hand: the
+    # directory adds no way around check_peer or check_url.
+    import p2p_directory as PD
+    rows, _, _ = PD.parse_doc(json.dumps({"schema": 1, "stations": [
+        {"call": c, "grid": "EM12", "confirmed": "2026-11-01", "entries": [
+            {"centre_khz": f, "mode": m, ("baud" if m == "PACKET" else "bw_hz"): w, "control": "attended",
+             "hours": "daily", "flags": []}]}
+        for c, f, m, w in (("N0ARD", 3590, "ARDOP", 500), ("N0VAR", 14101.5, "VARA_HF", 500),
+                           ("N9ABC", 3590, "ARDOP", 500), ("N0APR", 144390, "PACKET", 1200),
+                           ("N0PKT", 145090, "PACKET", 1200))]}).encode())
+    scheme = {"ARDOP": "ardop", "VARA_HF": "varahf", "PACKET": "ax25+agwpe"}
+    js_num = lambda v: str(int(v)) if float(v).is_integer() else repr(v)  # noqa: E731 - JS String(number)
+    typed = {"N0ARD": "ardop:///N0ARD?freq=3588.5", "N0VAR": "varahf:///N0VAR?freq=14100",
+             "N9ABC": "ardop:///N9ABC?freq=3588.5", "N0APR": "ax25+agwpe:///N0APR?freq=144390",
+             "N0PKT": "ax25+agwpe:///N0PKT?freq=145090"}
+    check("A-4 picked: every directory row parsed", len(rows), 5)
+    for r in rows:
+        e = r["entries"][0]
+        url = f"{scheme[e['mode']]}:///{r['call']}?freq={js_num(e['dial_khz'])}"
+        check(f"A-4 picked {r['call']}: the URL is the hand-typed one", url, typed[r["call"]])
+        check(f"A-4 picked {r['call']}: same check_peer and check_url verdicts as typed",
+              (W.check_peer(url, "N9ABC"), W.check_url(url, band_of)),
+              (W.check_peer(typed[r["call"]], "N9ABC"), W.check_url(typed[r["call"]], band_of)))
+    check("A-4 picked own call: still refused as this station's own",
+          "own call" in (W.check_peer("ardop:///N9ABC?freq=3588.5", "N9ABC") or ""), True)
+    check("A-4 picked 144.390 packet: still refused as APRS",
+          "APRS" in (W.check_url("ax25+agwpe:///N0APR?freq=144390", band_of) or ""), True)
+
 
 # ------------------------------------------------------------ in-process engine
 

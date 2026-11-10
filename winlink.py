@@ -57,9 +57,10 @@ from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlspli
 import aiohttp
 from aiohttp import web
 
+import p2p_directory
 from listen_plan import (APRS_GUARD_HZ, APRS_HZ, MIN_HOURS, PACKET_BANDS, ListenError,  # noqa: F401
                          ListenPlan, packet_band_of)
-from pat_config import pat_config_path, preflight  # noqa: F401 - re-exported for callers
+from pat_config import pat_config_path, preflight, read_pat_config  # noqa: F401 - re-exported for callers
 
 log = logging.getLogger("winlink")
 
@@ -446,6 +447,18 @@ class PatEngine:
         self._listen_end_task = None
         self._listen_restore = None
         self._listen_abort = False      # Stop listening (or stop()) while a window is still starting
+        # The P2P directory (plan winlink-directory, phase 1): read-only, for
+        # the Peer picker. A pick fills the Peer fields; it never connects.
+        self.p2pdir = None
+        try:
+            dcfg = p2p_directory.config(getattr(args, "winlink_directory", None))
+        except p2p_directory.DirectoryError as e:
+            log.error("winlink: P2P directory off: %s", e)
+            dcfg = None
+        if dcfg:
+            cache = (os.path.join(os.path.dirname(os.path.expanduser(state)), p2p_directory.CACHE_FILE)
+                     if state else None)
+            self.p2pdir = p2p_directory.Directory(*dcfg, cache_path=cache)
 
     # --- lifecycle ---
 
@@ -1793,6 +1806,17 @@ class PatEngine:
         async def status(request):
             return web.json_response(self.snapshot())
 
+        async def p2pdir(request):
+            # Read-only: the directory's rows for the Peer picker. Nothing here
+            # connects; the page fills the Peer fields and Connect does the rest.
+            d = self.p2pdir
+            if d is None:
+                return web.json_response({"enabled": False})
+            await d.refresh(self.http, force=request.query.get("refresh") == "1")
+            fields, _ = read_pat_config(self.config_path) if self.config_path else (None, None)
+            grid = (fields or {}).get("locator")
+            return web.json_response(d.view(grid if isinstance(grid, str) else None, self.mycall))
+
         r = app.router
         r.add_get("/winlink/api/mailbox/{box}", guard(mailbox))
         r.add_post("/winlink/api/mailbox/out", guard(compose))
@@ -1803,6 +1827,7 @@ class PatEngine:
         r.add_get("/winlink/api/mailbox/{box}/{mid}/{file}", guard(attachment))
         r.add_get("/winlink/api/rmslist", guard(rmslist))
         r.add_get("/winlink/api/status", guard(status))
+        r.add_get("/winlink/api/p2pdir", guard(p2pdir))
 
     async def _pass(self, method, path, json_out=False, **kw):
         try:
