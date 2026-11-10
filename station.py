@@ -951,7 +951,7 @@ def main():
         # the add-on is for a radio's own page and would double the route here.
         log.info("addons: \"packet\" is the station's own tab; its add-on entry is ignored here")
     wl = cfg.get("winlink") or {}
-    from listen_plan import ListenPlan
+    from listen_plan import HfListenPlan, ListenPlan
     if wl.get("pat"):             # Winlink (Pat) is an add-on (addons/winlink.py); the lanes are not
         modems = [m for m in winlink.HF_MODEMS if any(m in r.modems for r in station.radios)]
         addon_cfg.setdefault("winlink", {"lane_for": station.lane_for, "hf_modems": modems, "engine_args": SimpleNamespace(
@@ -961,6 +961,8 @@ def main():
             # The listen window (winlink.listen), parsed as render.py checked it.
             winlink_listen=ListenPlan.from_block(wl["listen"]) if "listen" in wl else None,
             winlink_directory=wl.get("directory"),       # absent: on, default URL; false: off
+            # Attended HF listening (winlink.listen_hf), parsed as render.py checked it.
+            winlink_listen_hf=HfListenPlan.from_block(wl["listen_hf"]) if "listen_hf" in wl else None,
             addons_state=cfg.get("addons_state", "~/.local/state/radio-remote/addons.json"))})
     m = cfg.get("mesh") or {}
     if m.get("port"):             # Mesh is an add-on (addons/mesh.py); "mesh" configures it

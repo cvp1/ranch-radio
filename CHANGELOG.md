@@ -36,6 +36,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Attended HF listening.** Answer HF peer-to-peer Winlink calls (ARDOP or
+  VARA HF) while you are at the page: pick a channel from the host file's
+  `winlink.listen_hf`, confirm, and the radio's lane is armed on that
+  channel's dial frequency with Pat listening. It ends when the page that
+  opened it closes, when nobody presses **I'm here** (asked every
+  `presence_minutes`, default 15), at `max_minutes` (default 60), or on
+  STOP TX. Channels must sit wholly inside an HF data sub-band at General
+  privileges; the page shows which are inside a 47 CFR 97.221(b) segment.
+
 - **P2P directory in Winlink's Peer mode.** A list of stations that asked to
   be listed for peer-to-peer Winlink; a click fills the callsign, dial
   frequency and via, and never connects. On by default where Winlink is on

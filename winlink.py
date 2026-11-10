@@ -58,8 +58,8 @@ import aiohttp
 from aiohttp import web
 
 import p2p_directory
-from listen_plan import (APRS_GUARD_HZ, APRS_HZ, MIN_HOURS, PACKET_BANDS, ListenError,  # noqa: F401
-                         ListenPlan, packet_band_of)
+from listen_plan import (APRS_GUARD_HZ, APRS_HZ, MIN_HOURS, PACKET_BANDS, HfListenPlan,  # noqa: F401
+                         ListenError, ListenPlan, packet_band_of)
 from pat_config import pat_config_path, preflight, read_pat_config  # noqa: F401 - re-exported for callers
 
 log = logging.getLogger("winlink")
@@ -104,6 +104,7 @@ GOT_CONNECT = re.compile(r"Got connect \(([^:()]+):([^()]+)\)")
 LISTEN_FILE = "winlink-listen.json"   # the window's record, beside --addons-state
 READBACK_S = 5.0             # a listen start's read-back: Pat's listener, the hub's registration and window
 HUB_UNTIL_SLACK_S = 5.0      # the hub's window must end within this of ours
+HF_ASK_GRACE_S = 120.0       # attended HF: how long "still there?" waits for the operator
 LISTEN_POLL_S = 1.0          # the window's watcher looks this often (until, the hub, the add-ons)
 HUB_POLL_S = 5.0             # ...and asks the hub this often
 HUB_MISSES = 3               # the hub not answering this many times in a row ends the window
@@ -437,6 +438,16 @@ class PatEngine:
         except ListenError as e:
             log.error("winlink: listening not offered: %s", e)
             self.listen_plan = None
+        # Attended HF listening (winlink.listen_hf): the same window slot,
+        # record and end path; the radio is an HF radio's lane (RemoteLane),
+        # and the page that opened the window must stay open and answer.
+        try:
+            self.listen_hf_plan = HfListenPlan.from_args(args)
+        except ListenError as e:
+            log.error("winlink: attended HF listening not offered: %s", e)
+            self.listen_hf_plan = None
+        self._listen_page = None         # attended HF: the page that opened the window
+        self._listen_ack = 0.0           # ...and when its operator last said they are there
         state = getattr(args, "addons_state", None)
         self.listen_path = (os.path.join(os.path.dirname(os.path.expanduser(state)), LISTEN_FILE)
                             if state else None)
@@ -1176,17 +1187,24 @@ class PatEngine:
     # out by itself at `until`, whatever happens here). A page closing does
     # not end a window: the hub's expiry is the independent bound.
 
+    WINDOW_KEYS = ("method", "hz", "since", "until", "call", "name", "kind", "centre_hz", "ask_until", "segment")
+
     def listen_state(self):
-        """What a page needs: None when listening is not set up (hidden)."""
-        if self.listen_plan is None:
+        """What a page needs: None when no listening is set up (hidden).
+        plan: the VHF/UHF packet window's (or None); hf: attended HF's (or None)."""
+        if self.listen_plan is None and self.listen_hf_plan is None:
             return None
         w = self.listening
-        return {"plan": self.listen_plan.describe(), "busy": self._listen_busy,
-                "window": None if w is None else {k: w[k] for k in ("method", "hz", "since", "until", "call", "name")}}
+        return {"plan": self.listen_plan.describe() if self.listen_plan else None,
+                "hf": self.listen_hf_plan.describe() if self.listen_hf_plan else None,
+                "busy": self._listen_busy,
+                "window": None if w is None else {k: w[k] for k in self.WINDOW_KEYS if k in w}}
 
     def _listen_busy_text(self):
+        w = self.listening or {}
         plan = self.listen_plan
-        on = f" on {plan.mhz_text()} MHz" if plan else ""
+        on = (f" on {w['hz'] / 1e6:.4f} MHz" if w.get("hz")
+              else f" on {plan.mhz_text()} MHz" if plan else "")
         if self._listen_busy == "starting":
             return f"A listen window is starting{on}"
         if self._listen_busy == "ending":
@@ -1497,6 +1515,184 @@ class PatEngine:
                 asyncio.ensure_future(self._end_listen(reason))
                 return
 
+    # attended HF (winlink.listen_hf)
+    #
+    # Answer HF peer calls while the operator is at the page: local control,
+    # so it is held to the operator being there. The engine enforces it, the
+    # page only reports it: the window ends when the page that opened it
+    # closes, when "still there?" (every presence_minutes) goes unanswered for
+    # HF_ASK_GRACE_S, at max_minutes, on STOP TX, and if the radio's lane is
+    # disarmed. The radio is armed the way a session arms it (RemoteLane, its
+    # gates, QSY to the dial and settled before Pat listens) and stays armed
+    # only for the window; the radio disarms by itself if this server dies
+    # (its socket closes), and the record makes the next start end a Pat that
+    # outlived it.
+
+    async def listen_hf_start(self, ws, index):
+        st, plan = self.station, self.listen_hf_plan
+
+        def refuse(why):
+            log.info("winlink: not listening on HF: %s", why)
+            st.notice(f"Not listening: {why}.", "warn", ws)
+
+        if plan is None:
+            return refuse("attended HF listening is not set up on this station (the host file's winlink.listen_hf)")
+        if not self.running:
+            return refuse("Winlink is switched off")
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(plan.channels):
+            return refuse(f"{index!r} is not one of this station's HF listen channels")
+        ch = plan.channels[index]
+        if getattr(st, "tx_stopped", None):
+            return refuse("transmit is stopped (STOP TX); press Resume first")
+        if self.listening or self._listen_busy:
+            return refuse("a listen window is already open" if self.listening and not self._listen_busy
+                          else self._listen_busy_text()[:1].lower() + self._listen_busy_text()[1:])
+        if self._admitting or self._our_session():
+            return refuse("a Winlink session is running")
+        if self.inbound:
+            return refuse(f"Pat is in a session with {self.inbound['call']}")
+        if self.pat_busy:
+            return refuse("Pat is busy (connected or dialing)" if self._status_live
+                          else "Pat's state is not known (no status from it)")
+        if self.blocked:
+            return refuse(self.blocked)
+        if not self.listen_path:
+            return refuse("this server keeps no state (--addons-state), so a window could not be undone "
+                          "after a crash")
+        call = (self.mycall or "").upper()
+        if not call:
+            return refuse("Pat has not said this station's call yet")
+        url = f"{ch.modem}:///{call}?freq={ch.dial_khz:g}"
+        why = check_url(url, st.band_of)
+        if why:
+            return refuse(why.rstrip("."))
+        self._listen_busy = "starting"
+        self._listen_abort = False
+        self._send_listen()
+        handed = False
+        try:
+            lane, why = self.lane_for(url, None)
+            if why or lane is None:
+                return refuse((why or "no HF radio for it").rstrip("."))
+            why = self.preflight()
+            if why:
+                return refuse(why)
+            now = time.time()
+            rec = {"kind": "hf", "method": ch.modem, "hz": int(round(ch.dial_khz * 1000)),
+                   "centre_hz": int(round(ch.khz * 1000)), "segment": ch.describe()["segment"],
+                   "since": now, "until": now + plan.max_minutes * 60, "server_pid": os.getpid(),
+                   "stage": "arming", "hub": None, "name": lane.name, "call": call, "pat_port": self.port}
+            try:
+                self._save_listen(rec)
+            except OSError as e:
+                return refuse(f"the window's record could not be written ({e})")
+            try:
+                armed = await lane.arm(ws, url)
+            except Exception as e:         # noqa: BLE001 - refused, the lane's socket is closed
+                log.exception("winlink: arming the %s for listening", lane.name)
+                armed = False
+                st.notice(f"Not listening: arming the {lane.name} failed ({type(e).__name__}: {e}).", "warn", ws)
+            if not armed:
+                try:
+                    await lane.end(now, False, "not armed", lambda: True, self._send)
+                except Exception:          # noqa: BLE001 - closing its socket disarms in any case
+                    log.exception("winlink: closing the %s's lane", lane.name)
+                self._drop_listen()
+                log.info("winlink: not listening on HF: the %s was not armed", lane.name)
+                return
+            self._listen_lane = lane
+            self._listen_page = ws
+            self._listen_ack = time.monotonic()
+            self.listening = {**rec, "stage": "starting"}
+            handed = True
+            await self._listen_hf_open(ws, rec)
+        finally:
+            if not handed:
+                self._listen_busy = None
+                self._send_listen()
+
+    async def _listen_hf_open(self, ws, rec):
+        st = self.station
+        try:
+            if self._closing:
+                raise PatRestartError("the server is stopping")
+            if self._listen_abort:
+                raise PatRestartError("stopped from the page")
+            self._set_listen_stage(rec, "starting")
+            self.want["listen"] = rec["method"]
+            await self.restart_pat("an attended HF listen window")
+            end = time.monotonic() + READBACK_S
+            while True:
+                if self._closing or self._listen_abort:
+                    raise PatRestartError("stopped before it started")
+                listeners = self.status.get("active_listeners") if self._status_live else None
+                lane = self._listen_lane
+                if listeners == [rec["method"]] and lane is not None and lane.armed:
+                    break
+                if time.monotonic() >= end:
+                    raise PatRestartError(f"Pat is listening on {listeners!r}, not [{rec['method']!r}]"
+                                          if listeners != [rec["method"]] else f"the {rec['name']} is not armed")
+                await asyncio.sleep(0.2)
+        except (PatRestartError, OSError) as e:
+            log.warning("winlink: attended HF window not opened: %s; undoing it", e)
+            st.notice(f"Not listening: {e}. Everything is being put back.", "warn", ws)
+            await self._end_listen(f"not opened: {e}")
+            return
+        self._set_listen_stage(rec, "listening")
+        self.listening = dict(rec)
+        self._listen_busy = None
+        mins = (rec["until"] - rec["since"]) / 60
+        where = "inside a 97.221(b) segment" if rec.get("segment") else "outside the 97.221(b) segments"
+        log.warning("winlink: attended HF listening for calls to %s on %.4f MHz centre (%s, dial %.4f) until %s",
+                    rec["call"], rec["centre_hz"] / 1e6, rec["method"], rec["hz"] / 1e6,
+                    time.strftime("%H:%M", time.localtime(rec["until"])))
+        st.notice(f"Listening (attended) for calls to {rec['call']} on {rec['centre_hz'] / 1e6:.4f} MHz "
+                  f"({MODEM_NAMES.get(rec['method'], rec['method'])}, {where}) for {mins:g} min. Keep this page "
+                  "open: closing it ends the window.", "info")
+        self._send_listen()
+        self._listen_task = asyncio.create_task(self._listen_hf_watch())
+
+    def listen_here(self, ws=None):
+        """The operator answered "still there?" (any open page may)."""
+        w = self.listening
+        if not w or w.get("kind") != "hf":
+            return
+        self._listen_ack = time.monotonic()
+        if w.pop("ask_until", None) is not None:
+            log.info("winlink: attended HF window: the operator is there")
+            self._send_listen()
+
+    async def _listen_hf_watch(self):
+        plan = self.listen_hf_plan
+        presence_s = plan.presence_minutes * 60 if plan else 15 * 60
+        while True:
+            await asyncio.sleep(LISTEN_POLL_S)
+            w = self.listening
+            if w is None or self._listen_busy or w.get("kind") != "hf":
+                return
+            reason = None
+            page, lane = self._listen_page, self._listen_lane
+            now = time.time()
+            if now >= w["until"]:
+                reason = "the window ran out"
+            elif page is None or page.closed:
+                reason = "the page that opened it closed (attended listening needs it open)"
+            elif getattr(self.station, "tx_stopped", None):
+                reason = "transmit was stopped (STOP TX)"
+            elif lane is None or not lane.armed:
+                reason = f"the {w.get('name', 'radio')}'s Winlink lane was disarmed"
+            elif w.get("ask_until") is not None:
+                if now >= w["ask_until"]:
+                    reason = "nobody answered \"still there?\""
+            elif time.monotonic() - self._listen_ack >= presence_s:
+                w["ask_until"] = now + HF_ASK_GRACE_S
+                log.info("winlink: attended HF window: asking the operator if they are still there")
+                self.station.notice("Still there? Answer within 2 minutes or HF listening ends.", "warn")
+                self._send_listen()
+            if reason:
+                asyncio.ensure_future(self._end_listen(reason))
+                return
+
     # end (B4)
 
     async def listen_stop(self, ws=None):
@@ -1547,6 +1743,16 @@ class PatEngine:
                 if not await self._links_clear(hub, call, ABORT_GRACE_S) and not stopping:
                     ib = self.inbound or {"call": who, "remote": f"AX.25:{who}"}
                     await self._escalate(ib, gone=lambda proc, s: self._links_clear(hub, call, s))
+        elif self.inbound:
+            # Attended HF: no hub; Pat's own state says an exchange is up.
+            who = self.inbound["call"]
+            log.info("winlink: %s is still connected; disconnecting", who)
+            await self._disconnect(dirty=False)
+            end = time.monotonic() + ABORT_GRACE_S
+            while self.inbound and time.monotonic() < end:
+                await asyncio.sleep(0.2)
+            if self.inbound and not stopping:
+                await self._escalate(self.inbound)
         # 3. Pat without the flag, read back.
         proc = self.proc
         if stopping:
@@ -1577,6 +1783,7 @@ class PatEngine:
                 self._send_listen()
                 return
         self._listen_lane = None
+        self._listen_page = None
         self._drop_listen()
         self._listen_busy = None
         self._send_listen()
@@ -1636,6 +1843,13 @@ class PatEngine:
         pid = rec.get("pid")
         if isinstance(pid, int) and pid > 0:
             await self._end_stale_pat(pid, rec)
+        if rec.get("kind") == "hf":
+            # The radio's lane belonged to the old station's socket: the radio
+            # disarmed when that socket closed (server.py), so nothing keys.
+            log.warning("winlink: the old attended HF window is ended; its radio disarmed when the old "
+                        "station's connection closed")
+            self._drop_listen()
+            return
         target_for = getattr(self.station, "winlink_listen_target", None)
         target, _ = target_for(need_hub=False) if target_for else (None, None)
         tuner = (target or {}).get("tuner")
