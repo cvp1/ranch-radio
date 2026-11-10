@@ -88,6 +88,7 @@ def read_pat_config(path):
     # hamlib_rigs is a map: its keys match exactly (Go's json is case-blind for fields only)
     rig_addr = _key(rigs.get(rig), "address") if isinstance(rigs, dict) and isinstance(rig, str) else None
     return {"listen": _key(cfg, "listen"), "schedule": _key(cfg, "schedule"),
+            "locator": _key(cfg, "locator"),            # the station's grid (P2P directory distances)
             "beacon_every": _key(_key(ax25, "beacon"), "every"),
             "agwpe_addr": _key(_key(cfg, "agwpe"), "addr"),
             "varahf_addr": _key(vara, "addr"), "varahf_rig": rig,

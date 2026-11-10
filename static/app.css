@@ -411,6 +411,11 @@ body.tx .tx-meters { opacity: 1; }
 .wl-gw { grid-template-columns: 7em 7em 8em 1fr; font: 12px var(--mono); }
 .wl-msg:hover, .wl-gw:hover { background: rgba(255,255,255,.04); color: var(--text); }
 .wl-gw.on { color: var(--accent); background: rgba(var(--accent-rgb), .08); }
+.wl-dir { grid-template-columns: 7em 8em 9em 1fr; cursor: pointer; }
+.wl-dir-off { opacity: .5; cursor: default; }
+.wl-dir-off:hover { background: transparent; color: var(--muted); }
+.wl-dir-head { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 12px;
+  border-bottom: 1px solid var(--line); }
 .wl-msg.unread { color: var(--text); font-weight: 600; }
 .wl-who { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

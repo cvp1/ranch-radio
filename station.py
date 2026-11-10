@@ -960,6 +960,7 @@ def main():
             winlink_session_max=float(wl.get("session_max", 900)),
             # The listen window (winlink.listen), parsed as render.py checked it.
             winlink_listen=ListenPlan.from_block(wl["listen"]) if "listen" in wl else None,
+            winlink_directory=wl.get("directory"),       # absent: on, default URL; false: off
             addons_state=cfg.get("addons_state", "~/.local/state/radio-remote/addons.json"))})
     m = cfg.get("mesh") or {}
     if m.get("port"):             # Mesh is an add-on (addons/mesh.py); "mesh" configures it

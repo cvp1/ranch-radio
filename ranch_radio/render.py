@@ -417,6 +417,21 @@ def validate(h):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
     _validate_xara(h, ports)
     listen_plan(h)
+    _validate_directory(h)
+
+
+def _validate_directory(h):
+    """winlink.directory (the P2P directory the Peer picker reads): absent
+    means on with the default URL; false switches it off; an object names
+    an https URL and refresh_hours (1 to 168)."""
+    w = h.get("winlink") or {}
+    if "directory" not in w:
+        return
+    from p2p_directory import DirectoryError, config   # the repo root (as listen_plan)
+    try:
+        config(w["directory"])
+    except DirectoryError as e:
+        raise HostError(f"{h['host']}: {e}") from None
 
 
 XARA_HF = (500, 2300, 2750)
