@@ -53,7 +53,7 @@ const rrMapMath = (() => {
   const TILE = 256, ZMIN = 1, ZMAX = 8, SVGNS = "http://www.w3.org/2000/svg";
   const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const NEED = { dxcc: "#e5484d", dxcc_band: "#f76b15", dxcc_mode: "#ffc53d", grid: "#5b7fff", grid_band: "#5b7fff",
-                 dxcc_unconfirmed: "#a970e0", call_band_mode: "#30a46c" };
+                 dxcc_unconfirmed: "#a970e0", call_band_mode: "#00d8ff" };
   let body = null, snap = {}, z = 3, cx = null, cy = null, w = 0, h = 0, built = false, drag = null, centred = false;
   const tiles = new Map();
   const px = (lon, zz = z) => ((lon + 180) / 360) * TILE * 2 ** zz;
@@ -155,7 +155,9 @@ const rrMapMath = (() => {
     el2.innerHTML = `<span>grids on <select class="rm-band">${sel}</select> (${esc(M.showing || "")}): ${n.length} worked, of them ${n.filter((s) => s === "c").length} confirmed</span>
       <span>${(M.decodes || []).length} heard</span>
       <span>${snap.pota ? `${snap.pota.length} POTA on ${esc(M.showing || "")}` : ""}${snap.pota_error ? ` <span class="lb-bad">${esc(snap.pota_error)}</span>` : ""}</span>
-      <span class="rm-key"><i class="rm-kw"></i>worked <i class="rm-kc"></i>confirmed <i class="rm-kn"></i>night</span>`;
+      <span class="rm-key"><i class="rm-kw"></i>worked <i class="rm-kc"></i>confirmed <i class="rm-kn"></i>night</span>
+      <span class="rm-key">${Object.entries({ dxcc: "DXCC", dxcc_band: "band", dxcc_mode: "mode", grid: "grid",
+        dxcc_unconfirmed: "unconfirmed", call_band_mode: "new call" }).map(([k, t]) => `<i class="rm-dot" style="background:${NEED[k]}"></i>${t}`).join(" ")}</span>`;
     el2.querySelector(".rm-band").onchange = (e) => { snap.chosen = e.target.value === "current" ? null : e.target.value; send({ t: "addon", addon: "map", do: "show", band: e.target.value }); };
   }
 

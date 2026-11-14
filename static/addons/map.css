@@ -15,3 +15,4 @@
 .rm-attr { position: absolute; right: 6px; bottom: 4px; font-size: 0.7em; color: #ccc; background: rgba(0,0,0,0.4); padding: 0 4px; border-radius: 3px; }
 .rm-key i { display: inline-block; width: 10px; height: 10px; margin: 0 3px 0 8px; vertical-align: middle; border-radius: 2px; }
 .rm-kw { background: rgba(91, 127, 255, 0.6); } .rm-kc { background: rgba(48, 164, 108, 0.75); } .rm-kn { background: rgba(0, 0, 30, 0.6); }
+.rm-key i.rm-dot { border-radius: 50%; border: 1px solid #111; }

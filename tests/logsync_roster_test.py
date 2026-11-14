@@ -133,6 +133,31 @@ check("  a stale one can't", ro.for_reply(k)[0], None)
 now[0] += R.KEEP_S
 check("  and ages off the roster", ro.view()["rows"], [])
 
+# ================================================================ a click answers the station's CQ
+now = [5000.0]
+ro = R.Roster(clock=lambda: now[0])
+ro.status(U.parse_status(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31")))
+ro.add(U.parse_decode(J.decode(msg="CQ JA1XYZ PM95", t_ms=1000, df=900)))
+now[0] += 15
+ro.add(U.parse_decode(J.decode(msg="K9ABC JA1XYZ -05", t_ms=16000, df=900)))
+ro.add(U.parse_decode(J.decode(msg="JA2XYZ K9ABC R-07", t_ms=16000, df=1300)))
+rows = {r["call"]: r for r in ro.view()["rows"]}
+check("cq: the row shows the latest line, keeps the CQ's grid", (rows["JA1XYZ"]["message"], rows["JA1XYZ"]["grid"]),
+      ("K9ABC JA1XYZ -05", "PM95"))
+check("  and answers the CQ", (rows["JA1XYZ"]["answer"], (ro.for_reply(rows["JA1XYZ"]["key"])[0] or {}).get("message")),
+      ("cq", "CQ JA1XYZ PM95"))
+check("  a station never heard calling CQ: its latest line, marked", (rows["K9ABC"]["answer"],
+      (ro.for_reply(rows["K9ABC"]["key"])[0] or {}).get("message")), ("line", "JA2XYZ K9ABC R-07"))
+check("  the latest line's key still answers it", (ro.for_reply(R.Roster.dkey(ro.rows["JA1XYZ"]["dec"]))[0] or {}).get("message"),
+      "K9ABC JA1XYZ -05")
+now[0] += R.REPLY_MAX_AGE_S - 10
+check("  once the CQ is stale, the latest line", ro.view()["rows"][0]["answer"] if ro.view()["rows"][0]["call"] == "JA1XYZ"
+      else {r["call"]: r for r in ro.view()["rows"]}["JA1XYZ"]["answer"], "line")
+now[0] += 20
+check("  nothing fresh: nothing to answer", {r["call"]: r for r in ro.view()["rows"]}["JA1XYZ"]["answer"], None)
+ro.add(U.parse_decode(J.decode(msg="CQ JA1XYZ PM95", t_ms=91000, df=900)))
+check("  a new CQ: answerable again", {r["call"]: r for r in ro.view()["rows"]}["JA1XYZ"]["answer"], "cq")
+
 # ================================================================ the engine, end to end through the relay
 
 
@@ -187,6 +212,28 @@ if r4:
     rr = U.Reader(r4[0]); rr.u32(); rr.u32(); rr.u32(); cid = rr.utf8()
     fields = (cid, rr.u32(), rr.i32(), round(struct.unpack(">d", rr.take(8))[0], 1), rr.u32(), rr.utf8(), rr.utf8(), rr.u8(), rr.u8())
     check("  with that decode's exact fields, modifiers 0", fields, ("JTDX", 12 * 3600 * 1000, -10, 0.1, 1400, "~", "CQ VK9NA RG30", 0, 0))
+outcomes = []
+logsync.REPLY_CONFIRM_S = 0.6
+jt.got.clear()
+BG.call(eng.reply, rows["VK9NA"]["key"], lambda ok, msg: outcomes.append((ok, msg)))
+jt.send(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31", dx_call="VK9NA"), ("127.0.0.1", port))
+check("  JTDX took it (its Status names the station): the page is told", testkit.wait_for(lambda: outcomes, 3) and outcomes,
+      [(True, "JTDX is calling VK9NA.")])
+time.sleep(0.8)
+check("  once", len(outcomes), 1)
+outcomes.clear()
+BG.call(eng.reply, rows["JA2XYZ"]["key"], lambda ok, msg: outcomes.append((ok, msg)))
+jt.send(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31", dx_call="VK9NA"), ("127.0.0.1", port))
+check("  JTDX ignored it (no Status with that call): the page is told which setting",
+      testkit.wait_for(lambda: outcomes, 3) and (outcomes[0][0], "Accept UDP requests" in outcomes[0][1], "reply messages" in outcomes[0][1]),
+      (False, True, False))
+eng.roster.add(U.parse_decode(J.decode(msg="N9XYZ JA3XYZ -03", df=1700)))
+k3 = {r["call"]: r for r in BG.call(eng.roster_view)["rows"]}["JA3XYZ"]["key"]
+outcomes.clear()
+BG.call(eng.reply, k3, lambda ok, msg: outcomes.append((ok, msg)))
+check("  a non-CQ line ignored: it names the reply filter too",
+      testkit.wait_for(lambda: outcomes, 3) and ("reply messages" in outcomes[0][1] and "wasn't calling CQ" in outcomes[0][1]), True)
+jt.poll()
 jt.got.clear()
 check("  an unknown key: refused, nothing sent", (BG.call(eng.reply, "nope") is not None, (time.sleep(0.4), jt.poll())[1]), (True, []))
 for row in eng.roster.rows.values():
@@ -234,8 +281,10 @@ class Sync:
     def roster_view(self):
         return {"rows": [{"call": "K1AAA"}]}
 
-    def reply(self, key):
+    def reply(self, key, done=None):
         self.asked.append(key)
+        if key == "good":
+            done(False, "JTDX didn't take it.")
         return None if key == "good" else "that decode is no longer on the roster"
 
 
@@ -246,7 +295,8 @@ a = RosterAddon(h, {"enabled": True})
 check("  with it, the roster", a.snapshot(), {"roster": {"rows": [{"call": "K1AAA"}]}})
 BG.run(a.command(None, "reply", {"key": "good", "call": "K1AAA"}))
 BG.run(a.command(None, "reply", {"key": "gone", "call": "K1AAA"}))
-check("  a reply goes to the sync; the page hears each outcome", (h.logsync.asked, [lv for lv, _ in h.notes]), (["good", "gone"], ["info", "warn"]))
+check("  a reply goes to the sync; the page hears each outcome", (h.logsync.asked, [lv for lv, _ in h.notes]), (["good", "gone"], ["warn", "warn"]))
+check("  JTDX's outcome is the notice", h.notes[0][1], "Roster: JTDX didn't take it.")
 a.push()
 check("  a push broadcasts the roster", '"addon": "roster"' in h.sent[-1] and "K1AAA" in h.sent[-1], True)
 

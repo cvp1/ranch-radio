@@ -66,7 +66,10 @@
       </div>`;
     const tr = rows.map((r) => {
       const [label, cls] = NEED[r.need] || ["", "rs-none"];
-      return `<tr class="rs-row ${cls}${r.to_me ? " rs-me" : ""}" data-key="${esc(r.key)}" data-call="${esc(r.call)}" title="Click to answer ${esc(r.call)} in JTDX">
+      const tip = r.answer === "cq" ? `Click to answer ${r.call}'s CQ in JTDX`
+        : r.answer === "line" ? `${r.call} isn't calling CQ: JTDX answers this only if its UDP reply filter accepts any message`
+        : `Nothing fresh from ${r.call} to answer`;
+      return `<tr class="rs-row ${cls}${r.to_me ? " rs-me" : ""}${r.answer === "cq" ? "" : " rs-nocq"}" data-key="${esc(r.key)}" data-call="${esc(r.call)}" title="${esc(tip)}">
         <td class="rs-call">${esc(r.call)}${r.lotw ? ` <span class="rs-lotw" title="uses LoTW">L</span>` : ""}</td>
         <td>${r.cq ? `CQ${r.cq_word ? " " + esc(r.cq_word) : ""}` : r.to_me ? "<b>you</b>" : esc(r.to || "")}</td>
         <td>${esc(r.entity)}</td><td>${esc(r.grid)}</td>

@@ -13,6 +13,7 @@
 .rs-mode { border-left-color: #ffc53d; } .rs-mode .rs-need { color: #d4a017; }
 .rs-grid, .rs-gridband { border-left-color: #3e63dd; } .rs-grid .rs-need, .rs-gridband .rs-need { color: #5b7fff; }
 .rs-unconf { border-left-color: #8e4ec6; } .rs-unconf .rs-need { color: #a970e0; }
-.rs-newcall { border-left-color: #30a46c; }
+.rs-newcall { border-left-color: #00d8ff; } .rs-newcall .rs-need { color: #00b8e6; font-weight: 700; }
 .rs-none { opacity: 0.6; }
 .rs-me { background: rgba(229,72,77,0.12); }
+.rs-nocq .rs-call { opacity: 0.55; }
