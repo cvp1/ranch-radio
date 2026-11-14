@@ -631,7 +631,7 @@ come back. The station runs it from the host file's `logsync` block:
 
 ```sh
 .venv/bin/python tests/<name>_test.py     # one suite
-bash tests/run_all.sh                      # everything (page tests need Chrome or Chromium)
+bash tests/run_all.sh --full               # everything (page tests need Chrome or Chromium)
 ```
 
 Tests use simulated radios and stand-in service managers; none touches a real

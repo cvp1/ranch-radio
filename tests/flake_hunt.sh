@@ -25,7 +25,7 @@ for r in $(seq "$RUNNERS"); do
         -e PASSES="$PASSES" -e RUNNER="$r" -e RR_SENTINEL=1 -e RR_SKIP="${names} ${RR_SKIP:-}" "$IMAGE" bash -c '
         cp -r /src ~/work && rm -rf ~/work/.venv && ln -s ~/venv ~/work/.venv && cd ~/work
         for p in $(seq "$PASSES"); do
-            LOGDIR=/out/r$RUNNER-p$p bash tests/run_all.sh > /out/r$RUNNER-p$p.txt 2>&1
+            LOGDIR=/out/r$RUNNER-p$p bash tests/run_all.sh --full > /out/r$RUNNER-p$p.txt 2>&1
         done' &
 done
 wait

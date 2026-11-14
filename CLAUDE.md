@@ -100,7 +100,7 @@ python3 tests/affected.py                  # which runs your change touches (vs 
 python3 tests/affected.py --run            # run just those
 python3 tests/<name>_test.py               # one test, directly
 python3 tests/public_hygiene_test.py       # required, seconds
-bash tests/run_all.sh                      # everything, serial, ~30 min locally
+bash tests/run_all.sh --full               # everything, serial, ~30 min (CI runs it)
 RR_SHARD=2/4 bash tests/run_all.sh         # one CI shard
 bash tests/flake_hunt.sh                   # the suite at CI's CPU budget (Docker)
 ```
