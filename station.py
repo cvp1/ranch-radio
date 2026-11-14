@@ -20,6 +20,9 @@ transmit safety. This process is the front of the station:
           codec level and station-ID wait), over packet through the UV-PRO
           hub, or over telnet.
   Mesh    the Meshtastic node (mesh.py).
+  Logsync every QSO JTDX logs, to Wavelog, QRZ and LoTW (logsync.py), from
+          station.json's "logsync" block. Not an add-on: the Logbook tab only
+          shows its status, and a broken logsync is reported, never fatal.
 
 Safety the radio servers rely on: a session's lane is armed over this
 process's WebSocket to that radio's server, so if this process dies the
@@ -406,6 +409,8 @@ class Station:
         self.packet_up = False
         self.addons = None            # addons.Addons from the config's "addons" (UV-PRO, ...)
         self.modules = None           # ranch_radio.pageapi.ModulesService from the config's "host_file"
+        self.logsync = None           # logsync.LogSync from the config's "logsync" block
+        self.logsync_error = None     # why it isn't running: shown on the Logbook tab
         self._tasks = []
         self._rigctl = None
         self._lane = None
@@ -665,7 +670,8 @@ class Station:
                                       "winlink": (self.addons.own_snapshot("winlink")
                                                   if self.addons and self.addons.get("winlink") else None),
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
-                                      "addons": self.addons.snapshot() if self.addons else {}}))
+                                      "addons": self.addons.snapshot() if self.addons else {},
+                                      "logsync": self.logsync_status()}))
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -706,6 +712,12 @@ class Station:
                             "warn", ws)
             else:
                 self.modules.handle(ws, m)
+        elif t == "logsync":
+            if self.logsync is None:
+                self.notice("Logbook sync is not running on this station.", "warn", ws)
+            elif m.get("do") == "correct":
+                why = await self.logsync.correct(int(m["id"]), str(m["dest"]))
+                self.notice(why or f"Correction queued for {m['dest']}.", "warn" if why else "info", ws)
         elif t == "ping":
             await ws.send_str(json.dumps({"t": "pong", "ts": m.get("ts")}))
 
@@ -727,7 +739,36 @@ class Station:
             self._lane = await asyncio.start_server(self._lane_client, "127.0.0.1", int(wl["lane_port"]))
         if self.addons:
             await self.addons.start()
+        await self.start_logsync()
         self._tasks.append(asyncio.create_task(self.presence_loop()))
+
+    # --- the logbook sync (logsync.py): a station module; its failure stays its own
+
+    async def start_logsync(self):
+        if self.logsync is None:
+            return
+        try:
+            await self.logsync.start()
+        except Exception as e:
+            why = _logsync_module().scrub(f"{type(e).__name__}: {e}", cap=200)
+            log.error("logsync did not start: %s", why)
+            self.logsync_error = f"did not start: {why}"
+            try:
+                await self.logsync.stop()
+            except Exception as e2:
+                log.debug("logsync: stop after a failed start: %s", type(e2).__name__)
+            self.logsync = None
+
+    def logsync_status(self):
+        """For the pages (and the Logbook tab): an allowlist, see LogSync.status."""
+        if self.logsync is not None:
+            return self.logsync.status()
+        if self.logsync_error:
+            return {"loaded": False, "error": self.logsync_error}
+        return None
+
+    def logsync_changed(self, status):
+        self._broadcast(json.dumps({"t": "addon", "addon": "logbook", "logsync": status}))
 
     async def stop(self):
         for t in self._tasks:
@@ -736,6 +777,8 @@ class Station:
             await w.stop()
         if self.addons:
             await self.addons.stop()
+        if self.logsync is not None:
+            await self.logsync.stop()
         await self.ardop.stop()
         for srv in (self._rigctl, self._lane):
             if srv:
@@ -922,6 +965,15 @@ def make_app(station, args):
     return app
 
 
+def _logsync_module():
+    """logsync.py, loaded by name the way addons/__init__.py loads an add-on:
+    only a station whose config has a "logsync" block ever imports it, and the
+    test selector (tests/affected.py) keeps it a seam, so a logsync change runs
+    logsync_test (which spawns this station) rather than every station test."""
+    import importlib
+    return importlib.import_module("logsync")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--config", default="~/.config/radio-remote/station.json",
@@ -973,6 +1025,17 @@ def main():
         wa = station.addons.get("winlink")
         if wa is not None:                   # between sessions the panel shows the radio's own lane state
             wa.engine.idle_lane = IdleLane(station)
+    if cfg.get("logsync"):
+        try:
+            station.logsync = _logsync_module().LogSync(cfg["logsync"], notify=station.logsync_changed,
+                                                        alert=lambda msg: station.notice(msg, "warn"))
+        except Exception as e:           # a broken logsync must not take the station down
+            try:
+                why = _logsync_module().scrub(f"{type(e).__name__}: {e}", cap=200)
+            except Exception:            # it did not even import: the type alone, no text to scrub
+                why = type(e).__name__
+            station.logsync_error = f"not loaded: {why}"
+            log.error("logsync %s", station.logsync_error)
     if cfg.get("host_file"):
         from ranch_radio import pageapi
         # RANCH_RADIO_REPO / RANCH_RADIO_HOME: tests point these at scratch copies.

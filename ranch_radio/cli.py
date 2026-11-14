@@ -49,7 +49,7 @@ def load_host(name):
 def modules_of(h):
     """Catalog names a host runs, in catalog order."""
     on = {r.get("rig") or r["id"] for r in h["radios"]}
-    on |= {k for k in ("station", "winlink", "mesh", "packet") if h.get(k)}
+    on |= {k for k in ("station", "winlink", "mesh", "packet", "logsync") if h.get(k)}
     on |= set(h.get("addons") or {}) | set(h.get("integrations") or {})
     if render.updates(h):
         on.add("updates")
@@ -718,6 +718,34 @@ RADIO_FORMATS = {
 }
 
 
+def _ledger_path(a):
+    if a.ledger:
+        return os.path.expanduser(a.ledger)
+    h = load_host(a.host or this_host())
+    b = h.get("logsync")
+    if not isinstance(b, dict):
+        sys.exit(f"ranch-radio: hosts/{h['host']}.json has no logsync block")
+    sys.path.insert(0, str(ROOT))
+    from logsync_config import DEFAULT_LEDGER   # stdlib only: this CLI never loads the sync itself
+    return os.path.expanduser(str(b.get("ledger", DEFAULT_LEDGER)))
+
+
+def cmd_logsync(a):
+    """The logbook sync's ledger: status, and the backfill review (PLAN §7).
+    Reads and writes the ledger only; it never sends anything anywhere. The
+    work is logsync.py's own entry point (python -m logsync), run as a child
+    so this CLI, and render with it, never import the sync's SQLite, UDP and
+    network code."""
+    path = _ledger_path(a)
+    if not os.path.exists(path):
+        sys.exit(f"ranch-radio: no ledger at {paths.shown(path)} yet "
+                 f"(the station creates it when logsync starts)")
+    argv = [sys.executable, "-m", "logsync", a.action, "--ledger", path]
+    if a.apply:
+        argv += ["--apply", a.apply]
+    return subprocess.run(argv, cwd=str(ROOT)).returncode
+
+
 def cmd_radios(a):
     import json
     path = Path(os.path.expanduser(a.config))
@@ -805,8 +833,14 @@ def main(argv=None):
     rm.add_argument("module")
     rm.add_argument("--host", help="default: this machine")
     rm.add_argument("--apply", action="store_true")
+    ls = sub.add_parser("logsync", help="the logbook sync's ledger: status, and the backfill review")
+    ls.add_argument("action", choices=["status", "backfill"])
+    ls.add_argument("--apply", metavar="HASH", help="backfill: release exactly the set the report with this hash listed")
+    ls.add_argument("--host", help="default: this machine")
+    ls.add_argument("--ledger", help="the ledger file (default: from the host file's logsync block)")
     a = p.parse_args(argv)
     return {"modules": cmd_modules, "hosts": cmd_hosts, "render": cmd_render, "radios": cmd_radios,
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
-            "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon}[a.cmd](a) or 0
+            "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
+            "logsync": cmd_logsync}[a.cmd](a) or 0

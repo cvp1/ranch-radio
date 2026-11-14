@@ -3,7 +3,8 @@ web page) in a tab beside Propagation.
 
 The page shows the logbook in a frame, with a link to open it in its own tab.
 Nothing here talks to the logbook: the browser loads it directly, with its
-own login.
+own login. When the station runs the logbook sync (logsync.py), its status
+rides in this tab's snapshot for display; switching the tab off never stops it.
 
 Options (the host file's addons block), one of:
 
@@ -65,7 +66,11 @@ class Logbook(Addon):
         self.target = resolve(opts)       # a bad config fails here: shown as not loaded, with the reason
 
     def snapshot(self):
-        return dict(self.target)
+        # The logbook sync's status (logsync.py, a station module) rides along
+        # for display only: this tab never starts, stops or configures it.
+        status = getattr(self.host, "logsync_status", None)
+        st = status() if callable(status) else None
+        return {**self.target, **({"logsync": st} if st else {})}
 
 
 ADDON = Logbook

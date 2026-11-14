@@ -275,6 +275,79 @@ def machine(h, budget_s=None, include_available=False):
         out.append(vara_config_check(h))
     if "vara" not in present and h["os"] == "macos" and not late("vara", "a leftover xara"):
         out += xara_leftover_checks(h)
+    if "logsync" in present and not late("logsync", "TQSL, credential files, the UDP intake"):
+        out += logsync_checks(block_of(h, "logsync") or {})
+    return out
+
+
+def logsync_checks(b, tqsl_timeout_s=10):
+    """The logbook sync's machine checks: TQSL answers -v (within 10 s), each
+    credential file exists with mode 600 (looked up, never read), and the
+    UDP intake can bind. The LoTW certificate's password can't be seen from
+    here: TQSL keeps it to itself. The station kills a TQSL that waits on a
+    password dialog and holds LoTW, so a warn says so."""
+    import socket
+    import struct
+    out = []
+    lw = b.get("lotw")
+    if isinstance(lw, dict):
+        exe = _expand(lw.get("tqsl", "tqsl"))
+        if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            out.append(Check("logsync", MISSING, f"TQSL not found ({lw.get('tqsl')})",
+                             "install TrustedQSL (https://lotw.arrl.org) and set logsync.lotw.tqsl"))
+        else:
+            try:
+                r = subprocess.run([exe, "-v"], capture_output=True, text=True, timeout=tqsl_timeout_s,
+                                   stdin=subprocess.DEVNULL)
+                ver = ((r.stdout or r.stderr).strip().splitlines() or ["?"])[-1][:80]
+                out.append(Check("logsync", OK if r.returncode == 0 else MISSING,
+                                 f"TQSL -v: {ver}" if r.returncode == 0 else f"TQSL -v exited {r.returncode}"))
+            except subprocess.TimeoutExpired:
+                out.append(Check("logsync", MISSING, f"TQSL -v did not answer in {tqsl_timeout_s} s (a dialog?)",
+                                 "run TQSL once by hand and clear whatever it asks"))
+            except OSError as e:
+                out.append(Check("logsync", MISSING, f"TQSL -v: {type(e).__name__}"))
+        out.append(Check("logsync", WARN, "the LoTW certificate must have no password (not checked here: "
+                                          "TQSL never passes -p; a password dialog is killed after 60 s and LoTW held)",
+                         "in TQSL, remove the certificate's password, or LoTW uploads will hold"))
+    for dest, field in (("wavelog", "key_file"), ("qrz", "key_file"), ("lotw", "password_file")):
+        d = b.get(dest)
+        if not isinstance(d, dict) or not d.get(field):
+            continue
+        p = _expand(d[field])
+        try:
+            mode = os.stat(p).st_mode
+        except OSError:
+            out.append(Check("logsync", MISSING, f"{dest} credential file {d[field]} not present",
+                             "write it from your password store, one line, then chmod 600"))
+            continue
+        if mode & 0o077:
+            out.append(Check("logsync", MISSING, f"{dest} credential file {d[field]} is readable by others",
+                             f"chmod 600 {d[field]}"))
+        else:
+            out.append(Check("logsync", OK, f"{dest} credential file {d[field]}: present, mode 600"))
+    u = b.get("udp") or {}
+    try:
+        port = int(u.get("port"))
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            if u.get("group"):
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if hasattr(socket, "SO_REUSEPORT"):
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                s.bind(("", port))
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                             struct.pack("4s4s", socket.inet_aton(u["group"]), socket.inet_aton(u.get("iface", "0.0.0.0"))))
+                out.append(Check("logsync", OK, f"UDP {port}: can join {u['group']} beside GridTracker"))
+            else:
+                s.bind((u.get("bind", "127.0.0.1"), port))
+                out.append(Check("logsync", OK, f"UDP {u.get('bind')}:{port} is free for the relay"))
+        finally:
+            s.close()
+    except (OSError, TypeError, ValueError) as e:
+        out.append(Check("logsync", WARN, f"UDP intake: {type(e).__name__}: {getattr(e, 'strerror', '') or e} "
+                                          "(the station's own logsync, if it is running, holds the port)",
+                         "stop whatever else holds the port (GridTracker's own UDP server, for the relay shape)"))
     return out
 
 

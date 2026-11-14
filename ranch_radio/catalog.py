@@ -46,6 +46,14 @@ MODULES = [
              "direwolf_tnc.py runs Direwolf", "platforms": ["macos", "linux"],
      "ships": "rendered from the host file's packet block: Linux uvpro-hub.service or packet-hub.service "
               "(+ direwolf.service); macOS launchd agents for the hub (+ Direwolf)"},
+    {"name": "logsync", "kind": "service", "title": "Logbook sync: every QSO JTDX logs, to Wavelog, QRZ and LoTW, "
+                                                     "with confirmations back (replaces GridTracker's uploads)",
+     "code": "logsync.py (senders, pulls), logsync_udp.py (JTDX's UDP: multicast beside GridTracker, or a unicast "
+             "relay), logsync_ledger.py (SQLite ledger), logsync_adif.py, logsync_config.py "
+             "(the block's checks, stdlib only: what render imports); the Logbook tab shows its status",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's logsync block, run by the station (station.json); TQSL for LoTW; credentials in "
+              "files (mode 600) the block names; `ranch-radio logsync backfill` reviews the first import"},
 
     {"name": "audio", "kind": "service", "title": "Radio sound cards: pinned PipeWire names, never the desktop default",
      "code": "ranch_radio/render.py wireplumber_rules (and wait_audio in each radio unit)", "platforms": ["linux"],
