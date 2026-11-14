@@ -9,16 +9,21 @@ Decode (2) is read for the sending station and its grid:
     <CALL> forms (hashed calls) lose their brackets; RR73 is never a grid.
 
 A row is the latest decode from a station within KEEP_S. The page gets rows
-sorted by need (new DXCC first), then signal. reply(key) gives the decode a
-Reply must carry, if it is still fresh (REPLY_MAX_AGE_S): an old line can't
-be answered, as in JTDX.
+sorted by need (new DXCC first), then signal.
+
+A click answers the station's last CQ or QRZ if one is fresh (REPLY_MAX_AGE_S),
+else its latest line: JTDX, by default, takes a Reply only for a line that
+starts CQ, CQDX or QRZ ("UDP reply messages" in Settings > Reporting), and the
+latest line is often the station working someone else. Each row says which it
+would answer ("answer": "cq", "line", or None when nothing is fresh), and the
+row's key is that decode's.
 """
 import math
 import re
 import time
 
 KEEP_S = 120
-REPLY_MAX_AGE_S = 45
+REPLY_MAX_AGE_S = 60              # two FT8 CQ periods
 MAX_ROWS = 150
 _CALL = re.compile(r"^(?=.*[0-9])(?=.*[A-Z])[A-Z0-9/]{3,13}$")
 _GRID = re.compile(r"^[A-R]{2}[0-9]{2}$")
@@ -89,12 +94,13 @@ class Roster:
     def __init__(self, needs=None, clock=time.monotonic):
         self.needs, self.clock = needs, clock
         self.st = {}                       # the last Status: dial, mode, de_call, de_grid, band
-        self.rows = {}                     # call -> {"dec", "at", "parsed", "band", "mode"}
+        self.rows = {}                     # call -> {"dec", "at", "parsed", "band", "mode", "cq": {"dec", "at"} | None}
 
     def status(self, d):
         from logsync_adif import band_of
         self.st = {"dial": d.get("dial"), "mode": d.get("mode") or "", "de_call": (d.get("de_call") or "").upper(),
                    "de_grid": d.get("de_grid") or "", "id": d.get("id"),
+                   "dx_call": (d.get("dx_call") or "").upper(),
                    "band": band_of(f"{(d.get('dial') or 0) / 1e6:.6f}") if d.get("dial") else ""}
 
     def add(self, dec):
@@ -102,8 +108,12 @@ class Roster:
         p = parse_message(dec.get("message"))
         if not p or p["call"] == self.st.get("de_call"):
             return None
-        self.rows[p["call"]] = {"dec": dec, "at": self.clock(), "parsed": p, "band": self.st.get("band", ""),
-                                "mode": self.st.get("mode", "")}
+        now, old = self.clock(), self.rows.get(p["call"])
+        cq = {"dec": dec, "at": now} if p["cq"] else (old or {}).get("cq")
+        if not p["grid"] and old and old["parsed"]["grid"]:
+            p = dict(p, grid=old["parsed"]["grid"])         # "N0CALL K1ABC -10" keeps the grid its CQ gave
+        self.rows[p["call"]] = {"dec": dec, "at": now, "parsed": p, "band": self.st.get("band", ""),
+                                "mode": self.st.get("mode", ""), "cq": cq}
         return p["call"]
 
     def prune(self):
@@ -112,9 +122,21 @@ class Roster:
             del self.rows[c]
 
     @staticmethod
-    def key(r):
-        d = r["dec"]
+    def dkey(d):
         return f"{d['id']}|{d['t_ms']}|{d['df']}|{d['message'].strip()}"
+
+    def target(self, r):
+        """(decode, "cq" | "line") a click on row r answers, or (None, None)."""
+        now = self.clock()
+        if r.get("cq") and now - r["cq"]["at"] <= REPLY_MAX_AGE_S:
+            return r["cq"]["dec"], "cq"
+        if now - r["at"] <= REPLY_MAX_AGE_S:
+            return r["dec"], "line"
+        return None, None
+
+    def key(self, r):
+        d, _ = self.target(r)
+        return self.dkey(d or r["dec"])
 
     def view(self):
         """The page's rows: newest data, sorted by need then signal; no raw bytes."""
@@ -125,7 +147,7 @@ class Roster:
             level, reasons = (self.needs.need(call, p["grid"], r["band"], r["mode"]) if self.needs else (None, []))
             e = self.needs.cty.lookup(call) if self.needs and self.needs.cty else None
             km, brg = distance_bearing(self.st.get("de_grid"), p["grid"])
-            out.append({"key": self.key(r), "call": call, "grid": p["grid"], "cq": p["cq"], "cq_word": p["cq_word"],
+            out.append({"key": self.key(r), "answer": self.target(r)[1], "call": call, "grid": p["grid"], "cq": p["cq"], "cq_word": p["cq_word"],
                         "to_me": bool(me) and p["to"] == me, "to": p["to"], "snr": d["snr"], "dt": round(d["dt"], 1),
                         "df": d["df"], "message": d["message"].strip(), "age": round(now - r["at"]),
                         "need": level, "reasons": reasons, "entity": e.name if e else "", "cont": e.cont if e else "",
@@ -143,14 +165,17 @@ class Roster:
         b = rv["band"] if band in (None, "") else (None if band == "all" else band)
         return {"me": self.st.get("de_grid", ""), "band": rv["band"], "showing": b or "all",
                 "grids": self.needs.grid_map(b) if self.needs else {},
-                "decodes": [{k: r[k] for k in ("key", "call", "grid", "need", "snr", "cq", "to_me", "entity")}
+                "decodes": [{k: r[k] for k in ("key", "answer", "call", "grid", "need", "snr", "cq", "to_me", "entity")}
                             for r in rv["rows"] if r["grid"]]}
 
     def for_reply(self, key):
-        """The decode to answer, or (None, why)."""
+        """The decode to answer (the one key names, the station's CQ or its
+        latest line), or (None, why)."""
+        now = self.clock()
         for r in self.rows.values():
-            if self.key(r) == key:
-                if self.clock() - r["at"] > REPLY_MAX_AGE_S:
-                    return None, f"{r['parsed']['call']}'s decode is {round(self.clock() - r['at'])} s old: answer a fresh one"
-                return r["dec"], None
+            for d, at in ((r["dec"], r["at"]), *(((r["cq"]["dec"], r["cq"]["at"]),) if r.get("cq") else ())):
+                if self.dkey(d) == key:
+                    if now - at > REPLY_MAX_AGE_S:
+                        return None, f"{r['parsed']['call']}'s decode is {round(now - at)} s old: answer a fresh one"
+                    return d, None
         return None, "that decode is no longer on the roster"

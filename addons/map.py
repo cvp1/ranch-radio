@@ -122,9 +122,9 @@ class Map(Addon):
             if ls is None:
                 self.notice("The logbook sync isn't running, so the map can't answer.", "warn", ws)
                 return
-            why = ls.reply(str(m.get("key", "")))
-            self.notice(f"Map: {why}" if why else f"Asked JTDX to answer {m.get('call') or 'that station'}.",
-                        "warn" if why else "info", ws)
+            why = ls.reply(str(m.get("key", "")), done=lambda ok, msg: self.notice(f"Map: {msg}", "info" if ok else "warn", ws))
+            if why:
+                self.notice(f"Map: {why}", "warn", ws)
         else:
             await super().command(ws, verb, m)
 

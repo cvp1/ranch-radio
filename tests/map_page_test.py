@@ -75,8 +75,9 @@ class Sync:
     def map_view(self, band=None):
         return self.roster.map_view(band)
 
-    def reply(self, key):
+    def reply(self, key, done=None):
         self.asked.append(key)
+        done and done(True, "JTDX is calling JA5XYZ.")
         return None
 
 
@@ -88,7 +89,7 @@ mv = s.map_view(None)
 check("map view: our grid, the band in view", (mv["me"], mv["band"], mv["showing"]), ("FN31", "20m", "20m"))
 check("  the band's grids", mv["grids"], {"PM95": "c", "PM97": "w"})
 check("  only decodes with a grid", sorted(d["call"] for d in mv["decodes"]), ["JA5XYZ", "VK2ABC"])
-check("  each with its need and key", sorted(mv["decodes"][0]) , sorted(["key", "call", "grid", "need", "snr", "cq", "to_me", "entity"]))
+check("  each with its need and key", sorted(mv["decodes"][0]) , sorted(["key", "answer", "call", "grid", "need", "snr", "cq", "to_me", "entity"]))
 check("  'all' shows every band's grids", s.map_view("all")["grids"], {"PM95": "c", "PM96": "w", "PM97": "w"})
 
 # ================================================================ POTA
@@ -128,7 +129,8 @@ check("  'show all': every band's spots and grids", (len(a.snapshot()["pota"]), 
 loop.run_until_complete(a.command(object(), "show", {"band": "40m"}))
 check("  'show 40m'", ([p["call"] for p in a.snapshot()["pota"]], a.snapshot()["map"]["grids"]), (["K2ABC"], {"PM95": "w", "PM96": "w"}))
 loop.run_until_complete(a.command(None, "reply", {"key": mv["decodes"][0]["key"], "call": "JA5XYZ"}))
-check("  a click answers through the sync", (s.asked, a.host.notes[-1][0]), ([mv["decodes"][0]["key"]], "info"))
+check("  a click answers through the sync; JTDX's outcome reaches the page", (s.asked, a.host.notes[-1]),
+      ([mv["decodes"][0]["key"]], ("info", "Map: JTDX is calling JA5XYZ.")))
 check("  pota off: none in the snapshot", M.Map(Host(s), {"pota": False}).snapshot()["pota"], None)
 
 # ================================================================ the sun, in a real browser

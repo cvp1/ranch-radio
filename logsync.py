@@ -112,6 +112,8 @@ def scrub(text, secrets=(), cap=500):
 
 ROSTER_PUSH_S = 1.0               # the roster's push after a burst of decodes
 NEEDS_MIN_S = 60.0                # the needs index is rebuilt at most this often
+REPLY_CONFIRM_S = 6.0             # a Reply JTDX took shows as its DX Call in a Status within this
+REPLY_REFUSED = ("JTDX didn't take it. In JTDX: Settings > Reporting, tick \"Accept UDP requests\"{extra}.")
 
 class LogSync:
     def __init__(self, cfg, notify=None, alert=None, clock=time.time, roster=None):
@@ -124,6 +126,7 @@ class LogSync:
         self._needs_dirty = True
         self._needs_built = 0.0
         self._roster_handle = None
+        self._reply_wait = None          # {"call", "done", "handle", "kind"}: a Reply waiting for JTDX's Status
         self.ledger = None
         self.intake = None
         self.http = None
@@ -198,6 +201,9 @@ class LogSync:
             self._notify_handle.cancel()
         if self._roster_handle is not None:
             self._roster_handle.cancel()
+        if self._reply_wait is not None:
+            self._reply_wait["handle"].cancel()
+            self._reply_wait = None
         if self.ledger is not None:
             self.ledger.close()
         self.started = False
@@ -208,7 +214,9 @@ class LogSync:
         if typ in (1, 2):
             try:
                 if typ == 1:
-                    self.roster.status(udp.parse_status(data))
+                    st = udp.parse_status(data)
+                    self.roster.status(st)
+                    self._reply_check(st)
                 elif self.roster.add(udp.parse_decode(data)):
                     self._roster_soon()
             except ValueError as e:
@@ -252,17 +260,57 @@ class LogSync:
     def map_view(self, band=None):
         return self.roster.map_view(band)
 
-    def reply(self, key):
+    def reply(self, key, done=None):
         """Answer a roster decode: JTDX gets a Reply (4) carrying that decode's
-        fields, as a double-click would. None when sent, else why not."""
+        fields, as a double-click would. None when sent, else why not.
+
+        JTDX sends no answer to a Reply, and drops one it won't take without a
+        word. So the outcome is read from its next Status: done(True, msg) when
+        its DX Call becomes the station within REPLY_CONFIRM_S, else
+        done(False, msg) with the JTDX settings that refuse it."""
         dec, why = self.roster.for_reply(str(key))
         if dec is None:
             return why
         if not self.intake.to_client(dec["id"], udp.build_reply(dec)):
             return ("JTDX isn't connected to the intake" if self.cfg.shape != "multicast"
                     else "the roster can't answer in multicast mode: GridTracker answers JTDX there")
-        log.info("logsync: roster: asked JTDX to answer %r", dec["message"].strip())
+        import logsync_roster
+        p = logsync_roster.parse_message(dec["message"]) or {}
+        call, kind = p.get("call") or "?", ("cq" if p.get("cq") else "line")
+        log.info("logsync: roster: Reply sent to JTDX for %r", dec["message"].strip())
+        if self._reply_wait is not None:
+            self._reply_wait["handle"].cancel()
+            self._reply_wait = None
+        if done is not None:
+            h = asyncio.get_running_loop().call_later(REPLY_CONFIRM_S, self._reply_timeout)
+            self._reply_wait = {"call": call, "done": done, "handle": h, "kind": kind}
         return None
+
+    def _reply_check(self, st):
+        w = self._reply_wait
+        if w is None or (st.get("dx_call") or "").upper() != w["call"]:
+            return
+        w["handle"].cancel()
+        self._reply_wait = None
+        log.info("logsync: roster: JTDX took the Reply: DX Call %s", w["call"])
+        self._reply_done(w, True, f"JTDX is calling {w['call']}.")
+
+    def _reply_timeout(self):
+        w, self._reply_wait = self._reply_wait, None
+        if w is None:
+            return
+        extra = ("" if w["kind"] == "cq" else
+                 f", and set \"UDP reply messages\" to accept any message: {w['call']} wasn't calling CQ")
+        log.info("logsync: roster: JTDX didn't take the Reply for %s (no Status with that DX Call in %.0f s)",
+                 w["call"], REPLY_CONFIRM_S)
+        self._reply_done(w, False, REPLY_REFUSED.format(extra=extra))
+
+    @staticmethod
+    def _reply_done(w, ok, msg):
+        try:
+            w["done"](ok, msg)
+        except Exception as e:
+            log.error("logsync: roster: reply outcome: %s", type(e).__name__)
 
     def _build_needs(self):
         import logsync_cty

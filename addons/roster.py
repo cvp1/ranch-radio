@@ -46,11 +46,9 @@ class Roster(Addon):
         if ls is None:
             self.notice("The logbook sync isn't running, so the roster can't answer.", "warn", ws)
             return
-        why = ls.reply(str(m.get("key", "")))
+        why = ls.reply(str(m.get("key", "")), done=lambda ok, msg: self.notice(f"Roster: {msg}", "info" if ok else "warn", ws))
         if why:
             self.notice(f"Roster: {why}", "warn", ws)
-        else:
-            self.notice(f"Asked JTDX to answer {m.get('call') or 'that station'}.", "info", ws)
 
 
 ADDON = Roster
