@@ -10,6 +10,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 - **`doctor` no longer reports a working TQSL as missing.** Real TQSL 2.8.6 prints its
   version for `-v` and exits 255; the check now reads the version line, not the exit code.
   The test's fake TQSL exits 255 the same way.
+- **logsync matches phone QSOs on LoTW and QRZ.** The identity key carried SSB's sideband
+  (USB/LSB), but LoTW and QRZ return phone QSOs as plain `SSB`, so every USB/LSB QSO looked
+  missing and would have been re-signed. The sideband is no longer part of the key; a ledger
+  built before this fix should be rebuilt (move `logsync.db` aside and restart).
 
 ### Changed
 

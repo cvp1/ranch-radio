@@ -280,6 +280,10 @@ check("  and the fake JTDX builds the same bytes", J.logged(T0.replace(microseco
 check("header(): schema, type, id", U.header(J.reply()), (2, 4, "JTDX"))
 check("a Logged ADIF parses to its one record", U.parse_adif_message(J.logged_adif(T0, mode="FT4", dial=21074000,
                                                                                   band="15m")).get("SUBMODE"), "FT4")
+_ph = {"CALL": "N9SSB", "BAND": "20m", "QSO_DATE": "20240504", "TIME_ON": "150000"}
+check("a phone QSO's key ignores the sideband: SSB/USB, SSB, USB and LSB are one key",
+      len({A.key(A.qso({**_ph, **m}, "N0CALL")) for m in ({"MODE": "SSB", "SUBMODE": "USB"}, {"MODE": "SSB"},
+                                                           {"MODE": "USB"}, {"MODE": "SSB", "SUBMODE": "LSB"})}), 1)
 check("type 5 and type 12 of one QSO have one key",
       A.key(A.qso(U.parse_logged(J.logged(T0, mode="FT4", dial=21074000)))),
       A.key(A.qso(U.parse_adif_message(J.logged_adif(T0, mode="FT4", dial=21074000, band="15m")))))
@@ -541,7 +545,13 @@ h.lotw.accept(rec("N9AAA", qa))                       # accepted, not confirmed
 h.lotw.accept(rec("N9BBB", qb))
 h.lotw.confirm("N9BBB", qb.strftime("%Y%m%d"), qb.strftime("%H%M%S"))
 h.qrz.add(rec("N9AAA", qa))
+qs = dt.datetime(2024, 5, 4, 15, 0, 0)            # a phone QSO: Wavelog keeps the sideband, LoTW and QRZ don't
+h.wl.add({**rec("N9SSB", qs), "MODE": "SSB", "SUBMODE": "USB", "FREQ": "14.250000"})
+h.lotw.accept({**rec("N9SSB", qs), "MODE": "SSB", "FREQ": "14.250000"})
+h.qrz.add({**rec("N9SSB", qs), "MODE": "SSB", "FREQ": "14.250000"})
 h.start()
+check("backfill: a USB phone QSO matches LoTW's and QRZ's plain SSB",
+      (h.state("N9SSB", "lotw"), h.state("N9SSB", "qrz")), (["accepted"], ["sent"]))
 check("backfill: A on LoTW (accepted, unconfirmed)", h.state("N9AAA", "lotw"), ["accepted"])
 check("  B confirmed", h.state("N9BBB", "lotw"), ["confirmed"])
 check("  A on QRZ", h.state("N9AAA", "qrz"), ["sent"])

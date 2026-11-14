@@ -151,7 +151,12 @@ def qso(f, own=None):
 
 
 def key(q):
-    return "|".join((q["own"], q["call"], q["band"], q["mode"], q["submode"], q["ts"]))
+    """The identity key. A phone QSO's sideband (SSB's USB/LSB submode) is not
+    part of it: LoTW and QRZ return phone QSOs as MODE=SSB with no submode, so
+    a key carrying the sideband never matches them (found live: every USB/LSB
+    QSO looked missing from LoTW)."""
+    sub = "" if q["mode"] == "SSB" else q["submode"]
+    return "|".join((q["own"], q["call"], q["band"], q["mode"], sub, q["ts"]))
 
 
 # The fields whose change makes a re-log a revision (PLAN §5): call, time, band
