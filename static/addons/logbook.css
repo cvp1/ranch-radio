@@ -12,3 +12,16 @@
 .lb-t.lb-held { color: #d9534f; }
 .lb-t.lb-unknown, .lb-t.lb-pending, .lb-t.lb-attempting { opacity: 0.7; }
 .lb-near { color: #e0a800; font-size: 0.85em; }
+.lb-set summary { cursor: pointer; }
+.lb-set-body { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }
+.lb-grp { border: 1px solid rgba(127,127,127,0.35); border-radius: 6px; padding: 6px 10px; }
+.lb-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; align-items: center; }
+.lb-grid input, .lb-grid select { min-width: 0; width: 100%; max-width: 32em; }
+.lb-sec { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.lb-sec input { max-width: 18em; }
+.lb-test-row { margin-top: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.lb-ok { color: #3c9a5f; }
+.lb-bad { color: #d9534f; }
+.lb-set-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.lb-set-note { font-size: 0.85em; opacity: 0.8; }
+.lb-diff { font-size: 0.8em; max-height: 16em; overflow: auto; background: rgba(127,127,127,0.12); padding: 6px; border-radius: 4px; }

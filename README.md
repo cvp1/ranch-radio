@@ -610,6 +610,15 @@ come back. The station runs it from the host file's `logsync` block:
   `ranch-radio logsync backfill --apply HASH` releases exactly that set.
   `ranch-radio logsync status` shows the ledger. `ranch-radio doctor` checks
   TQSL, the credential files and the UDP port.
+- **Settings on the Logbook tab.** Open *Settings* under the sync's strip to
+  change the Wavelog address and station profile, TQSL's path and station
+  location, the LoTW login and where each credential file lives. A change
+  shows its host-file diff first; *Apply* writes the host file and
+  station.json and restarts the sync (the radios carry on). The Wavelog key,
+  QRZ key and LoTW password are write-only: type a new one and *Save*; the
+  page only ever shows whether each is set, its length and when it changed.
+  *Test* checks each destination live and read-only (the key, the profile,
+  the login, the TQSL location).
 
 ## How it fits together
 

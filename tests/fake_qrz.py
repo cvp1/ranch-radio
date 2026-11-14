@@ -73,6 +73,8 @@ class FakeQrz:
                     return web.Response(text="RESULT=FAIL&REASON=Unable to add QSO to database: duplicate&EXTENDED=")
             n = self.add(f)
             return web.Response(text=f"RESULT=OK&LOGID={n}&COUNT=1")
+        if act == "STATUS":
+            return web.Response(text=f"RESULT=OK&COUNT={len(self.log)}&DATA=CALLSIGN%3D{self.call}")
         if act == "FETCH":
             o = dict(p.split(":", 1) for p in opt.split(",") if ":" in p)
             rows = [q for q in self.log if q["id"] > int(o.get("AFTERLOGID", 0))]
