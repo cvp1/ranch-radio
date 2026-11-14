@@ -135,6 +135,17 @@ class Roster:
         return {"band": self.st.get("band", ""), "mode": self.st.get("mode", ""), "dial": self.st.get("dial"),
                 "rows": out[:MAX_ROWS], "needs": self.needs.summary() if self.needs else None}
 
+    def map_view(self, band=None):
+        """The Map tab: our grid, worked/confirmed grids (the current band by
+        default, one band, or every band with "all"), and the decodes that
+        carry a grid."""
+        rv = self.view()
+        b = rv["band"] if band in (None, "") else (None if band == "all" else band)
+        return {"me": self.st.get("de_grid", ""), "band": rv["band"], "showing": b or "all",
+                "grids": self.needs.grid_map(b) if self.needs else {},
+                "decodes": [{k: r[k] for k in ("key", "call", "grid", "need", "snr", "cq", "to_me", "entity")}
+                            for r in rv["rows"] if r["grid"]]}
+
     def for_reply(self, key):
         """The decode to answer, or (None, why)."""
         for r in self.rows.values():

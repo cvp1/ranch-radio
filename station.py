@@ -850,8 +850,9 @@ class Station:
 
     def roster_changed(self):
         """New decodes on the sync's roster: to pages, if the Roster tab is on."""
-        if self.addons and self.addons.is_on("roster"):
-            self.addons.get("roster").push()
+        for name in ("roster", "map"):
+            if self.addons and self.addons.is_on(name):
+                self.addons.get(name).push()
 
     def logsync_changed(self, status):
         self._broadcast(json.dumps({"t": "addon", "addon": "logbook", "logsync": status}))

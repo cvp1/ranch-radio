@@ -249,6 +249,9 @@ class LogSync:
     def roster_view(self):
         return self.roster.view()
 
+    def map_view(self, band=None):
+        return self.roster.map_view(band)
+
     def reply(self, key):
         """Answer a roster decode: JTDX gets a Reply (4) carrying that decode's
         fields, as a double-click would. None when sent, else why not."""
