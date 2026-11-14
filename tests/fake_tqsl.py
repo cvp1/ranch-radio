@@ -6,7 +6,7 @@ Behaves as lotw-help/cmdline describes TQSL in batch mode (-x/-q): status on
 stderr, the last line "Final Status: <text> (<code>)", exit codes 0 all
 uploaded, 8 none processed (duplicates or out of date range), 9 some
 ignored (the same), 2 rejected, 11 network, others errors. -v prints a
-version.
+version and exits 255, as real TQSL 2.8.6 does.
 
 It reads what to do from the JSON file named by $FAKE_TQSL_CONF:
     {"mode": "upload", "store": PATH, "range_from": "YYYYMMDD"}
@@ -49,9 +49,9 @@ def final(text, code):
 
 def main():
     argv = sys.argv[1:]
-    if argv == ["-v"]:
+    if argv == ["-v"]:                  # as real TQSL 2.8.6 (macOS): prints the version, exits 255
         print("TQSL Version 2.8.2 [fake]")
-        return 0
+        return 255
     conf = json.load(open(os.environ["FAKE_TQSL_CONF"]))
     path = argv[-1] if argv else ""
     try:

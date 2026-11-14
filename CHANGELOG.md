@@ -5,6 +5,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`doctor` no longer reports a working TQSL as missing.** Real TQSL 2.8.6 prints its
+  version for `-v` and exits 255; the check now reads the version line, not the exit code.
+  The test's fake TQSL exits 255 the same way.
+
 ### Changed
 
 - **Winlink features are off the radio server's import path.** The server
