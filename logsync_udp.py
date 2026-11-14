@@ -96,8 +96,9 @@ class Reader:
         t = dt.datetime(day.year, day.month, day.day, tzinfo=dt.UTC) + dt.timedelta(milliseconds=ms)
         if spec == 2:
             t -= dt.timedelta(seconds=offset)
-        elif spec == 0:                   # local time on JTDX's machine: this machine's
-            t = t.replace(tzinfo=None).astimezone(dt.UTC)
+        # spec 0 ("local time") is taken as UTC: JTDX labels its QSO times local
+        # but the values are UTC (found live: every QSO Logged came out shifted by
+        # the station's UTC offset, 7 h in Arizona). JTDX's clock is UTC throughout.
         return t
 
 

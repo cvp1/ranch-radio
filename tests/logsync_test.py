@@ -264,10 +264,10 @@ def s8(text):
 jd = (dt.date(2026, 11, 13) - dt.date(1970, 1, 1)).days + 2440588
 on_ms = (12 * 3600 + 3 * 60 + 15) * 1000 + 400
 raw = (u32(0xADBCCBDA) + u32(2) + u32(5) + s8("JTDX")
-       + struct.pack(">q", jd) + u32(on_ms + 75000) + b"\x01"          # time off, UTC
+       + struct.pack(">q", jd) + u32(on_ms + 75000) + b"\x00"          # time off: UTC values, labelled local (real JTDX)
        + s8("N9ABC") + s8("EN50") + struct.pack(">Q", 21074000) + s8("FT4")
        + s8("-07") + s8("+02") + s8("50") + s8("") + s8("")
-       + struct.pack(">q", jd) + u32(on_ms) + b"\x01"                   # time on
+       + struct.pack(">q", jd) + u32(on_ms) + b"\x00"                   # time on
        + s8("") + s8("N0CALL") + s8("FN31"))
 f = U.parse_logged(raw)
 check("a hand-built QSO Logged parses: call, band, FT4 as MFSK/FT4, time to the second",
@@ -284,6 +284,16 @@ _ph = {"CALL": "N9SSB", "BAND": "20m", "QSO_DATE": "20240504", "TIME_ON": "15000
 check("a phone QSO's key ignores the sideband: SSB/USB, SSB, USB and LSB are one key",
       len({A.key(A.qso({**_ph, **m}, "N0CALL")) for m in ({"MODE": "SSB", "SUBMODE": "USB"}, {"MODE": "SSB"},
                                                            {"MODE": "USB"}, {"MODE": "SSB", "SUBMODE": "LSB"})}), 1)
+_tz = os.environ.get("TZ")
+os.environ["TZ"] = "America/Phoenix"              # local != UTC, as on a real station (CI runs in UTC)
+time.tzset()
+check("type 5 from real JTDX (UTC values labelled local) keeps its UTC time-on, whatever the zone",
+      A.qso(U.parse_logged(J.logged(T0)))["ts"], T0.strftime("%Y%m%d%H%M%S"))
+if _tz is None:
+    os.environ.pop("TZ")
+else:
+    os.environ["TZ"] = _tz
+time.tzset()
 check("type 5 and type 12 of one QSO have one key",
       A.key(A.qso(U.parse_logged(J.logged(T0, mode="FT4", dial=21074000)))),
       A.key(A.qso(U.parse_adif_message(J.logged_adif(T0, mode="FT4", dial=21074000, band="15m")))))

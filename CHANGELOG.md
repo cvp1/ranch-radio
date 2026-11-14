@@ -7,6 +7,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **logsync keeps JTDX's QSO times in UTC.** JTDX labels the times in its QSO Logged
+  message as local time, but the values are UTC; logsync converted them from local and
+  shifted every QSO by the station's UTC offset. The test JTDX now sends what real JTDX sends,
+  and the time check runs in a non-UTC zone (CI runs in UTC, where the bug can't show).
 - **`doctor` no longer reports a working TQSL as missing.** Real TQSL 2.8.6 prints its
   version for `-v` and exits 255; the check now reads the version line, not the exit code.
   The test's fake TQSL exits 255 the same way.
