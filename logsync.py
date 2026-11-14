@@ -909,20 +909,53 @@ def status_text(ledger_path):
         led.close()
 
 
+def needs_text(path, a):
+    """`ranch-radio logsync needs`: the needs index's totals, and what one
+    station would be (--call, with --grid --band --mode)."""
+    import logsync_cty
+    import logsync_needs
+    import logsync_refdata
+    state = os.path.dirname(path)
+    cty_path, note = logsync_refdata.ensure("cty", state)
+    if note:
+        print(f"note: {note}")
+    cty = logsync_cty.Cty(logsync_refdata.read(cty_path)) if cty_path else None
+    n = logsync_needs.Needs.from_ledger(path, cty)
+    users, note = logsync_refdata.ensure("lotw_users", state)
+    if note:
+        print(f"note: {note}")
+    if users:
+        n.load_lotw_users(logsync_refdata.read(users))
+    s = n.summary()
+    print(f"{s['qsos']} QSOs: {s['dxcc_worked']} DXCC worked, {s['dxcc_confirmed']} confirmed; "
+          f"{s['grids_worked']} grids worked, {s['grids_confirmed']} confirmed; {s['lotw_users']} active LoTW users known")
+    if a.call:
+        e = cty.lookup(a.call) if cty else None
+        level, reasons = n.need(a.call, a.grid or "", a.band or "", a.mode or "")
+        print(f"{a.call.upper()}: {e.name if e else 'entity unknown'}; "
+              + (", ".join(logsync_needs.LABELS[r] for r in reasons) if reasons else "nothing new")
+              + ("; uses LoTW (last upload " + n.lotw_user(a.call) + ")" if n.lotw_user(a.call) else ""))
+    return 0
+
+
 def main(argv=None):
-    """python -m logsync {status,backfill} --ledger PATH [--apply HASH]
-    (what `ranch-radio logsync` runs)."""
+    """python -m logsync {status,backfill,needs} --ledger PATH [--apply HASH]
+    [--call C --grid G --band B --mode M] (what `ranch-radio logsync` runs)."""
     import argparse
     import sys
     p = argparse.ArgumentParser(prog="python -m logsync")
-    p.add_argument("action", choices=["status", "backfill"])
+    p.add_argument("action", choices=["status", "backfill", "needs"])
     p.add_argument("--ledger", required=True)
     p.add_argument("--apply", metavar="HASH")
+    for k in ("call", "grid", "band", "mode"):
+        p.add_argument(f"--{k}")
     a = p.parse_args(argv)
     path = os.path.expanduser(a.ledger)
     if a.action == "status":
         sys.stdout.write(status_text(path))
         return 0
+    if a.action == "needs":
+        return needs_text(path, a)
     if a.apply:
         n = apply(path, a.apply)
         if n is None:

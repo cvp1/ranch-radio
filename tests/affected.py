@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ("tests/run_all.sh", "tests/ci/", "requirements.txt", "install.sh", ".github/")
 PACKAGES = ("addons", "ranch_radio")
-PATH_TOKEN = re.compile(r"[\w./-]+\.(?:py|js|css|html|sh|json|c|swift|qml|conf|rules|plist)\b")
+PATH_TOKEN = re.compile(r"[\w./-]+\.(?:py|js|css|html|sh|json|csv|bin|c|swift|qml|conf|rules|plist)\b")
 
 
 def rel(p):
