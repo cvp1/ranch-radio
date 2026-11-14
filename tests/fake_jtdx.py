@@ -44,11 +44,14 @@ def _b(v):
     return struct.pack(">?", bool(v))
 
 
+SPEC = 0          # real JTDX labels its UTC times "local" (timespec 0)
+
+
 def _qdt(t):
-    """QDateTime, UTC (timespec 1)."""
+    """QDateTime as real JTDX sends it: UTC values, timespec SPEC (0, "local")."""
     jd = (t.date() - dt.date(1970, 1, 1)).days + 2440588
     ms = ((t.hour * 60 + t.minute) * 60 + t.second) * 1000 + t.microsecond // 1000
-    return struct.pack(">qIB", jd, ms, 1)
+    return struct.pack(">qIB", jd, ms, SPEC)
 
 
 def _qtime(ms):
