@@ -610,6 +610,14 @@ come back. The station runs it from the host file's `logsync` block:
   `ranch-radio logsync backfill --apply HASH` releases exactly that set.
   `ranch-radio logsync status` shows the ledger. `ranch-radio doctor` checks
   TQSL, the credential files and the UDP port.
+- **What you still need.** `ranch-radio logsync needs` prints DXCC entities and
+  grids worked and confirmed (from the ledger; LoTW or QRZ confirmations),
+  and with `--call CALL --grid GRID --band 20m --mode FT8` what that station
+  would be: new DXCC, new on the band or in the mode, new grid, not yet
+  confirmed, or a new call on the band and mode, and whether it uses LoTW.
+  It keeps country-files.com's cty.csv (weekly) and ARRL's LoTW user list
+  (daily) beside the ledger, and falls back to the cached copy when a fetch
+  fails. The roster and map build on it.
 - **Settings on the Logbook tab.** Open *Settings* under the sync's strip to
   change the Wavelog address and station profile, TQSL's path and station
   location, the LoTW login and where each credential file lives. A change

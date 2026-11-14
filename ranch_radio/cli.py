@@ -743,6 +743,9 @@ def cmd_logsync(a):
     argv = [sys.executable, "-m", "logsync", a.action, "--ledger", path]
     if a.apply:
         argv += ["--apply", a.apply]
+    for k in ("call", "grid", "band", "mode"):
+        if getattr(a, k, None):
+            argv += [f"--{k}", getattr(a, k)]
     return subprocess.run(argv, cwd=str(ROOT)).returncode
 
 
@@ -833,11 +836,14 @@ def main(argv=None):
     rm.add_argument("module")
     rm.add_argument("--host", help="default: this machine")
     rm.add_argument("--apply", action="store_true")
-    ls = sub.add_parser("logsync", help="the logbook sync's ledger: status, and the backfill review")
-    ls.add_argument("action", choices=["status", "backfill"])
+    ls = sub.add_parser("logsync", help="the logbook sync's ledger: status, the backfill review, and needs")
+    ls.add_argument("action", choices=["status", "backfill", "needs"])
     ls.add_argument("--apply", metavar="HASH", help="backfill: release exactly the set the report with this hash listed")
     ls.add_argument("--host", help="default: this machine")
     ls.add_argument("--ledger", help="the ledger file (default: from the host file's logsync block)")
+    for k, h in (("call", "needs: a station's callsign"), ("grid", "needs: its grid"), ("band", "needs: e.g. 20m"),
+                 ("mode", "needs: e.g. FT8")):
+        ls.add_argument(f"--{k}", help=h)
     a = p.parse_args(argv)
     return {"modules": cmd_modules, "hosts": cmd_hosts, "render": cmd_render, "radios": cmd_radios,
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,

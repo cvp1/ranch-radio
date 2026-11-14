@@ -61,6 +61,12 @@ check("logsync_settings.py (the Logbook tab's settings): its own test, no transm
       ("logsync_settings_test" in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
 
 
+for f in ("logsync_cty.py", "logsync_needs.py", "logsync_refdata.py", "tests/fixtures/cty-sample.csv"):
+    sel = affected.select([f])
+    check(f"{f} (the needs index): logsync_needs_test, no transmit/rig/Winlink test",
+          ("logsync_needs_test" in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
+
+
 def _static_imports(path):
     import ast
     tree = ast.parse((affected.ROOT / path).read_text())

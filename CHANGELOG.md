@@ -7,6 +7,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The needs index** (`logsync_cty.py`, `logsync_needs.py`, `logsync_refdata.py`): DXCC entity
+  from cty.csv (exact calls, longest prefix, portable forms, KG4), worked/confirmed by entity, band,
+  mode group and grid from the ledger, LoTW users; `ranch-radio logsync needs`. On a real ledger the
+  lookup agrees with Wavelog's DXCC on 99.6% of QSOs.
+- **`tests/affected.py` sees `.csv` and `.bin` fixtures**, so a fixture change selects the test that
+  reads it (the OpenGD77 `.bin` fixture selected nothing before).
+
 - **Logbook sync settings on the Logbook tab.** Paths, addresses, the Wavelog profile and the
   TQSL location, planned as a host-file diff and applied with a sync restart (no radio restart);
   the three credentials write-only (set, length and date shown, never the value); a live
