@@ -236,6 +236,18 @@ MANIFESTS = {
         "ask": {"url": "the logbook's address, e.g. https://192.168.1.20:8087/"},
         "needs": [],
     },
+    "map": {
+        "label": "Map (worked grids, who JTDX hears, gray line, POTA)",
+        "family": "addon",
+        "block": ("addons", "map"),
+        "os": ["macos", "linux"],
+        # Needs the logbook sync (the host's logsync block). "pota": false
+        # turns off the POTA spots (api.pota.app, fetched while the tab is on).
+        "template": {"any": {"enabled": True}},
+        "rules": {},
+        "ask": {},
+        "needs": [],
+    },
     "roster": {
         "label": "Roster (who JTDX hears, by what you need)",
         "family": "addon",

@@ -7,6 +7,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The Map tab** (`addons/map.py`, `static/addons/map.js`): worked/confirmed grids by band, live
+  decodes by need (click to answer), the gray line (sun position checked against NOAA reference
+  points in a browser), POTA spots on the band.
+
 - **The Roster tab** (`addons/roster.py`, `logsync_roster.py`): JTDX's decodes, live, marked by need,
   LoTW use, distance and bearing; click to answer (a Reply to JTDX, as a double-click). JTDX's Decode
   and Status are parsed to the layout of a real JTDX 2.2 capture (its short Status, null strings,

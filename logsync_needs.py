@@ -61,7 +61,7 @@ class Needs:
         self.cty = cty
         self.worked = {"dxcc": set(), "dxcc_band": set(), "dxcc_mode": set(), "grid": set(), "grid_band": set(),
                        "call_band_mode": set()}
-        self.confirmed = {"dxcc": set(), "grid": set()}
+        self.confirmed = {"dxcc": set(), "grid": set(), "grid_band": set()}
         self.qsos = 0
         self.lotw_users = {}
 
@@ -88,6 +88,7 @@ class Needs:
             w["grid_band"].add((g, band))
             if confirmed:
                 self.confirmed["grid"].add(g)
+                self.confirmed["grid_band"].add((g, band))
         w["call_band_mode"].add(((call or "").upper(), band, mg))
         self.qsos += 1
 
@@ -147,6 +148,17 @@ class Needs:
             reasons.append("call_band_mode")
         reasons.sort(key=LEVELS.index)
         return (reasons[0] if reasons else None), reasons
+
+    def grid_map(self, band=None):
+        """{grid4: "c" (confirmed) | "w" (worked)}, on one band or all."""
+        if band:
+            b = band.lower()
+            out = {g: "w" for g, bb in self.worked["grid_band"] if bb == b}
+            out.update({g: "c" for g, bb in self.confirmed["grid_band"] if bb == b})
+            return out
+        out = {g: "w" for g in self.worked["grid"]}
+        out.update({g: "c" for g in self.confirmed["grid"]})
+        return out
 
     def summary(self):
         w, c = self.worked, self.confirmed

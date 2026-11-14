@@ -618,6 +618,13 @@ come back. The station runs it from the host file's `logsync` block:
   It keeps country-files.com's cty.csv (weekly) and ARRL's LoTW user list
   (daily) beside the ledger, and falls back to the cached copy when a fetch
   fails. The roster and map build on it.
+- **The Map tab** (the `map` add-on: `ranch-radio add map`). Grids you have
+  worked (blue) and confirmed (green) on the band JTDX is on, one band or
+  all; who JTDX is hearing now at their grids, coloured by need (click one to
+  answer it, as on the Roster tab); your grid; the gray line; POTA
+  activators spotted on the band (api.pota.app, every minute while the tab
+  is on; `"pota": false` turns them off). OpenStreetMap tiles, as on the Mesh
+  map. Needs the logbook sync.
 - **The Roster tab** (the `roster` add-on: `ranch-radio add roster`). Who JTDX
   is hearing now, coloured by what you still need — new DXCC, new on this
   band or in this mode, new grid, not yet confirmed, new call — with the

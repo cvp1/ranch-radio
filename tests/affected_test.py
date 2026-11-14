@@ -63,7 +63,8 @@ check("logsync_settings.py (the Logbook tab's settings): its own test, no transm
 
 for f, t in (("logsync_cty.py", "logsync_needs_test"), ("logsync_needs.py", "logsync_needs_test"),
              ("logsync_refdata.py", "logsync_needs_test"), ("tests/fixtures/cty-sample.csv", "logsync_needs_test"),
-             ("logsync_roster.py", "logsync_roster_test"), ("addons/roster.py", "logsync_roster_test")):
+             ("logsync_roster.py", "logsync_roster_test"), ("addons/roster.py", "logsync_roster_test"),
+             ("addons/map.py", "map_page_test")):
     sel = affected.select([f])
     check(f"{f} (needs and roster): {t}, no transmit/rig/Winlink test",
           (t in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
