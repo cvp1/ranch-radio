@@ -17,6 +17,8 @@ group per run).
               Send correction; LoTW refuses a correction (no report there)
   crash       a crash after Wavelog's 201 and before "sent" -> unknown at the
               restart -> the reconcile finds it -> no second send
+              (and QRZ's: the reconcile FETCHes by call); a QSO QRZ already has
+              -> FAIL duplicate -> sent, no alert
   TQSL        exit 9 on a backfill batch with one out-of-range QSO -> that QSO
               held(not on LoTW) with TQSL's reason, the rest accepted (and all
               three unknown, not submitted, straight after the run); exit 0 but
@@ -379,6 +381,32 @@ h.start()
 check("  after the restart: reconciled to sent", testkit.wait_for(lambda: h.state("N9ABC", "wavelog") == ["sent"], 10), True)
 check("  by the reconcile", h.db("SELECT d.detail FROM dest d")[0]["detail"], "found on reconcile")
 check("  and never sent twice", len(h.wl_posts()), 1)
+h.close()
+
+# QRZ: the same lost result; the reconcile FETCHes by call and finds it.
+h = H(dests=("qrz",), timing={"pull_at_start": False}, start=False)
+h.start(crash_after_send="qrz")
+h.send(J.logged_adif(T0))
+check("QRZ crash: QRZ got the QSO", testkit.wait_for(lambda: len(h.qrz.inserts) == 1, 10), True)
+check("  the ledger still says attempting (the result was lost)",
+      testkit.wait_for(lambda: h.state("N9ABC", "qrz") == ["attempting"], 5), True)
+h.stop()
+h.start()
+check("  after the restart: reconciled to sent", testkit.wait_for(lambda: h.state("N9ABC", "qrz") == ["sent"], 10), True)
+check("  by the reconcile", h.db("SELECT d.detail FROM dest d")[0]["detail"], "found on reconcile")
+check("  and never sent twice", len(h.qrz.inserts), 1)
+h.close()
+
+# QRZ already has the QSO (logged by hand, or by GridTracker in the parallel
+# run): its FAIL "duplicate" counts as sent, never held or alerted.
+from fake_wavelog import records as _wl_records  # noqa: E402
+h = H(dests=("qrz",), timing={"pull_at_start": False}, start=False)
+h.qrz.add(_wl_records("<EOH>" + J.adif_record(T0))[0])
+h.start()
+h.send(J.logged_adif(T0))
+check("QRZ duplicate: one INSERT, answered duplicate", testkit.wait_for(lambda: len(h.qrz.inserts) == 1, 10), True)
+check("  counts as sent", testkit.wait_for(lambda: h.state("N9ABC", "qrz") == ["sent"], 5), True)
+check("  with no alert", h.alerts, [])
 h.close()
 
 # LoTW: a TQSL run whose result was lost. Uploaded -> the next qso_qsl=no pull
