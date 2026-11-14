@@ -5,6 +5,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Logbook sync settings on the Logbook tab.** Paths, addresses, the Wavelog profile and the
+  TQSL location, planned as a host-file diff and applied with a sync restart (no radio restart);
+  the three credentials write-only (set, length and date shown, never the value); a live
+  read-only *Test* per destination.
+
 ### Fixed
 
 - **logsync keeps JTDX's QSO times in UTC.** JTDX labels the times in its QSO Logged

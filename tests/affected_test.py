@@ -56,6 +56,11 @@ for f in ("logsync.py", "logsync_config.py", "logsync_udp.py", "logsync_ledger.p
     check(f"  {f}: a handful, not the suite", len(sel) <= 10, True)
 
 
+sel = affected.select(["logsync_settings.py"])
+check("logsync_settings.py (the Logbook tab's settings): its own test, no transmit/rig/Winlink test",
+      ("logsync_settings_test" in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
+
+
 def _static_imports(path):
     import ast
     tree = ast.parse((affected.ROOT / path).read_text())

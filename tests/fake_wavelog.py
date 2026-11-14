@@ -53,6 +53,9 @@ class FakeWavelog:
         self.calls = []                   # [(path, adif string or fetchfromid)]
         self.down = False
         self.rate = 0
+        self.rights = "rw"                # the key's rights, as check_auth reports them
+        self.profiles = [{"station_id": str(station_id), "station_profile_name": "Home", "station_gridsquare": "FN31PR",
+                          "station_callsign": "N0CALL", "station_active": "1", "station_uuid": "0000"}]
 
     def add(self, f):
         self.next_id += 1
@@ -63,7 +66,20 @@ class FakeWavelog:
         a = web.Application()
         a.router.add_post("/index.php/api/qso", self.qso)
         a.router.add_post("/index.php/api/get_contacts_adif", self.contacts)
+        a.router.add_get("/index.php/api/check_auth/{key}", self.check_auth)
+        a.router.add_get("/index.php/api/station_info/{key}", self.station_info)
         return a
+
+    # Api.php check_auth / station_info (as Wavelog answers: JSON, the key in the path)
+    async def check_auth(self, request):
+        if request.match_info["key"] != self.key:
+            return web.json_response({"status": "failed", "reason": "missing or invalid api key"})
+        return web.json_response({"status": "valid", "rights": self.rights})
+
+    async def station_info(self, request):
+        if request.match_info["key"] != self.key:
+            return web.json_response({"status": "failed", "reason": "missing or invalid api key"}, status=401)
+        return web.json_response(self.profiles)
 
     async def qso(self, request):
         if self.down:

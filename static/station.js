@@ -309,6 +309,8 @@ const station = (() => {
       } else if (m.t === "addon") {
         addons.event(m);
         if ("on" in m) modules.addonChanged();
+      } else if (m.t === "logsync_settings") {
+        addons.event({ ...m, t: "addon", addon: "logbook", settings: true });   // the Logbook tab's Settings
       } else if (m.t === "modules" || m.t === "module_plan" || m.t === "module_applied") {
         modules.event(m);
       } else if (m.t === "notice") {

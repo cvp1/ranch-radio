@@ -411,6 +411,7 @@ class Station:
         self.modules = None           # ranch_radio.pageapi.ModulesService from the config's "host_file"
         self.logsync = None           # logsync.LogSync from the config's "logsync" block
         self.logsync_error = None     # why it isn't running: shown on the Logbook tab
+        self.settings_plans = None    # logsync_settings.Plans: the Logbook tab's planned host-file edits
         self._tasks = []
         self._rigctl = None
         self._lane = None
@@ -718,6 +719,8 @@ class Station:
             elif m.get("do") == "correct":
                 why = await self.logsync.correct(int(m["id"]), str(m["dest"]))
                 self.notice(why or f"Correction queued for {m['dest']}.", "warn" if why else "info", ws)
+        elif t == "logsync_settings":
+            await self._logsync_settings(ws, m)
         elif t == "ping":
             await ws.send_str(json.dumps({"t": "pong", "ts": m.get("ts")}))
 
@@ -758,6 +761,83 @@ class Station:
             except Exception as e2:
                 log.debug("logsync: stop after a failed start: %s", type(e2).__name__)
             self.logsync = None
+
+    def make_logsync(self, block):
+        """A LogSync from a logsync block, or None with logsync_error set: a
+        broken block must not take the station down."""
+        self.logsync, self.logsync_error = None, None
+        try:
+            self.logsync = _logsync_module().LogSync(block, notify=self.logsync_changed,
+                                                     alert=lambda msg: self.notice(msg, "warn"))
+        except Exception as e:
+            try:
+                why = _logsync_module().scrub(f"{type(e).__name__}: {e}", cap=200)
+            except Exception:            # it did not even import: the type alone, no text to scrub
+                why = type(e).__name__
+            self.logsync_error = f"not loaded: {why}"
+            log.error("logsync %s", self.logsync_error)
+        return self.logsync
+
+    async def restart_logsync(self, block):
+        """The settings changed: stop the sync, start it on the new block.
+        The radios and the rest of the station carry on."""
+        if self.logsync is not None:
+            await self.logsync.stop()
+        self.cfg["logsync"] = block
+        self.make_logsync(block)
+        await self.start_logsync()
+        self.logsync_changed(self.logsync_status())
+
+    # --- the Logbook tab's settings (logsync_settings.py, loaded by name like logsync)
+
+    async def _logsync_settings(self, ws, m):
+        """{"t": "logsync_settings", "do": get|plan|apply|secret|test, ...} ->
+        {"t": "logsync_settings", "do", ...} to that page. A credential's value
+        is never logged, echoed or sent back to any page."""
+        import importlib
+        S = importlib.import_module("logsync_settings")
+        do = m.get("do")
+        reply = {"t": "logsync_settings", "do": do}
+        try:
+            block = self.cfg.get("logsync")
+            if not isinstance(block, dict):
+                raise S.SettingsError("the logbook sync isn't set up on this station (ranch-radio add logsync)")
+            if do == "get":
+                reply["view"] = await asyncio.to_thread(S.view, block)
+            elif do == "secret":
+                dest = str(m.get("dest"))
+                reply["dest"], reply["state"] = dest, await asyncio.to_thread(S.write_secret, block, dest, m.get("value"))
+                log.info("logsync settings: the %s credential was set from the page (%s chars)",
+                         dest, reply["state"].get("chars"))
+                reply["view"] = await asyncio.to_thread(S.view, block)
+            elif do in ("plan", "apply"):
+                if self.modules is None:
+                    raise S.SettingsError("this station's config names no host file; run ranch-radio install")
+                if self.settings_plans is None:
+                    self.settings_plans = S.Plans()
+                if do == "plan":
+                    from ranch_radio import render
+                    reply["plan"] = await asyncio.to_thread(self.settings_plans.make, str(self.modules.path),
+                                                            m.get("changes"), render.validate)
+                else:
+                    h = await asyncio.to_thread(self.settings_plans.apply, str(m.get("id")))
+                    new = await asyncio.to_thread(S.write_station_json, h)
+                    log.info("logsync settings: host file and station.json updated from the page; restarting the sync")
+                    await self.restart_logsync(new)
+                    reply["applied"] = True
+                    reply["view"] = await asyncio.to_thread(S.view, new)
+            elif do == "test":
+                import aiohttp
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=S.TEST_TIMEOUT_S)) as http:
+                    reply["result"] = await S.test(str(m.get("dest")), block, http, _logsync_module().scrub)
+            else:
+                raise S.SettingsError(f"unknown settings action {do!r}")
+        except S.SettingsError as e:
+            reply["error"] = str(e)
+        except Exception as e:                       # never the message text: it can't carry a value, but be sure
+            log.error("logsync settings: %s failed: %s", do, type(e).__name__)
+            reply["error"] = f"{do} failed ({type(e).__name__})"
+        await ws.send_str(json.dumps(reply))
 
     def logsync_status(self):
         """For the pages (and the Logbook tab): an allowlist, see LogSync.status."""
@@ -1026,16 +1106,7 @@ def main():
         if wa is not None:                   # between sessions the panel shows the radio's own lane state
             wa.engine.idle_lane = IdleLane(station)
     if cfg.get("logsync"):
-        try:
-            station.logsync = _logsync_module().LogSync(cfg["logsync"], notify=station.logsync_changed,
-                                                        alert=lambda msg: station.notice(msg, "warn"))
-        except Exception as e:           # a broken logsync must not take the station down
-            try:
-                why = _logsync_module().scrub(f"{type(e).__name__}: {e}", cap=200)
-            except Exception:            # it did not even import: the type alone, no text to scrub
-                why = type(e).__name__
-            station.logsync_error = f"not loaded: {why}"
-            log.error("logsync %s", station.logsync_error)
+        station.make_logsync(cfg["logsync"])        # a broken logsync must not take the station down
     if cfg.get("host_file"):
         from ranch_radio import pageapi
         # RANCH_RADIO_REPO / RANCH_RADIO_HOME: tests point these at scratch copies.

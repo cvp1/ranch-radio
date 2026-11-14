@@ -15,6 +15,13 @@
 // a strip of counts and holds above the frame, and the latest QSOs with a tick
 // per destination. Display only, plus the operator's Send correction for a QSO
 // edited after upload; this tab never starts or stops the sync.
+//
+// Settings (when the sync runs): the logsync block's paths and URLs, and its
+// three credentials. {"t": "logsync_settings", do: get|plan|apply|secret|test}
+// to the station (logsync_settings.py). Paths and URLs are planned first (the
+// host-file diff is shown) and applied on the operator's word; a credential is
+// write-only: its box is cleared as it is sent, and the page only ever hears
+// whether it is set, how long and when it changed.
 
 (() => {
   let body = null, snap = {}, loadedSrc = "", seen = null;
@@ -44,6 +51,7 @@
       loadedSrc = "";
       body.innerHTML = `<div class="lb">
           <div class="lb-sync" hidden></div>
+          <details class="lb-set" hidden><summary class="stat">Settings</summary><div class="lb-set-body stat">Loading…</div></details>
           <div class="lb-bar">
             <a class="chip chip-mini lb-open" href="${esc(url)}" target="_blank" rel="noopener">Open in its own tab</a>
             <span class="lb-url stat">${esc(url)}</span>
@@ -56,6 +64,7 @@
       watch();
     }
     renderSync();
+    wireSettings();
     if (frame && visible() && loadedSrc !== url) { frame.src = url; loadedSrc = url; }
   }
 
@@ -116,6 +125,107 @@
     }
   }
 
+  // ---------------------------------------------------------------- settings
+
+  let setView = null, setPlan = null;
+  const results = {};
+  const GROUPS = [
+    ["wavelog", "Wavelog", ["wavelog.url", "wavelog.station_profile_id", "wavelog.key_file"]],
+    ["qrz", "QRZ", ["qrz.key_file"]],
+    ["lotw", "LoTW", ["lotw.tqsl", "lotw.location", "lotw.login", "lotw.password_file"]],
+  ];
+
+  function setEl() { return body && body.querySelector(".lb-set"); }
+
+  function wireSettings() {
+    const d = setEl();
+    if (!d) return;
+    d.hidden = !snap.logsync;              // running or not: settings are how a broken one gets fixed
+    if (d.dataset.wired) { renderSettings(); return; }
+    d.dataset.wired = "1";
+    d.addEventListener("toggle", () => { if (d.open) send({ t: "logsync_settings", do: "get" }); });
+  }
+
+  function secretState(s) {
+    if (!s || !s.set) return `<span class="lb-bad">not set</span>`;
+    const when = s.updated ? new Date(s.updated).toLocaleString() : "";
+    return `set · ${esc(s.chars)} characters · updated ${esc(when)}` + (s.mode_ok === false ? ` · <span class="lb-bad">file readable by others</span>` : "");
+  }
+
+  function fieldInput(f, locations) {
+    const id = `lbs-${f.key.replace(".", "-")}`;
+    if (f.key === "lotw.location" && locations && locations.length) {
+      const opts = locations.concat(locations.includes(f.value) ? [] : [f.value])
+        .map((n) => `<option${n === f.value ? " selected" : ""}>${esc(n)}</option>`).join("");
+      return `<label for="${id}">${esc(f.label)}</label><select id="${id}" data-key="${esc(f.key)}">${opts}</select>`;
+    }
+    const type = f.kind === "int" ? "number" : "text";
+    return `<label for="${id}">${esc(f.label)}</label><input id="${id}" type="${type}" data-key="${esc(f.key)}" value="${esc(f.value ?? "")}" spellcheck="false" autocomplete="off">`;
+  }
+
+  function renderSettings() {
+    const d = setEl();
+    const el = d && d.querySelector(".lb-set-body");
+    if (!el || !setView) return;
+    const byKey = Object.fromEntries((setView.fields || []).map((f) => [f.key, f]));
+    const groups = GROUPS.filter(([dest]) => (setView.secrets || {})[dest] || byKey[`${dest}.key_file`] || byKey[`${dest}.password_file`] || byKey[`${dest}.url`]);
+    el.innerHTML = groups.map(([dest, title, keys]) => {
+      const sec = (setView.secrets || {})[dest];
+      const r = results[dest];
+      return `<fieldset class="lb-grp" data-dest="${esc(dest)}"><legend>${esc(title)}</legend>
+        <div class="lb-grid">${keys.filter((k) => byKey[k]).map((k) => fieldInput(byKey[k], setView.locations)).join("")}
+        ${sec ? `<label for="lbs-sec-${esc(dest)}">${esc(sec.label)}</label>
+          <span class="lb-sec"><input id="lbs-sec-${esc(dest)}" type="password" autocomplete="new-password" placeholder="type a new one to replace it" data-secret="${esc(dest)}">
+          <button class="chip chip-mini lb-sec-save" data-dest="${esc(dest)}">Save</button>
+          <span class="lb-sec-state">${secretState(sec)}</span></span>` : ""}</div>
+        <div class="lb-test-row"><button class="chip chip-mini lb-test" data-dest="${esc(dest)}">Test ${esc(title)}</button>
+          ${r ? `<span class="lb-test-msg ${r.ok ? "lb-ok" : "lb-bad"}">${r.ok ? "✓" : "✕"} ${esc(r.msg)}</span>` : ""}</div>
+      </fieldset>`;
+    }).join("") + `<div class="lb-set-actions"><button class="chip lb-plan">Review changes…</button>
+        <span class="lb-set-note">Paths and addresses go in the host file (you'll see the change first); keys go straight to their files and are never shown.</span></div>
+      ${setPlan ? `<div class="lb-plan-box"><div>Change ${setPlan.changes.map((c) => `<b>${esc(c.label)}</b>`).join(", ")}:</div>
+          <pre class="lb-diff">${esc(setPlan.diff)}</pre>
+          <button class="chip lb-apply">Apply and restart the sync</button> <button class="chip chip-mini lb-cancel">Cancel</button></div>` : ""}`;
+    for (const b of el.querySelectorAll(".lb-sec-save")) {
+      b.onclick = () => {
+        const inp = el.querySelector(`input[data-secret="${b.dataset.dest}"]`);
+        const v = inp.value;
+        inp.value = "";                               // never left in the page
+        if (!v.trim()) { toast("Type the new value first.", "warn"); return; }
+        send({ t: "logsync_settings", do: "secret", dest: b.dataset.dest, value: v });
+      };
+    }
+    for (const b of el.querySelectorAll(".lb-test")) {
+      b.onclick = () => { results[b.dataset.dest] = { ok: true, msg: "testing…" }; renderSettings(); send({ t: "logsync_settings", do: "test", dest: b.dataset.dest }); };
+    }
+    el.querySelector(".lb-plan").onclick = () => {
+      const changes = {};
+      for (const i of el.querySelectorAll("[data-key]")) {
+        const f = byKey[i.dataset.key];
+        if (f && String(f.value ?? "") !== i.value) changes[i.dataset.key] = i.value;
+      }
+      if (!Object.keys(changes).length) { toast("Nothing changed.", "info"); return; }
+      send({ t: "logsync_settings", do: "plan", changes });
+    };
+    const ap = el.querySelector(".lb-apply");
+    if (ap) ap.onclick = () => { send({ t: "logsync_settings", do: "apply", id: setPlan.id }); setPlan = null; };
+    const cn = el.querySelector(".lb-cancel");
+    if (cn) cn.onclick = () => { setPlan = null; renderSettings(); };
+  }
+
+  function settingsEvent(m) {
+    if (m.error) {
+      if (m.do === "test" && m.dest) results[m.dest] = { ok: false, msg: m.error };
+      toast(`Logbook settings: ${m.error}`, "warn");
+    }
+    if (m.view) setView = m.view;
+    if (m.do === "plan" && m.plan) setPlan = m.plan;
+    if (m.do === "apply" && m.applied) toast("Settings saved; the logbook sync restarted on them.", "info");
+    if (m.do === "secret" && m.state) toast(`${(setView && setView.secrets[m.dest] || {}).label || m.dest} saved.`, "info");
+    if (m.do === "test" && m.result) results[m.result.dest] = m.result;
+    renderSettings();
+  }
+
   function visible() { return !!body && body.offsetParent !== null; }
 
   // Load the frame when the tab is first shown (the logbook's dashboard is
@@ -129,7 +239,10 @@
   addons.register("logbook", {
     mount(b) { body = b; render(); },
     hello(s) { snap = s || {}; render(); },
-    event(m) { if (m && m.logsync) { snap.logsync = m.logsync; renderSync(); } },
+    event(m) {
+      if (m && m.settings) { settingsEvent(m); return; }
+      if (m && m.logsync) { snap.logsync = m.logsync; renderSync(); wireSettings(); }
+    },
     off() { snap = {}; render(); },
     tab() { return { dot: target() ? "ok" : "off", title: target() || "Your logbook" }; },
     card() {
