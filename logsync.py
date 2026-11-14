@@ -278,9 +278,11 @@ class LogSync:
         p = logsync_roster.parse_message(dec["message"]) or {}
         call, kind = p.get("call") or "?", ("cq" if p.get("cq") else "line")
         log.info("logsync: roster: Reply sent to JTDX for %r", dec["message"].strip())
-        if self._reply_wait is not None:
-            self._reply_wait["handle"].cancel()
-            self._reply_wait = None
+        if self._reply_wait is not None:            # one wait at a time: the older click is told, never left hanging
+            old, self._reply_wait = self._reply_wait, None
+            old["handle"].cancel()
+            log.info("logsync: roster: Reply for %s replaced by a newer click (%s)", old["call"], call)
+            self._reply_done(old, False, f"A newer click ({call}) replaced this one before JTDX answered {old['call']}.")
         if done is not None:
             h = asyncio.get_running_loop().call_later(REPLY_CONFIRM_S, self._reply_timeout)
             self._reply_wait = {"call": call, "done": done, "handle": h, "kind": kind}

@@ -233,6 +233,16 @@ outcomes.clear()
 BG.call(eng.reply, k3, lambda ok, msg: outcomes.append((ok, msg)))
 check("  a non-CQ line ignored: it names the reply filter too",
       testkit.wait_for(lambda: outcomes, 3) and ("reply messages" in outcomes[0][1] and "wasn't calling CQ" in outcomes[0][1]), True)
+first, second = [], []
+BG.call(eng.reply, rows["JA2XYZ"]["key"], lambda ok, msg: first.append((ok, msg)))
+BG.call(eng.reply, rows["VK9NA"]["key"], lambda ok, msg: second.append((ok, msg)))
+check("  a second click before JTDX answers: the first page is told it was replaced",
+      testkit.wait_for(lambda: first, 1) and (first[0][0], "replaced" in first[0][1], "JA2XYZ" in first[0][1]), (False, True, True))
+jt.send(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31", dx_call="VK9NA"), ("127.0.0.1", port))
+check("  and the second still resolves on its own Status", testkit.wait_for(lambda: second, 3) and second,
+      [(True, "JTDX is calling VK9NA.")])
+time.sleep(0.8)
+check("  each told once", (len(first), len(second)), (1, 1))
 jt.poll()
 jt.got.clear()
 check("  an unknown key: refused, nothing sent", (BG.call(eng.reply, "nope") is not None, (time.sleep(0.4), jt.poll())[1]), (True, []))

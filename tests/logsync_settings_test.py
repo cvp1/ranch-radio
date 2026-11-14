@@ -257,6 +257,18 @@ web_p, radio_web, rig = testkit.free_port(), testkit.free_port(), testkit.free_p
 radio = subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", "ic7300", "--no-audio", "--host", "127.0.0.1",
                           "--listen", str(radio_web), "--rigctl-host", "127.0.0.1", "--rigctl-port", str(rig)],
                          cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+children = [radio]
+
+
+def _reap():                                  # any exit but the clean os._exit: no child outlives the test
+    for p in children:
+        if p.poll() is None:
+            p.kill()
+
+
+import atexit
+atexit.register(_reap)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))   # a runner's SIGTERM unwinds through atexit
 cfg = {"name": "test", "radios": [{"id": "ic7300", "name": "IC-7300", "web": radio_web, "rigctl": rig}],
        "addons": {"logbook": {"enabled": True, "url": "https://192.168.1.20:8087/"}},
        "addons_state": str(tmp / "addons.json"), "logsync": h2["logsync"], "host_file": "test"}
@@ -266,6 +278,7 @@ env.pop("CC_OBS_TOKENS_FILE", None)
 st = subprocess.Popen([sys.executable, "station.py", "--config", str(shome / ".config" / "radio-remote" / "station.json"),
                        "--host", "127.0.0.1", "--listen", str(web_p), "--rigctl-port", "0"],
                       cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+children.append(st)
 
 
 def _open(p):
