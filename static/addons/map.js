@@ -41,8 +41,8 @@ const rrMapMath = (() => {
     const cosz = Math.sin(lat * rad) * Math.sin(s.lat * rad) + Math.cos(lat * rad) * Math.cos(s.lat * rad) * Math.cos((lon - s.lon) * rad);
     return cosz < 0;
   }
-  function gridLL(g) {                             // a grid's south-west corner and size
-    g = (g || "").toUpperCase();
+  function gridLL(g) {                             // a grid's south-west corner and size (4 or 6 characters: the square)
+    g = (g || "").toUpperCase().slice(0, 4);
     if (!/^[A-R]{2}[0-9]{2}$/.test(g)) return null;
     return { lon: (g.charCodeAt(0) - 65) * 20 - 180 + Number(g[2]) * 2, lat: (g.charCodeAt(1) - 65) * 10 - 90 + Number(g[3]), w: 2, h: 1 };
   }
@@ -54,7 +54,7 @@ const rrMapMath = (() => {
   const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const NEED = { dxcc: "#e5484d", dxcc_band: "#f76b15", dxcc_mode: "#ffc53d", grid: "#5b7fff", grid_band: "#5b7fff",
                  dxcc_unconfirmed: "#a970e0", call_band_mode: "#30a46c" };
-  let body = null, snap = {}, z = 3, cx = null, cy = null, w = 0, h = 0, built = false, drag = null;
+  let body = null, snap = {}, z = 3, cx = null, cy = null, w = 0, h = 0, built = false, drag = null, centred = false;
   const tiles = new Map();
   const px = (lon, zz = z) => ((lon + 180) / 360) * TILE * 2 ** zz;
   const py = (lat, zz = z) => {
@@ -69,6 +69,8 @@ const rrMapMath = (() => {
         <a class="rm-attr" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a></div>`;
     const wrap = body.querySelector(".rm-wrap");
     for (const b of body.querySelectorAll("[data-z]")) b.onclick = () => zoom(Number(b.dataset.z));
+    // Drawn while the tab is hidden the map has no size; draw again the moment it has one.
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => draw()).observe(wrap);
     wrap.addEventListener("wheel", (e) => { e.preventDefault(); zoom(e.deltaY < 0 ? 1 : -1); }, { passive: false });
     wrap.addEventListener("pointerdown", (e) => { if (e.target.closest(".rm-d, .rm-ctl")) return; drag = { x: e.clientX, y: e.clientY, cx, cy }; wrap.setPointerCapture(e.pointerId); });
     wrap.addEventListener("pointermove", (e) => { if (!drag) return; cx = drag.cx - (e.clientX - drag.x); cy = drag.cy - (e.clientY - drag.y); draw(); });
@@ -113,9 +115,10 @@ const rrMapMath = (() => {
     if (!body || !built) return;
     const wrap = body.querySelector(".rm-wrap");
     w = wrap.clientWidth; h = wrap.clientHeight;
+    if (!w || !h) return;                         // hidden: nothing to place yet
     const M = snap.map;
     const me = M && rrMapMath.gridLL(M.me);
-    if (cx == null) { cx = px(me ? me.lon + 1 : -100); cy = py(me ? me.lat + 0.5 : 35); }
+    if (cx == null || (!centred && me)) { cx = px(me ? me.lon + 1 : -100); cy = py(me ? me.lat + 0.5 : 35); centred = !!me; }
     drawTiles();
     body.querySelector(".rm-world").setAttribute("transform", `translate(${w / 2 - cx},${h / 2 - cy})`);
     for (const g of body.querySelectorAll(".rm-world > g")) g.innerHTML = "";
@@ -149,7 +152,7 @@ const rrMapMath = (() => {
     const M = snap.map || {}, n = Object.values(M.grids || {});
     const sel = ["current", "all", "160m", "80m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m"]
       .map((b) => `<option${(b === "current" ? !snap.chosen : snap.chosen === b) ? " selected" : ""}>${b}</option>`).join("");
-    el2.innerHTML = `<span>grids on <select class="rm-band">${sel}</select> (${esc(M.showing || "")}): ${n.length} worked, ${n.filter((s) => s === "c").length} confirmed</span>
+    el2.innerHTML = `<span>grids on <select class="rm-band">${sel}</select> (${esc(M.showing || "")}): ${n.length} worked, of them ${n.filter((s) => s === "c").length} confirmed</span>
       <span>${(M.decodes || []).length} heard</span>
       <span>${snap.pota ? `${snap.pota.length} POTA on ${esc(M.showing || "")}` : ""}${snap.pota_error ? ` <span class="lb-bad">${esc(snap.pota_error)}</span>` : ""}</span>
       <span class="rm-key"><i class="rm-kw"></i>worked <i class="rm-kc"></i>confirmed <i class="rm-kn"></i>night</span>`;
@@ -165,7 +168,7 @@ const rrMapMath = (() => {
 
   window.rrMapMath = rrMapMath;               // the tests check the gray line against reference points
   addons.register("map", {
-    mount(b) { body = b; built = false; render(); },
+    mount(b) { body = b; built = false; centred = false; cx = null; render(); },
     hello(s) { snap = Object.assign({ chosen: snap.chosen }, s || {}); render(); },
     event(m) { if (m.map || m.error) { snap = Object.assign({ chosen: snap.chosen }, m); render(); } },
     off() { snap = {}; if (body) body.innerHTML = ""; built = false; },

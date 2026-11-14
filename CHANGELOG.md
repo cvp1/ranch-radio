@@ -5,6 +5,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Map tab centres on your grid and fills with tiles.** A 6-character station grid (as JTDX
+  reports it) was refused, so the map had no "you" and a default centre; and a map drawn while its
+  tab was hidden kept a zero size (one tile). Found on the first live look.
+
 ### Added
 
 - **The Map tab** (`addons/map.py`, `static/addons/map.js`): worked/confirmed grids by band, live

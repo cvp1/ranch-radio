@@ -153,6 +153,31 @@ try:
     eq = json.loads(b.js("JSON.stringify(rrMapMath.night(new Date(Date.UTC(2026, 2, 20, 14, 46))).slice(1, -1).map(p => p[1]))"))
     check("  at the March equinox the line is nearly a meridian (no lat stuck at the equator)", max(abs(x) for x in eq) > 80, True)
     check("gridLL: FN31's south-west corner", json.loads(b.js("JSON.stringify(rrMapMath.gridLL('FN31'))")), {"lon": -74, "lat": 41, "w": 2, "h": 1})
+    check("  a 6-character grid (as JTDX gives our own) is its square", json.loads(b.js("JSON.stringify(rrMapMath.gridLL('FN31pr'))")),
+          {"lon": -74, "lat": 41, "w": 2, "h": 1})
+    # The tab mounted while hidden, then shown: it must draw at its real size, centred on our grid.
+    b.goto("about:blank")                       # a fresh page: map.js declares rrMapMath once per page
+    b.js("""(() => {
+      window.esc = (s) => String(s); window.send = () => {};
+      window.__impl = null; window.addons = {register(n, impl) { window.__impl = impl; }};
+      const s = document.createElement('style'); s.textContent = '.rm-wrap{position:relative;height:300px;overflow:hidden}.rm-tile{position:absolute;width:256px;height:256px}';
+      document.head.appendChild(s);
+      const host = document.createElement('div'); host.id = 'mapbox'; host.style.display = 'none'; host.style.width = '800px';
+      document.body.appendChild(host);
+    })()""")
+    b.js((ROOT / "static/addons/map.js").read_text())
+    b.js("""__impl.mount(document.getElementById('mapbox'));
+      __impl.hello({map: {me: 'FN31pr', band: '15m', showing: '15m', grids: {FN31: 'c', FN42: 'w'}, decodes: []}, pota: []});
+      document.getElementById('mapbox').style.display = 'block';""")
+    b.wait("document.querySelectorAll('#mapbox .rm-tile').length > 2", 5)
+    shown = json.loads(b.js("""JSON.stringify({tiles: document.querySelectorAll('#mapbox .rm-tile').length,
+      me: !!document.querySelector('#mapbox .rm-mep'),
+      mePos: (() => { const c = document.querySelector('#mapbox .rm-mep'); const r = c && c.getBoundingClientRect();
+                      const w = document.querySelector('#mapbox .rm-wrap').getBoundingClientRect();
+                      return r ? [Math.round(r.x + r.width / 2 - w.x), Math.round(r.y + r.height / 2 - w.y)] : null; })()})"""))
+    check("map hidden then shown: tiles fill the view", shown["tiles"] > 2, True)
+    check("  our grid (6 characters) is marked, at the centre", (shown["me"], [abs(shown["mePos"][0] - 400) < 3, abs(shown["mePos"][1] - 150) < 3] if shown["mePos"] else None),
+          (True, [True, True]))
 finally:
     b.close()
 
