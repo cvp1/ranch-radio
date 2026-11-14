@@ -236,6 +236,18 @@ MANIFESTS = {
         "ask": {"url": "the logbook's address, e.g. https://192.168.1.20:8087/"},
         "needs": [],
     },
+    "roster": {
+        "label": "Roster (who JTDX hears, by what you need)",
+        "family": "addon",
+        "block": ("addons", "roster"),
+        "os": ["macos", "linux"],
+        # Needs the logbook sync (the host's logsync block) in unicast relay
+        # mode: its intake hears JTDX and answers it on the relay's path.
+        "template": {"any": {"enabled": True}},
+        "rules": {},
+        "ask": {},
+        "needs": [],
+    },
     # The logbook sync (logsync.py): a station module, not an add-on. doctor
     # adds its own checks (doctor.logsync_checks): TQSL answers -v, the
     # credential files exist with mode 600, the UDP intake can bind.

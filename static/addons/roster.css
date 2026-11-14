@@ -1,0 +1,18 @@
+/* The Roster tab (static/addons/roster.js). */
+.rs-bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 8px; font-size: 0.9em; }
+.rs-t { border-collapse: collapse; width: 100%; font-size: 0.88em; }
+.rs-t th, .rs-t td { padding: 3px 8px; text-align: left; white-space: nowrap; }
+.rs-t .rs-num { text-align: right; font-variant-numeric: tabular-nums; }
+.rs-msg { opacity: 0.75; font-family: ui-monospace, monospace; }
+.rs-row { cursor: pointer; border-left: 4px solid transparent; }
+.rs-row:hover { background: rgba(127,127,127,0.18); }
+.rs-call { font-weight: 600; font-family: ui-monospace, monospace; }
+.rs-lotw { font-size: 0.7em; padding: 0 3px; border-radius: 3px; background: #3c9a5f; color: #fff; vertical-align: middle; }
+.rs-dxcc { border-left-color: #e5484d; } .rs-dxcc .rs-need { color: #e5484d; font-weight: 700; }
+.rs-band { border-left-color: #f76b15; } .rs-band .rs-need { color: #f76b15; font-weight: 600; }
+.rs-mode { border-left-color: #ffc53d; } .rs-mode .rs-need { color: #d4a017; }
+.rs-grid, .rs-gridband { border-left-color: #3e63dd; } .rs-grid .rs-need, .rs-gridband .rs-need { color: #5b7fff; }
+.rs-unconf { border-left-color: #8e4ec6; } .rs-unconf .rs-need { color: #a970e0; }
+.rs-newcall { border-left-color: #30a46c; }
+.rs-none { opacity: 0.6; }
+.rs-me { background: rgba(229,72,77,0.12); }

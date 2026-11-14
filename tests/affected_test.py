@@ -61,10 +61,12 @@ check("logsync_settings.py (the Logbook tab's settings): its own test, no transm
       ("logsync_settings_test" in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
 
 
-for f in ("logsync_cty.py", "logsync_needs.py", "logsync_refdata.py", "tests/fixtures/cty-sample.csv"):
+for f, t in (("logsync_cty.py", "logsync_needs_test"), ("logsync_needs.py", "logsync_needs_test"),
+             ("logsync_refdata.py", "logsync_needs_test"), ("tests/fixtures/cty-sample.csv", "logsync_needs_test"),
+             ("logsync_roster.py", "logsync_roster_test"), ("addons/roster.py", "logsync_roster_test")):
     sel = affected.select([f])
-    check(f"{f} (the needs index): logsync_needs_test, no transmit/rig/Winlink test",
-          ("logsync_needs_test" in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
+    check(f"{f} (needs and roster): {t}, no transmit/rig/Winlink test",
+          (t in sel, [n for n in sel if n.startswith(TX_FAMILY)], len(sel) <= 10), (True, [], True))
 
 
 def _static_imports(path):

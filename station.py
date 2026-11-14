@@ -768,7 +768,8 @@ class Station:
         self.logsync, self.logsync_error = None, None
         try:
             self.logsync = _logsync_module().LogSync(block, notify=self.logsync_changed,
-                                                     alert=lambda msg: self.notice(msg, "warn"))
+                                                     alert=lambda msg: self.notice(msg, "warn"),
+                                                     roster=self.roster_changed)
         except Exception as e:
             try:
                 why = _logsync_module().scrub(f"{type(e).__name__}: {e}", cap=200)
@@ -846,6 +847,11 @@ class Station:
         if self.logsync_error:
             return {"loaded": False, "error": self.logsync_error}
         return None
+
+    def roster_changed(self):
+        """New decodes on the sync's roster: to pages, if the Roster tab is on."""
+        if self.addons and self.addons.is_on("roster"):
+            self.addons.get("roster").push()
 
     def logsync_changed(self, status):
         self._broadcast(json.dumps({"t": "addon", "addon": "logbook", "logsync": status}))

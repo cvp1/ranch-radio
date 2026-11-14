@@ -18,6 +18,9 @@ data (fresh, stale, failed fetch, oversize, not the right file).
 
     python3 tests/logsync_needs_test.py
 """
+import os as _os
+_os.environ["RANCH_RADIO_OFFLINE"] = "1"      # no test reaches the internet (logsync_refdata)
+
 import datetime as dt
 import os
 import shutil
@@ -136,6 +139,9 @@ def fetch_fail(url, cap):
 
 
 state = tmp / "state"
+p, note = R.ensure("cty", state, fetch=fetch_ok)
+check("refdata offline: no fetch at all, no cache -> None, said", (p, len(calls), "offline" in note), (None, 0, True))
+os.environ["RANCH_RADIO_OFFLINE"] = "0"           # the fetches below are injected, never the internet
 p, note = R.ensure("cty", state, fetch=fetch_ok)
 check("refdata: no copy -> fetched, checked, cached", (Path(p).read_text() == CTY_TEXT, note, len(calls)), (True, "", 1))
 p, note = R.ensure("cty", state, fetch=fetch_ok)

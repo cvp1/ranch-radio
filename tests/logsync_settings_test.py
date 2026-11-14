@@ -21,6 +21,9 @@ or LoTW.
 
     python3 tests/logsync_settings_test.py
 """
+import os as _os
+_os.environ["RANCH_RADIO_OFFLINE"] = "1"      # no test reaches the internet (logsync_refdata)
+
 import asyncio
 import json
 import os
