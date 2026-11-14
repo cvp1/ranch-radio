@@ -236,6 +236,22 @@ MANIFESTS = {
         "ask": {"url": "the logbook's address, e.g. https://192.168.1.20:8087/"},
         "needs": [],
     },
+    # The logbook sync (logsync.py): a station module, not an add-on. doctor
+    # adds its own checks (doctor.logsync_checks): TQSL answers -v, the
+    # credential files exist with mode 600, the UDP intake can bind.
+    "logsync": {
+        "label": "Logbook sync (JTDX to Wavelog, QRZ, LoTW)",
+        "family": "files",
+        "block": ("logsync",),
+        "os": ["macos", "linux"],
+        "template": {"any": {"udp": {"group": "224.0.0.1", "port": 2237},
+                             "wavelog": {"url": ASK, "station_profile_id": 1,
+                                         "key_file": "~/.config/ranch-radio/wavelog-key"}}},
+        "rules": {"wavelog.url": "http_url"},
+        "ask": {"wavelog.url": "your Wavelog's address, e.g. http://127.0.0.1:8086 (QRZ and LoTW are added by "
+                               "hand: see the README's Logbook sync section)"},
+        "needs": [],
+    },
     "macos-widget": {
         "label": "Menu bar widget",
         "family": "files",

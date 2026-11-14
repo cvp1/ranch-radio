@@ -124,12 +124,18 @@ RULES = [
     (("station", "tls_names", "*"), TOKEN), (("station", "label"), LABEL), (("station", "path"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
     (("updates", "at"), CLOCK), (("updates", "label"), LABEL),
+    (("logsync", "udp", "group"), TOKEN), (("logsync", "udp", "bind"), TOKEN), (("logsync", "udp", "iface"), TOKEN),
+    (("logsync", "udp", "relay"), TOKEN), (("logsync", "forward", "*"), TOKEN), (("logsync", "call"), CALL),
+    (("logsync", "ledger"), TOKEN), (("logsync", "wavelog", "url"), TOKEN), (("logsync", "wavelog", "key_file"), TOKEN),
+    (("logsync", "qrz", "key_file"), TOKEN), (("logsync", "qrz", "url"), TOKEN),
+    (("logsync", "lotw", "tqsl"), TOKEN), (("logsync", "lotw", "location"), TEXT), (("logsync", "lotw", "login"), TOKEN),
+    (("logsync", "lotw", "password_file"), TOKEN), (("logsync", "lotw", "url"), TOKEN),
     (("addons", "*"), None),     # add-on names: checked below
 ]
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"),
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
          ("winlink", "ardopcf", "port"), ("winlink", "xara", "port"), ("winlink", "xara", "lane_port"),
-         ("station", "rigctl_port")]
+         ("station", "rigctl_port"), ("logsync", "udp", "port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
          ("updates", "apply"), ("mesh", "feed_tx")]
@@ -419,6 +425,33 @@ def validate(h):
     listen_plan(h)
     listen_hf_plan(h)
     _validate_directory(h)
+    _validate_logsync(h)
+
+
+def _validate_logsync(h):
+    """logsync (the logbook sync, logsync.py): checked the way the station
+    reads it, so a host file the station would refuse never renders."""
+    if "logsync" not in h:
+        return
+    # The repo root, loaded by name (stdlib only): render sits under the radio
+    # server (levels.py), and a static import would make every logsync change
+    # select the transmit-safety tests. logsync_test covers this wiring.
+    import importlib
+    try:
+        importlib.import_module("logsync_config").check_block(_logsync_block(h))
+    except ValueError as e:
+        raise HostError(f"{h['host']}: {e}") from None
+    except Exception as e:                   # a malformed block is a refusal, never a crash in the radio's save
+        raise HostError(f"{h['host']}: logsync: not a valid block ({type(e).__name__})") from None
+
+
+def _logsync_block(h):
+    """The station's logsync block: the host file's, with the host's own
+    callsign when the block names none (QRZ's User-Agent carries it)."""
+    b = dict(h["logsync"]) if isinstance(h.get("logsync"), dict) else h.get("logsync")
+    if isinstance(b, dict) and "call" not in b and h.get("call"):
+        b["call"] = h["call"]
+    return b
 
 
 def _validate_directory(h):
@@ -905,6 +938,8 @@ def station_json(h):
         d["winlink"] = dict(h["winlink"])
     if h.get("mesh"):
         d["mesh"] = dict(h["mesh"])
+    if h.get("logsync"):
+        d["logsync"] = _logsync_block(h)
     if h.get("addons"):
         d["addons"] = h["addons"]
     d["host_file"] = h["host"]                  # the station page's Modules tab

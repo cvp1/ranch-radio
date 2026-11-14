@@ -168,6 +168,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
+| `logsync` | Every QSO JTDX logs, to Wavelog, QRZ and LoTW, with receipts and confirmations back; status on the Logbook tab | Wavelog's API key; QRZ's logbook key; TQSL with a password-free certificate |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
@@ -564,6 +565,51 @@ packet hub, on macOS or Linux:
 
 [`examples/hosts/mac-aioc.json`](examples/hosts/mac-aioc.json) is a whole
 host file. `ranch-radio doctor` checks that Direwolf is installed.
+
+## Logbook sync
+
+`logsync` takes over the uploads GridTracker does: every QSO JTDX logs goes
+to Wavelog, QRZ and LoTW, and LoTW receipts and confirmations (and QRZ's)
+come back. The station runs it from the host file's `logsync` block:
+
+```json
+"logsync": {"udp": {"group": "224.0.0.1", "port": 2237}, "forward": ["192.168.1.77:2237"],
+            "call": "N0CALL",
+            "wavelog": {"url": "http://127.0.0.1:8086", "station_profile_id": 1,
+                        "key_file": "~/.config/ranch-radio/wavelog-key"},
+            "qrz": {"key_file": "~/.config/ranch-radio/qrz-key"},
+            "lotw": {"tqsl": "/Applications/TrustedQSL/tqsl.app/Contents/MacOS/tqsl",
+                     "location": "Home", "login": "N0CALL",
+                     "password_file": "~/.config/ranch-radio/lotw-password"}}
+```
+
+- **Hearing JTDX.** With `udp.group`, point JTDX's UDP server at the group
+  (224.0.0.1:2237) and logsync joins it beside GridTracker; GridTracker's
+  replies go straight to JTDX. With `"udp": {"bind": "127.0.0.1", "port":
+  2237, "relay": "127.0.0.1:2238"}` logsync owns the port and relays to
+  GridTracker on 2238, passing back only its Reply, Halt Tx and Free Text.
+  `forward` feeds other listeners one way.
+- **One QSO, once.** A QSO is recorded from JTDX's Logged ADIF (turn on
+  ADIF sending for JTDX's UDP server, `EnableUDP1adifSending` in its
+  settings), or from QSO Logged after 3 s without one; both name it the same way (calls, band,
+  mode with FT4 filed as MFSK/FT4, time on to the second). A re-log with a
+  changed report or grid is kept as a revision and sent only when you press
+  **Send correction** on the Logbook tab.
+- **Uploads.** Wavelog `api/qso`, QRZ `INSERT` (never `REPLACE`), LoTW one
+  TQSL run per QSO (`-x -d -a compliant -l LOCATION -u`). A destination's
+  duplicate counts as sent; a LoTW upload counts once LoTW lists it, and one
+  missing after three hourly checks is held and reported. A send whose answer
+  was lost is checked against the destination before any retry.
+- **Credentials** are one-line files, mode 600, named in the block and read
+  when used: never on a command line, in a log or on the page. The LoTW
+  certificate must have no password: TQSL is never given `-p`, and a TQSL
+  waiting on a dialog is killed after 60 s and LoTW held.
+- **The first start** imports your Wavelog log with QRZ and LoTW *held*, then
+  marks what LoTW and QRZ already have. `ranch-radio logsync backfill`
+  writes a report (counts, every held QSO, near misses) and its hash;
+  `ranch-radio logsync backfill --apply HASH` releases exactly that set.
+  `ranch-radio logsync status` shows the ledger. `ranch-radio doctor` checks
+  TQSL, the credential files and the UDP port.
 
 ## How it fits together
 

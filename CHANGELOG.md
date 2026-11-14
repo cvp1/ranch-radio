@@ -36,6 +36,19 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Logbook sync (`logsync`).** The station logs every QSO JTDX reports to
+  Wavelog, QRZ and LoTW, and pulls receipts and confirmations back, so
+  GridTracker's uploads can be switched off. It hears JTDX's UDP beside
+  GridTracker (a multicast group) or as a unicast relay in front of it;
+  GridTracker's click-to-reply keeps working either way. Every QSO lands in a
+  ledger (`~/.local/state/radio-remote/logsync.db`, with an ADIF safety copy)
+  with a state per destination; the Logbook tab shows the counts, holds and a
+  tick per destination for recent QSOs. The first start imports the Wavelog
+  log as held: `ranch-radio logsync backfill` reports it, and only
+  `--apply HASH` releases it. Credentials are files (mode 600) the block
+  names; TQSL runs without `-p` and is killed after 60 s.
+  **Host file:** a `logsync` block (see `examples/hosts/mac-shack.json`).
+
 - **Attended HF listening.** Answer HF peer-to-peer Winlink calls (ARDOP or
   VARA HF) while you are at the page: pick a channel from the host file's
   `winlink.listen_hf`, confirm, and the radio's lane is armed on that

@@ -3,7 +3,7 @@
   "os": "macos",
   "repo": "~/ranch-radio",
   "python": "~/ranch-radio/.venv/bin/python",
-  "note": "Example: a Mac with one radio (an IC-7300 over USB). The station agent serves the page (https, 7300) with Winlink, Mesh and the MD-UV390 (OpenGD77 add-on); the radio's own server is behind it on loopback (7301).",
+  "note": "Example: a Mac with one radio (an IC-7300 over USB). The station agent serves the page (https, 7300) with Winlink, Mesh, the MD-UV390 (OpenGD77 add-on) and the logbook sync (JTDX to Wavelog, QRZ and LoTW); the radio's own server is behind it on loopback (7301).",
   "station": {"https": true, "tls_names": ["mac-shack", "192.168.1.21"]},
   "radios": [
     {"id": "ic7300", "name": "IC-7300", "label": "org.ranch-radio.ic7300-remote",
@@ -22,6 +22,12 @@
                           "audio_in": "USB Audio CODEC", "audio_out": "USB Audio CODEC",
                           "hostcommands": "CONSOLELOG 2"}},
   "mesh": {"port": "ble:NODEM_7720", "keys": ["HomeNet=~/.config/ranch-radio/keys/mesh_channel"]},
+  "logsync": {"udp": {"group": "224.0.0.1", "port": 2237}, "forward": ["192.168.1.77:2237"], "call": "N0CALL",
+              "wavelog": {"url": "http://127.0.0.1:8086", "station_profile_id": 1,
+                          "key_file": "~/.config/ranch-radio/wavelog-key"},
+              "qrz": {"key_file": "~/.config/ranch-radio/qrz-key"},
+              "lotw": {"tqsl": "/Applications/TrustedQSL/tqsl.app/Contents/MacOS/tqsl", "location": "Home",
+                       "login": "N0CALL", "password_file": "~/.config/ranch-radio/lotw-password"}},
   "addons": {
     "opengd77": {"enabled": true, "port": "auto", "label": "MD-UV390", "poll": 2,
                  "dmrconf": "/opt/homebrew/bin/dmrconf"}
