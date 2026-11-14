@@ -27,7 +27,7 @@ push again.
 ```sh
 python3 tests/public_hygiene_test.py   # quick, required
 python3 tests/affected.py --run        # the runs your change touches (vs main)
-bash tests/run_all.sh                  # the full suite, one test at a time
+bash tests/run_all.sh --full           # the full suite, one test at a time
 ```
 
 `tests/affected.py` picks runs from the import graph and the files each test

@@ -621,8 +621,8 @@ class Station(TxAudio):
                                     "codec_db": self.codec and self.codec.current}))
 
     async def _winlink_end(self, ws, started, ok, reason):
-        import winlink
-        await winlink.id_tail(self, started, lambda: self.winlink_owner is not ws,
+        import winlink_tail
+        await winlink_tail.id_tail(self, started, lambda: self.winlink_owner is not ws,
                               lambda d: self._broadcast(json.dumps({"t": "winlink", **d})),
                               scheme=self.winlink_scheme or "ardop")
         if self.winlink_owner is ws:

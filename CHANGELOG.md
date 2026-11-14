@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **Winlink features are off the radio server's import path.** The server
+  takes only `winlink_tail.py` (the end-of-session station-ID wait, moved
+  verbatim from `winlink.py`), and `render.py` loads the P2P directory and
+  listen-plan checkers by name from stdlib-only modules. A change to
+  `p2p_directory.py` or `listen_plan.py` now selects 27 and 26 runs instead
+  of 77 and 76, none of them transmit-safety or rig-contract tests;
+  `tests/affected_test.py` guards the seam. `tests/run_all.sh` refuses a
+  bare local run of the whole suite (`--full` to insist; CI is unaffected).
+
 - **One station on every host.** A Mac now runs the station (`station.py`)
   in front of its radio, as Linux always has: the page at 7300 with
   Winlink, Mesh, the packet tab, the add-ons and the Modules tab is the

@@ -461,11 +461,21 @@ def _validate_directory(h):
     w = h.get("winlink") or {}
     if "directory" not in w:
         return
-    from p2p_directory import DirectoryError, config   # the repo root (as listen_plan)
+    pd = _feature("p2p_directory_config")
     try:
-        config(w["directory"])
-    except DirectoryError as e:
+        pd.config(w["directory"])
+    except pd.DirectoryError as e:
         raise HostError(f"{h['host']}: {e}") from None
+
+
+def _feature(name):
+    """A station feature's stdlib-only checker at the repo root (listen_plan,
+    p2p_directory_config), loaded by name. The radio server reaches render
+    (levels.py), so a static import would tie every transmit-safety test to a
+    Winlink feature change; the feature's own tests cover this wiring, and
+    tests/affected_test.py keeps both the seam and the stdlib-only rule."""
+    import importlib
+    return importlib.import_module(name)
 
 
 XARA_HF = (500, 2300, 2750)
@@ -517,10 +527,10 @@ def listen_plan(h):
     w = h.get("winlink") or {}
     if "listen" not in w:
         return None
-    from listen_plan import ListenError, ListenPlan   # the repo root (as doctor imports pat_config)
+    lp = _feature("listen_plan")
     try:
-        return ListenPlan.from_block(w["listen"])
-    except ListenError as e:
+        return lp.ListenPlan.from_block(w["listen"])
+    except lp.ListenError as e:
         raise HostError(f"{h['host']}: {e}") from None
 
 
@@ -531,10 +541,10 @@ def listen_hf_plan(h):
     w = h.get("winlink") or {}
     if "listen_hf" not in w:
         return None
-    from listen_plan import HfListenPlan, ListenError   # the repo root (as listen_plan)
+    lp = _feature("listen_plan")
     try:
-        plan = HfListenPlan.from_block(w["listen_hf"])
-    except ListenError as e:
+        plan = lp.HfListenPlan.from_block(w["listen_hf"])
+    except lp.ListenError as e:
         raise HostError(f"{h['host']}: {e}") from None
     if not any(r.get("lane") for r in h.get("radios", [])):
         raise HostError(f"{h['host']}: winlink.listen_hf needs a radio with a Winlink lane")

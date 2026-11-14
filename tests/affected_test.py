@@ -77,6 +77,47 @@ check("  and not a test that opens no page", [n for n in app if n in ("aprs_test
 uv = affected.select(["static/addons/uvpro.js"])
 check("an add-on's script: its own tests too", ("uvpro_test" in uv, "uvpro_page_test" in uv), (True, True))
 
+# The radio server is the transmitting process: a Winlink feature (its listen
+# plans, the P2P directory, the Pat engine) is not on its import path. The
+# server takes only winlink_tail.py (the session's station-ID tail), and
+# render.py loads the features' checkers by name. If one of these fails, a
+# static import crept back into server.py, render.py or winlink_tail.py: fix
+# the edge, don't widen this list.
+TX_FAMILY = ("civ_safety", "tx_", "rigctl_contract")
+for f in ("listen_plan.py", "p2p_directory.py", "p2p_directory_config.py", "winlink.py"):
+    check(f"{f}: no transmit-safety or rig-contract run",
+          [n for n in affected.select([f]) if n.startswith(TX_FAMILY)], [])
+check("winlink_tail.py is transmit code: it does pick civ_safety_test",
+      "civ_safety_test" in affected.select(["winlink_tail.py"]), True)
+
+
+def _imported(path):
+    import ast
+    tree = ast.parse((affected.ROOT / path).read_text())
+    out = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    return out | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+
+
+FEATURES = {"winlink", "listen_plan", "p2p_directory", "p2p_directory_config", "pat_config"}
+check("server.py, render.py and winlink_tail.py import no Winlink feature module (the seam)",
+      {f: sorted(_imported(f) & FEATURES) for f in ("server.py", "ranch_radio/render.py", "winlink_tail.py")},
+      {"server.py": [], "ranch_radio/render.py": [], "winlink_tail.py": []})
+
+# What render loads by name stays stdlib only: the radio server runs render.validate.
+import subprocess  # noqa: E402
+probe = (
+    "import json, sys, glob\n"
+    "from ranch_radio import render\n"
+    "import winlink_tail\n"
+    "for f in sorted(glob.glob('examples/hosts/*.json')):\n"
+    "    h = render.load(f) if hasattr(render, 'load') else json.load(open(f))\n"
+    "    render.validate(h); render.listen_plan(h); render.listen_hf_plan(h)\n"
+    "print(sorted(m for m in ('aiohttp', 'sqlite3', 'winlink', 'p2p_directory')"
+    " if m in sys.modules))\n")
+r = subprocess.run([sys.executable, "-c", probe], cwd=affected.ROOT, capture_output=True, text=True)
+check("render.validate over every example host loads none of aiohttp, sqlite3, winlink, p2p_directory",
+      (r.returncode, r.stdout.strip(), r.stderr.strip()[-300:]), (0, "[]", ""))
+
 check("README.md picks nothing", affected.select(["README.md"]), {})
 check("the harness picks everything", len(affected.select(["tests/run_all.sh"])), len(names))
 check("so does requirements.txt", len(affected.select(["requirements.txt"])), len(names))

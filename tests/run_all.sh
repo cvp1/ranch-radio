@@ -11,12 +11,25 @@
 #   RR_ONLY="a_test b_test" bash tests/run_all.sh   (only those runs; what
 #                                         tests/affected.py --run sets)
 #   RR_LIST=1 bash tests/run_all.sh      (print every run's name, run none)
+#   bash tests/run_all.sh --full         (the whole suite, ~30 min: refused
+#                                         locally without --full; CI, a
+#                                         shard, RR_ONLY and RR_LIST need none)
 #   RR_TEST_TIMEOUT=600 bash tests/run_all.sh   (per-run cap, default 300 s;
 #                                         the slowest run takes ~150 s on CI)
 # Each finished run appends "name seconds" to $LOGDIR/durations.tsv, which
 # tests/ci/shard.py check reads.
 set -u
 cd "$(dirname "$0")/.."
+# Test only what a change's dependencies dictate (tests/affected.py --run);
+# the whole suite is CI's. A bare local run is almost always a mistake.
+full=""; [[ "${1:-}" == "--full" ]] && { full=1; shift; }
+if [[ -z "$full" && -z "${CI:-}" && -z "${RR_SHARD:-}" && -z "${RR_ONLY:-}" && -z "${RR_LIST:-}" ]]; then
+  echo "run_all.sh: refusing the whole suite (~30 min) locally."
+  echo "  python3 tests/affected.py --why    which runs this change needs"
+  echo "  python3 tests/affected.py --run    run just those"
+  echo "  bash tests/run_all.sh --full       the whole suite anyway (CI runs it on every PR)"
+  exit 2
+fi
 LOGDIR="${LOGDIR:-/tmp/rr-suite}"
 mkdir -p "$LOGDIR"
 PY="${PYTHON:-.venv/bin/python}"; [[ -x "$PY" ]] || PY=python3

@@ -23,10 +23,10 @@ import time
 
 import aiohttp
 
+from p2p_directory_config import DEFAULT_REFRESH_H, DEFAULT_URL, DirectoryError, config  # noqa: F401  (re-exported)
+
 log = logging.getLogger("p2p_directory")
 
-DEFAULT_URL = "https://cvp1.github.io/p2p-directory/v1/directory.json"
-DEFAULT_REFRESH_H = 6
 MAX_BYTES = 512 * 1024
 FETCH_TIMEOUT_S = 10
 RETRY_S = 300            # after a failed fetch, the next try waits this long
@@ -58,27 +58,6 @@ DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 MAX_ENTRIES, MAX_NOTE, MAX_HOURS = 12, 80, 40
 MAX_STATIONS = 5000
-
-
-class DirectoryError(ValueError):
-    pass
-
-
-def config(block):
-    """(url, refresh_hours) from the host file's winlink.directory, or None when off."""
-    if block is False:
-        return None
-    if block is None or block is True:
-        return DEFAULT_URL, DEFAULT_REFRESH_H
-    if not isinstance(block, dict):
-        raise DirectoryError("winlink.directory must be false or an object")
-    url = block.get("url", DEFAULT_URL)
-    hours = block.get("refresh_hours", DEFAULT_REFRESH_H)
-    if not isinstance(url, str) or not re.fullmatch(r"https://[^\s]+|http://(127\.0\.0\.1|localhost)(:\d+)?/[^\s]*", url):
-        raise DirectoryError(f"winlink.directory.url = {url!r}: https://, or http:// on this machine")
-    if not isinstance(hours, (int, float)) or isinstance(hours, bool) or not 1 <= hours <= 168:
-        raise DirectoryError(f"winlink.directory.refresh_hours = {hours!r}: 1 to 168")
-    return url, float(hours)
 
 
 def dial_khz(centre_khz, mode):
