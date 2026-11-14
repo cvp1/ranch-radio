@@ -7,6 +7,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The Roster tab** (`addons/roster.py`, `logsync_roster.py`): JTDX's decodes, live, marked by need,
+  LoTW use, distance and bearing; click to answer (a Reply to JTDX, as a double-click). JTDX's Decode
+  and Status are parsed to the layout of a real JTDX 2.2 capture (its short Status, null strings,
+  padded messages). Reference data never fetched under `RANCH_RADIO_OFFLINE=1` (the tests set it).
+
 - **The needs index** (`logsync_cty.py`, `logsync_needs.py`, `logsync_refdata.py`): DXCC entity
   from cty.csv (exact calls, longest prefix, portable forms, KG4), worked/confirmed by entity, band,
   mode group and grid from the ledger, LoTW users; `ranch-radio logsync needs`. On a real ledger the

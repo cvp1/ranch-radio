@@ -140,6 +140,54 @@ def parse_logged(data):
     return {k: v for k, v in f.items() if v}
 
 
+def _open(data, typ):
+    r = Reader(data)
+    if r.u32() != MAGIC:
+        raise ValueError("not a WSJT-X/JTDX datagram")
+    r.u32()
+    if r.u32() != typ:
+        raise ValueError(f"not a type {typ} message")
+    return r, r.utf8()
+
+
+def parse_decode(data):
+    """Decode (2) -> {"id", "new", "t_ms", "snr", "dt", "df", "mode", "message",
+    "low", "off_air"}. "message" is as sent (JTDX pads some with spaces); a
+    Reply must carry it unchanged, so the caller strips only for display."""
+    r, cid = _open(data, 2)
+    new, t_ms, snr = bool(r.u8()), r.u32(), r.i32()
+    dt_s = struct.unpack(">d", r.take(8))[0]
+    df, mode, msg = r.u32(), r.utf8(), r.utf8()
+    low, off = bool(r.u8()), bool(r.u8())
+    return {"id": cid, "new": new, "t_ms": t_ms, "snr": snr, "dt": dt_s, "df": df, "mode": mode, "message": msg,
+            "low": low, "off_air": off}
+
+
+def parse_status(data):
+    """Status (1) -> the fields the roster uses. JTDX 2.2's ends after the
+    special-operation byte; newer WSJT-X adds more, which is ignored."""
+    r, cid = _open(data, 1)
+    d = {"id": cid, "dial": r.u64(), "mode": r.utf8(), "dx_call": r.utf8(), "report": r.utf8(), "tx_mode": r.utf8(),
+         "tx_enabled": bool(r.u8()), "transmitting": bool(r.u8()), "decoding": bool(r.u8())}
+    d["rx_df"], d["tx_df"] = r.u32(), r.u32()
+    d["de_call"], d["de_grid"], d["dx_grid"] = r.utf8(), r.utf8(), r.utf8()
+    return d
+
+
+def _qs(text):
+    b = text.encode()
+    return struct.pack(">I", len(b)) + b
+
+
+def build_reply(dec, modifiers=0):
+    """Reply (4) for a decode, carrying its fields unchanged (JTDX matches the
+    decode it shows by them, as for a double-click). modifiers 0: no keyboard
+    modifier, so JTDX treats it exactly as a plain double-click."""
+    return (struct.pack(">III", MAGIC, 2, 4) + _qs(dec["id"]) + struct.pack(">I", dec["t_ms"])
+            + struct.pack(">i", dec["snr"]) + struct.pack(">d", dec["dt"]) + struct.pack(">I", dec["df"])
+            + _qs(dec["mode"]) + _qs(dec["message"]) + struct.pack(">?", dec["low"]) + struct.pack(">B", modifiers))
+
+
 def parse_adif_message(data):
     """Logged ADIF (type 12) -> the ADIF fields of its one record."""
     r = Reader(data)
@@ -230,6 +278,10 @@ class MulticastIntake:
             raise
         return s
 
+    def to_client(self, cid, data):
+        """Multicast: GridTracker owns replies to JTDX; logsync never sends to it."""
+        return False
+
     async def start(self):
         loop = asyncio.get_running_loop()
         self.fwd.open()
@@ -266,6 +318,7 @@ class RelayIntake:
         self.on_message, self.fwd, self.expire_s = on_message, forwarder, expire_s
         self.transport = None
         self.clients = {}                 # (id, addr) -> {"transport", "addr", "id", "seen"}
+        self.last = {}                    # id -> the address it last sent from
         self._sweeper = None
 
     async def start(self):
@@ -285,6 +338,7 @@ class RelayIntake:
         if typ not in OUT_TYPES:
             log.info("logsync: type %d from %s on the intake port dropped", typ, addr[0])
             return
+        self.last[cid] = addr[:2]         # where this client is, relay or not (the roster's Reply)
         self.fwd.send(data, addr)
         if self.relay:
             self._upstream(cid, addr, data)
@@ -326,6 +380,19 @@ class RelayIntake:
             return
         if self.transport is not None:
             self.transport.sendto(data, c["addr"])
+
+    def to_client(self, cid, data):
+        """Send data to JTDX (the client with this id that spoke last), from
+        the intake port, as a reply on the relay's path would be. -> bool."""
+        if self.transport is None:
+            return False
+        cs = [c for c in self.clients.values() if c["id"] == cid] or \
+             ([{"addr": self.last.get(cid)}] if self.last.get(cid) else [])
+        if not cs:
+            return False
+        c = max(cs, key=lambda c: c.get("seen", 0))
+        self.transport.sendto(data, c["addr"])
+        return True
 
     async def _sweep(self):
         while True:

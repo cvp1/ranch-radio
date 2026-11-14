@@ -618,6 +618,17 @@ come back. The station runs it from the host file's `logsync` block:
   It keeps country-files.com's cty.csv (weekly) and ARRL's LoTW user list
   (daily) beside the ledger, and falls back to the cached copy when a fetch
   fails. The roster and map build on it.
+- **The Roster tab** (the `roster` add-on: `ranch-radio add roster`). Who JTDX
+  is hearing now, coloured by what you still need — new DXCC, new on this
+  band or in this mode, new grid, not yet confirmed, new call — with the
+  entity, a LoTW marker, distance and bearing; stations calling you sit at
+  the top. Filters: CQ only, needs only; an optional alert (sound and a
+  browser notification) at a chosen need level. **Click a row to answer that
+  station**: JTDX gets a Reply, exactly as if you had double-clicked the line
+  in JTDX. Ranch Radio never enables transmit: whether JTDX starts calling is
+  JTDX's own double-click setting. A decode older than 45 s can't be
+  answered. Needs the logbook sync in unicast relay mode (its intake hears
+  JTDX and answers on the relay's path).
 - **Settings on the Logbook tab.** Open *Settings* under the sync's strip to
   change the Wavelog address and station profile, TQSL's path and station
   location, the LoTW login and where each credential file lives. A change

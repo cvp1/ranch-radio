@@ -110,10 +110,20 @@ def scrub(text, secrets=(), cap=500):
 
 # ---------------------------------------------------------------- the engine
 
+ROSTER_PUSH_S = 1.0               # the roster's push after a burst of decodes
+NEEDS_MIN_S = 60.0                # the needs index is rebuilt at most this often
+
 class LogSync:
-    def __init__(self, cfg, notify=None, alert=None, clock=time.time):
+    def __init__(self, cfg, notify=None, alert=None, clock=time.time, roster=None):
         self.cfg = cfg if isinstance(cfg, Config) else Config(cfg)
         self.notify_cb, self.alert_cb, self.clock = notify, alert, clock
+        import logsync_roster
+        self.roster_cb = roster          # called (no args) when the roster has new decodes, at most every ROSTER_PUSH_S
+        self.roster = logsync_roster.Roster()
+        self.needs = None                # logsync_needs.Needs, built in a thread at start and when the ledger grows
+        self._needs_dirty = True
+        self._needs_built = 0.0
+        self._roster_handle = None
         self.ledger = None
         self.intake = None
         self.http = None
@@ -163,6 +173,7 @@ class LogSync:
             self.tasks.append(asyncio.ensure_future(self._every(self.pull_lotw, "lotw_every_s", after_import=True)))
         if c.qrz:
             self.tasks.append(asyncio.ensure_future(self._every(self.pull_qrz, "qrz_every_s", after_import=True)))
+        self.tasks.append(asyncio.ensure_future(self._needs_loop()))
         self.started = True
         log.info("logsync: listening (%s, port %d); destinations: %s", c.shape, c.port,
                  ", ".join(c.dests) or "none")
@@ -185,6 +196,8 @@ class LogSync:
             await self.http.close()
         if self._notify_handle is not None:
             self._notify_handle.cancel()
+        if self._roster_handle is not None:
+            self._roster_handle.cancel()
         if self.ledger is not None:
             self.ledger.close()
         self.started = False
@@ -192,6 +205,15 @@ class LogSync:
     # -- intake
 
     def _message(self, typ, data, addr):
+        if typ in (1, 2):
+            try:
+                if typ == 1:
+                    self.roster.status(udp.parse_status(data))
+                elif self.roster.add(udp.parse_decode(data)):
+                    self._roster_soon()
+            except ValueError as e:
+                log.debug("logsync: roster: a type %d datagram didn't parse (%s)", typ, e)
+            return
         if typ == 5:
             f = udp.parse_logged(data)
             k = adif.key(adif.qso(f, self.cfg.call))
@@ -210,6 +232,67 @@ class LogSync:
                 w[1].cancel()
             self.record(f, "jtdx12")
 
+    # -- the roster (logsync_roster) and the needs index behind it (logsync_needs)
+
+    def _roster_soon(self):
+        """One push per burst of decodes (a cycle's arrive within a second or two)."""
+        if self.roster_cb is None or self._roster_handle is not None:
+            return
+        def fire():
+            self._roster_handle = None
+            try:
+                self.roster_cb()
+            except Exception as e:
+                log.error("logsync: roster push: %s", type(e).__name__)
+        self._roster_handle = asyncio.get_running_loop().call_later(ROSTER_PUSH_S, fire)
+
+    def roster_view(self):
+        return self.roster.view()
+
+    def reply(self, key):
+        """Answer a roster decode: JTDX gets a Reply (4) carrying that decode's
+        fields, as a double-click would. None when sent, else why not."""
+        dec, why = self.roster.for_reply(str(key))
+        if dec is None:
+            return why
+        if not self.intake.to_client(dec["id"], udp.build_reply(dec)):
+            return ("JTDX isn't connected to the intake" if self.cfg.shape != "multicast"
+                    else "the roster can't answer in multicast mode: GridTracker answers JTDX there")
+        log.info("logsync: roster: asked JTDX to answer %r", dec["message"].strip())
+        return None
+
+    def _build_needs(self):
+        import logsync_cty
+        import logsync_needs
+        import logsync_refdata
+        state = os.path.dirname(self.cfg.ledger) or "."
+        cty_path, note = logsync_refdata.ensure("cty", state)
+        if note:
+            log.warning("logsync: needs: %s", note)
+        cty = logsync_cty.Cty(logsync_refdata.read(cty_path)) if cty_path else None
+        n = logsync_needs.Needs.from_ledger(self.cfg.ledger, cty)
+        users, note = logsync_refdata.ensure("lotw_users", state)
+        if note:
+            log.warning("logsync: needs: %s", note)
+        if users:
+            n.load_lotw_users(logsync_refdata.read(users))
+        return n
+
+    async def _needs_loop(self):
+        """Build the needs index at start, again when the ledger has new QSOs
+        (at most every NEEDS_MIN_S), and daily for the reference data."""
+        while True:
+            if self._needs_dirty or self.clock() - self._needs_built > 86400:
+                self._needs_dirty = False
+                try:
+                    n = await asyncio.to_thread(self._build_needs)
+                    self.needs = self.roster.needs = n
+                    self._needs_built = self.clock()
+                    log.info("logsync: needs: %s", n.summary())
+                except Exception as e:
+                    log.error("logsync: needs index: %s", type(e).__name__)
+            await asyncio.sleep(NEEDS_MIN_S)
+
     def _lone5(self, k):
         w = self.held5.pop(k, None)
         if w is not None:
@@ -227,6 +310,7 @@ class LogSync:
         log.info("logsync: %s %s %s %s: %s (%s)", q["call"], q["band"], q["mode"] + ("/" + q["submode"] if q["submode"] else ""),
                  q["ts"], what, source)
         if what == "new":
+            self._needs_dirty = True         # the roster's needs pick it up at the next rebuild
             for e in self.wake.values():
                 e.set()
         if what != "same":

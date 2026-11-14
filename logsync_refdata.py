@@ -12,6 +12,9 @@ and size), checked (cty must parse; the user list must have rows with dates)
 and swapped in atomically. If the fetch or the check fails, the cached copy
 is used and the note says so, loudly; with no copy at all it returns None and
 the caller runs without that data (the roster shows needs as unknown).
+
+RANCH_RADIO_OFFLINE=1 in the environment: never fetch, the cache only (the
+test suites set it, so no test reaches the internet).
 """
 import os
 import time
@@ -57,6 +60,8 @@ def ensure(name, state_dir, fetch=_fetch, now=time.time, sources=SOURCES):
         age = None
     if age is not None and age < s["max_age_s"]:
         return path, ""
+    if os.environ.get("RANCH_RADIO_OFFLINE") == "1":
+        return (path if age is not None else None), f"{name}: offline (RANCH_RADIO_OFFLINE), no fetch"
     try:
         data = fetch(s["url"], s["max_bytes"])
         _check(name, data)

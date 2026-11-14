@@ -66,15 +66,25 @@ def heartbeat(cid="JTDX"):
     return head(0, cid) + struct.pack(">I", 3) + _s("2.2.159") + _s("")
 
 
-def status(cid="JTDX", dial=14074000, mode="FT8", de="N0CALL"):
-    return (head(1, cid) + struct.pack(">Q", dial) + _s(mode) + _s("N9ABC") + _s("-10") + _s(mode)
-            + _b(False) + _b(False) + _b(True) + struct.pack(">ii", 1500, 1500) + _s(de) + _s("FN31") + _s("")
-            + _b(False) + _s("") + _b(False) + _b(True))
+def status(cid="JTDX", dial=14074000, mode="FT8", de="N0CALL", dx_call="N9ABC", report="-10", tx_mode=None,
+           tx_enabled=False, transmitting=False, decoding=True, rx_df=1500, tx_df=1500, de_grid="FN31", dx_grid=None,
+           watchdog=False, submode=None, fast=False, special=1):
+    """Status (1) as JTDX 2.2 sends it: it ends after the special-operation
+    byte (no frequency tolerance, T/R period, configuration or Tx message,
+    which newer WSJT-X adds), and an empty field is a null string (None
+    here), not a zero-length one. Checked byte for byte against a capture."""
+    return (head(1, cid) + struct.pack(">Q", dial) + _s(mode) + _s(dx_call) + _s(report) + _s(tx_mode or mode)
+            + _b(tx_enabled) + _b(transmitting) + _b(decoding) + struct.pack(">II", rx_df, tx_df) + _s(de) + _s(de_grid)
+            + _s(dx_grid) + _b(watchdog) + _s(submode) + _b(fast) + struct.pack(">B", special))
 
 
-def decode(cid="JTDX", msg="CQ N9ABC EN50", snr=-10, df=1500, mode="~"):
-    return (head(2, cid) + _b(True) + _qtime(12 * 3600 * 1000) + struct.pack(">i", snr) + struct.pack(">d", 0.1)
-            + struct.pack(">I", df) + _s(mode) + _s(msg) + _b(False) + _b(False))
+def decode(cid="JTDX", msg="CQ N9ABC EN50", snr=-10, df=1500, mode="~", t_ms=12 * 3600 * 1000, dt_s=0.1, new=True,
+           low=False, off_air=False):
+    """Decode (2), as JTDX sends it: mode is the mode character ("~" FT8,
+    "+" FT4), and the message may carry trailing spaces. Checked byte for
+    byte against a capture."""
+    return (head(2, cid) + _b(new) + _qtime(t_ms) + struct.pack(">i", snr) + struct.pack(">d", dt_s)
+            + struct.pack(">I", df) + _s(mode) + _s(msg) + _b(low) + _b(off_air))
 
 
 def clear(cid="JTDX"):
