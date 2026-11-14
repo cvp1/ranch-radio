@@ -300,8 +300,11 @@ def logsync_checks(b, tqsl_timeout_s=10):
                 r = subprocess.run([exe, "-v"], capture_output=True, text=True, timeout=tqsl_timeout_s,
                                    stdin=subprocess.DEVNULL)
                 ver = ((r.stdout or r.stderr).strip().splitlines() or ["?"])[-1][:80]
-                out.append(Check("logsync", OK if r.returncode == 0 else MISSING,
-                                 f"TQSL -v: {ver}" if r.returncode == 0 else f"TQSL -v exited {r.returncode}"))
+                # Real TQSL (2.8.6, macOS) prints its version for -v and exits 255:
+                # the version line is the answer, not the exit code.
+                ok = ver.startswith("TQSL Version")
+                out.append(Check("logsync", OK if ok else MISSING,
+                                 f"TQSL -v: {ver}" if ok else f"TQSL -v printed no version (exit {r.returncode})"))
             except subprocess.TimeoutExpired:
                 out.append(Check("logsync", MISSING, f"TQSL -v did not answer in {tqsl_timeout_s} s (a dialog?)",
                                  "run TQSL once by hand and clear whatever it asks"))

@@ -1002,6 +1002,13 @@ checks = doctor.logsync_checks({"udp": {"bind": "127.0.0.1", "port": dport}, "wa
                                 "qrz": {"key_file": str(dtmp / "missing")}})
 got = {(c.status, c.what.split(":")[0].split(" (")[0]) for c in checks}
 check("doctor: TQSL -v answers", ("ok", "TQSL -v") in got, True)
+junk = dtmp / "not-tqsl"
+junk.write_text("#!/bin/sh\necho hello\nexit 0\n")
+os.chmod(junk, 0o755)
+got = {(c.status, c.what.split(":")[0].split(" (")[0]) for c in doctor.logsync_checks(
+    {"udp": {"bind": "127.0.0.1", "port": dport}, "lotw": {"tqsl": str(junk), "password_file": str(k2)}})}
+check("  a binary that prints no TQSL version is missing, whatever its exit code",
+      ("missing", "TQSL -v printed no version") in got, True)
 check("  a credential file with mode 600 passes, one readable by others doesn't, a missing one is missing",
       [c.status for c in checks if "credential file" in c.what], ["ok", "missing", "missing"])
 check("  the certificate-password warn is there", any(c.status == "warn" and "no password" in c.what for c in checks), True)
