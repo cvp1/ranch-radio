@@ -17,6 +17,9 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - requests (position, telemetry, ...): one per node at a time, each kind 60 s
     apart, answered or not, in later snapshots; ignore / remove / reboot;
     NeighborInfo and the node's own counters reach the page
+  - who hears us (hears_us): a node whose NeighborInfo lists us, a
+    traceroute's first hop, a node that ACKed our DM; NeighborInfo and
+    traceroutes kept across a bridge restart and a server restart, mode 600
   - without the Mesh add-on, mesh commands are refused
 
     python3 tests/mesh_test.py
@@ -37,6 +40,7 @@ import aiohttp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
+sys.path.insert(0, ROOT)
 from fake_mesh_bridge import FAKE_KEY  # noqa: E402
 import testkit  # noqa: E402
 
@@ -163,6 +167,11 @@ def commands():
         return []
 
 
+def hears_of(hears):
+    """hears list -> {(id, how): snr}"""
+    return {(h["id"], h["how"]): h["snr"] for h in hears or []}
+
+
 def mmsg(e):
     """A mesh event's message record (a notice's "msg" is its text)."""
     m = e.get("msg") if e.get("t") == "mesh" else None
@@ -175,6 +184,29 @@ def ack_of(text, state):
         return r is not None and r.get("text") == text and r.get("ack") == state
     return pred
 
+
+# hears_us on its own: what counts, what doesn't
+import mesh as mesh_mod  # noqa: E402
+NOW = 1_000_000.0
+ME_ID = "!b2a6fd78"
+got = mesh_mod.hears_us(ME_ID, {
+    "!0000cafe": {"t": NOW - 60, "neighbors": [{"id": ME_ID, "snr": 7.25}]},
+    "!0000beef": {"t": NOW - 60, "neighbors": [{"id": "!0000cafe", "snr": 1.0}]},     # hears someone else
+    "!000000aa": {"t": NOW - 8 * 86400, "neighbors": [{"id": ME_ID, "snr": 3.0}]},    # older than 7 days
+}, {
+    "!0000beef": {"to": "!0000beef", "state": "done", "done_t": NOW - 30, "route": ["!0000cafe"], "snr_towards": [6.0, 4.5]},
+    "!0000d00d": {"to": "!0000d00d", "state": "done", "done_t": NOW - 20, "route": [], "snr_towards": [-3.5]},
+    "!0000f00d": {"to": "!0000f00d", "state": "done", "done_t": NOW - 20, "route": ["?"], "snr_towards": [1.0, 2.0]},
+    "!0000dead": {"to": "!0000dead", "state": "failed", "done_t": NOW - 10},
+}, [
+    {"mine": True, "dm": True, "to": "!0000beef", "ack": "delivered", "t": NOW - 5},
+    {"mine": True, "dm": True, "to": "!0000abcd", "ack": "failed", "t": NOW - 5},
+    {"mine": True, "dm": False, "to": None, "ack": "relayed", "t": NOW - 5},
+], now=NOW)
+check("hears_us: evidence, newest first", [(h["id"], h["how"], h["snr"]) for h in got],
+      [("!0000beef", "dm", None), ("!0000d00d", "trace", -3.5), ("!0000cafe", "trace", 6.0),
+       ("!0000cafe", "neighbor", 7.25)])
+check("hears_us: no node id yet -> nothing", mesh_mod.hears_us(None, {"x": {"t": NOW}}, {}, [], now=NOW), [])
 
 server = start()
 try:
@@ -325,6 +357,11 @@ try:
     nb = snap.hello["mesh"]["neighbors"]
     snap.close()
     check("NeighborInfo reaches the page", [x["id"] for x in nb.get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])
+    h = hears_of(snap.hello["mesh"]["hears"])
+    check("hears us: RDG's NeighborInfo lists us", h.get(("!0000cafe", "neighbor")), 7.25)
+    check("  RDG is the traceroute's first hop", h.get(("!0000cafe", "trace")), 6.0)
+    check("  BASE ACKed our DM", ("!0000beef", "dm") in h, True)
+    check("  BASE is not said to hear us directly", ("!0000beef", "neighbor") in h or ("!0000beef", "trace") in h, False)
     page.events.clear()
     page.send({"t": "mesh_request", "to": "!0000beef", "kind": "position"})
     check("request: running", bool(page.wait(lambda e: (e.get("request") or {}).get("state") == "running")), True)
@@ -387,6 +424,11 @@ try:
     check("  bridge started again: connected",
           bool(page.wait(lambda e: (e.get("status") or {}).get("connected") is True, timeout=12)), True)
     check("  bridge starts counted", len(open(STARTS).read().split()), 2)
+    e = page.wait(lambda e: e.get("neighbors") is not None, 3) or {}
+    check("  the new bridge's NeighborInfo (BASE only) is merged: RDG's report kept",
+          sorted(e.get("neighbors") or {}), ["!0000beef", "!0000cafe"])
+    e = page.wait(lambda e: e.get("hears") is not None and "neighbors" not in e, 3) or {}
+    check("  hears us: RDG still", hears_of(e.get("hears")).get(("!0000cafe", "neighbor")), 7.25)
     page.close()
 finally:
     out = stop(server)
@@ -395,6 +437,9 @@ mode = stat.S_IMODE(os.stat(MESH_LOG).st_mode) if os.path.exists(MESH_LOG) else 
 check("history file is mode 600", oct(mode) if mode is not None else None, "0o600")
 with open(MESH_LOG) as f:
     check("the channel key is not in the history file", FAKE_KEY in f.read(), False)
+LINKS = os.path.splitext(MESH_LOG)[0] + "-links.json"
+mode = stat.S_IMODE(os.stat(LINKS).st_mode) if os.path.exists(LINKS) else None
+check("links file is mode 600", oct(mode) if mode is not None else None, "0o600")
 check("the channel key is not in the server log", FAKE_KEY in out, False)
 
 server = start(key=BAD_KEY)
@@ -405,6 +450,10 @@ try:
     check("restart: our message kept as delivered", hist.get("hello ranch", {}).get("ack"), "delivered")
     check("restart: NAK kept as failed", hist.get("nak", {}).get("ack"), "failed")
     check("restart: a reply keeps its reply_id", hist.get("me too", {}).get("reply_id"), 1001)
+    h = hears_of(page.hello["mesh"]["hears"])
+    check("restart: RDG still hears us (from the links file)", h.get(("!0000cafe", "neighbor")), 7.25)
+    check("restart: the traceroute's first hop kept", h.get(("!0000cafe", "trace")), 6.0)
+    check("restart: BASE's NeighborInfo kept", [x["id"] for x in page.hello["mesh"]["neighbors"].get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])
     check("restart: a reaction keeps emoji", (hist.get("👍", {}).get("emoji"), hist.get("👍", {}).get("reply_id")), (True, 1001))
     chans = {c["name"]: c for c in (page.latest("info", 3) or {}).get("channels", [])}
     check("wrong key: key_ok false", chans.get("HomeNet", {}).get("key_ok"), False)

@@ -8,7 +8,8 @@ risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
 incoming ones on our message), Retry on a failed or unknown send, Direct as a list of
 conversations, the header's counters, a card's distance / environment / Ask
-for (position) / Ignore, NeighborInfo links on the map, Reboot node.
+for (position) / Ignore, NeighborInfo links on the map, Reboot node, who
+hears us ("heard by N" and its list).
 
     python3 tests/mesh_page_test.py [screenshot.png]
 """
@@ -254,6 +255,23 @@ try:
 
         # Header, card, map links
         check("header: this node's counters", b.js(f"({TEXT})('#mesh-stats')").startswith("ch 12.5%tx 1.3%⚡ powered3 online"), True)
+        check("header: heard by 1 (RDG's NeighborInfo lists us)", b.js(f"({TEXT})('#mesh-hears-btn')"), "heard by 1")
+        b.js("document.querySelector('#mesh-hears-btn').click()")
+        check("  click: the list opens", b.js(f"({VISIBLE})('#mesh-hears')"), True)
+        check("  one row a node: RDG (traceroute + NeighborInfo, newest SNR), BASE apart as a DM",
+              b.js("[...document.querySelectorAll('#mesh-hears .mesh-hear')].map((e) => [...e.children].slice(0, 4).map((c) => c.textContent))"),
+              [["RDG", "Ridge Relay", "first hop of a traceroute · says it hears us", "6 dB"],
+               ["BASE", "Ranch Base", "got our DM", ""]])
+        b.js("document.querySelector('#mesh-hears .mesh-hear').click()")
+        check("  a row opens that node's card", b.js(f"({TEXT})('#mesh-card .mesh-card-head b')"), "RDG")
+        b.js("mesh.event({ t: 'mesh', hears: [{ id: '!0000cafe', t: Date.now() / 1000, snr: 7.25, how: 'neighbor' }, "
+             "{ id: '!0000beef', t: Date.now() / 1000, snr: null, how: 'dm' }] })")
+        check("  a DM ACK is listed apart and not counted as direct",
+              [b.js(f"({TEXT})('#mesh-hears-btn')"),
+               b.js("[...document.querySelectorAll('#mesh-hears .mesh-hears-h')].map((e) => e.textContent)")],
+              ["heard by 1", ["Hear us directly", "Got our DMs (maybe through relays)"]])
+        b.js("document.querySelector('#mesh-hears-btn').click()")
+        check("  click again: closed", b.js(f"({VISIBLE})('#mesh-hears')"), False)
         if not b.js(f"({VISIBLE})('#mesh-card') && ({TEXT})('#mesh-card .mesh-card-head b') === 'BASE'"):
             b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
         check("BASE's card is open", b.js(f"({VISIBLE})('#mesh-card') && ({TEXT})('#mesh-card .mesh-card-head b')"), "BASE")

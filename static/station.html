@@ -150,9 +150,11 @@
       <span class="spacer"></span>
       <span id="mesh-key"></span>
       <span class="mesh-stats" id="mesh-stats"></span>
+      <button class="chip chip-mini" id="mesh-hears-btn" hidden title="Nodes that hear this one">heard by 0</button>
       <button class="chip chip-mini" id="mesh-cfg-btn" title="The node's settings: name, role, LoRa, position, ...">Settings</button>
       <button class="chip chip-mini" id="mesh-power" title="Close the link to the node and free its port">Switch off</button>
     </div>
+    <div class="mesh-hears" id="mesh-hears" hidden></div>
     <div class="mesh-cfg" id="mesh-cfg" hidden>
       <div class="wl-bar"><div class="seg" id="mesh-cfg-tabs"></div></div>
       <form class="mesh-cfg-form" id="mesh-cfg-form" autocomplete="off"></form>

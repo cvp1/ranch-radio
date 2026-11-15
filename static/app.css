@@ -558,6 +558,12 @@ body.tx .tx-meters { opacity: 1; }
 .mm-attr { position: absolute; right: 6px; bottom: 4px; font: 10px var(--sans); color: var(--dim);
   background: rgba(0,0,0,.55); padding: 1px 5px; border-radius: 4px; text-decoration: none; }
 .mesh-cfg { display: flex; flex-direction: column; gap: 10px; }
+.mesh-hears { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; }
+.mesh-hears-note { font-size: 11px; padding-bottom: 4px; }
+.mesh-hears-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding-top: 6px; }
+.mesh-hear { display: grid; grid-template-columns: 4em 1fr auto 5em 3em; gap: 8px; align-items: baseline;
+  text-align: left; background: none; border: 0; color: inherit; padding: 3px 4px; cursor: pointer; }
+.mesh-hear:hover { background: var(--hover, rgba(127,127,127,.12)); }
 .mesh-cfg-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 18px; }
 .mesh-cfg-form label { display: grid; grid-template-columns: 1fr 9.5em; gap: 8px; align-items: center;
   font-size: 12px; color: var(--muted); min-height: 30px; }

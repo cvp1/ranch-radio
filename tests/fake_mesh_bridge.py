@@ -14,7 +14,7 @@ updates the values and sends config again, except hop_limit 6, which the
 answers via !0000cafe; to !0000dead, NO_RESPONSE. Every message heard is
 also an "rx" (activity). !0000cafe replies to the first message (reply_id
 1001); "react to me" gets a 👍 reaction from !0000beef. NeighborInfo: BASE
-hears RDG. "request" to !0000beef answers (a position request moves it, a
+hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
 telemetry one fills its air_tx); to anyone else, "no reply". "node" ignore /
 unignore / remove change the node list; "reboot" is done.
 Each start appends a line to $FAKE_MESH_STARTS (restart counting) and every
@@ -59,7 +59,12 @@ def main():
     p.add_argument("port")
     p.add_argument("--key", action="append", default=[])
     args = p.parse_args()
+    first_start = True
     if os.environ.get("FAKE_MESH_STARTS"):
+        try:
+            first_start = not open(os.environ["FAKE_MESH_STARTS"]).read().strip()
+        except OSError:
+            pass
         with open(os.environ["FAKE_MESH_STARTS"], "a") as f:
             f.write(f"{time.time()}\n")
     key_ok = None
@@ -102,7 +107,10 @@ def main():
          text="gate is closed", snr=7.5, rssi=-90, hops=0)
     emit(ev="msg", id=1002, **{"from": "!0000cafe"}, to="^all", ch=1, dm=False,
          text="thanks, I saw it", snr=3.0, rssi=-110, hops=0, reply_id=1001, emoji=False)
-    emit(ev="neighbors", neighbors={"!0000beef": {"t": now, "neighbors": [{"id": "!0000cafe", "snr": 6.5}]}})
+    nb = {"!0000beef": {"t": now, "neighbors": [{"id": "!0000cafe", "snr": 6.5}]}}
+    if first_start:                     # only once: a restart must keep it from the links file
+        nb["!0000cafe"] = {"t": now, "neighbors": [{"id": ME["id"], "snr": 7.25}, {"id": "!0000beef", "snr": 2.0}]}
+    emit(ev="neighbors", neighbors=nb)
     next_id = [5000]
 
     def ack_later(pid, ok, reason):
