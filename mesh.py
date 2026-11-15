@@ -22,7 +22,11 @@ package. This side:
     one request in flight per node and each kind at most every REQUEST_GAP_S
   - ignores, unignores or removes a node in the node's DB (mesh_node) and
     reboots the node (mesh_reboot)
-  - keeps each node's NeighborInfo (who it hears, with SNR) for the map
+  - keeps each node's NeighborInfo (who it hears, with SNR) for the map, and
+    the finished traceroutes, in --mesh-log's -links.json (a restart and a
+    new bridge keep them: nodes send NeighborInfo hours apart)
+  - works out who hears this node (hears_us): a node whose NeighborInfo lists
+    us, the first hop of a traceroute, a node that ACKed our DM
 
 Channel keys stay with the bridge (--mesh-key NAME=PATH): only "the node's
 key matches" (key_ok) comes back here and goes to the pages.
@@ -55,6 +59,43 @@ REQUEST_KINDS = {"position": "position", "telemetry": "telemetry", "env": "envir
 REQUEST_GAP_S = 60.0          # each kind to one node at most this often: every request is airtime
 EMOJI_MAX_BYTES = 16          # a reaction is one emoji (with modifiers), not a message
 NODE_ACTIONS = {"ignore": "ignore", "unignore": "unignore", "remove": "remove"}
+LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
+NEIGHBORS_KEEP = 300          # nodes' NeighborInfo kept, newest first
+
+
+def hears_us(me, neighbors, traces, messages, now=None):
+    """Who hears this node, from what the station already holds; no airtime.
+    -> [{"id", "t", "snr", "how"}], newest first. how: "neighbor" (its
+    NeighborInfo lists us; snr is how it hears us), "trace" (first hop of a
+    traceroute; snr_towards[0]), "dm" (it ACKed our DM: it got it, maybe
+    through relays; no snr). A node keeps its newest evidence of each kind.
+    Nothing here comes from a rebroadcast of ours: the firmware drops that
+    as a duplicate and tells the phone only "implicit ACK", never who."""
+    if not me:
+        return []
+    now = time.time() if now is None else now
+    best = {}
+
+    def note(nid, how, t, snr=None):
+        if not nid or nid == me or nid == "?" or not t or now - t > LINKS_KEEP_S:
+            return
+        key = (nid, how)
+        if key not in best or t > best[key]["t"]:
+            best[key] = {"id": nid, "t": t, "snr": snr, "how": how}
+
+    for nid, rec in (neighbors or {}).items():
+        for x in rec.get("neighbors") or []:
+            if x.get("id") == me:
+                note(nid, "neighbor", rec.get("t"), x.get("snr"))
+    for tr in (traces or {}).values():
+        if tr.get("state") == "done":
+            first = (tr.get("route") or [tr.get("to")])[0]
+            snr = (tr.get("snr_towards") or [None])[0]
+            note(first, "trace", tr.get("done_t"), snr)
+    for m in messages or []:
+        if m.get("mine") and m.get("dm") and m.get("ack") == "delivered":
+            note(m.get("to"), "dm", m.get("t"))
+    return sorted(best.values(), key=lambda r: -r["t"])
 
 
 class MeshEngine:
@@ -70,6 +111,7 @@ class MeshEngine:
             if getattr(args, "mesh_feed_tx", False):
                 self.cmd += ["--feed-tx"]
         self.log_path = os.path.expanduser(args.mesh_log) if args.mesh_log else None
+        self.links_path = (os.path.splitext(self.log_path)[0] + "-links.json") if self.log_path else None
         self.proc = None
         self.connected = False
         self.error = None
@@ -167,6 +209,7 @@ class MeshEngine:
             for name in self.info["missing"] or []:
                 log.warning("mesh: channel %s is not configured on the node", name)
             self._send({"info": self.info})
+            self._send_hears()
         elif ev == "config":
             self.config = {"sections": m["sections"], "values": m["values"]}
             self._send({"config": self.config})
@@ -190,12 +233,22 @@ class MeshEngine:
             log.info("mesh: traceroute to %s %s%s", m["to"], rec["state"],
                      f" ({rec['error']})" if rec["error"] else f" via {rec['route']}")
             self._send({"trace": rec})
+            if rec["state"] == "done":
+                self._save_links()
+                self._send_hears()
         elif ev == "nodes":
             self.nodes = m["nodes"]
             self._send({"nodes": self.nodes})
         elif ev == "neighbors":
-            self.neighbors = m["neighbors"] or {}
+            # The bridge holds only what it heard since it started: merge, the
+            # newer report of a node wins, so a restart doesn't forget the rest.
+            for nid, rec in (m["neighbors"] or {}).items():
+                if (rec.get("t") or 0) >= (self.neighbors.get(nid) or {}).get("t", 0):
+                    self.neighbors[nid] = rec
+            self._prune_links()
+            self._save_links()
             self._send({"neighbors": self.neighbors})
+            self._send_hears()
         elif ev == "req":
             key = self._req_refs.pop(m["ref"], None)
             if key is None:
@@ -233,6 +286,8 @@ class MeshEngine:
             if rec is not None:
                 state = ("relayed" if m.get("relayed") else "delivered") if m["ok"] else "failed"
                 self._settle(rec, state, None if m["ok"] else m.get("reason"))
+                if state == "delivered" and rec.get("dm"):
+                    self._send_hears()
 
     def _status(self, connected, error):
         self.connected, self.error = bool(connected), error
@@ -277,7 +332,14 @@ class MeshEngine:
                 "info": self.info, "config": self.config, "nodes": self.nodes,
                 "traces": list(self.traces.values()), "messages": list(self.messages),
                 "requests": self.requests, "neighbors": self.neighbors,
-                "text_max": TEXT_MAX_BYTES}
+                "hears": self.hears(), "text_max": TEXT_MAX_BYTES}
+
+    def hears(self):
+        me = ((self.info or {}).get("me") or {}).get("id")
+        return hears_us(me, self.neighbors, self.traces, self.messages)
+
+    def _send_hears(self):
+        self._send({"hears": self.hears()})
 
     # --- pages -> node
 
@@ -480,9 +542,56 @@ class MeshEngine:
 
     # --- history on disk
 
+    def _prune_links(self, now=None):
+        now = time.time() if now is None else now
+        keep = sorted(((nid, r) for nid, r in self.neighbors.items()
+                       if isinstance(r, dict) and now - (r.get("t") or 0) <= LINKS_KEEP_S),
+                      key=lambda x: -(x[1].get("t") or 0))[:NEIGHBORS_KEEP]
+        self.neighbors = dict(keep)
+
+    def _load_links(self):
+        if not self.links_path:
+            return
+        try:
+            with open(self.links_path) as f:
+                d = json.load(f)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as e:
+            log.warning("mesh links %s not read: %s", self.links_path, e)
+            return
+        now = time.time()
+        if isinstance(d.get("neighbors"), dict):
+            self.neighbors = d["neighbors"]
+            self._prune_links(now)
+        for tr in d.get("traces") or []:
+            if (isinstance(tr, dict) and tr.get("state") == "done" and NODE_ID.match(str(tr.get("to")))
+                    and now - (tr.get("done_t") or 0) <= LINKS_KEEP_S):
+                self.traces[tr["to"]] = tr
+        while len(self.traces) > TRACES_KEEP:
+            self.traces.pop(next(iter(self.traces)))
+        log.info("mesh: NeighborInfo of %d nodes and %d traceroutes from %s",
+                 len(self.neighbors), len(self.traces), self.links_path)
+
+    def _save_links(self):
+        if not self.links_path:
+            return
+        d = {"neighbors": self.neighbors,
+             "traces": [t for t in self.traces.values() if t.get("state") == "done"]}
+        tmp = self.links_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.links_path), exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(d, f)
+            os.replace(tmp, self.links_path)
+        except OSError as e:
+            log.warning("mesh links %s not written: %s", self.links_path, e)
+
     def _load(self):
         if not self.log_path:
             return
+        self._load_links()
         recs = []
         try:
             with open(self.log_path) as f:

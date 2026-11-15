@@ -17,6 +17,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The Mesh tab shows who hears your node.** "heard by N" in the header opens
+  a list, one row a node: those whose NeighborInfo lists yours (with the SNR
+  they hear you at), the first hop of a traceroute, and apart from them, nodes
+  that ACKed your DM (they got it, maybe through relays). Nothing is sent to
+  find out. NeighborInfo and traceroutes are now kept on disk for 7 days, so a
+  restart no longer empties the map's links (nodes send NeighborInfo hours
+  apart). Not in it: who rebroadcast your packet; the firmware drops that as
+  a duplicate and tells the app only that someone did.
+
 - **The Mesh tab does what the Meshtastic apps do.** Direct is now a list of
   conversations, one per node, each with its unread count; replies quote what
   they answer, and a message takes an emoji reaction (👍 ❤️ 😂 ‼️ ❓ 🎉, the

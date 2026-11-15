@@ -3,8 +3,8 @@
 // Mesh panel: a Meshtastic node's channels, direct conversations (one per
 // node), replies and emoji reactions, the node list (a node's card: message
 // it, traceroute, ask for its position / telemetry / user info, favorite,
-// ignore, remove), the map (meshmap.js, with NeighborInfo links) and
-// settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
+// ignore, remove), the map (meshmap.js, with NeighborInfo links), who hears
+// this node ("heard by N": the server's hears_us) and settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
 // mesh_send / mesh_config / mesh_favorite / mesh_trace / mesh_request /
 // mesh_node / mesh_reboot out); the server keeps the history, so a page
 // opened later sees it too.
@@ -25,6 +25,11 @@ const mesh = (() => {
   const traces = {};        // node id -> the last traceroute to it
   let requests = {};        // node id -> {kind: {state, t, error}}: position / telemetry / user info asks
   let neighbors = {};       // node id -> {t, neighbors: [{id, snr}]}: who each node hears directly
+  let hears = [];           // [{id, t, snr, how}]: who hears this node (mesh.py hears_us)
+  let hearsOpen = false;
+  const HOW = { neighbor: ["says it hears us", "Its NeighborInfo lists this node, with the SNR it hears us at"],
+    trace: ["first hop of a traceroute", "A traceroute's first hop: it heard us at this SNR"],
+    dm: ["got our DM", "It ACKed a direct message of ours: it got it, maybe through relays"] };
   const REACTIONS = ["👍", "❤️", "😂", "‼️", "❓", "🎉"];
   const REQUESTS = [["position", "Position", "Ask it for its position"],
     ["telemetry", "Telemetry", "Ask it for its battery, voltage and channel use"],
@@ -117,6 +122,51 @@ const mesh = (() => {
     if (!want && !confirm("Switch Mesh off? The link to the node closes and its port is free until you switch it on again.")) return;
     send({ t: "addon", addon: "mesh", do: "power", on: want });
   };
+
+  // Who hears us: direct evidence first (its NeighborInfo, a traceroute's first
+  // hop), then the nodes that ACKed a DM (reached, maybe through relays).
+  function renderHears() {
+    const direct = new Set(hears.filter((h) => h.how !== "dm").map((h) => h.id));
+    const btn = $("#mesh-hears-btn");
+    btn.hidden = !connected && !hears.length;
+    btn.textContent = `heard by ${direct.size}`;
+    btn.title = `Nodes that hear this one directly (last 7 days)${hears.length > direct.size ? "; the list also has nodes that got our DMs" : ""}`;
+    on(btn, hearsOpen);
+    const el = $("#mesh-hears");
+    el.hidden = !hearsOpen;
+    if (!hearsOpen) return;
+    // One row per node: every way we know, the SNR of its newest direct evidence.
+    const group = (list) => {
+      const by = new Map();
+      for (const h of list) {
+        const g = by.get(h.id) || { id: h.id, t: 0, snr: null, snrT: 0, how: [] };
+        g.how.push(h.how);
+        g.t = Math.max(g.t, h.t);
+        if (h.snr != null && h.t > g.snrT) { g.snr = h.snr; g.snrT = h.t; }
+        by.set(h.id, g);
+      }
+      return [...by.values()].sort((a, b) => b.t - a.t);
+    };
+    const rows = (list) => group(list).map((g) => {
+      const n = byId(g.id);
+      const how = g.how.map((k) => (HOW[k] || [k])[0]).join(" · ");
+      const why = g.how.map((k) => (HOW[k] || [k, ""])[1]).filter(Boolean).join("; ");
+      return `<button class="mesh-hear" data-id="${esc(g.id)}" title="${esc(`${long(g.id)} ${g.id}: ${why}`)}">` +
+        `<b>${esc(short(g.id))}</b><span class="mesh-long">${esc(n?.longName || g.id)}</span>` +
+        `<span class="wl-dim">${esc(how)}</span><span class="wl-dim">${g.snr != null ? `${g.snr} dB` : ""}</span>` +
+        `<span class="wl-dim">${esc(ago(g.t))}</span></button>`;
+    }).join("");
+    const d = hears.filter((h) => h.how !== "dm"), r = hears.filter((h) => h.how === "dm" && !direct.has(h.id));
+    el.innerHTML = `<div class="wl-dim mesh-hears-note">From NeighborInfo, traceroutes and DM ACKs over the last 7 days; ` +
+      `nothing is sent to find out. A node with NeighborInfo off only shows up here after a traceroute.</div>` +
+      (d.length ? `<div class="mesh-hears-h">Hear us directly</div>${rows(d)}` : `<div class="wl-empty">No node has said it hears us yet. Traceroute a node to find out.</div>`) +
+      (r.length ? `<div class="mesh-hears-h">Got our DMs (maybe through relays)</div>${rows(r)}` : "");
+    el.onclick = (e) => {
+      const id = e.target.closest("button.mesh-hear")?.dataset.id;
+      if (id && byId(id)) select(id);
+    };
+  }
+  $("#mesh-hears-btn").onclick = () => { hearsOpen = !hearsOpen; renderHears(); };
 
   function renderTabs() {
     const seg = $("#mesh-tabs");
@@ -626,9 +676,11 @@ const mesh = (() => {
     for (const tr of snap.traces || []) traces[tr.to] = tr;
     requests = snap.requests || {};
     neighbors = snap.neighbors || {};
+    hears = snap.hears || [];
     map.setNodes(nodes, myId());
     map.setLinks(links());
     renderHead();
+    renderHears();
     renderTabs();
     renderMessages();
     renderCompose();
@@ -659,12 +711,15 @@ const mesh = (() => {
       map.setLinks(links());
       renderNodes();
       renderHead();
+      renderHears();
     }
     if (m.neighbors) {
       neighbors = m.neighbors;
       map.setLinks(links());
       renderCard();
     }
+    if (m.hears) { hears = m.hears; renderHears(); }
+    if (m.status) renderHears();
     if (m.request) onRequest(m.request);
     if (m.trace) onTrace(m.trace);
     if (m.rx) map.pulse(m.rx.from);
@@ -676,7 +731,7 @@ const mesh = (() => {
   $("#mesh-text").oninput = count;
   $("#mesh-find").oninput = renderNodes;
   $("#mesh-all").onclick = () => { recentOnly = !recentOnly; on($("#mesh-all"), recentOnly); renderNodes(); };
-  setInterval(() => { renderNodes(); map.render(); }, 60000);  // keep "heard 5m ago" and the map's colours current
+  setInterval(() => { renderNodes(); renderHears(); map.render(); }, 60000);  // keep "heard 5m ago" and the map's colours current
 
   // {"t": "addon", "addon": "mesh", "on", "error", "snapshot"}: switched on or off
   function power(m) {
