@@ -184,13 +184,27 @@ try:
               sorted(b.js("[...document.querySelectorAll('#mesh-map .mm-node text')].map((t) => t.textContent)")),
               ["BASE", "RDG", "TEST"])
         check("  says how many", b.js(f"({TEXT})('#mesh-map .mm-note')").split(" · ")[0], "2 of 3 nodes on the map")
+        # Nothing selected: this node's own links, coloured by direction (RDG's NeighborInfo
+        # lists us; packets from RDG and BASE arrived with no hop used).
+        b.js("document.querySelector('#mesh-nodes .mesh-node.on')?.click()")        # the open card's node: close it
+        b.wait("!document.querySelector('#mesh-nodes .mesh-node.on')", 5)
+        mine = b.js("[...document.querySelectorAll('#mesh-map line.mm-link')].map((l) => [l.getAttribute('class'), "
+                    "l.querySelector('title')?.textContent || '']).filter((x) => x[1].includes('you')).sort((a, b) => (a[1] < b[1] ? -1 : 1))")
+        check("  with nothing selected: who hears this node and who it hears, by direction", mine,
+              [["mm-link both", "RDG hears you at 7.25 dB; you hear RDG at 3.25 dB"], ["mm-link out", "you hear BASE at 7.5 dB"]])
+        check("  the map's note is the key", "you: green hears you, blue you hear, purple both" in b.js(f"({TEXT})('#mesh-map .mm-note')"), True)
+        check("  a pair is drawn once (ours in colour, not also as a plain NeighborInfo line)",
+              b.js("document.querySelectorAll('#mesh-map line.mm-link').length"), 3)
         check("  tiles requested", b.js("document.querySelectorAll('#mesh-map .mm-tile').length > 0"), True)
         b.js("[...document.querySelectorAll('#mesh-map .mm-node')].find((g) => g.textContent.startsWith('RDG'))"
              ".dispatchEvent(new MouseEvent('click', { bubbles: true }))")
         check("clicking a node on the map opens its card", b.js(f"({TEXT})('#mesh-card .mesh-card-head b')"), "RDG")
         check("  and marks it on the map", b.js("document.querySelector('#mesh-map .mm-node.sel text')?.textContent"), "RDG")
         b.js("mesh.event({ t: 'mesh', rx: { from: '!0000beef', port: 'POSITION_APP' } })")
-        check("a packet heard pulses on the map", b.js("document.querySelectorAll('#mesh-map .mm-pulse').length"), 1)
+        check("a packet heard pulses on the map", b.js("document.querySelectorAll('#mesh-map .mm-pulse:not(.tx)').length"), 1)
+        b.js("send({ t: 'mesh_send', text: 'on the air', ch: 1 })")
+        check("  a message of ours pulses red at this node",
+              bool(b.wait("document.querySelectorAll('#mesh-map .mm-pulse.tx').length === 1", 5)), True)
         b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
         b.js("document.querySelector('#mesh-card [data-act=trace]').click()")
         check("Traceroute: the card shows the path",

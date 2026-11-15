@@ -2,7 +2,8 @@
 
 // Mesh map: the nodes that report a position, over OpenStreetMap tiles
 // (fetched by the browser; without internet the dots still show on a plain
-// grid). Activity pulses on a node when a packet from it is heard, and the
+// grid). Activity pulses on a node when a packet from it is heard (red, at
+// this node, when a message of ours goes out: pulse(id, "tx")), and the
 // last traceroute is drawn as its path there (solid) and back (dashed).
 // Drag to pan, wheel or +/- to zoom, Fit to frame the active nodes again.
 // The APRS page (aprs.js) also uses: a selected station's track (setTrack),
@@ -246,11 +247,11 @@ const meshMap = (() => {
       setTrace(rec) { trace = rec; drawTrace(); },
       setTrack(points) { track = points || []; drawTrack(); },
       setLinks(list, note = "") { links = list || []; legend = note; render(); },
-      pulse(id) {
+      pulse(id, cls = "") {             // cls "tx": a packet of ours going out (red), not one heard
         const nd = byId(id);
         if (!nd || nd.lat == null || (!nd.lat && !nd.lon) || !w) return;
         const c = document.createElementNS(SVGNS, "circle");
-        c.setAttribute("class", "mm-pulse");
+        c.setAttribute("class", `mm-pulse${cls ? ` ${cls}` : ""}`);
         const [sx, sy] = spot(nd);
         c.setAttribute("cx", sx);
         c.setAttribute("cy", sy);

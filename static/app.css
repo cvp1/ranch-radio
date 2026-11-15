@@ -557,6 +557,7 @@ body.tx .tx-meters { opacity: 1; }
 .mm-node.k-is circle { fill: rgba(167, 139, 250, .55); }
 .mm-pulse { fill: none; stroke: var(--accent); stroke-width: 2; transform-box: fill-box; transform-origin: center;
   animation: mm-pulse 1.6s ease-out forwards; pointer-events: none; }
+.mm-pulse.tx { stroke: var(--tx); stroke-width: 2.5; }
 @keyframes mm-pulse { from { transform: scale(1); opacity: .95; } to { transform: scale(6); opacity: 0; } }
 .mm-note { position: absolute; left: 8px; top: 6px; font: 11px var(--mono); color: var(--muted);
   background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 6px; pointer-events: none; }

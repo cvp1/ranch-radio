@@ -3,7 +3,8 @@
 // Mesh panel: a Meshtastic node's channels, direct conversations (one per
 // node), replies and emoji reactions, the node list (a node's card: message
 // it, traceroute, ask for its position / telemetry / user info / neighbours, favorite,
-// ignore, remove), the map (meshmap.js, with NeighborInfo links), who hears
+// ignore, remove), the map (meshmap.js, with NeighborInfo links; with nothing
+// selected, this node's own: who hears it and who it hears directly), who hears
 // this node ("heard by N": the server's hears_us) and settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
 // mesh_send / mesh_config / mesh_favorite / mesh_trace / mesh_request /
 // mesh_node / mesh_reboot out); the server keeps the history, so a page
@@ -416,11 +417,37 @@ const mesh = (() => {
   // NeighborInfo as map links: every pair heard; or, with a node selected,
   // just its own, each saying which way: green = it is heard by that node
   // (that node's list has it), blue = it hears that node, purple = both.
+  // This node's own links, drawn with nothing selected so the map answers
+  // "who hears me, and who do I hear" at a glance, in the colours a selected
+  // node's links have. Hears us: mesh.py's hears_us (its NeighborInfo lists
+  // us, or it was a traceroute's first hop; a DM's ACK is not direct, so not
+  // here). We hear it: a packet from it arrived with no hop used in the last
+  // day, or our own node's NeighborInfo lists it.
+  function myLinks() {
+    const me = myId(), now = Date.now() / 1000, by = new Map();
+    if (!me) return [];
+    const rec = (id) => by.get(id) || by.set(id, {}).get(id);
+    for (const n of nodes) {
+      if (!n.me && n.id !== me && n.hops === 0 && n.last_heard && now - n.last_heard < HEARD_RECENT_S) rec(n.id).out = n.snr ?? null;
+    }
+    for (const x of neighbors[me]?.neighbors || []) if (x.id !== me && !("out" in rec(x.id))) rec(x.id).out = x.snr ?? null;
+    for (const h of hears) if (h.how !== "dm" && h.id !== me && !("inn" in rec(h.id))) rec(h.id).inn = h.snr ?? null;   // newest first
+    const db = (v) => (v != null ? `${v} dB` : "?");
+    return [...by].map(([id, r]) => {
+      const inn = "inn" in r, outw = "out" in r;
+      return { from: me, to: id, cls: inn && outw ? "both" : inn ? "in" : "out",
+        label: inn && outw ? `${db(r.inn)} / ${db(r.out)}` : db(inn ? r.inn : r.out),
+        title: [inn ? `${short(id)} hears you at ${db(r.inn)}` : "", outw ? `you hear ${short(id)} at ${db(r.out)}` : ""].filter(Boolean).join("; ") };
+    });
+  }
+
   function links() {
     const snr = (a, b) => (neighbors[a]?.neighbors || []).find((x) => x.id === b)?.snr;
     const hears = (a, b) => (neighbors[a]?.neighbors || []).some((x) => x.id === b);
     const db = (v) => (v != null ? `${v} dB` : "?");
     const out = [], seen = new Set();
+    const mine = selected ? [] : myLinks();
+    for (const l of mine) seen.add([l.from, l.to].sort().join("-"));      // ours are drawn once, in colour, on top
     for (const [from, rec] of Object.entries(neighbors)) {
       for (const x of rec.neighbors || []) {
         if (selected && from !== selected && x.id !== selected) continue;
@@ -441,9 +468,10 @@ const mesh = (() => {
             .filter(Boolean).join("; ") });
       }
     }
-    return out;
+    return [...out, ...mine];
   }
-  const legend = () => (selected ? `${short(selected)}: green hears it, blue it hears, purple both` : "");
+  const legend = () => (selected ? `${short(selected)}: green hears it, blue it hears, purple both`
+    : myLinks().length ? "you: green hears you, blue you hear, purple both" : "");
   const drawLinks = () => map.setLinks(links(), legend());
 
   function select(id, fromMap = false) {
@@ -768,11 +796,12 @@ const mesh = (() => {
       drawLinks();
       renderCard();
     }
-    if (m.hears) { hears = m.hears; renderHears(); }
+    if (m.hears) { hears = m.hears; renderHears(); drawLinks(); }
     if (m.status) renderHears();
     if (m.request) onRequest(m.request);
     if (m.trace) onTrace(m.trace);
     if (m.rx) map.pulse(m.rx.from);
+    if (m.msg && m.msg.mine) map.pulse(myId(), "tx");        // ours, handed to the node to send: red, at us
     if (m.msg) addMessage(m.msg);
     if (m.update) updateMessage(m.update);
   }
