@@ -477,14 +477,13 @@ const mesh = (() => {
   }
 
   // Why a link can't be a line on the map: the map places a node only by its
-  // position, and the ranch's nodes share one.
+  // position (nodes sharing one are drawn apart).
   function offMap(a, b) {
     const pa = byId(a), pb = byId(b);
     const has = (x) => x && x.lat != null && (x.lat || x.lon);
     if (!pb) return "not in this node's list";
     if (!has(pb)) return "no position";
-    if (has(pa) && pa.lat === pb.lat && pa.lon === pb.lon) return "same spot";
-    return "";
+    return "";                        // the same spot is fine: the map fans those apart
   }
 
   // Who the node hears (its NeighborInfo) and who hears it (others' lists),

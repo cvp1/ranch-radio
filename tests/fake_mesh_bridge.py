@@ -82,7 +82,8 @@ def main():
                    {"index": 1, "name": "HomeNet", "role": "SECONDARY", "key_ok": key_ok}])
     values = {"owner": {"long_name": ME["long"], "short_name": ME["short"]},
               "device": {"role": "CLIENT", "node_info_broadcast_secs": 10800},
-              "lora": {"region": "US", "hop_limit": 3, "tx_enabled": True}}
+              "lora": {"region": "US", "hop_limit": 3, "tx_enabled": True},
+              "neighbor_info": {"enabled": True}}     # not a section here; the server reads it
     emit(ev="config", sections=SECTIONS, values=values)
     now = int(time.time())
     nodes = [
@@ -145,6 +146,11 @@ def main():
         if m.get("cmd") == "request":
             def answer(m=m):
                 time.sleep(0.3)
+                if m["to"] == ME["id"] and m["kind"] == "neighbors":   # our own node, asked of itself
+                    emit(ev="neighbors", neighbors={ME["id"]: {"t": int(time.time()), "neighbors": [
+                        {"id": "!0000cafe", "snr": 7.0}, {"id": "!0000beef", "snr": 3.0}]}})
+                    emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=True, error=None)
+                    return
                 if m["to"] != "!0000beef":
                     nak = m["kind"] == "neighbors" and m["to"] == "!0000dead"   # its NeighborInfo is off
                     emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=False,

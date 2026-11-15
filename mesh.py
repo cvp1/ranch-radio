@@ -18,6 +18,8 @@ package. This side:
     node for every page, and passes "heard a packet from X" on as activity
   - replies and emoji reactions (mesh_send reply_to / emoji), checked
     against a message it holds
+  - asks its own node for its neighbours now and then (SELF_NEIGHBORS_S;
+    answered inside the node, nothing on the air), so who it hears is known
   - asks a node for its position, telemetry, user info or neighbours
     (mesh_request), one request in flight per node and each kind at most every
     REQUEST_GAP_S (neighbours: 180 s, the firmware's own limit)
@@ -65,6 +67,12 @@ REQUEST_GAP_S = 60.0          # each kind to one node at most this often: every 
 # A node answers a NeighborInfo request at most once every 3 minutes
 # (NeighborInfoModule::allocReply); asking sooner only spends airtime.
 REQUEST_GAP_BY_KIND = {"neighbors": 180.0}
+# This node's own NeighborInfo, asked of the node itself (answered inside it,
+# nothing on the air) a little after it connects and then this often, so the
+# station always holds who its own node hears. Only with the module on. The
+# node's 3-minute answer limit counts these too, hence not more often.
+SELF_NEIGHBORS_S = float(os.environ.get("MESH_SELF_NEIGHBORS_S", "1800"))
+SELF_NEIGHBORS_FIRST_S = float(os.environ.get("MESH_SELF_NEIGHBORS_FIRST_S", "20"))
 EMOJI_MAX_BYTES = 16          # a reaction is one emoji (with modifiers), not a message
 NODE_ACTIONS = {"ignore": "ignore", "unignore": "unignore", "remove": "remove"}
 LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
@@ -136,6 +144,7 @@ class MeshEngine:
         self.requests = {}            # node id -> {kind: {"state", "t", "error"}}
         self._req_refs = {}           # request ref -> (node id, kind)
         self.neighbors = {}           # node id -> {"t", "neighbors": [{"id", "snr"}]}
+        self._self_nb = None          # the timer for asking our own node for its neighbours
         self._closing = False
         self._reached = False         # this run of the bridge got through to the node
         self._task = None
@@ -148,6 +157,8 @@ class MeshEngine:
 
     async def stop(self):
         self._closing = True
+        if self._self_nb is not None:
+            self._self_nb.cancel()
         if self._task:
             self._task.cancel()
         if self.proc and self.proc.returncode is None:
@@ -232,6 +243,8 @@ class MeshEngine:
         elif ev == "config":
             self.config = {"sections": m["sections"], "values": m["values"]}
             self._send({"config": self.config})
+            if self._self_nb is None:
+                self._self_nb = asyncio.get_running_loop().call_later(SELF_NEIGHBORS_FIRST_S, self._self_neighbors)
         elif ev == "done":
             ws, what = self._writes.pop(m["ref"], (None, "?"))
             if m["ok"]:
@@ -499,18 +512,37 @@ class MeshEngine:
         await self.proc.stdin.drain()
         log.info("mesh: traceroute to %s", to)
 
-    def _peer_why(self, to):
+    def _peer_why(self, to, kind=None):
         if not NODE_ID.match(str(to)):
             return f"Not a node id: {to!r}."
-        if to == ((self.info or {}).get("me") or {}).get("id"):
+        if to == self._me() and kind != "neighbors":     # its own neighbours: asked of itself, off the air
             return "That is this node."
         return None
+
+    def _me(self):
+        return ((self.info or {}).get("me") or {}).get("id")
+
+    def _self_neighbors(self):
+        """Ask our own node for its NeighborInfo (see SELF_NEIGHBORS_S); quietly
+        skipped when it can't be asked now, then again later."""
+        if self._closing:
+            return
+        self._self_nb = asyncio.get_running_loop().call_later(SELF_NEIGHBORS_S, self._self_neighbors)
+        me = self._me()
+        on = (((self.config or {}).get("values") or {}).get("neighbor_info") or {}).get("enabled")
+        mine = self.requests.get(me, {}) if me else {}
+        last = mine.get("neighbors")
+        if (not me or not on or not self.connected or self.proc is None or self.proc.returncode is not None
+                or any(r["state"] == "running" for r in mine.values())
+                or (last and time.time() - last["t"] < REQUEST_GAP_BY_KIND["neighbors"])):
+            return
+        asyncio.ensure_future(self._issue(me, "neighbors"))
 
     async def request(self, ws, to, kind):
         """Ask node TO for its position, telemetry, environment or user info."""
         if not self._usable(ws):
             return
-        why = self._peer_why(to)
+        why = self._peer_why(to, kind)
         if why is None and kind not in REQUEST_KINDS:
             why = f"Not something to ask a node for: {kind!r}."
         mine = self.requests.get(to, {})
@@ -524,6 +556,9 @@ class MeshEngine:
         if why:
             self.station.notice(why, "warn", ws)
             return
+        await self._issue(to, kind)
+
+    async def _issue(self, to, kind):
         self._ref += 1
         rec = {"state": "running", "t": time.time(), "error": None}
         self.requests.setdefault(to, {})[kind] = rec
