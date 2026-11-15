@@ -458,13 +458,44 @@ const mesh = (() => {
       `<div class="wl-dim">${(tr.route || []).length} hop${(tr.route || []).length === 1 ? "" : "s"} between · ${esc(when(tr.done_t))}</div></div>`;
   }
 
+  // Why a link can't be a line on the map: the map places a node only by its
+  // position, and the ranch's nodes share one.
+  function offMap(a, b) {
+    const pa = byId(a), pb = byId(b);
+    const has = (x) => x && x.lat != null && (x.lat || x.lon);
+    if (!pb) return "not in this node's list";
+    if (!has(pb)) return "no position";
+    if (has(pa) && pa.lat === pb.lat && pa.lon === pb.lon) return "same spot";
+    return "";
+  }
+
+  // Who the node hears (its NeighborInfo) and who hears it (others' lists),
+  // every one by name: the map only shows those it can place.
+  function neighboursHtml(n) {
+    const nb = neighbors[n.id];
+    const by = Object.entries(neighbors).filter(([id, r]) => id !== n.id && (r.neighbors || []).some((x) => x.id === n.id))
+      .map(([id, r]) => ({ id, snr: r.neighbors.find((x) => x.id === n.id).snr }));
+    if (!nb && !by.length) return "";
+    const item = (x, from, to) => {
+      const why = offMap(from, to);
+      return `<span class="mesh-nb" data-go="${esc(x.id)}" title="${esc(`${long(x.id)} ${x.id}`)}">${esc(short(x.id))}` +
+        `${x.snr != null ? ` <span class="wl-dim">${x.snr} dB</span>` : ""}${why ? ` <span class="wl-dim mesh-nb-off">(${esc(why)})</span>` : ""}</span>`;
+    };
+    const list = (xs, from, to) => xs.map((x) => item(x, from(x), to(x))).join("");
+    const hears = nb ? `<div><span class="wl-dim">hears</span>${(nb.neighbors || []).length
+      ? list(nb.neighbors, () => n.id, (x) => x.id) : `<span class="wl-dim">nobody yet</span>`}` +
+      ` <span class="wl-dim">· ${esc(when(nb.t))}</span></div>` : "";
+    const heardBy = by.length ? `<div><span class="wl-dim">heard by</span>${list(by, (x) => x.id, () => n.id)}</div>` : "";
+    return `<div class="mesh-nbs">${hears}${heardBy}</div>`;
+  }
+
   function renderCard() {
     const card = $("#mesh-card");
     const n = byId(selected);
     card.hidden = !n;
     if (!n) return;
     const tr = traces[n.id];
-    const w = where(n), env = n.env || {}, nb = neighbors[n.id];
+    const w = where(n), env = n.env || {};
     const fields = [["hops", hopsText(n)], ["SNR", n.snr != null ? `${n.snr} dB` : ""],
       ["battery", n.battery != null ? (n.battery > 100 ? "powered" : `${n.battery}%`) : ""],
       ["voltage", n.voltage != null ? `${n.voltage.toFixed(2)} V` : ""],
@@ -480,7 +511,6 @@ const mesh = (() => {
       ["pressure", env.pressure != null ? `${env.pressure.toFixed(1)} hPa` : ""],
       ["IAQ", env.iaq != null ? `${env.iaq}` : ""], ["light", env.lux != null ? `${Math.round(env.lux)} lx` : ""],
       ["wind", env.wind != null ? `${env.wind.toFixed(1)} m/s` : ""],
-      ["hears", nb ? `${(nb.neighbors || []).length} node${(nb.neighbors || []).length === 1 ? "" : "s"} directly` : ""],
       ["key", n.pkc ? "PKI ✓" : ""], ["via", n.mqtt ? "MQTT" : ""],
       ["ignored", n.ignored ? "yes: its packets are dropped" : ""]].filter(([, v]) => v);
     const reqs = requests[n.id] || {};
@@ -505,8 +535,10 @@ const mesh = (() => {
       `<div class="wl-row mesh-reqs"><span class="wl-dim">Ask for</span>` +
       REQUESTS.map(([k, label, why]) => `<button class="chip chip-mini" data-req="${k}" title="${esc(why)}"${!connected || busy ? " disabled" : ""}>${label}</button>`).join("") +
       (reqNote ? `<span class="wl-dim mesh-req-note">${esc(reqNote)}</span>` : "") + "</div>" +
-      traceHtml(tr);
+      neighboursHtml(n) + traceHtml(tr);
     card.onclick = (e) => {
+      const go = e.target.closest("[data-go]")?.dataset.go;
+      if (go) { if (byId(go)) select(go); return; }
       const act = e.target.closest("button")?.dataset.act;
       if (act === "close") select(n.id);
       else if (act === "dm") directTo(n.id);

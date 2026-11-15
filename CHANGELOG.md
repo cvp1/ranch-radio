@@ -31,6 +31,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **A node's card lists who it hears and who hears it, by name.** Each with its
+  SNR and a click through to that node; one the map can't draw says why (no
+  position, the same spot, not in this node's list). The ranch's own nodes
+  share a position, so their links were never visible lines.
+
 - **Ask a node for its neighbours.** A node's card has Ask for → Neighbours: one
   small packet, and the answer lists every node it hears directly with SNR,
   which fills the map's links and "heard by" when yours is among them. Only a
