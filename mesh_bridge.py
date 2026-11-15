@@ -442,9 +442,10 @@ class Bridge:
         return self.iface._sendPacket(p, dest, wantAck=True)
 
     def request(self, m):
-        """Ask a node for its position, telemetry or user info. Its answer
-        lands in the node DB through the library (and the node list with it);
-        this only says whether one came. What goes out carries nothing of
+        """Ask a node for its position, telemetry, user info or neighbours. Its
+        answer lands in the node DB through the library (and the node list with
+        it), a NeighborInfo answer in note_neighbors (the library publishes the
+        reply as a received packet too); this only says whether one came. What goes out carries nothing of
         ours a broadcast wouldn't: an empty position and empty metrics (the
         firmware answers want_response regardless), and for user info our own
         User, because the far end stores what we send as our NodeInfo."""
@@ -473,6 +474,13 @@ class Bridge:
             elif kind in ("telemetry", "env"):
                 data, port = telemetry_pb2.Telemetry(), portnums_pb2.PortNum.TELEMETRY_APP
                 (data.device_metrics if kind == "telemetry" else data.environment_metrics).SetInParent()
+            elif kind == "neighbors":
+                # What the apps send: one dummy neighbour (id 0, SNR 0), which
+                # the far end recognises and does not add to its own list
+                # (NeighborInfoModule.cpp). It answers only with its NeighborInfo
+                # module on, and at most once every 3 minutes.
+                data = mesh_pb2.NeighborInfo(neighbors=[mesh_pb2.Neighbor(node_id=0, snr=0)])
+                port = portnums_pb2.PortNum.NEIGHBORINFO_APP
             elif kind == "nodeinfo":
                 from google.protobuf import json_format
                 me = self.iface.nodesByNum.get(self.my_num, {}).get("user", {})

@@ -17,6 +17,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Ask a node for its neighbours.** A node's card has Ask for → Neighbours: one
+  small packet, and the answer lists every node it hears directly with SNR,
+  which fills the map's links and "heard by" when yours is among them. Only a
+  node with its NeighborInfo module on answers, at most once every 3 minutes
+  (the firmware's limit, so the card waits that long too); a NO_RESPONSE says so.
+
 - **The Mesh tab shows who hears your node.** "heard by N" in the header opens
   a list, one row a node: those whose NeighborInfo lists yours (with the SNR
   they hear you at), the first hop of a traceroute, and apart from them, nodes

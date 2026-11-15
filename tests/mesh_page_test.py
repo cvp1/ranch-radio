@@ -281,6 +281,8 @@ try:
         check("  who it hears", "hears 1 node directly" in card, True)
         check("map: the NeighborInfo link, with its SNR",
               b.js("[...document.querySelectorAll('#mesh-map .mm-link-label')].map((t) => t.textContent)"), ["6.5 dB"])
+        check("card: Ask for has Neighbours",
+              b.js("document.querySelector('#mesh-card [data-req=neighbors]')?.textContent"), "Neighbours")
         b.js("document.querySelector('#mesh-card [data-req=position]').click()")
         check("Ask for position: answered",
               bool(b.wait(f"({TEXT})('#mesh-card').includes('Position: answered')")), True)

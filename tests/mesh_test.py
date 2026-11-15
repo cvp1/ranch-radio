@@ -381,6 +381,21 @@ try:
     page.send({"t": "mesh_request", "to": "!0000dead", "kind": "nodeinfo"})
     e = page.wait(lambda e: (e.get("request") or {}).get("state") == "failed")
     check("  no answer: failed with the reason", e and e["request"]["error"], "no reply")
+    page.events.clear()
+    page.send({"t": "mesh_request", "to": "!0000beef", "kind": "neighbors"})
+    e = page.wait(lambda e: (e.get("request") or {}).get("kind") == "neighbors" and e["request"]["state"] == "done")
+    check("ask for neighbours: answered", bool(e), True)
+    e = page.wait(lambda e: e.get("hears") is not None and ("!0000beef", "neighbor") in hears_of(e["hears"]))
+    check("  BASE's answer lists us: it hears us directly now", e and hears_of(e["hears"])[("!0000beef", "neighbor")], 4.0)
+    n = len(page.events)
+    page.send({"t": "mesh_request", "to": "!0000beef", "kind": "neighbors"})
+    check("  again within 3 minutes is refused (the firmware answers once per 3 min)", page.warned(n), True)
+    w = next((x for x in page.events[n:] if x.get("t") == "notice"), {})
+    check("  saying so", "try again in 1" in str(w.get("msg")) or "try again in 2" in str(w.get("msg")), True)
+    page.send({"t": "mesh_request", "to": "!0000dead", "kind": "neighbors"})
+    e = page.wait(lambda e: (e.get("request") or {}).get("kind") == "neighbors" and e["request"]["state"] == "failed")
+    check("  NO_RESPONSE explained", e and e["request"]["error"],
+          "NO_RESPONSE: its NeighborInfo module is off, or it answered in the last 3 minutes")
     before = len(commands())
     for name, msg in [("this node", {"to": "!b2a6fd78", "kind": "position"}),
                       ("bad id", {"to": "beef", "kind": "position"}),
