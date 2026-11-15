@@ -413,8 +413,13 @@ const mesh = (() => {
 
   // ---------- a node's card: details, message, traceroute, favorite
 
-  // NeighborInfo as map links: every pair heard, or just the selected node's.
+  // NeighborInfo as map links: every pair heard; or, with a node selected,
+  // just its own, each saying which way: green = it is heard by that node
+  // (that node's list has it), blue = it hears that node, purple = both.
   function links() {
+    const snr = (a, b) => (neighbors[a]?.neighbors || []).find((x) => x.id === b)?.snr;
+    const hears = (a, b) => (neighbors[a]?.neighbors || []).some((x) => x.id === b);
+    const db = (v) => (v != null ? `${v} dB` : "?");
     const out = [], seen = new Set();
     for (const [from, rec] of Object.entries(neighbors)) {
       for (const x of rec.neighbors || []) {
@@ -422,17 +427,30 @@ const mesh = (() => {
         const key = [from, x.id].sort().join("-");
         if (seen.has(key)) continue;
         seen.add(key);
-        out.push({ from, to: x.id, label: x.snr != null ? `${x.snr} dB` : "" });
+        if (!selected) {
+          out.push({ from, to: x.id, label: x.snr != null ? `${x.snr} dB` : "" });
+          continue;
+        }
+        const other = from === selected ? x.id : from;
+        const inn = hears(other, selected), outw = hears(selected, other);
+        const s = short(selected), o = short(other);
+        out.push({ from: selected, to: other,
+          cls: inn && outw ? "both" : inn ? "in" : "out",
+          label: inn && outw ? `${db(snr(other, selected))} / ${db(snr(selected, other))}` : db(inn ? snr(other, selected) : snr(selected, other)),
+          title: [inn ? `${o} hears ${s} at ${db(snr(other, selected))}` : "", outw ? `${s} hears ${o} at ${db(snr(selected, other))}` : ""]
+            .filter(Boolean).join("; ") });
       }
     }
     return out;
   }
+  const legend = () => (selected ? `${short(selected)}: green hears it, blue it hears, purple both` : "");
+  const drawLinks = () => map.setLinks(links(), legend());
 
   function select(id, fromMap = false) {
     selected = selected === id && !fromMap ? null : id;
     map.select(selected);
     map.setTrace(traces[selected] || null);
-    map.setLinks(links());
+    drawLinks();
     renderNodes();
     if (fromMap && selected) $(`#mesh-nodes [data-id="${selected}"]`)?.scrollIntoView({ block: "nearest" });
   }
@@ -711,7 +729,7 @@ const mesh = (() => {
     neighbors = snap.neighbors || {};
     hears = snap.hears || [];
     map.setNodes(nodes, myId());
-    map.setLinks(links());
+    drawLinks();
     renderHead();
     renderHears();
     renderTabs();
@@ -741,14 +759,14 @@ const mesh = (() => {
     if (m.nodes) {
       nodes = m.nodes;
       map.setNodes(nodes, myId());
-      map.setLinks(links());
+      drawLinks();
       renderNodes();
       renderHead();
       renderHears();
     }
     if (m.neighbors) {
       neighbors = m.neighbors;
-      map.setLinks(links());
+      drawLinks();
       renderCard();
     }
     if (m.hears) { hears = m.hears; renderHears(); }
@@ -775,5 +793,5 @@ const mesh = (() => {
     renderNodes();
   }
 
-  return { hello, event, power, connected: () => connected };
+  return { hello, event, power, connected: () => connected, _nodes: () => nodes };
 })();

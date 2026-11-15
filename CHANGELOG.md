@@ -31,6 +31,14 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The Mesh map shows which way a node's links go, and nodes sharing a spot
+  apart.** Select a node: green lines are the nodes that hear it, blue the
+  ones it hears, purple both, each labelled with its SNR (both ways when both)
+  and a tooltip saying who hears whom; the map's note gives the key. Nodes at
+  the very same position (a channel shares positions only to a grid cell, so a
+  site's nodes all land on its centre) are drawn on a small ring around it, so
+  each one, and the links between them, can be seen.
+
 - **A node's card lists who it hears and who hears it, by name.** Each with its
   SNR and a click through to that node; one the map can't draw says why (no
   position, the same spot, not in this node's list). The ranch's own nodes
