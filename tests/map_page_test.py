@@ -20,6 +20,9 @@ the add-on's loop isn't started; tiles are never asked for).
              second, and the page redraws only your marker and the panel
   paths      a locator's centre (4 and 6 characters); distance and bearing;
              a great circle is one line across the date line
+  background NASA's Blue Marble by default with its credit, city lights on
+             the night side; past a background's deepest zoom its tiles are
+             drawn larger; a pick changes tiles, credit and the night's look
   the page   two-way needs both directions on one band; the window and the
              layer switches take stations off; a first look frames them all
   sun        the subsolar point at the June and December solstices; night and
@@ -297,6 +300,7 @@ try:
       const host = document.createElement('div'); host.id = 'mapbox'; host.style.display = 'none'; host.style.width = '800px';
       document.body.appendChild(host);
     })()""")
+    b.js((ROOT / "static/basemaps.js").read_text() + "; window.basemaps = basemaps;")
     b.js((ROOT / "static/addons/map.js").read_text())
     b.js("""__impl.mount(document.getElementById('mapbox'));
       __impl.hello({map: {me: 'FN31pr', band: '15m', showing: '15m', grids: {FN31: 'c', FN42: 'w'}, decodes: []}, pota: []});
@@ -310,6 +314,26 @@ try:
     check("map hidden then shown: tiles fill the view", shown["tiles"] > 2, True)
     check("  our grid (6 characters) is marked, at the centre", (shown["me"], [abs(shown["mePos"][0] - 400) < 3, abs(shown["mePos"][1] - 150) < 3] if shown["mePos"] else None),
           (True, [True, True]))
+    # ---- the background (basemaps.js)
+    BGJS = """JSON.stringify({host: new URL(document.querySelector('#mapbox .bm-tile').src).host, attr: document.querySelector('#mapbox .bm-host + .bm-host ~ a, #mapbox a').textContent,
+      lights: document.querySelectorAll('#mapbox [data-basemap="lights"] .bm-tile').length > 0 && !document.querySelector('#mapbox [data-basemap="lights"]').hidden,
+      clip: document.querySelector('#mapbox [data-basemap="lights"]').style.clipPath.startsWith('polygon('),
+      lit: !!document.querySelector('#mapbox polygon.lit')})"""
+    check("background: NASA's Blue Marble by default, credited; the night side is the Earth's city lights, cut along the terminator",
+          json.loads(b.js(BGJS)), {"host": "gibs.earthdata.nasa.gov", "attr": "NASA GIBS", "lights": True, "clip": True, "lit": True})
+    check("  a menu to pick another", json.loads(b.js("JSON.stringify([...document.querySelectorAll('#mapbox .bm-pick option')].map((o) => o.value))")),
+          ["earth", "terrain", "topo", "imagery", "streets", "dark"])
+    for _ in range(7):
+        b.js("document.querySelector('#mapbox [data-z=\"1\"]').click()")
+    deep = json.loads(b.js("""JSON.stringify((() => { const i = document.querySelector('#mapbox [data-basemap="earth"] .bm-tile');
+      return {level: i.src.split('GoogleMapsCompatible_Level8/')[1].split('/')[0], px: parseInt(i.style.width, 10)}; })())"""))
+    check("  past its deepest zoom (8) the map still zooms: the deepest tiles, drawn larger (zoom 10: four times)", deep, {"level": "8", "px": 1025})
+    for _ in range(7):
+        b.js("document.querySelector('#mapbox [data-z=\"-1\"]').click()")
+    b.js("(() => { const s = document.querySelector('#mapbox .bm-pick'); s.value = 'streets'; s.dispatchEvent(new Event('change')); })()")
+    check("  Streets picked: OpenStreetMap's tiles and credit, and the night side is shaded again",
+          json.loads(b.js(BGJS)), {"host": "tile.openstreetmap.org", "attr": "© OpenStreetMap", "lights": False, "clip": True, "lit": False})
+    b.js("(() => { const s = document.querySelector('#mapbox .bm-pick'); s.value = 'earth'; s.dispatchEvent(new Event('change')); })()")
     # ---- the page's own working out, from a snapshot handed to it
     now = 2_000_000
     snap_js = {"now": now, "map": {"me": "FN31pr", "band": "20m", "showing": "all", "grids": {}, "decodes": [

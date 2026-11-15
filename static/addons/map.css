@@ -9,8 +9,10 @@
 .rm-layers { display: inline-flex; gap: 4px; flex-wrap: wrap; }
 .rm-wrap { position: relative; height: calc(100vh - 210px); min-height: 440px; overflow: hidden; border-radius: 6px; background: #1b2430; touch-action: none; cursor: grab; }
 .rm-tiles, .rm-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.rm-tile { position: absolute; width: 256px; height: 256px; user-select: none; opacity: 0.7; filter: saturate(0.7) brightness(0.78); }
+/* The background's tiles are basemaps.js's (app.css: .bm-tile, the dimming per background). */
+.rm-lights { filter: brightness(1.25) contrast(1.1); }
 .rm-nightp { fill: rgba(0, 0, 30, 0.42); stroke: rgba(160, 180, 255, 0.25); stroke-width: 1; pointer-events: none; }
+.rm-nightp.lit { fill: none; stroke: rgba(255, 210, 140, 0.45); }      /* the night side is its own picture: just the line */
 .rm-gw { fill: rgba(91, 127, 255, 0.22); stroke: rgba(91, 127, 255, 0.5); stroke-width: 0.5; }
 .rm-gc { fill: rgba(48, 164, 108, 0.3); stroke: rgba(48, 164, 108, 0.65); stroke-width: 0.5; }
 .rm-potap { fill: #ffc53d; stroke: #111; stroke-width: 0.8; }

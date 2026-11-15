@@ -7,6 +7,23 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **A choice of map backgrounds, on every map** (`static/basemaps.js`): a menu
+  beside the zoom buttons, the pick kept in the browser (one for the world
+  map, one for the local maps).
+  - *Earth*: NASA's Blue Marble, relief and sea floor. The Map tab's new
+    default, and there the night side is the Earth's own city lights, cut
+    along the gray line.
+  - *Terrain*: OpenTopoMap, relief with contours, peaks and roads. The new
+    default on the Mesh, MeshCore and APRS maps.
+  - *Topo (US)*, *Imagery (US)*: USGS The National Map.
+  - *Streets*, *Dark*: OpenStreetMap, plain and inverted. Dark is the look
+    the local maps had.
+
+  Each map credits the background it is drawing. Tiles come to the browser
+  straight from each provider, as OpenStreetMap's always did. Past a
+  background's deepest zoom its deepest tiles are drawn larger, so no map goes
+  blank zooming in.
+
 - **The Map tab shows who you hear, who hears you and what is on the air.**
   - *Hears you*: the stations that reported your callsign to PSKReporter, one
     by one at their own locators (diamonds), with the SNR each gave you and

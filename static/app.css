@@ -526,8 +526,17 @@ body.tx .tx-meters { opacity: 1; }
   background: #0b0f14 repeating-linear-gradient(0deg, transparent 0 63px, rgba(255,255,255,.03) 63px 64px),
               repeating-linear-gradient(90deg, transparent 0 63px, rgba(255,255,255,.03) 63px 64px); }
 .mesh-map.dragging { cursor: grabbing; }
-.mm-tiles { position: absolute; inset: 0; filter: invert(1) hue-rotate(180deg) brightness(.8) contrast(.85) saturate(.5); }
-.mm-tile { position: absolute; left: 0; top: 0; width: 256px; height: 256px; user-select: none; -webkit-user-drag: none; }
+.mm-tiles { position: absolute; inset: 0; }
+/* Map backgrounds (basemaps.js), on every map. Each is dimmed to sit under the
+   marks of a dark page; "dark" is the inverted street map these maps had. */
+.bm-tile { position: absolute; left: 0; top: 0; max-width: none; user-select: none; -webkit-user-drag: none; }
+.bm-host[data-basemap="dark"] { filter: invert(1) hue-rotate(180deg) brightness(.8) contrast(.85) saturate(.5); }
+.bm-host[data-basemap="streets"], .bm-host[data-basemap="terrain"] { filter: brightness(.74) saturate(.9); }
+.bm-host[data-basemap="topo"] { filter: brightness(.7) contrast(1.1); }
+.bm-host[data-basemap="imagery"] { filter: brightness(.82); }
+.bm-host[data-basemap="earth"] { filter: brightness(.9) saturate(1.15) contrast(1.05); }
+.bm-pick { height: 24px; padding: 0 4px; font: 10.5px var(--mono); color: var(--text); background: rgba(0,0,0,.6);
+  border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
 .mm-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .mm-node { cursor: pointer; }
 .mm-node circle { fill: #6b7280; stroke: rgba(0,0,0,.6); stroke-width: 1.5; }
