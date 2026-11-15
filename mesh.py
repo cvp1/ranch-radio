@@ -48,6 +48,10 @@ TEXT_MAX_BYTES = 200          # Meshtastic's payload is 233 bytes; apps cap text
 RESTART_S = (5.0, 15.0, 60.0)  # wait before restarting the bridge, growing while it can't reach the node
 COMPACT_AT = 4 * MESSAGES_KEEP  # log records before the file is rewritten to the kept messages
 NODE_ID = re.compile(r"^![0-9a-f]{8}$")
+# The bridge's longest line: the node list is one JSON line (~450 bytes a
+# node). asyncio's default cap is 64 KiB; a node with 179 in its DB sent 81 KB
+# and the read died without a word (seen live 2026-11-15).
+LINE_MAX = 4 << 20
 TRACE_GAP_S = 30.0            # firmware drops traceroutes sent closer together than this
 TRACES_KEEP = 50
 # A sent message whose node reports neither an ACK nor a failure in this long
@@ -160,7 +164,7 @@ class MeshEngine:
             try:
                 self.proc = await asyncio.create_subprocess_exec(
                     *self.cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE)
+                    stderr=asyncio.subprocess.PIPE, limit=LINE_MAX)
             except OSError as e:
                 log.error("cannot start the mesh bridge (%s): %s", self.cmd[0], e)
                 self._status(False, f"bridge not started: {e}")
@@ -168,11 +172,22 @@ class MeshEngine:
                 continue
             log.info("mesh bridge started (pid %d) on %s", self.proc.pid, self.cmd[2])
             err = asyncio.create_task(self._stderr(self.proc.stderr))
-            async for raw in self.proc.stdout:
+            while True:
+                try:
+                    raw = await self.proc.stdout.readline()
+                except ValueError:            # longer than LINE_MAX: start over, loudly
+                    log.error("mesh bridge sent a line over %d bytes; restarting it", LINE_MAX)
+                    self.error = f"the bridge sent a line over {LINE_MAX} bytes"
+                    self.proc.kill()
+                    break
+                if not raw:
+                    break
                 try:
                     self._on_bridge(json.loads(raw))
                 except (ValueError, KeyError, TypeError) as e:
                     log.warning("mesh bridge: bad line %r (%s)", raw[:200], e)
+                except Exception:             # never let one event stop the reading
+                    log.exception("mesh bridge: line %r not handled", raw[:200])
             code = await self.proc.wait()
             await err
             if self._closing:
