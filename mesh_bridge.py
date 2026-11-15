@@ -20,15 +20,22 @@ Out (stdout, one JSON object per line):
     {"ev": "status", "connected": bool, "error": str|None}
     {"ev": "info", "me": {...}, "channels": [{"index", "name", "role", "key_ok"}]}
     {"ev": "nodes", "nodes": [...]}               (on change, at most every NODES_EVERY_S)
-    {"ev": "msg", "id", "from", "to", "ch", "dm", "text", "snr", "rssi", "hops"}
+    {"ev": "msg", "id", "from", "to", "ch", "dm", "text", "snr", "rssi", "hops",
+     "reply_id", "emoji"}                         (emoji: a reaction to reply_id)
     {"ev": "sent", "ref", "id"} / {"ev": "send_failed", "ref", "error"}
     {"ev": "ack", "id", "ok", "by", "reason"}
     {"ev": "config", "sections": [...], "values": {section: {field: value}}}
     {"ev": "done", "ref", "ok", "error"}         (a set or favorite was written, or not)
     {"ev": "rx", "from": "!xxxxxxxx", "port": str}  (any packet heard: activity on the map)
     {"ev": "trace", "ref", "to", "ok", "error", "route", "snr_towards", "route_back", "snr_back"}
+    {"ev": "req", "ref", "to", "kind", "ok", "error"}   (a request's answer came, or didn't)
+    {"ev": "neighbors", "neighbors": {"!xxxxxxxx": {"t", "neighbors": [{"id", "snr"}]}}}
 In (stdin):
-    {"cmd": "send", "ref": n, "text": str, "ch": int, "to": "!xxxxxxxx"|null}
+    {"cmd": "send", "ref": n, "text": str, "ch": int, "to": "!xxxxxxxx"|null,
+     "reply_to": packet id|null, "emoji": bool}
+    {"cmd": "request", "ref": n, "to": "!xxxxxxxx", "kind": "position"|"telemetry"|"env"|"nodeinfo"}
+    {"cmd": "node", "ref": n, "to": "!xxxxxxxx", "do": "ignore"|"unignore"|"remove"}
+    {"cmd": "reboot", "ref": n}
     {"cmd": "set", "ref": n, "section": str, "values": {field: value}}
     {"cmd": "favorite", "ref": n, "to": "!xxxxxxxx", "fav": bool}
     {"cmd": "trace", "ref": n, "to": "!xxxxxxxx"}
@@ -61,10 +68,22 @@ log = logging.getLogger("mesh_bridge")
 
 NODES_EVERY_S = 5.0
 TRACE_TIMEOUT_S = 90.0        # a traceroute over several hops on LongFast can take a minute
+REQUEST_TIMEOUT_S = 90.0      # a position/telemetry/user request: the same mesh, the same wait
+REQUEST_KINDS = ("position", "telemetry", "env", "nodeinfo")
+REBOOT_S = 5
 UNKNOWN_SNR = -128            # RouteDiscovery's "no SNR for this hop"
 NODE_FIELDS_USER = ("longName", "shortName", "hwModel", "role")
 CLOSE_WAIT_S = 3.0               # longest we wait for the node link to close
 ROLES = {0: "DISABLED", 1: "PRIMARY", 2: "SECONDARY"}
+# The node DB's telemetry, by the short names the page uses.
+ENV_FIELDS = (("temp", "temperature"), ("humidity", "relativeHumidity"),
+              ("pressure", "barometricPressure"), ("iaq", "iaq"), ("lux", "lux"),
+              ("wind", "windSpeed"), ("volts", "voltage"))
+# The node's own counters (LocalStats telemetry, sent to the client only, never on the air).
+STATS_FIELDS = (("tx", "numPacketsTx"), ("rx", "numPacketsRx"), ("rx_bad", "numPacketsRxBad"),
+                ("dupes", "numRxDupe"), ("relayed", "numTxRelay"), ("online", "numOnlineNodes"),
+                ("total", "numTotalNodes"), ("util", "channelUtilization"), ("air_tx", "airUtilTx"),
+                ("uptime", "uptimeSeconds"), ("noise", "noiseFloor"))
 
 # The settings the page can see and change: (section, label, where, fields),
 # where is "owner" (setOwner), "config" (localConfig) or "module" (moduleConfig),
@@ -189,6 +208,8 @@ class Bridge:
         self.closing = False
         self.feed = None              # mesh_feed.Feed with --feed
         self.feed_dirty = False       # a packet changed lastHeard/SNR: the feed's node list is stale
+        self.neighbors = {}           # node id -> {"t", "neighbors": [{"id", "snr"}]} from NEIGHBORINFO_APP
+        self.neighbors_dirty = False
 
     # --- node -> server
 
@@ -223,6 +244,8 @@ class Bridge:
             u = n.get("user", {})
             pos = n.get("position", {})
             dm = n.get("deviceMetrics", {})
+            env = n.get("environmentMetrics", {})
+            ls = n.get("localStats") if n.get("num") == self.my_num else None
             out.append({
                 "num": n.get("num"), "id": u.get("id"),
                 **{k: u.get(k) for k in NODE_FIELDS_USER},
@@ -232,6 +255,11 @@ class Bridge:
                 "alt": pos.get("altitude"), "voltage": dm.get("voltage"),
                 "util": dm.get("channelUtilization"), "mqtt": bool(n.get("viaMqtt")),
                 "fav": bool(n.get("isFavorite")), "me": n.get("num") == self.my_num,
+                "air_tx": dm.get("airUtilTx"), "uptime": dm.get("uptimeSeconds"),
+                "pos_t": pos.get("time"), "ignored": bool(n.get("isIgnored")),
+                "pkc": bool(u.get("publicKey")), "licensed": bool(u.get("isLicensed")),
+                "env": {k: env[f] for k, f in ENV_FIELDS if env.get(f) is not None} or None,
+                "stats": {k: ls[f] for k, f in STATS_FIELDS if ls.get(f) is not None} if ls else None,
             })
         emit(ev="nodes", nodes=out)
 
@@ -278,7 +306,9 @@ class Bridge:
             emit(ev="msg", id=packet.get("id"), **{"from": packet.get("fromId")},
                  to=packet.get("toId"), ch=packet.get("channel", 0), dm=to == self.my_num,
                  text=d.get("text", ""), snr=packet.get("rxSnr"), rssi=packet.get("rxRssi"),
-                 hops=hops)
+                 hops=hops, reply_id=d.get("replyId") or None, emoji=bool(d.get("emoji")))
+        elif port == "NEIGHBORINFO_APP":
+            self.note_neighbors(packet)
         elif port == "ROUTING_APP":
             rid = d.get("requestId")
             if rid in self.pending:
@@ -288,6 +318,19 @@ class Bridge:
                 # (implicit ack); from the destination = delivered.
                 emit(ev="ack", id=rid, ok=reason == "NONE", reason=reason,
                      by=packet.get("fromId"), relayed=packet.get("from") == self.my_num)
+
+    def note_neighbors(self, packet):
+        """A node's NeighborInfo: who it hears directly, with SNR. Kept per
+        node (the latest wins) and sent to the page for the map's links."""
+        ni = (packet.get("decoded") or {}).get("neighborinfo") or {}
+        num = ni.get("nodeId") or packet.get("from")
+        if not num:
+            return
+        self.neighbors[f"!{num:08x}"] = {
+            "t": int(packet.get("rxTime") or time.time()),
+            "neighbors": [{"id": f"!{x['nodeId']:08x}", "snr": x.get("snr")}
+                          for x in ni.get("neighbors") or [] if x.get("nodeId")]}
+        self.neighbors_dirty = True
 
     def on_node(self, node, interface):
         self.nodes_dirty = True
@@ -307,6 +350,9 @@ class Bridge:
                     self.nodes()
                 except Exception:
                     log.exception("node list")
+            if self.neighbors_dirty:
+                self.neighbors_dirty = False
+                emit(ev="neighbors", neighbors=self.neighbors)
             if self.feed is not None and self.feed_dirty:
                 self.feed_dirty = False   # Feed keeps the latest and sends it at most every NODES_EVERY_S
                 try:
@@ -359,8 +405,8 @@ class Bridge:
         from meshtastic import BROADCAST_ADDR
         ref = m.get("ref")
         try:
-            pkt = self.iface.sendText(str(m["text"]), destinationId=m.get("to") or BROADCAST_ADDR,
-                                      wantAck=True, channelIndex=int(m.get("ch", 0)))
+            pkt = self.send_text(str(m["text"]), m.get("to") or BROADCAST_ADDR, int(m.get("ch", 0)),
+                                 m.get("reply_to"), bool(m.get("emoji")))
         except Exception as e:
             if feed:
                 self.feed.sent(False, error=str(e))
@@ -376,6 +422,110 @@ class Bridge:
                  snr=None, rssi=None, hops=None, via="feed")
         else:
             emit(ev="sent", ref=ref, id=pkt.id)
+
+    def send_text(self, text, dest, ch, reply_to=None, emoji=False):
+        """A text message, optionally a reply to (or, with emoji, a reaction
+        to) packet reply_to. sendText knows reply ids but not the emoji flag
+        the apps use for a reaction, so a reaction is built here the way
+        sendData builds any packet."""
+        if not emoji:
+            return self.iface.sendText(text, destinationId=dest, wantAck=True, channelIndex=ch,
+                                       replyId=int(reply_to) if reply_to else None)
+        from meshtastic.protobuf import mesh_pb2, portnums_pb2
+        p = mesh_pb2.MeshPacket()
+        p.channel = ch
+        p.decoded.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
+        p.decoded.payload = text.encode()
+        p.decoded.reply_id = int(reply_to)
+        p.decoded.emoji = 1
+        p.id = self.iface._generatePacketId()
+        return self.iface._sendPacket(p, dest, wantAck=True)
+
+    def request(self, m):
+        """Ask a node for its position, telemetry or user info. Its answer
+        lands in the node DB through the library (and the node list with it);
+        this only says whether one came. What goes out carries nothing of
+        ours a broadcast wouldn't: an empty position and empty metrics (the
+        firmware answers want_response regardless), and for user info our own
+        User, because the far end stores what we send as our NodeInfo."""
+        from meshtastic.protobuf import mesh_pb2, portnums_pb2, telemetry_pb2
+        ref, to, kind = m.get("ref"), m["to"], m["kind"]
+        done = threading.Event()
+
+        def finish(ok, error=None):
+            if not done.is_set():
+                done.set()
+                emit(ev="req", ref=ref, to=to, kind=kind, ok=ok, error=error)
+
+        def on_response(p):
+            d = p.get("decoded") or {}
+            if d.get("portnum") == "ROUTING_APP":
+                reason = (d.get("routing") or {}).get("errorReason", "NONE")
+                if reason != "NONE":
+                    finish(False, reason)
+                return
+            self.nodes_dirty = True
+            finish(True)
+
+        try:
+            if kind == "position":
+                data, port = mesh_pb2.Position(), portnums_pb2.PortNum.POSITION_APP
+            elif kind in ("telemetry", "env"):
+                data, port = telemetry_pb2.Telemetry(), portnums_pb2.PortNum.TELEMETRY_APP
+                (data.device_metrics if kind == "telemetry" else data.environment_metrics).SetInParent()
+            elif kind == "nodeinfo":
+                from google.protobuf import json_format
+                me = self.iface.nodesByNum.get(self.my_num, {}).get("user", {})
+                data = json_format.ParseDict(me, mesh_pb2.User(), ignore_unknown_fields=True)
+                port = portnums_pb2.PortNum.NODEINFO_APP
+            else:
+                raise ValueError(f"not a request: {kind}")
+            self.iface.sendData(data, destinationId=int(to[1:], 16), portNum=port, wantResponse=True,
+                                onResponse=on_response, channelIndex=0)
+        except BaseException as e:
+            finish(False, f"{type(e).__name__}: {e}")
+            return
+        t = threading.Timer(REQUEST_TIMEOUT_S, finish, args=(False, "no reply"))
+        t.daemon = True
+        t.start()
+
+    def node_action(self, m):
+        """Ignore, unignore or remove a node in this node's DB (admin to our
+        own node only; nothing goes on the air)."""
+        ref, to, do = m.get("ref"), m["to"], m["do"]
+        try:
+            num = int(to[1:], 16)
+            node = self.iface.localNode
+            if do == "ignore":
+                node.setIgnored(num)
+            elif do == "unignore":
+                node.removeIgnored(num)
+            elif do == "remove":
+                node.removeNode(num)
+            else:
+                raise ValueError(f"not a node action: {do}")
+        except BaseException as e:
+            emit(ev="done", ref=ref, ok=False, error=f"{type(e).__name__}: {e}")
+            return
+        db = self.iface.nodesByNum or {}
+        if do == "remove":
+            n = db.pop(num, None)
+            uid = ((n or {}).get("user") or {}).get("id")
+            if uid and self.iface.nodes:
+                self.iface.nodes.pop(uid, None)
+            self.neighbors.pop(to, None)
+        elif num in db:
+            db[num]["isIgnored"] = do == "ignore"
+        self.nodes_dirty = True
+        emit(ev="done", ref=ref, ok=True, error=None)
+
+    def reboot(self, m):
+        try:
+            self.iface.localNode.reboot(REBOOT_S)
+        except BaseException as e:
+            emit(ev="done", ref=m.get("ref"), ok=False, error=f"{type(e).__name__}: {e}")
+            return
+        emit(ev="done", ref=m.get("ref"), ok=True, error=None)
 
     def set_config(self, m):
         """Write one section's changed fields. The server has checked them
@@ -598,6 +748,12 @@ def main():
                     b.favorite(m)
                 elif cmd == "trace":
                     b.trace(m)
+                elif cmd == "request":
+                    b.request(m)
+                elif cmd == "node":
+                    b.node_action(m)
+                elif cmd == "reboot":
+                    b.reboot(m)
             except (KeyError, TypeError, ValueError) as e:
                 emit(ev="done", ref=m.get("ref"), ok=False, error=f"bad command: {e}")
         b.closing = True              # server closed our stdin: exit

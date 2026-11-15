@@ -5,6 +5,10 @@ check (never the key); messages, Send's 200-byte limit, delivery ticks,
 DMs from a node card, unread counts; favorites; the node list and map;
 traceroute; Settings (dirty marking, validation, only changed fields sent,
 risky fields ask first, Revert, disabled while disconnected); the on/off switch.
+Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
+incoming ones on our message), Retry on a failed send, Direct as a list of
+conversations, the header's counters, a card's distance / environment / Ask
+for (position) / Ignore, NeighborInfo links on the map, Reboot node.
 
     python3 tests/mesh_page_test.py [screenshot.png]
 """
@@ -198,6 +202,73 @@ try:
             b.js("document.querySelector('#mesh').scrollIntoView()")
             b.screenshot(SHOT.replace(".png", "-map.png"))
 
+        # Replies, reactions, retry
+        b.js(f"{tab('HomeNet')}.click()")
+        ROW = "[...document.querySelectorAll('#mesh-list .mesh-msg')].find((r) => r.querySelector('.mesh-body')?.textContent === {})"
+        check("a reply shows what it answers",
+              b.js(f"({ROW.format(json.dumps('thanks, I saw it'))})?.querySelector('.mesh-quote')?.textContent"),
+              "↪ BASE gate is closed")
+        b.js(f"({ROW.format(json.dumps('gate is closed'))}).querySelector('[data-act=reply]').click()")
+        check("Reply: the compose bar says so", "Replying to BASE" in b.js(f"({TEXT})('#mesh-to')"), True)
+        type_text("on it")
+        b.js("document.querySelector('#mesh-send').click()")
+        b.wait(f"!!({ROW.format(json.dumps('on it'))})")
+        c = [c for c in commands() if c.get("text") == "on it"]
+        check("  sent with reply_to", c and (c[0]["reply_to"], c[0]["ch"]), (1001, 1))
+        check("  the bar clears", "Replying" in b.js(f"({TEXT})('#mesh-to')"), False)
+        b.js(f"({ROW.format(json.dumps('gate is closed'))}).querySelector('[data-react=\"❤️\"]').click()")
+        check("React: a chip on the message",
+              bool(b.wait(f"(({ROW.format(json.dumps('gate is closed'))})?.querySelector('.mesh-reacts')?.textContent || '').includes('❤️')")), True)
+        c = [c for c in commands() if c.get("text") == "❤️"]
+        check("  sent as a reaction to it", c and (c[0]["reply_to"], c[0]["emoji"]), (1001, True))
+        check("  not a row of its own", b.js("[...document.querySelectorAll('#mesh-list .mesh-body')].some((e) => e.textContent === '❤️')"), False)
+        type_text("react to me")
+        b.js("document.querySelector('#mesh-send').click()")
+        check("an incoming reaction shows on our message",
+              bool(b.wait(f"(({ROW.format(json.dumps('react to me'))})?.querySelector('.mesh-reacts')?.textContent || '').includes('👍')")), True)
+        type_text("nak")
+        b.js("document.querySelector('#mesh-send').click()")
+        check("a failed send offers Retry", bool(b.wait(f"!!({ROW.format(json.dumps('nak'))})?.querySelector('[data-act=retry]')")), True)
+        b.js(f"({ROW.format(json.dumps('nak'))}).querySelector('[data-act=retry]').click()")
+        time.sleep(0.5)
+        check("  Retry sends it again", len([c for c in commands() if c.get("text") == "nak"]), 2)
+
+        # Direct: the conversations
+        b.js(f"{tab('Direct')}.click()")
+        b.js(f"{tab('Direct')}.click()")
+        check("Direct again: the list of conversations",
+              b.js("[...document.querySelectorAll('#mesh-list .mesh-conv b')].map((e) => e.textContent)"), ["BASE"])
+        b.js("mesh.event({ t: 'mesh', msg: { k: 'msg', id: 88, t: Date.now() / 1000, from: '!0000cafe', "
+             "to: '!b2a6fd78', ch: 0, dm: true, text: 'you up?', snr: 3, hops: 0 } })")
+        check("  a new DM: its conversation, unread", b.js("document.querySelector('#mesh-list .mesh-conv')?.textContent"),
+              "RDGyou up?now1")
+        b.js("document.querySelector('#mesh-list .mesh-conv').click()")
+        check("  open it: only that node's messages",
+              b.js("[...document.querySelectorAll('#mesh-list .mesh-body')].map((e) => e.textContent)"), ["you up?"])
+        check("  addressed to it", "To RDG" in b.js(f"({TEXT})('#mesh-to')"), True)
+
+        # Header, card, map links
+        check("header: this node's counters", b.js(f"({TEXT})('#mesh-stats')").startswith("ch 12.5%tx 1.3%⚡ powered3 online"), True)
+        if not b.js(f"({VISIBLE})('#mesh-card') && ({TEXT})('#mesh-card .mesh-card-head b') === 'BASE'"):
+            b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
+        check("BASE's card is open", b.js(f"({VISIBLE})('#mesh-card') && ({TEXT})('#mesh-card .mesh-card-head b')"), "BASE")
+        card = b.js(f"({TEXT})('#mesh-card')")
+        check("card: distance and bearing", "distance 2.0 km SE (123°)" in card, True)
+        check("  environment", "temp 21.5 °C / 71 °F" in card and "pressure 850.2 hPa" in card, True)
+        check("  who it hears", "hears 1 node directly" in card, True)
+        check("map: the NeighborInfo link, with its SNR",
+              b.js("[...document.querySelectorAll('#mesh-map .mm-link-label')].map((t) => t.textContent)"), ["6.5 dB"])
+        b.js("document.querySelector('#mesh-card [data-req=position]').click()")
+        check("Ask for position: answered",
+              bool(b.wait(f"({TEXT})('#mesh-card').includes('Position: answered')")), True)
+        rq = [c for c in commands() if c.get("cmd") == "request"]
+        check("  sent to the bridge", rq and (rq[-1]["to"], rq[-1]["kind"]), ("!0000beef", "position"))
+        b.js("document.querySelector('#mesh-card [data-act=ignore]').click()")
+        check("Ignore: the node is dimmed in the list",
+              bool(b.wait("[...document.querySelectorAll('#mesh-nodes .mesh-node.ignored')].some((n) => n.textContent.includes('BASE'))")), True)
+        b.js("document.querySelector('#mesh-card [data-act=ignore]').click()")
+        b.wait("![...document.querySelectorAll('#mesh-nodes .mesh-node.ignored')].length")
+
         # Settings
         CFG_TABS = "[...document.querySelectorAll('#mesh-cfg-tabs .chip')]"
         FIELD = ("(l) => [...document.querySelectorAll('#mesh-cfg-form label')]"
@@ -255,10 +326,15 @@ try:
               b.js(f"({TEXT})('#mesh-cfg-note')"), "The node is not connected: port busy")
         check("  and the fields are disabled", b.js("[...document.querySelectorAll('#mesh-cfg-form select')].every((e) => e.disabled)"), True)
         b.js("mesh.event({ t: 'mesh', status: { connected: true, error: null } })")
+        b.js("window.confirm = () => true")
+        b.js("document.querySelector('#mesh-reboot').click()")
+        time.sleep(0.5)
+        check("Reboot node: sent after asking", [c for c in commands() if c.get("cmd") == "reboot"] != [], True)
         b.js("document.querySelector('#mesh-cfg-btn').click()")
         check("Settings closed: messages again", b.js(f"({VISIBLE})('#mesh-list')"), True)
 
         # the add-on's on/off switch
+        b.js(f"{tab('HomeNet')}.click()")
         check("power: the switch reads 'Switch off'", b.js(f"({TEXT})('#mesh-power')"), "Switch off")
         b.js("window.confirm = (q) => { window.asked = q; return true; }")
         b.js("document.querySelector('#mesh-power').click()")
@@ -271,6 +347,7 @@ try:
         check("  on again: Connected", b.wait(f"({TEXT})('#mesh-state') === 'Connected' && 'on'"), "on")
         check("  switching on doesn't ask", b.js("window.asked"), None)
         check("  the messages are back", bool(b.wait("document.querySelectorAll('#mesh-list .mesh-text').length > 0")), True)
+        check("  still on the channel it was on", b.js(f"{tab('HomeNet')}.classList.contains('on')"), True)
         if SHOT:
             b.js("document.querySelector('#mesh').scrollIntoView()")
             b.screenshot(SHOT)

@@ -11,6 +11,11 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - settings are schema-checked before the bridge; a good change is written
     and echoed; a node refusal warns
   - favorites; traceroute (one at a time, 30 s apart, result in later snapshots)
+  - replies and reactions: reply_id / emoji in and out, checked against a held
+    message, kept across a restart
+  - requests (position, telemetry, ...): one per node at a time, each kind 60 s
+    apart, answered or not, in later snapshots; ignore / remove / reboot;
+    NeighborInfo and the node's own counters reach the page
   - without the Mesh add-on, mesh commands are refused
 
     python3 tests/mesh_test.py
@@ -157,6 +162,12 @@ def commands():
         return []
 
 
+def mmsg(e):
+    """A mesh event's message record (a notice's "msg" is its text)."""
+    m = e.get("msg") if e.get("t") == "mesh" else None
+    return m if isinstance(m, dict) else {}
+
+
 def ack_of(text, state):
     def pred(e):
         r = e.get("update") if e.get("t") == "mesh" else None
@@ -269,6 +280,89 @@ try:
     check("  a page opened later gets the result", tr.get("!0000beef", {}).get("state"), "done")
     late.close()
 
+    # Replies and reactions
+    snap = Page()                      # the fake sent these at start: they are in a new page's snapshot
+    snap_nodes = {n["id"]: n for n in snap.hello["mesh"]["nodes"]}
+    r = next((x for x in snap.hello["mesh"]["messages"] if x["text"] == "thanks, I saw it"), {})
+    check("incoming reply carries reply_id", r.get("reply_id"), 1001)
+    page.send({"t": "mesh_send", "text": "me too", "ch": 1, "reply_to": 1001})
+    check("reply: delivered", bool(page.wait(ack_of("me too", "delivered"))), True)
+    c = [c for c in commands() if c.get("text") == "me too"]
+    check("  bridge got reply_to 1001", c and (c[0]["reply_to"], c[0]["emoji"]), (1001, False))
+    page.send({"t": "mesh_send", "text": "👍", "ch": 1, "reply_to": 1001, "emoji": True})
+    check("reaction: delivered", bool(page.wait(ack_of("👍", "delivered"))), True)
+    c = [c for c in commands() if c.get("text") == "👍"]
+    check("  bridge got it as an emoji reaction", c and (c[0]["reply_to"], c[0]["emoji"]), (1001, True))
+    page.send({"t": "mesh_send", "text": "react to me", "ch": 1})
+    e = page.wait(lambda e: mmsg(e).get("emoji") is True and not mmsg(e).get("mine"))
+    check("incoming reaction: emoji with the reply_id of ours", bool(e and e["msg"]["reply_id"] >= 5000), True)
+    before = len(commands())
+    for name, msg in [("reply to a message not held", {"text": "hi", "ch": 1, "reply_to": 424242}),
+                      ("reply_to not a number", {"text": "hi", "ch": 1, "reply_to": "1001"}),
+                      ("reply_to true", {"text": "hi", "ch": 1, "reply_to": True}),
+                      ("reaction without a message", {"text": "👍", "ch": 1, "emoji": True}),
+                      ("reaction that is a sentence", {"text": "this is far too long to be one emoji", "ch": 1,
+                                                       "reply_to": 1001, "emoji": True})]:
+        n = len(page.events)
+        page.send({"t": "mesh_send", **msg})
+        check(f"refused with a warning: {name}", page.warned(n), True)
+    time.sleep(0.3)
+    check("  none of them reached the bridge", len(commands()), before)
+
+    # Requests, node actions, reboot
+    nodes = snap_nodes
+    check("node fields: environment", (nodes.get("!0000beef", {}).get("env") or {}).get("temp"), 21.5)
+    check("node fields: this node's counters", ((nodes.get("!b2a6fd78") or {}).get("stats") or {}).get("rx"), 900)
+    nb = snap.hello["mesh"]["neighbors"]
+    snap.close()
+    check("NeighborInfo reaches the page", [x["id"] for x in nb.get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])
+    page.events.clear()
+    page.send({"t": "mesh_request", "to": "!0000beef", "kind": "position"})
+    check("request: running", bool(page.wait(lambda e: (e.get("request") or {}).get("state") == "running")), True)
+    n = len(page.events)
+    page.send({"t": "mesh_request", "to": "!0000beef", "kind": "telemetry"})
+    check("  a second to the same node while one runs is refused", page.warned(n), True)
+    e = page.wait(lambda e: (e.get("request") or {}).get("state") == "done")
+    check("  answered", e and (e["request"]["to"], e["request"]["kind"]), ("!0000beef", "position"))
+    check("  the node list has the new position",
+          bool(page.wait(lambda e: any(x["id"] == "!0000beef" and x["lat"] == 40.92 for x in e.get("nodes") or []))), True)
+    n = len(page.events)
+    page.send({"t": "mesh_request", "to": "!0000beef", "kind": "position"})
+    check("  the same kind again within 60 s is refused", page.warned(n), True)
+    page.send({"t": "mesh_request", "to": "!0000beef", "kind": "telemetry"})
+    check("  another kind is fine", bool(page.wait(
+        lambda e: (e.get("request") or {}).get("kind") == "telemetry" and e["request"]["state"] == "done")), True)
+    page.send({"t": "mesh_request", "to": "!0000dead", "kind": "nodeinfo"})
+    e = page.wait(lambda e: (e.get("request") or {}).get("state") == "failed")
+    check("  no answer: failed with the reason", e and e["request"]["error"], "no reply")
+    before = len(commands())
+    for name, msg in [("this node", {"to": "!b2a6fd78", "kind": "position"}),
+                      ("bad id", {"to": "beef", "kind": "position"}),
+                      ("unknown kind", {"to": "!0000cafe", "kind": "admin"})]:
+        n = len(page.events)
+        page.send({"t": "mesh_request", **msg})
+        check(f"request refused: {name}", page.warned(n), True)
+    for name, msg in [("this node", {"to": "!b2a6fd78", "action": "ignore"}),
+                      ("unknown action", {"to": "!0000cafe", "action": "factory_reset"})]:
+        n = len(page.events)
+        page.send({"t": "mesh_node", **msg})
+        check(f"node action refused: {name}", page.warned(n), True)
+    time.sleep(0.3)
+    check("  none of them reached the bridge", len(commands()), before)
+    late = Page()
+    check("  a page opened later gets the requests",
+          (late.hello["mesh"]["requests"].get("!0000beef") or {}).get("position", {}).get("state"), "done")
+    late.close()
+    page.send({"t": "mesh_node", "to": "!0000dead", "action": "ignore"})
+    check("ignore: the node list marks it", bool(page.wait(
+        lambda e: any(x["id"] == "!0000dead" and x.get("ignored") for x in e.get("nodes") or []))), True)
+    page.send({"t": "mesh_node", "to": "!0000dead", "action": "remove"})
+    check("remove: gone from the node list", bool(page.wait(
+        lambda e: "nodes" in e and not any(x["id"] == "!0000dead" for x in e["nodes"]))), True)
+    page.events.clear()
+    page.send({"t": "mesh_reboot"})
+    check("reboot: sent, and a notice", bool(page.wait(lambda e: e.get("t") == "notice" and "reboot saved" in e["msg"])), True)
+
     alltext = "".join(page.raw)
     check("the channel key never reaches the page", FAKE_KEY in alltext, False)
 
@@ -297,10 +391,12 @@ check("the channel key is not in the server log", FAKE_KEY in out, False)
 server = start(key=BAD_KEY)
 try:
     page = Page()
-    hist = {r["text"]: r for r in page.hello["mesh"]["messages"]}
+    hist = {r["text"]: r for r in page.hello["mesh"]["messages"] if r.get("mine") or r["text"] != "👍"}
     check("restart: history kept (incoming)", "gate is closed" in hist, True)
     check("restart: our message kept as delivered", hist.get("hello ranch", {}).get("ack"), "delivered")
     check("restart: NAK kept as failed", hist.get("nak", {}).get("ack"), "failed")
+    check("restart: a reply keeps its reply_id", hist.get("me too", {}).get("reply_id"), 1001)
+    check("restart: a reaction keeps emoji", (hist.get("👍", {}).get("emoji"), hist.get("👍", {}).get("reply_id")), (True, 1001))
     chans = {c["name"]: c for c in (page.latest("info", 3) or {}).get("channels", [])}
     check("wrong key: key_ok false", chans.get("HomeNet", {}).get("key_ok"), False)
     page.close()

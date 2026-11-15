@@ -37,7 +37,9 @@ MODULES = [
      "platforms": ["macos"],
      "ships": "macOS: a xara launchd agent and three --winlink-vara-* flags on the radio's server, with the station arming VARA sessions over its lane, rendered "
               "from the host file's winlink.xara block"},
-    {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, DMs, nodes, map); on/off switch",
+    {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, conversations, replies and reactions, "
+                                                 "nodes with telemetry and requests, map with neighbour links, settings); "
+                                                 "on/off switch",
      "code": "addons/mesh.py over mesh.py, mesh_bridge.py (runs in the meshtastic venv)", "platforms": ["macos", "linux"],
      "ships": "the station's mesh block (station.json), both OSes; the meshtastic venv via doctor --fix"},
     {"name": "packet", "kind": "service", "title": "Packet hub (APRS + Winlink: Bluetooth KISS, network KISS, "

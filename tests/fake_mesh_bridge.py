@@ -11,7 +11,11 @@ Settings: a cut-down copy of the real schema (owner, device, lora). "set"
 updates the values and sends config again, except hop_limit 6, which the
 "node" refuses; "favorite" flips the node's star in the node list. "trace" to !0000beef
 answers via !0000cafe; to !0000dead, NO_RESPONSE. Every message heard is
-also an "rx" (activity).
+also an "rx" (activity). !0000cafe replies to the first message (reply_id
+1001); "react to me" gets a 👍 reaction from !0000beef. NeighborInfo: BASE
+hears RDG. "request" to !0000beef answers (a position request moves it, a
+telemetry one fills its air_tx); to anyone else, "no reply". "node" ignore /
+unignore / remove change the node list; "reboot" is done.
 Each start appends a line to $FAKE_MESH_STARTS (restart counting) and every
 command received goes to $FAKE_MESH_LOG.
 """
@@ -77,7 +81,9 @@ def main():
     nodes = [
         {"num": ME["num"], "id": ME["id"], "longName": ME["long"], "shortName": ME["short"],
          "hwModel": "HELTEC_V4", "role": None, "last_heard": now, "snr": None, "hops": None,
-         "battery": 101, "lat": 40.91, "lon": -105.12, "fav": True, "me": True},
+         "battery": 101, "lat": 40.91, "lon": -105.12, "fav": True, "me": True, "util": 12.5,
+         "air_tx": 1.25, "uptime": 93600,
+         "stats": {"tx": 40, "rx": 900, "rx_bad": 3, "online": 3, "total": 4, "util": 12.5, "air_tx": 1.25}},
         {"num": 0xcafe, "id": "!0000cafe", "longName": "Ridge Relay", "shortName": "RDG",
          "hwModel": "RAK4631", "role": "ROUTER", "last_heard": now - 600, "snr": 3.25, "hops": 0,
          "battery": None, "lat": 40.97, "lon": -105.02, "fav": False, "me": False},
@@ -86,12 +92,16 @@ def main():
          "battery": 40, "lat": None, "lon": None, "fav": False, "me": False},
         {"num": 0xbeef, "id": "!0000beef", "longName": "Ranch Base", "shortName": "BASE",
          "hwModel": "RAK4631", "role": "ROUTER", "last_heard": now - 30, "snr": 7.5, "hops": 0,
-         "battery": 88, "lat": 40.9, "lon": -105.1, "fav": False, "me": False}]
+         "battery": 88, "lat": 40.9, "lon": -105.1, "fav": False, "me": False, "pkc": True,
+         "env": {"temp": 21.5, "humidity": 30.0, "pressure": 850.2}}]
     emit(ev="nodes", nodes=nodes)
     time.sleep(0.5)
     emit(ev="rx", **{"from": "!0000beef"}, port="TEXT_MESSAGE_APP")
     emit(ev="msg", id=1001, **{"from": "!0000beef"}, to="^all", ch=1, dm=False,
          text="gate is closed", snr=7.5, rssi=-90, hops=0)
+    emit(ev="msg", id=1002, **{"from": "!0000cafe"}, to="^all", ch=1, dm=False,
+         text="thanks, I saw it", snr=3.0, rssi=-110, hops=0, reply_id=1001, emoji=False)
+    emit(ev="neighbors", neighbors={"!0000beef": {"t": now, "neighbors": [{"id": "!0000cafe", "snr": 6.5}]}})
     next_id = [5000]
 
     def ack_later(pid, ok, reason):
@@ -118,6 +128,34 @@ def main():
             emit(ev="done", ref=m["ref"], ok=True, error=None)
             emit(ev="nodes", nodes=nodes)
             continue
+        if m.get("cmd") == "request":
+            def answer(m=m):
+                time.sleep(0.3)
+                if m["to"] != "!0000beef":
+                    emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=False, error="no reply")
+                    return
+                for n in nodes:
+                    if n["id"] == "!0000beef":
+                        if m["kind"] == "position":
+                            n["lat"], n["pos_t"] = 40.92, int(time.time())
+                        elif m["kind"] == "telemetry":
+                            n["air_tx"] = 2.5
+                emit(ev="nodes", nodes=nodes)
+                emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=True, error=None)
+            threading.Thread(target=answer).start()
+            continue
+        if m.get("cmd") == "node":
+            if m["do"] == "remove":
+                nodes[:] = [n for n in nodes if n["id"] != m["to"]]
+            for n in nodes:
+                if n["id"] == m["to"]:
+                    n["ignored"] = m["do"] == "ignore"
+            emit(ev="done", ref=m["ref"], ok=True, error=None)
+            emit(ev="nodes", nodes=nodes)
+            continue
+        if m.get("cmd") == "reboot":
+            emit(ev="done", ref=m["ref"], ok=True, error=None)
+            continue
         if m.get("cmd") == "trace":
             def answer(m=m):
                 time.sleep(0.4)
@@ -141,6 +179,12 @@ def main():
         nak = m["text"] == "nak"
         threading.Thread(target=ack_later, args=(next_id[0], not nak,
                                                  "MAX_RETRANSMIT" if nak else "NONE")).start()
+        if m["text"] == "react to me":
+            def react(pid=next_id[0], ch=m["ch"]):
+                time.sleep(0.5)
+                emit(ev="msg", id=9001, **{"from": "!0000beef"}, to="^all", ch=ch, dm=False, text="👍",
+                     snr=7.5, rssi=-90, hops=0, reply_id=pid, emoji=True)
+            threading.Thread(target=react).start()
     return 1
 
 
