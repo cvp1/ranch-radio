@@ -16,6 +16,13 @@ package. This side:
     that schema before the bridge writes them to the node
   - runs one traceroute at a time (mesh_trace), keeps the last result per
     node for every page, and passes "heard a packet from X" on as activity
+  - replies and emoji reactions (mesh_send reply_to / emoji), checked
+    against a message it holds
+  - asks a node for its position, telemetry or user info (mesh_request),
+    one request in flight per node and each kind at most every REQUEST_GAP_S
+  - ignores, unignores or removes a node in the node's DB (mesh_node) and
+    reboots the node (mesh_reboot)
+  - keeps each node's NeighborInfo (who it hears, with SNR) for the map
 
 Channel keys stay with the bridge (--mesh-key NAME=PATH): only "the node's
 key matches" (key_ok) comes back here and goes to the pages.
@@ -38,6 +45,11 @@ COMPACT_AT = 4 * MESSAGES_KEEP  # log records before the file is rewritten to th
 NODE_ID = re.compile(r"^![0-9a-f]{8}$")
 TRACE_GAP_S = 30.0            # firmware drops traceroutes sent closer together than this
 TRACES_KEEP = 50
+REQUEST_KINDS = {"position": "position", "telemetry": "telemetry", "env": "environment",
+                 "nodeinfo": "user info"}
+REQUEST_GAP_S = 60.0          # each kind to one node at most this often: every request is airtime
+EMOJI_MAX_BYTES = 16          # a reaction is one emoji (with modifiers), not a message
+NODE_ACTIONS = {"ignore": "ignore", "unignore": "unignore", "remove": "remove"}
 
 
 class MeshEngine:
@@ -66,6 +78,9 @@ class MeshEngine:
         self.traces = {}              # node id -> the last traceroute to it (running or finished)
         self._trace_ref = None        # ref of the traceroute in flight
         self._trace_t = 0.0
+        self.requests = {}            # node id -> {kind: {"state", "t", "error"}}
+        self._req_refs = {}           # request ref -> (node id, kind)
+        self.neighbors = {}           # node id -> {"t", "neighbors": [{"id", "snr"}]}
         self._closing = False
         self._reached = False         # this run of the bridge got through to the node
         self._task = None
@@ -117,6 +132,7 @@ class MeshEngine:
             self._writes.clear()
             if self._trace_ref is not None:
                 self._end_trace("the mesh node went away")
+            self._end_requests("the mesh node went away")
             if self.connected:
                 self._status(False, self.error or "mesh bridge stopped")
             fails = 0 if self._reached else fails + 1
@@ -172,10 +188,29 @@ class MeshEngine:
         elif ev == "nodes":
             self.nodes = m["nodes"]
             self._send({"nodes": self.nodes})
+        elif ev == "neighbors":
+            self.neighbors = m["neighbors"] or {}
+            self._send({"neighbors": self.neighbors})
+        elif ev == "req":
+            key = self._req_refs.pop(m["ref"], None)
+            if key is None:
+                return
+            to, kind = key
+            rec = self.requests.get(to, {}).get(kind)
+            if rec is None:
+                return
+            rec.update(state="done" if m["ok"] else "failed", error=m.get("error"), done_t=time.time())
+            log.info("mesh: %s request to %s %s%s", kind, to, rec["state"],
+                     f" ({rec['error']})" if rec["error"] else "")
+            self._send({"request": {"to": to, "kind": kind, **rec}})
         elif ev == "msg":
             rec = {"k": "msg", "id": m["id"], "t": time.time(), "from": m["from"], "to": m["to"],
                    "ch": m["ch"], "dm": bool(m["dm"]), "text": m["text"], "snr": m.get("snr"),
                    "rssi": m.get("rssi"), "hops": m.get("hops")}
+            if m.get("reply_id"):
+                rec["reply_id"] = m["reply_id"]
+            if m.get("emoji"):
+                rec["emoji"] = True
             self._add(rec)
         elif ev == "sent":
             rec = self._by_ref.pop(m["ref"], None)
@@ -231,14 +266,22 @@ class MeshEngine:
         return {"status": {"connected": self.connected, "error": self.error},
                 "info": self.info, "config": self.config, "nodes": self.nodes,
                 "traces": list(self.traces.values()), "messages": list(self.messages),
+                "requests": self.requests, "neighbors": self.neighbors,
                 "text_max": TEXT_MAX_BYTES}
 
     # --- pages -> node
 
-    async def send_text(self, ws, text, ch, to=None):
+    async def send_text(self, ws, text, ch, to=None, reply_to=None, emoji=False):
         text = str(text).strip()
         why = None
-        if not text:
+        if reply_to is not None and (isinstance(reply_to, bool) or not isinstance(reply_to, int)
+                                     or not any(r.get("id") == reply_to for r in self.messages)):
+            why = "That message is no longer here to reply to."
+        elif emoji and reply_to is None:
+            why = "A reaction needs a message to react to."
+        elif emoji and len(text.encode()) > EMOJI_MAX_BYTES:
+            why = "A reaction is one emoji."
+        elif not text:
             why = "Nothing to send."
         elif len(text.encode()) > TEXT_MAX_BYTES:
             why = f"Too long for one mesh message ({len(text.encode())} of {TEXT_MAX_BYTES} bytes)."
@@ -254,10 +297,15 @@ class MeshEngine:
         self._ref += 1
         rec = {"k": "msg", "id": None, "t": time.time(), "from": (self.info["me"] or {}).get("id"),
                "to": to, "ch": ch, "dm": to is not None, "text": text, "mine": True, "ack": "sending"}
+        if reply_to is not None:
+            rec["reply_id"] = reply_to
+        if emoji:
+            rec["emoji"] = True
         self._by_ref[self._ref] = rec
         self._add(rec)
-        self.proc.stdin.write((json.dumps({"cmd": "send", "ref": self._ref, "text": text,
-                                           "ch": ch, "to": to}) + "\n").encode())
+        self.proc.stdin.write((json.dumps({"cmd": "send", "ref": self._ref, "text": text, "ch": ch,
+                                           "to": to, "reply_to": reply_to, "emoji": bool(emoji)})
+                               + "\n").encode())
         await self.proc.stdin.drain()
         log.info("mesh: sending %d bytes on channel %d%s", len(text.encode()), ch,
                  f" to {to}" if to else "")
@@ -356,6 +404,62 @@ class MeshEngine:
         self.proc.stdin.write((json.dumps({"cmd": "trace", "ref": self._ref, "to": to}) + "\n").encode())
         await self.proc.stdin.drain()
         log.info("mesh: traceroute to %s", to)
+
+    def _peer_why(self, to):
+        if not NODE_ID.match(str(to)):
+            return f"Not a node id: {to!r}."
+        if to == ((self.info or {}).get("me") or {}).get("id"):
+            return "That is this node."
+        return None
+
+    async def request(self, ws, to, kind):
+        """Ask node TO for its position, telemetry, environment or user info."""
+        if not self._usable(ws):
+            return
+        why = self._peer_why(to)
+        if why is None and kind not in REQUEST_KINDS:
+            why = f"Not something to ask a node for: {kind!r}."
+        mine = self.requests.get(to, {})
+        if why is None and any(r["state"] == "running" for r in mine.values()):
+            why = "A request to that node is already waiting for its answer."
+        last = mine.get(kind)
+        wait = REQUEST_GAP_S - (time.time() - last["t"]) if last else 0
+        if why is None and wait > 0:
+            why = f"Asked for its {REQUEST_KINDS[kind]} {REQUEST_GAP_S - wait:.0f} s ago; try again in {wait:.0f} s."
+        if why:
+            self.station.notice(why, "warn", ws)
+            return
+        self._ref += 1
+        rec = {"state": "running", "t": time.time(), "error": None}
+        self.requests.setdefault(to, {})[kind] = rec
+        self._req_refs[self._ref] = (to, kind)
+        self._send({"request": {"to": to, "kind": kind, **rec}})
+        self.proc.stdin.write((json.dumps({"cmd": "request", "ref": self._ref, "to": to, "kind": kind})
+                               + "\n").encode())
+        await self.proc.stdin.drain()
+        log.info("mesh: asking %s for its %s", to, REQUEST_KINDS[kind])
+
+    def _end_requests(self, why):
+        for to, kind in self._req_refs.values():
+            rec = self.requests.get(to, {}).get(kind)
+            if rec and rec["state"] == "running":
+                rec.update(state="failed", error=why, done_t=time.time())
+                self._send({"request": {"to": to, "kind": kind, **rec}})
+        self._req_refs.clear()
+
+    async def node_action(self, ws, to, do):
+        if not self._usable(ws):
+            return
+        why = self._peer_why(to) or (None if do in NODE_ACTIONS else f"Not a node action: {do!r}.")
+        if why:
+            self.station.notice(why, "warn", ws)
+            return
+        await self._write_cmd(ws, f"{NODE_ACTIONS[do]} {to}", {"cmd": "node", "to": to, "do": do})
+
+    async def reboot(self, ws):
+        if not self._usable(ws):
+            return
+        await self._write_cmd(ws, "reboot", {"cmd": "reboot"})
 
     def _end_trace(self, why):
         rec = next((r for r in self.traces.values() if r["state"] == "running"), None)

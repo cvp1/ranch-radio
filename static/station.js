@@ -297,7 +297,7 @@ const station = (() => {
       } else if (m.t === "mesh") {
         mesh.event(m);
         if (m.status) { meshConnected = !!m.status.connected; renderNav(); renderCards(); }
-        if (m.msg && !m.msg.mine && route() !== "mesh") { meshUnread++; renderNav(); renderCards(); }
+        if (m.msg && !m.msg.mine && !m.msg.emoji && route() !== "mesh") { meshUnread++; renderNav(); renderCards(); }
       } else if (m.t === "addon" && m.addon === "winlink") {
         winlink.power(m);                 // Winlink's page is its own panel
         if ("on" in m) modules.addonChanged();

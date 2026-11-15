@@ -1,10 +1,13 @@
 "use strict";
 
-// Mesh panel: a Meshtastic node's channels, direct messages, node list (a
-// node's card: message it, traceroute, favorite), the map (meshmap.js) and
+// Mesh panel: a Meshtastic node's channels, direct conversations (one per
+// node), replies and emoji reactions, the node list (a node's card: message
+// it, traceroute, ask for its position / telemetry / user info, favorite,
+// ignore, remove), the map (meshmap.js, with NeighborInfo links) and
 // settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
-// mesh_send / mesh_config / mesh_favorite / mesh_trace out); the server keeps the history,
-// so a page opened later sees it too.
+// mesh_send / mesh_config / mesh_favorite / mesh_trace / mesh_request /
+// mesh_node / mesh_reboot out); the server keeps the history, so a page
+// opened later sees it too.
 // Uses app.js's $, send, toast and on.
 
 const mesh = (() => {
@@ -18,10 +21,19 @@ const mesh = (() => {
   let dmTo = null;          // node id for a direct message
   let recentOnly = false;    // the list shows every node the radio knows unless "Recent"
   let selected = null;      // node id whose card is open
+  let replyTo = null;       // the message being replied to
   const traces = {};        // node id -> the last traceroute to it
+  let requests = {};        // node id -> {kind: {state, t, error}}: position / telemetry / user info asks
+  let neighbors = {};       // node id -> {t, neighbors: [{id, snr}]}: who each node hears directly
+  const REACTIONS = ["👍", "❤️", "😂", "‼️", "❓", "🎉"];
+  const REQUESTS = [["position", "Position", "Ask it for its position"],
+    ["telemetry", "Telemetry", "Ask it for its battery, voltage and channel use"],
+    ["env", "Environment", "Ask it for its sensor readings (temperature, humidity, pressure)"],
+    ["nodeinfo", "User info", "Swap user info with it (its name and key; it gets ours)"]];
   const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true) });
   const LIVE_S = 15 * 60;
-  const unread = {};
+  const unread = {};        // channel index or "dm" -> count
+  const unreadDm = {};      // node id -> count
   let cfg = null;           // {sections, values}: the bridge's settings schema and the node's values
   let cfgOpen = false, cfgSec = null;
   const edits = {};         // section -> {field: value} not yet saved
@@ -33,6 +45,30 @@ const mesh = (() => {
   const myId = () => info?.me?.id;
   const bytes = (s) => new TextEncoder().encode(s).length;
   const viewOf = (m) => (m.dm ? "dm" : m.ch);
+  const peerOf = (m) => (m.mine ? m.to : m.from);
+  const isReaction = (m) => !!(m.emoji && m.reply_id);
+  const byMsgId = (id) => messages.find((m) => m.id === id && !isReaction(m));
+
+  // Great-circle distance (km) and initial bearing from this node.
+  function where(n) {
+    const me = byId(myId());
+    const ok = (x) => x && x.lat != null && (x.lat || x.lon);
+    if (!ok(me) || !ok(n) || me === n) return null;
+    const r = Math.PI / 180, [la1, la2] = [me.lat * r, n.lat * r], dl = (n.lon - me.lon) * r;
+    const a = Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dl / 2) ** 2;
+    const km = 12742 * Math.asin(Math.sqrt(a));
+    const deg = (Math.atan2(Math.sin(dl) * Math.cos(la2),
+      Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dl)) / r + 360) % 360;
+    return { km, deg };
+  }
+  const kmText = (w) => (w ? `${w.km < 10 ? w.km.toFixed(1) : Math.round(w.km)} km` : "");
+  const compass = (deg) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(deg / 45) % 8];
+  function dur(s) {
+    if (s == null) return "";
+    if (s < 3600) return `${Math.round(s / 60)}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
+    return `${Math.floor(s / 86400)}d ${Math.round((s % 86400) / 3600)}h`;
+  }
 
   function ago(t) {
     if (!t) return "";
@@ -58,6 +94,16 @@ const mesh = (() => {
       ? `<span class="stat mesh-key-ok" title="The node's key for ${esc(c.name)} is the expected one">${esc(c.name)} key ✓</span>`
       : `<span class="stat mesh-key-bad" title="The node's key for ${esc(c.name)} is NOT the expected one">${esc(c.name)} key ✗</span>`).join("")
       + (info?.missing || []).map((n) => `<span class="stat mesh-key-bad" title="Not configured on the node">${esc(n)} missing</span>`).join("");
+    const meNode = nodes.find((n) => n.me), stats = meNode?.stats || {};
+    const util = stats.util ?? meNode?.util, air = stats.air_tx ?? meNode?.air_tx;
+    const parts = [util != null ? [`ch ${util.toFixed(1)}%`, "Channel utilization: how busy the air is, as this node hears it"] : null,
+      air != null ? [`tx ${air.toFixed(1)}%`, "Air time this node transmitted in the last hour"] : null,
+      meNode?.battery != null ? [meNode.battery > 100 ? "⚡ powered" : `🔋 ${meNode.battery}%`, "This node's battery"] : null,
+      stats.online != null ? [`${stats.online} online`, `Nodes heard in the last 2 hours (of ${stats.total ?? "?"} known)`] : null,
+      stats.rx != null ? [`rx ${stats.rx} / tx ${stats.tx ?? "?"}`, `Packets received / sent since boot${stats.rx_bad ? `; ${stats.rx_bad} bad` : ""}${stats.dupes ? `; ${stats.dupes} duplicates` : ""}${stats.relayed ? `; ${stats.relayed} relayed` : ""}`] : null,
+      stats.noise != null ? [`noise ${stats.noise} dBm`, "Noise floor"] : null,
+      (stats.uptime ?? meNode?.uptime) != null ? [`up ${dur(stats.uptime ?? meNode.uptime)}`, "Since the node last booted"] : null].filter(Boolean);
+    $("#mesh-stats").innerHTML = connected ? parts.map(([t, why]) => `<span class="stat" title="${esc(why)}">${esc(t)}</span>`).join("") : "";
     $("#mesh").classList.toggle("mesh-off", !connected);
     const pw = $("#mesh-power");
     pw.textContent = switchedOff ? "Switch on" : "Switch off";
@@ -77,17 +123,35 @@ const mesh = (() => {
     seg.innerHTML = "";
     const tabs = (info?.channels || []).map((c) => [c.index, c.name]);
     tabs.push(["dm", "Direct"]);
-    if (view === null || !tabs.some(([v]) => v === view)) view = tabs.length > 1 ? tabs[0][0] : "dm";
+    // Before the node has sent its channels (a restart, switching on), keep the
+    // view: falling back to Direct then would stick once the channels arrive.
+    if (view === null || (info && !tabs.some(([v]) => v === view))) view = tabs.length > 1 ? tabs[0][0] : "dm";
     for (const [v, label] of tabs) {
       const b = document.createElement("button");
       b.className = "chip" + (v === view ? " on" : "");
       b.innerHTML = esc(label) + (unread[v] ? ` <span class="mesh-unread">${unread[v]}</span>` : "");
-      b.onclick = () => { view = v; unread[v] = 0; renderTabs(); renderMessages(); renderCompose(); };
+      b.onclick = () => {
+        if (v === "dm" && view === "dm") dmTo = null;        // Direct again: back to the conversations
+        view = v;
+        if (v !== "dm") unread[v] = 0;
+        renderTabs(); renderMessages(); renderCompose();
+      };
       seg.append(b);
     }
   }
 
   // ---------- messages
+
+  // Reactions to message id, folded into "👍 2" chips (who in the tooltip).
+  function reactionsTo(id) {
+    const by = new Map();
+    for (const r of messages) {
+      if (!isReaction(r) || r.reply_id !== id) continue;
+      if (!by.has(r.text)) by.set(r.text, []);
+      by.get(r.text).push(r.mine ? "me" : short(r.from));
+    }
+    return [...by].map(([e, who]) => `<span class="mesh-react" title="${esc(who.join(", "))}">${esc(e)}${who.length > 1 ? ` ${who.length}` : ""}</span>`).join("");
+  }
 
   function row(m) {
     const div = document.createElement("div");
@@ -98,34 +162,93 @@ const mesh = (() => {
     const [glyph, why] = m.mine ? (ACK[m.ack] || ["", ""]) : ["", ""];
     const meta = m.mine ? "" : [m.hops != null ? `${m.hops} hop${m.hops === 1 ? "" : "s"}` : "",
       m.snr != null ? `SNR ${m.snr}` : ""].filter(Boolean).join(" · ");
+    const orig = m.reply_id ? byMsgId(m.reply_id) : null;
+    const quote = m.reply_id ? `<span class="mesh-quote" title="In reply to">↪ ${orig
+      ? `<b>${esc(orig.mine ? "me" : short(orig.from))}</b> ${esc(orig.text.length > 60 ? `${orig.text.slice(0, 60)}…` : orig.text)}`
+      : "a message no longer here"}</span>` : "";
+    const canAct = connected && m.id != null && m.ack !== "failed";
+    const acts = canAct ? `<span class="mesh-acts"><button data-act="reply" title="Reply">↩</button>` +
+      REACTIONS.map((e) => `<button data-react="${esc(e)}" title="React ${esc(e)}">${esc(e)}</button>`).join("") + "</span>" : "";
+    const retry = m.mine && m.ack === "failed" && connected ? `<button class="chip chip-mini mesh-retry" data-act="retry" title="Send it again">Retry</button>` : "";
     div.innerHTML = `<span class="mesh-time">${hhmm(m.t)}</span>` +
       `<button class="mesh-who" title="${esc(m.mine ? "" : `${long(m.from)} ${m.from || ""}`)}">${esc(who)}</button>` +
-      `<span class="mesh-text">${esc(m.text)}</span>` +
-      `<span class="mesh-meta">${esc(meta)}${m.mine ? `<span class="mesh-ack ${esc(m.ack)}" title="${esc(why + (m.why ? `: ${m.why}` : ""))}">${glyph}</span>` : ""}</span>`;
-    const peer = m.mine ? m.to : m.from;
+      `<span class="mesh-text">${quote}<span class="mesh-body">${esc(m.text)}</span>` +
+      `<span class="mesh-reacts">${m.id != null ? reactionsTo(m.id) : ""}</span></span>` +
+      `<span class="mesh-meta">${acts}${retry}${esc(meta)}${m.mine ? `<span class="mesh-ack ${esc(m.ack)}" title="${esc(why + (m.why ? `: ${m.why}` : ""))}">${glyph}</span>` : ""}</span>`;
+    const peer = peerOf(m);
     if (peer && peer !== myId()) div.querySelector(".mesh-who").onclick = () => directTo(peer);
+    div.querySelector(".mesh-meta").onclick = (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const dest = m.dm ? peer : null;
+      if (btn.dataset.react) {
+        send({ t: "mesh_send", text: btn.dataset.react, ch: m.dm ? 0 : m.ch, to: dest, reply_to: m.id, emoji: true });
+      } else if (btn.dataset.act === "reply") {
+        replyTo = m;
+        renderCompose();
+        $("#mesh-text").focus();
+      } else if (btn.dataset.act === "retry") {
+        send({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
+      }
+    };
     return div;
+  }
+
+  // Direct with no node picked: one line per conversation, newest first.
+  function renderConversations(list) {
+    const last = new Map();
+    for (const m of messages) {
+      if (!m.dm) continue;
+      const p = peerOf(m);
+      if (p && p !== myId()) last.set(p, m);
+    }
+    const convs = [...last].sort((a, b) => b[1].t - a[1].t);
+    list.innerHTML = convs.length ? "" : `<div class="wl-empty">No direct messages (pick a node to message it)</div>`;
+    for (const [p, m] of convs) {
+      const b = document.createElement("button");
+      b.className = "mesh-conv";
+      b.dataset.peer = p;
+      const n = unreadDm[p] || 0;
+      b.innerHTML = `<b>${esc(short(p))}</b><span class="mesh-conv-last">${esc(m.mine ? "me: " : "")}${esc(isReaction(m) ? `reacted ${m.text}` : m.text)}</span>` +
+        `<span class="wl-dim">${esc(ago(m.t))}</span>${n ? `<span class="mesh-unread">${n}</span>` : "<span></span>"}`;
+      b.title = `${long(p)} ${p}`;
+      b.onclick = () => directTo(p);
+      list.append(b);
+    }
   }
 
   function renderMessages() {
     const list = $("#mesh-list");
-    const shown = messages.filter((m) => viewOf(m) === view);
+    if (view === "dm" && !dmTo) { renderConversations(list); return; }
+    const shown = messages.filter((m) => viewOf(m) === view && !isReaction(m) && (view !== "dm" || peerOf(m) === dmTo));
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-    list.innerHTML = shown.length ? "" : `<div class="wl-empty">No messages${view === "dm" ? " (pick a node to message it)" : ""}</div>`;
+    list.innerHTML = shown.length ? "" : `<div class="wl-empty">No messages${view === "dm" ? ` with ${esc(short(dmTo))} yet` : ""}</div>`;
     for (const m of shown) list.append(row(m));
     if (atBottom || shown.length < 2) list.scrollTop = list.scrollHeight;
   }
+
+  const unreadTotal = () => Object.values(unreadDm).reduce((a, b) => a + b, 0);
 
   function addMessage(m) {
     messages.push(m);
     if (messages.length > 300) messages.shift();
     const v = viewOf(m);
-    if (v === view) {
+    const here = v === view && (v !== "dm" || (dmTo && peerOf(m) === dmTo));
+    if (isReaction(m)) {
+      const el = $(`#mesh-list [data-key="${byMsgId(m.reply_id)?.mine ? `t${byMsgId(m.reply_id).t}` : `i${m.reply_id}`}"]`);
+      if (el) el.replaceWith(row(byMsgId(m.reply_id)));
+      if (!m.mine && byMsgId(m.reply_id)?.mine) toast(`Mesh · ${short(m.from)} reacted ${m.text}`, "info");
+      if (view === "dm" && !dmTo) renderMessages();
+      return;
+    }
+    if (here) {
       renderMessages();
       $("#mesh-list").scrollTop = $("#mesh-list").scrollHeight;
     } else if (!m.mine) {
-      unread[v] = (unread[v] || 0) + 1;
+      if (v === "dm") { unreadDm[m.from] = (unreadDm[m.from] || 0) + 1; unread.dm = unreadTotal(); }
+      else unread[v] = (unread[v] || 0) + 1;
       renderTabs();
+      if (view === "dm" && !dmTo) renderMessages();
     }
     if (!m.mine && m.dm) toast(`Mesh · ${short(m.from)}: ${m.text}`, "info");
   }
@@ -134,6 +257,7 @@ const mesh = (() => {
     const i = messages.findIndex((x) => x.mine && x.t === m.t);
     if (i < 0) return;
     messages[i] = m;
+    if (isReaction(m)) return;
     const el = $(`#mesh-list [data-key="t${m.t}"]`);
     if (el) el.replaceWith(row(m));
   }
@@ -141,9 +265,11 @@ const mesh = (() => {
   // ---------- compose
 
   function directTo(id) {
+    if (dmTo !== id) replyTo = null;
     dmTo = id;
     view = "dm";
-    unread.dm = 0;
+    unreadDm[id] = 0;
+    unread.dm = unreadTotal();
     renderTabs();
     renderMessages();
     renderCompose();
@@ -152,16 +278,25 @@ const mesh = (() => {
 
   function renderCompose() {
     const to = $("#mesh-to");
+    // A reply belongs to the conversation it was started in.
+    if (replyTo && (viewOf(replyTo) !== view || (view === "dm" && peerOf(replyTo) !== dmTo))) replyTo = null;
+    let html = "";
     if (view === "dm") {
-      to.hidden = false;
-      to.innerHTML = dmTo
-        ? `To <b>${esc(short(dmTo))}</b> <span class="wl-dim">${esc(long(dmTo))}</span> <button class="chip chip-mini" id="mesh-to-x">✕</button>`
-        : `<span class="wl-dim">Pick a node on the right (or a sender) to message it</span>`;
-      const x = $("#mesh-to-x");
-      if (x) x.onclick = () => { dmTo = null; renderCompose(); };
-    } else {
-      to.hidden = true;
+      html = dmTo
+        ? `To <b>${esc(short(dmTo))}</b> <span class="wl-dim">${esc(long(dmTo))}</span> <button class="chip chip-mini" id="mesh-to-x" title="Back to the conversations">✕</button>`
+        : `<span class="wl-dim">Pick a conversation, a node on the right, or a sender to message it</span>`;
     }
+    if (replyTo) {
+      html += `<span class="mesh-replying">↪ Replying to <b>${esc(replyTo.mine ? "me" : short(replyTo.from))}</b> ` +
+        `<span class="wl-dim">${esc(replyTo.text.length > 50 ? `${replyTo.text.slice(0, 50)}…` : replyTo.text)}</span> ` +
+        `<button class="chip chip-mini" id="mesh-reply-x" title="Not a reply">✕</button></span>`;
+    }
+    to.hidden = !html;
+    to.innerHTML = html;
+    const x = $("#mesh-to-x");
+    if (x) x.onclick = () => { dmTo = null; replyTo = null; renderMessages(); renderCompose(); };
+    const rx = $("#mesh-reply-x");
+    if (rx) rx.onclick = () => { replyTo = null; renderCompose(); };
     count();
   }
 
@@ -178,8 +313,10 @@ const mesh = (() => {
     const text = $("#mesh-text").value.trim();
     if (!text || $("#mesh-send").disabled) return;
     const dm = view === "dm";
-    send({ t: "mesh_send", text, ch: dm ? 0 : view, to: dm ? dmTo : null });
+    send({ t: "mesh_send", text, ch: dm ? 0 : view, to: dm ? dmTo : null, reply_to: replyTo?.id ?? null });
     $("#mesh-text").value = "";
+    replyTo = null;
+    renderCompose();
     count();
   }
 
@@ -200,13 +337,14 @@ const mesh = (() => {
     for (const n of list) {
       const b = document.createElement("button");
       const live = n.last_heard && now - n.last_heard < LIVE_S;
-      b.className = "mesh-node" + (n.id === selected ? " on" : "");
+      b.className = "mesh-node" + (n.id === selected ? " on" : "") + (n.ignored ? " ignored" : "");
       b.dataset.id = n.id;
       b.title = `${n.longName || ""} ${n.id || ""} · ${n.hwModel || ""}${n.role ? ` · ${n.role}` : ""} — click for details and traceroute`;
       b.innerHTML = `<span class="mesh-short"><span class="mesh-fav${n.fav ? " on" : ""}" title="${n.fav
         ? "Favorite: click to remove" : "Make a favorite (a CLIENT_BASE node always relays for its favorites)"}">${n.fav ? "★" : "☆"}</span>${esc(n.shortName || "?")}</span>` +
-        `<span class="mesh-long">${esc(n.longName || n.id)}<span class="mesh-sub">${esc([n.role && n.role !== "CLIENT" ? n.role : "",
-          n.lat != null && (n.lat || n.lon) ? "📍" : "", n.mqtt ? "MQTT" : ""].filter(Boolean).join(" "))}</span></span>` +
+        `<span class="mesh-long">${esc(n.longName || n.id)}<span class="mesh-sub">${esc([n.ignored ? "🚫 ignored" : "",
+          n.role && n.role !== "CLIENT" ? n.role : "",
+          n.lat != null && (n.lat || n.lon) ? `📍${kmText(where(n)) ? ` ${kmText(where(n))}` : ""}` : "", n.mqtt ? "MQTT" : ""].filter(Boolean).join(" "))}</span></span>` +
         `<span class="wl-dim">${esc(hopsText(n))}${n.snr != null && n.hops === 0 ? ` ${n.snr} dB` : ""}</span>` +
         `<span class="wl-dim">${n.battery != null ? (n.battery > 100 ? "⚡" : `${n.battery}%`) : ""}</span>` +
         `<span class="wl-dim${live ? " mesh-live" : ""}">${esc(ago(n.last_heard))}</span>`;
@@ -224,10 +362,26 @@ const mesh = (() => {
 
   // ---------- a node's card: details, message, traceroute, favorite
 
+  // NeighborInfo as map links: every pair heard, or just the selected node's.
+  function links() {
+    const out = [], seen = new Set();
+    for (const [from, rec] of Object.entries(neighbors)) {
+      for (const x of rec.neighbors || []) {
+        if (selected && from !== selected && x.id !== selected) continue;
+        const key = [from, x.id].sort().join("-");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ from, to: x.id, label: x.snr != null ? `${x.snr} dB` : "" });
+      }
+    }
+    return out;
+  }
+
   function select(id, fromMap = false) {
     selected = selected === id && !fromMap ? null : id;
     map.select(selected);
     map.setTrace(traces[selected] || null);
+    map.setLinks(links());
     renderNodes();
     if (fromMap && selected) $(`#mesh-nodes [data-id="${selected}"]`)?.scrollIntoView({ block: "nearest" });
   }
@@ -259,12 +413,33 @@ const mesh = (() => {
     card.hidden = !n;
     if (!n) return;
     const tr = traces[n.id];
+    const w = where(n), env = n.env || {}, nb = neighbors[n.id];
     const fields = [["hops", hopsText(n)], ["SNR", n.snr != null ? `${n.snr} dB` : ""],
       ["battery", n.battery != null ? (n.battery > 100 ? "powered" : `${n.battery}%`) : ""],
       ["voltage", n.voltage != null ? `${n.voltage.toFixed(2)} V` : ""],
-      ["ch. util", n.util != null ? `${n.util.toFixed(1)}%` : ""], ["heard", n.last_heard ? when(n.last_heard) : "never"],
+      ["ch. util", n.util != null ? `${n.util.toFixed(1)}%` : ""],
+      ["air tx", n.air_tx != null ? `${n.air_tx.toFixed(1)}%` : ""],
+      ["uptime", dur(n.uptime)], ["heard", n.last_heard ? when(n.last_heard) : "never"],
       ["position", n.lat != null && (n.lat || n.lon) ? `${n.lat.toFixed(4)}, ${n.lon.toFixed(4)}` : "none"],
-      ["via", n.mqtt ? "MQTT" : ""]].filter(([, v]) => v);
+      ["altitude", n.alt != null && n.lat != null && (n.lat || n.lon) ? `${n.alt} m` : ""],
+      ["fixed at", n.pos_t ? when(n.pos_t) : ""],
+      ["distance", w ? `${kmText(w)} ${compass(w.deg)} (${Math.round(w.deg)}°)` : ""],
+      ["temp", env.temp != null ? `${env.temp.toFixed(1)} °C / ${(env.temp * 9 / 5 + 32).toFixed(0)} °F` : ""],
+      ["humidity", env.humidity != null ? `${env.humidity.toFixed(0)}%` : ""],
+      ["pressure", env.pressure != null ? `${env.pressure.toFixed(1)} hPa` : ""],
+      ["IAQ", env.iaq != null ? `${env.iaq}` : ""], ["light", env.lux != null ? `${Math.round(env.lux)} lx` : ""],
+      ["wind", env.wind != null ? `${env.wind.toFixed(1)} m/s` : ""],
+      ["hears", nb ? `${(nb.neighbors || []).length} node${(nb.neighbors || []).length === 1 ? "" : "s"} directly` : ""],
+      ["key", n.pkc ? "PKI ✓" : ""], ["via", n.mqtt ? "MQTT" : ""],
+      ["ignored", n.ignored ? "yes: its packets are dropped" : ""]].filter(([, v]) => v);
+    const reqs = requests[n.id] || {};
+    const busy = Object.values(reqs).some((r) => r.state === "running");
+    const reqNote = Object.entries(reqs).filter(([, r]) => r.state !== "done" || Date.now() / 1000 - (r.done_t || 0) < 120)
+      .map(([k, r]) => {
+        const label = REQUESTS.find(([x]) => x === k)?.[1] || k;
+        return r.state === "running" ? `${label}: asking…` : r.state === "done" ? `${label}: answered ${when(r.done_t)}`
+          : `${label}: ${r.error || "no answer"}`;
+      }).join(" · ");
     card.innerHTML = `<div class="mesh-card-head"><b>${esc(n.shortName || "?")}</b><span>${esc(n.longName || "")}</span>` +
       `<span class="wl-dim">${esc(n.id)} · ${esc(n.hwModel || "")}${n.role ? ` · ${esc(n.role)}` : ""}</span>` +
       `<span class="spacer"></span><button class="chip chip-mini" data-act="close" title="Close">✕</button></div>` +
@@ -272,7 +447,13 @@ const mesh = (() => {
       `<div class="wl-row"><button class="chip chip-mini" data-act="dm">Message</button>` +
       `<button class="chip chip-mini" data-act="trace"${!connected || tr?.state === "running" ? " disabled" : ""} ` +
       `title="Ask the mesh for the route to this node and back, with each hop's SNR">Traceroute</button>` +
-      `<button class="chip chip-mini" data-act="fav"${connected ? "" : " disabled"}>${n.fav ? "★ Unfavorite" : "☆ Favorite"}</button></div>` +
+      `<button class="chip chip-mini" data-act="fav"${connected ? "" : " disabled"}>${n.fav ? "★ Unfavorite" : "☆ Favorite"}</button>` +
+      `<button class="chip chip-mini" data-act="ignore"${connected ? "" : " disabled"} title="${n.ignored
+        ? "Hear this node again" : "Drop this node's packets: it disappears from messages and the map"}">${n.ignored ? "Unignore" : "Ignore"}</button>` +
+      `<button class="chip chip-mini" data-act="remove"${connected ? "" : " disabled"} title="Forget this node; it comes back when it is next heard">Remove</button></div>` +
+      `<div class="wl-row mesh-reqs"><span class="wl-dim">Ask for</span>` +
+      REQUESTS.map(([k, label, why]) => `<button class="chip chip-mini" data-req="${k}" title="${esc(why)}"${!connected || busy ? " disabled" : ""}>${label}</button>`).join("") +
+      (reqNote ? `<span class="wl-dim mesh-req-note">${esc(reqNote)}</span>` : "") + "</div>" +
       traceHtml(tr);
     card.onclick = (e) => {
       const act = e.target.closest("button")?.dataset.act;
@@ -280,7 +461,21 @@ const mesh = (() => {
       else if (act === "dm") directTo(n.id);
       else if (act === "trace") send({ t: "mesh_trace", to: n.id });
       else if (act === "fav") send({ t: "mesh_favorite", to: n.id, fav: !n.fav });
+      else if (act === "ignore") send({ t: "mesh_node", to: n.id, action: n.ignored ? "unignore" : "ignore" });
+      else if (act === "remove" && confirm(`Remove ${n.shortName || n.id} from the node's list? It comes back when it is next heard.`)) {
+        send({ t: "mesh_node", to: n.id, action: "remove" });
+        select(n.id);
+      }
+      const req = e.target.closest("button")?.dataset.req;
+      if (req) send({ t: "mesh_request", to: n.id, kind: req });
     };
+  }
+
+  function onRequest(r) {
+    const { to, kind, ...rec } = r;
+    (requests[to] ||= {})[kind] = rec;
+    if (to === selected) renderCard();
+    if (rec.state === "failed") toast(`Mesh: ${short(to)} didn't answer (${rec.error || "no reply"})`, "warn");
   }
 
   function onTrace(tr) {
@@ -366,6 +561,7 @@ const mesh = (() => {
     const bad = s ? s.fields.filter((f) => names.includes(f.name) && invalid(f, e[f.name])) : [];
     $("#mesh-cfg-save").disabled = !connected || !names.length || bad.length > 0;
     $("#mesh-cfg-revert").disabled = !names.length;
+    $("#mesh-reboot").disabled = !connected;
     $("#mesh-cfg-note").textContent = !cfg ? "The node has not sent its settings yet."
       : !connected ? `The node is not connected${linkError ? `: ${linkError}` : "."}`
       : bad.length ? bad.map((f) => `${f.label}: ${invalid(f, e[f.name])}`).join(" · ")
@@ -410,6 +606,9 @@ const mesh = (() => {
   $("#mesh-cfg-form").onsubmit = (e) => e.preventDefault();
   $("#mesh-cfg-save").onclick = saveCfg;
   $("#mesh-cfg-revert").onclick = () => { delete edits[cfgSec]; renderCfg(); };
+  $("#mesh-reboot").onclick = () => {
+    if (connected && confirm("Reboot the node? The link drops for a few seconds and comes back on its own.")) send({ t: "mesh_reboot" });
+  };
 
   // ---------- from app.js
 
@@ -425,7 +624,10 @@ const mesh = (() => {
     textMax = snap.text_max || textMax;
     setConfig(snap.config || null);
     for (const tr of snap.traces || []) traces[tr.to] = tr;
+    requests = snap.requests || {};
+    neighbors = snap.neighbors || {};
     map.setNodes(nodes, myId());
+    map.setLinks(links());
     renderHead();
     renderTabs();
     renderMessages();
@@ -454,8 +656,16 @@ const mesh = (() => {
     if (m.nodes) {
       nodes = m.nodes;
       map.setNodes(nodes, myId());
+      map.setLinks(links());
       renderNodes();
+      renderHead();
     }
+    if (m.neighbors) {
+      neighbors = m.neighbors;
+      map.setLinks(links());
+      renderCard();
+    }
+    if (m.request) onRequest(m.request);
     if (m.trace) onTrace(m.trace);
     if (m.rx) map.pulse(m.rx.from);
     if (m.msg) addMessage(m.msg);

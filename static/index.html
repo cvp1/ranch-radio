@@ -323,6 +323,7 @@
       <span class="mesh-state" id="mesh-state">Not connected</span>
       <span class="spacer"></span>
       <span id="mesh-key"></span>
+      <span class="mesh-stats" id="mesh-stats"></span>
       <button class="chip chip-mini" id="mesh-cfg-btn" title="The node's settings: name, role, LoRa, position, ...">Settings</button>
       <button class="chip chip-mini" id="mesh-power" title="Close the link to the node and free its port">Switch off</button>
     </div>
@@ -333,6 +334,8 @@
         <button class="chip on" id="mesh-cfg-save" disabled>Save to node</button>
         <button class="chip" id="mesh-cfg-revert" disabled>Revert</button>
         <span class="wl-dim" id="mesh-cfg-note"></span>
+        <span class="spacer"></span>
+        <button class="chip" id="mesh-reboot" title="Restart the node (the link comes back on its own)">Reboot node</button>
       </div>
     </div>
     <div class="wl-cols mesh-cols" id="mesh-main">

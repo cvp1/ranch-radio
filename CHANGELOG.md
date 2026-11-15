@@ -13,6 +13,21 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The Mesh tab does what the Meshtastic apps do.** Direct is now a list of
+  conversations, one per node, each with its unread count; replies quote what
+  they answer, and a message takes an emoji reaction (👍 ❤️ 😂 ‼️ ❓ 🎉, the
+  apps' own `emoji` flag, so phones show them as reactions too); a failed send
+  has Retry. A node's card adds air time, uptime, environment sensors,
+  distance and bearing, when its position was fixed, whether it has a PKI key
+  and who it hears (NeighborInfo, also drawn on the map with each link's SNR);
+  from it, ask the node for its position, telemetry, environment or user info
+  (one request per node at a time, each kind once a minute: every ask is
+  airtime; a position ask sends an empty position, never ours), and Ignore or
+  Remove it. The header shows the node's own counters (channel use, air time,
+  packets, nodes online, noise floor, uptime), and Settings has Reboot node.
+  A restart of the node's link no longer drops you from the channel you were
+  reading to Direct.
+
 - **The Map tab** (`addons/map.py`, `static/addons/map.js`): worked/confirmed grids by band, live
   decodes by need (click to answer), the gray line (sun position checked against NOAA reference
   points in a browser), POTA spots on the band.

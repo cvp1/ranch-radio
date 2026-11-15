@@ -2,7 +2,8 @@
 
 The first add-on with its own tab rather than an add-on panel: its page is
 the Mesh tab (static/mesh.js), so it keeps that tab's wire protocol. The page
-sends {"t": "mesh_send" | "mesh_config" | "mesh_trace" | "mesh_favorite"}
+sends {"t": "mesh_send" | "mesh_config" | "mesh_trace" | "mesh_favorite" |
+"mesh_request" | "mesh_node" | "mesh_reboot"}
 (this add-on's ROUTES) and gets {"t": "mesh", ...} back. What the add-on
 system adds is the on/off switch: off stops the bridge and frees the node's
 serial port (the meshtastic CLI needs it to itself), and the choice is kept
@@ -33,7 +34,8 @@ class MeshAddon(Addon):
     label = "Mesh"
     title = "Meshtastic node"
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel
-    routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite")
+    routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite",
+              "mesh_request", "mesh_node", "mesh_reboot")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -72,14 +74,21 @@ class MeshAddon(Addon):
     async def command(self, ws, verb, m):
         e = self.engine
         if verb == "mesh_send":
-            to = m.get("to")
-            await e.send_text(ws, m["text"], int(m["ch"]), str(to) if to else None)
+            to = m.get("to")             # reply_to is type-checked by the engine
+            await e.send_text(ws, m["text"], int(m["ch"]), str(to) if to else None,
+                              m.get("reply_to"), bool(m.get("emoji")))
         elif verb == "mesh_config":
             await e.set_config(ws, str(m["section"]), m["values"])
         elif verb == "mesh_trace":
             await e.traceroute(ws, str(m["to"]))
         elif verb == "mesh_favorite":
             await e.set_favorite(ws, str(m["to"]), bool(m["fav"]))
+        elif verb == "mesh_request":
+            await e.request(ws, str(m["to"]), str(m["kind"]))
+        elif verb == "mesh_node":
+            await e.node_action(ws, str(m["to"]), str(m["action"]))  # "do" is the router's
+        elif verb == "mesh_reboot":
+            await e.reboot(ws)
         else:
             await super().command(ws, verb, m)
 
