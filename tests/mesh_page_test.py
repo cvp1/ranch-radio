@@ -8,7 +8,8 @@ risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
 incoming ones on our message), Retry on a failed or unknown send, Direct as a list of
 conversations, the header's counters, a card's distance / environment / Ask
-for (position) / Ignore, NeighborInfo links on the map, Reboot node, who
+for (position) / Ignore, who a node hears and who hears it (by name, and why one
+isn't on the map), NeighborInfo links on the map, Reboot node, who
 hears us ("heard by N" and its list).
 
     python3 tests/mesh_page_test.py [screenshot.png]
@@ -278,7 +279,16 @@ try:
         card = b.js(f"({TEXT})('#mesh-card')")
         check("card: distance and bearing", "distance 2.0 km SE (123°)" in card, True)
         check("  environment", "temp 21.5 °C / 71 °F" in card and "pressure 850.2 hPa" in card, True)
-        check("  who it hears", "hears 1 node directly" in card, True)
+        nbs = "[...document.querySelectorAll('#mesh-card .mesh-nbs > div')].map((d) => d.textContent.replace(/ · .*$/, ''))"
+        check("  who it hears and who hears it, by name with SNR", b.js(nbs), ["hearsRDG 6.5 dB", "heard byRDG 2 dB"])
+        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: ["
+             "{ id: '!0000cafe', snr: 6.5 }, { id: '!0000dead', snr: -4 }, { id: '!00c0ffee', snr: 1 }] } } })")
+        check("  one the map can't place says why", b.js(nbs)[0],
+              "hearsRDG 6.5 dBTRK -4 dB (no position)!00c0ffee 1 dB (not in this node's list)")
+        b.js("document.querySelector('#mesh-card .mesh-nb[data-go=\"!0000cafe\"]').click()")
+        check("  a name opens that node's card", b.js(f"({TEXT})('#mesh-card .mesh-card-head b')"), "RDG")
+        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [{ id: '!0000cafe', snr: 6.5 }] } } })")
+        b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
         check("map: the NeighborInfo link, with its SNR",
               b.js("[...document.querySelectorAll('#mesh-map .mm-link-label')].map((t) => t.textContent)"), ["6.5 dB"])
         check("card: Ask for has Neighbours",

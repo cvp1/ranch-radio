@@ -558,6 +558,10 @@ body.tx .tx-meters { opacity: 1; }
 .mm-attr { position: absolute; right: 6px; bottom: 4px; font: 10px var(--sans); color: var(--dim);
   background: rgba(0,0,0,.55); padding: 1px 5px; border-radius: 4px; text-decoration: none; }
 .mesh-cfg { display: flex; flex-direction: column; gap: 10px; }
+.mesh-nbs { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; font-size: 12px; }
+.mesh-nbs > div > .wl-dim:first-child { display: inline-block; min-width: 5.5em; }
+.mesh-nb { margin-right: 10px; cursor: pointer; white-space: nowrap; }
+.mesh-nb:hover { text-decoration: underline; }
 .mesh-hears { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; }
 .mesh-hears-note { font-size: 11px; padding-bottom: 4px; }
 .mesh-hears-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding-top: 6px; }
