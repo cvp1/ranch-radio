@@ -31,6 +31,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Traceroutes the station overhears show too.** A traceroute run from
+  somewhere else (the phone app on another of your nodes, say) is kept when
+  this node hears it: the request's route so far, or the answer's whole way
+  there with each hop's SNR. Either end's card shows it ("Overheard: A → B"),
+  and selecting either end draws it on the map when there's no traceroute of
+  your own to that node. Kept for 7 days like the links.
+
 - **The station knows who its own node hears.** It asks its own node for its
   NeighborInfo a little after connecting and every 30 minutes (answered inside
   the node; nothing goes on the air), when the node has the module on; a page
