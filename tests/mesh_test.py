@@ -465,7 +465,12 @@ try:
     check("restart: our message kept as delivered", hist.get("hello ranch", {}).get("ack"), "delivered")
     check("restart: NAK kept as failed", hist.get("nak", {}).get("ack"), "failed")
     check("restart: a reply keeps its reply_id", hist.get("me too", {}).get("reply_id"), 1001)
+    # "hears" needs this node's id, which comes with the bridge's info: a page
+    # that connects first gets an empty list in its hello, then a "hears" event.
     h = hears_of(page.hello["mesh"]["hears"])
+    if not h:
+        e = page.wait(lambda e: bool(e.get("hears")), 5) or {}
+        h = hears_of(e.get("hears"))
     check("restart: RDG still hears us (from the links file)", h.get(("!0000cafe", "neighbor")), 7.25)
     check("restart: the traceroute's first hop kept", h.get(("!0000cafe", "trace")), 6.0)
     check("restart: BASE's NeighborInfo kept", [x["id"] for x in page.hello["mesh"]["neighbors"].get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])

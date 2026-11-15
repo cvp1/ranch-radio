@@ -69,8 +69,14 @@ log = logging.getLogger("mesh_bridge")
 NODES_EVERY_S = 5.0
 TRACE_TIMEOUT_S = 90.0        # a traceroute over several hops on LongFast can take a minute
 REQUEST_TIMEOUT_S = 90.0      # a position/telemetry/user request: the same mesh, the same wait
-REQUEST_KINDS = ("position", "telemetry", "env", "nodeinfo")
+REQUEST_KINDS = ("position", "telemetry", "env", "nodeinfo", "neighbors")
 REBOOT_S = 5
+# After a write that restarts the node (Reboot, any settings section but the
+# owner), this bridge exits RELINK_S later and the server starts a new one.
+# The old link is not to be trusted: seen live 2026-11-15, a node rebooted
+# after a Neighbors save and Bluetooth died without a word (the page still said
+# connected, the next command hung for good); over USB the write itself hung.
+RELINK_S = REBOOT_S + 10.0
 UNKNOWN_SNR = -128            # RouteDiscovery's "no SNR for this hop"
 NODE_FIELDS_USER = ("longName", "shortName", "hwModel", "role")
 CLOSE_WAIT_S = 3.0               # longest we wait for the node link to close
@@ -335,6 +341,19 @@ class Bridge:
     def on_node(self, node, interface):
         self.nodes_dirty = True
 
+    def expect_restart(self, why):
+        """The node is about to restart: start over on a new link RELINK_S
+        from now, whatever the old one does (it may hang this very write)."""
+        def relink():
+            if self.closing or self.lost.is_set():
+                return
+            emit(ev="status", connected=False, error=f"the node restarts after {why}; connecting again")
+            self.lost.set()
+        t = threading.Timer(RELINK_S, relink)
+        t.daemon = True
+        t.start()
+        return t
+
     def on_lost(self, interface):
         if self.closing:
             return
@@ -528,9 +547,11 @@ class Bridge:
         emit(ev="done", ref=ref, ok=True, error=None)
 
     def reboot(self, m):
+        relink = self.expect_restart("Reboot")
         try:
             self.iface.localNode.reboot(REBOOT_S)
         except BaseException as e:
+            relink.cancel()
             emit(ev="done", ref=m.get("ref"), ok=False, error=f"{type(e).__name__}: {e}")
             return
         emit(ev="done", ref=m.get("ref"), ok=True, error=None)
@@ -538,8 +559,8 @@ class Bridge:
     def set_config(self, m):
         """Write one section's changed fields. The server has checked them
         against the schema; the protobufs check them again here. The node
-        restarts after some changes (LoRa, role): the link drops and the
-        server starts this bridge again."""
+        restarts after a settings write (all but the owner's): this bridge
+        does not wait for the link to notice (expect_restart)."""
         ref, section, values = m.get("ref"), m["section"], m["values"]
         spec = next((s for s in SETTINGS if s[0] == section), None)
         try:
@@ -560,14 +581,18 @@ class Bridge:
                 msg = self._section(spec[2], section)
                 before = type(msg)()
                 before.CopyFrom(msg)
+                relink = None
                 try:
                     for name, v in values.items():
                         d = msg.DESCRIPTOR.fields_by_name[name]
                         if d.type == 14:
                             v = d.enum_type.values_by_name[v].number
                         setattr(msg, name, v)
+                    relink = self.expect_restart(f"saving {spec[1]}")
                     node.writeConfig(section)
                 except BaseException:
+                    if relink is not None:
+                        relink.cancel()
                     msg.CopyFrom(before)        # keep our copy what the node has
                     raise
         except BaseException as e:              # the library's our_exit() raises SystemExit

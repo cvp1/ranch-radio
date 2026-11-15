@@ -7,6 +7,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Mesh: Reboot node, or saving a node setting, no longer leaves a dead link
+  that says "connected".** The node restarts after both; the bridge now starts
+  over on a new link 15 s later instead of waiting for the old one to notice.
+  Seen live: after a Neighbors save the Bluetooth link died silently and every
+  later command (a Reboot, two Neighbours asks) hung; over USB the save itself
+  hung.
+
 - **A mesh message the node never reports on no longer says "sent" forever.** After two minutes
   with neither an ACK nor a failure it shows "?" (no ACK came back) and offers Retry; a late ACK
   still settles it. Seen live: a reaction lost on the air stayed "sent" and nothing said so.
