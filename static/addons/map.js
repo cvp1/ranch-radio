@@ -17,9 +17,10 @@
 // distance, bearing, what it is to you) and to answer it, as on the Roster tab.
 //
 // Also: Maidenhead grids worked (blue) and confirmed (green), your own grid,
-// the gray line, POTA activators on the band. OpenStreetMap tiles fetched by
-// the browser (as on the Mesh map); without internet everything still draws
-// on a plain background. Drag to pan, wheel, double-click or +/- to zoom.
+// the gray line, POTA activators on the band. The background is picked from
+// a menu (basemaps.js: NASA's Blue Marble by default, with the night side's
+// city lights; terrain, topo, imagery, streets), its tiles fetched by the
+// browser; without internet everything still draws on a plain background. Drag to pan, wheel, double-click or +/- to zoom.
 // No library: Web Mercator in world pixels, an SVG over the tiles. Everything
 // is placed in the copy of the world centred on you, so a path over the
 // Pacific is one line and not two halves.
@@ -107,7 +108,6 @@ const rrMapMath = (() => {
 
 (() => {
   const TILE = 256, ZMIN = 1, ZMAX = 10, SVGNS = "http://www.w3.org/2000/svg";
-  const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const NEED = { dxcc: "#e5484d", dxcc_band: "#f76b15", dxcc_mode: "#ffc53d", grid: "#5b7fff", grid_band: "#5b7fff",
                  dxcc_unconfirmed: "#a970e0", call_band_mode: "#00d8ff" };
   const NEED_WORD = { dxcc: "new DXCC", dxcc_band: "new DXCC on this band", dxcc_mode: "new DXCC in this mode", grid: "new grid",
@@ -125,7 +125,8 @@ const rrMapMath = (() => {
   let layers = { hear: true, heard: true, paths: true, grids: true, pota: true, night: true, ...keep.get("map.layers", {}) };
   let windowMin = WINDOWS.includes(keep.get("map.window", 60)) ? keep.get("map.window", 60) : 60;
   let listOpen = keep.get("map.list", window.innerWidth > 700);   // on a phone the map comes first
-  const tiles = new Map(), seen = new Set();
+  const seen = new Set();
+  let base = null, lights = null, nightPts = [];   // the background (basemaps.js), its night side, the terminator
   const px = (lon, zz = z) => ((lon + 180) / 360) * TILE * 2 ** zz;
   const py = (lat, zz = z) => {
     const s = Math.sin((Math.max(-85, Math.min(85, lat)) * Math.PI) / 180);
@@ -229,7 +230,7 @@ const rrMapMath = (() => {
   // ------------------------------------------------------------ building the page
 
   function build() {
-    body.innerHTML = `<div class="rm-bar stat"></div><div class="rm-wrap"><div class="rm-tiles"></div><svg class="rm-svg">
+    body.innerHTML = `<div class="rm-bar stat"></div><div class="rm-wrap"><div class="rm-tiles"></div><div class="rm-tiles rm-lights" hidden></div><svg class="rm-svg">
         <g class="rm-world"><g class="rm-night"></g><g class="rm-grids"></g><g class="rm-paths"></g><g class="rm-pota"></g>
         <g class="rm-beam"></g><g class="rm-st"></g><g class="rm-me"></g><g class="rm-fx"></g></g></svg>
         <div class="rm-hud"></div><div class="rm-card" hidden></div>
@@ -237,8 +238,13 @@ const rrMapMath = (() => {
         <div class="rm-ctl"><button class="chip chip-mini" data-z="1" title="Zoom in">+</button><button class="chip chip-mini" data-z="-1" title="Zoom out">−</button>
           <button class="chip chip-mini" data-fit title="Frame you and every station shown">Fit</button>
           <button class="chip chip-mini" data-home title="Centre on your station">Me</button></div>
-        <a class="rm-attr" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a></div>`;
+        <a class="rm-attr" target="_blank" rel="noopener"></a></div>`;
     const wrap = $$(".rm-wrap");
+    // The background, with its menu beside the zoom buttons. Over the Earth
+    // one, the night side is the Earth's own city lights.
+    base = basemaps.layer($$(".rm-tiles"), { key: "world", def: "earth", cls: "rm-tile", attr: $$(".rm-attr"), onChange: () => draw() });
+    lights = basemaps.layer($$(".rm-lights"), { fixed: "lights", cls: "rm-light" });
+    $$(".rm-ctl").append(base.control());
     for (const b of body.querySelectorAll("[data-z]")) b.onclick = () => zoom(Number(b.dataset.z));
     $$("[data-fit]").onclick = () => { fit(); draw(); };
     $$("[data-home]").onclick = () => { if (me) { cx = px(ref()); cy = py(me.lat); draw(); } };
@@ -315,23 +321,17 @@ const rrMapMath = (() => {
     return e;
   }
 
+  // Over the Earth background the night side is drawn as what is there: its city lights.
+  const litNight = () => base.id() === "earth" && layers.night;
+
   function drawTiles() {
-    const host = $$(".rm-tiles"), n = 2 ** z;
-    const x0 = Math.floor((cx - w / 2) / TILE), x1 = Math.floor((cx + w / 2) / TILE);
-    const y0 = Math.max(0, Math.floor((cy - h / 2) / TILE)), y1 = Math.min(n - 1, Math.floor((cy + h / 2) / TILE));
-    const want = new Set();
-    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-      const k = `${z}/${x}/${y}`; want.add(k);
-      let img = tiles.get(k);
-      if (!img) {
-        img = document.createElement("img"); img.className = "rm-tile"; img.alt = ""; img.draggable = false;
-        img.src = TILES.replace("{z}", z).replace("{x}", ((x % n) + n) % n).replace("{y}", y);
-        img.onerror = () => { img.style.visibility = "hidden"; };
-        tiles.set(k, img); host.appendChild(img);
-      }
-      img.style.left = `${x * TILE - cx + w / 2}px`; img.style.top = `${y * TILE - cy + h / 2}px`;
-    }
-    for (const [k, img] of tiles) if (!want.has(k)) { img.remove(); tiles.delete(k); }
+    base.render(z, cx, cy, w, h);
+    const host = $$(".rm-lights");
+    host.hidden = !litNight();
+    if (host.hidden) return;
+    lights.render(z, cx, cy, w, h);
+    // Only the night side of it: the terminator, in this view's pixels.
+    host.style.clipPath = `polygon(${nightPts.map(([lo, la]) => `${(px(lo) - cx + w / 2).toFixed(0)}px ${(py(la) - cy + h / 2).toFixed(0)}px`).join(",")})`;
   }
 
   // A drag only moves what is drawn; nothing is rebuilt.
@@ -357,12 +357,13 @@ const rrMapMath = (() => {
     const M = snap.map;
     if (cx == null || (!centred && me)) { cx = px(ref()); cy = py(me ? me.lat : 35); centred = !!me; }
     if (!fitted && me && stations.some(shown)) { fitted = true; fit(); }     // the first stations: frame them, once
+    nightPts = rrMapMath.night(new Date(), ref() - 540, ref() + 540);
     pan();
     const g = (c) => { const x = $$(`.rm-${c}`); x.innerHTML = ""; return x; };
     const nightG = g("night"), gridsG = g("grids"), pathsG = g("paths"), potaG = g("pota"), stG = g("st");
     if (layers.night) {
-      const pts = rrMapMath.night(new Date(), ref() - 540, ref() + 540).map(([lo, la]) => `${px(lo).toFixed(1)},${py(la).toFixed(1)}`).join(" ");
-      el("polygon", { points: pts, class: "rm-nightp" }, nightG);
+      const pts = nightPts.map(([lo, la]) => `${px(lo).toFixed(1)},${py(la).toFixed(1)}`).join(" ");
+      el("polygon", { points: pts, class: `rm-nightp${litNight() ? " lit" : ""}` }, nightG);
     }
     if (!M) return;
     if (layers.grids) for (const [gr, st] of Object.entries(M.grids || {})) {

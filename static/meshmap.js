@@ -1,7 +1,8 @@
 "use strict";
 
-// Mesh map: the nodes that report a position, over OpenStreetMap tiles
-// (fetched by the browser; without internet the dots still show on a plain
+// Mesh map: the nodes that report a position, over the background picked
+// from its menu (basemaps.js: terrain, topo, imagery, streets, the Earth; tiles
+// fetched by the browser; without internet the dots still show on a plain
 // grid). Activity pulses on a node when a packet from it is heard (red, at
 // this node, when a message of ours goes out: pulse(id, "tx")), and the
 // last traceroute is drawn as its path there (solid) and back (dashed).
@@ -19,7 +20,6 @@
 
 const meshMap = (() => {
   const TILE = 256, ZMIN = 2, ZMAX = 17;
-  const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const LIVE_S = 15 * 60, RECENT_S = 24 * 3600;
   const SVGNS = "http://www.w3.org/2000/svg";
   const FAN_PX = 14;                 // radius of the ring nodes sharing a position are drawn on
@@ -31,13 +31,16 @@ const meshMap = (() => {
       `<div class="mm-ctl"><button class="chip chip-mini" data-z="1" title="Zoom in">+</button>` +
       `<button class="chip chip-mini" data-z="-1" title="Zoom out">−</button>` +
       `<button class="chip chip-mini" data-fit title="Frame the nodes heard in the last day">Fit</button></div>` +
-      `<a class="mm-attr" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>`;
+      `<a class="mm-attr" target="_blank" rel="noopener"></a>`;
     const tilesEl = el.querySelector(".mm-tiles"), svg = el.querySelector(".mm-svg");
+    // The background (basemaps.js): one choice for all the local maps, with its menu beside Fit.
+    const base = basemaps.layer(tilesEl, { key: "local", def: "terrain", cls: "mm-tile", attr: el.querySelector(".mm-attr"),
+                                           onChange: () => render() });
+    el.querySelector(".mm-ctl").append(base.control());
     const world = el.querySelector(".mm-world"), traceG = el.querySelector(".mm-trace");
     const nodesG = el.querySelector(".mm-nodes"), pulsesG = el.querySelector(".mm-pulses");
     const boxesG = el.querySelector(".mm-boxes"), trackG = el.querySelector(".mm-track");
     const linksG = el.querySelector(".mm-links");
-    const tiles = new Map();
     let nodes = [], myId = null, selected = null, trace = null, track = [], links = [], legend = "";
     let fan = new Map();               // node id -> [dx, dy] screen px, for nodes sharing a position
     let z = 12, cx = 0, cy = 0, moved = false, w = 0, h = 0;
@@ -90,27 +93,8 @@ const meshMap = (() => {
       h = el.clientHeight;
       if (!w || !h) return;                       // in a hidden tab: draw when shown
       if (!moved) fit();
-      const x0 = cx - w / 2, y0 = cy - h / 2, n = 2 ** z;
-      const want = new Set();
-      for (let ty = Math.floor(y0 / TILE); ty <= Math.floor((y0 + h) / TILE); ty++) {
-        if (ty < 0 || ty >= n) continue;
-        for (let tx = Math.floor(x0 / TILE); tx <= Math.floor((x0 + w) / TILE); tx++) {
-          const key = `${z}/${tx}/${ty}`;
-          want.add(key);
-          let img = tiles.get(key);
-          if (!img) {
-            img = new Image();
-            img.className = "mm-tile";
-            img.alt = "";
-            img.onerror = () => { img.style.visibility = "hidden"; };
-            img.src = TILES.replace("{z}", z).replace("{x}", ((tx % n) + n) % n).replace("{y}", ty);
-            tiles.set(key, img);
-            tilesEl.append(img);
-          }
-          img.style.transform = `translate(${tx * TILE - x0}px, ${ty * TILE - y0}px)`;
-        }
-      }
-      for (const [key, img] of tiles) if (!want.has(key)) { img.remove(); tiles.delete(key); }
+      const x0 = cx - w / 2, y0 = cy - h / 2;
+      base.render(z, cx, cy, w, h);
       world.setAttribute("transform", `translate(${-x0} ${-y0})`);
       drawNodes();
       drawLinks();

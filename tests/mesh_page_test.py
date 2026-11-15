@@ -196,6 +196,17 @@ try:
         check("  a pair is drawn once (ours in colour, not also as a plain NeighborInfo line)",
               b.js("document.querySelectorAll('#mesh-map line.mm-link').length"), 3)
         check("  tiles requested", b.js("document.querySelectorAll('#mesh-map .mm-tile').length > 0"), True)
+        # The background (basemaps.js): terrain until the operator picks another, the pick kept in the browser.
+        BG = "[document.querySelector('#mesh-map .mm-tile').src.split('/')[2], document.querySelector('#mesh-map .mm-attr').textContent, document.querySelector('#mesh-map .mm-tiles').dataset.basemap]"
+        check("  background: terrain by default, with its own attribution", b.js(BG),
+              ["tile.opentopomap.org", "© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)", "terrain"])
+        check("  a menu to pick another", b.js("[...document.querySelectorAll('#mesh-map .bm-pick option')].map((o) => o.textContent)"),
+              ["Earth", "Terrain", "Topo (US)", "Imagery (US)", "Streets", "Dark"])
+        b.js("(() => { const s = document.querySelector('#mesh-map .bm-pick'); s.value = 'topo'; s.dispatchEvent(new Event('change')); })()")
+        check("  picked: the tiles, the attribution and the dimming follow; the choice is kept",
+              (b.js(BG), b.js("localStorage.getItem('rr-basemap.local')")),
+              (["basemap.nationalmap.gov", "USGS The National Map", "topo"], "topo"))
+        check("  no tile of the old background is left", b.js("[...document.querySelectorAll('#mesh-map .mm-tile')].every((i) => i.src.includes('nationalmap'))"), True)
         b.js("[...document.querySelectorAll('#mesh-map .mm-node')].find((g) => g.textContent.startsWith('RDG'))"
              ".dispatchEvent(new MouseEvent('click', { bubbles: true }))")
         check("clicking a node on the map opens its card", b.js(f"({TEXT})('#mesh-card .mesh-card-head b')"), "RDG")

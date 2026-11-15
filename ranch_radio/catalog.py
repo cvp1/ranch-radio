@@ -82,7 +82,7 @@ MODULES = [
      "ships": "the host file's addons block; add \"skywatch\": {\"url\", \"db\"} for per-band decodes and forecast openings"},
     {"name": "map", "kind": "addon", "title": "Who you hear, who hears you (PSKReporter) and what is on the air, with the path to each station; "
                                               "grids worked and confirmed, the gray line and POTA spots",
-     "code": "addons/map.py, static/addons/map.js (OpenStreetMap tiles in the browser; POTA from api.pota.app; "
+     "code": "addons/map.py, static/addons/map.js (a choice of backgrounds, static/basemaps.js, fetched by the browser; POTA from api.pota.app; "
              "who hears you from the propagation add-on's PSKReporter poll; the radios' state from station.py's watches)",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block; needs the logbook sync (logsync)"},

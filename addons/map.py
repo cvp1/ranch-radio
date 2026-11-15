@@ -20,8 +20,9 @@ The grids, decodes and JTDX's state come from the logbook sync (logsync.py:
 its ledger, roster and rig_view); the radios from the station's watches
 (station.rigs_view). POTA spots are fetched from api.pota.app every
 POTA_EVERY_S while the tab is on (a public, unauthenticated feed; nothing of
-ours is sent); a failed fetch keeps the last spots and says so. The map tiles
-are OpenStreetMap's, fetched by the browser as on the Mesh map.
+ours is sent); a failed fetch keeps the last spots and says so. The map's
+background is the operator's pick (static/basemaps.js), fetched by the browser
+as on the Mesh map.
 
 Options (the host file's addons block):
 

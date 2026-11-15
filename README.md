@@ -642,7 +642,23 @@ come back. The station runs it from the host file's `logsync` block:
     band (api.pota.app, every minute while the tab is on; `"pota": false`
     turns them off). Each layer has its own switch.
 
-  OpenStreetMap tiles, as on the Mesh map. Needs the logbook sync.
+  Needs the logbook sync.
+
+- **Map backgrounds.** Every map (the Map tab, Mesh, MeshCore, APRS) has a
+  menu for its background; the choice is kept in the browser, one for the
+  world map and one for the local maps.
+  - *Earth*: NASA's Blue Marble, relief and sea floor. The Map tab's default;
+    there the night side shows the Earth's city lights.
+  - *Terrain*: OpenTopoMap, relief with contours, peaks and roads. The local
+    maps' default.
+  - *Topo (US)* and *Imagery (US)*: USGS The National Map, contours and aerial
+    imagery of the United States.
+  - *Streets* and *Dark*: OpenStreetMap, plain and inverted (the look the
+    maps had before).
+
+  The tiles are fetched by your browser straight from each provider; the
+  server asks for none. Past a background's deepest zoom its deepest tiles are
+  drawn larger. Without internet the maps draw on a plain background.
 - **The Roster tab** (the `roster` add-on: `ranch-radio add roster`). Who JTDX
   is hearing now, coloured by what you still need — new DXCC, new on this
   band or in this mode, new grid, not yet confirmed, new call — with the
