@@ -315,6 +315,8 @@ class Bridge:
                  hops=hops, reply_id=d.get("replyId") or None, emoji=bool(d.get("emoji")))
         elif port == "NEIGHBORINFO_APP":
             self.note_neighbors(packet)
+        elif port == "TRACEROUTE_APP":
+            self.note_trace(packet)
         elif port == "ROUTING_APP":
             rid = d.get("requestId")
             if rid in self.pending:
@@ -324,6 +326,29 @@ class Bridge:
                 # (implicit ack); from the destination = delivered.
                 emit(ev="ack", id=rid, ok=reason == "NONE", reason=reason,
                      by=packet.get("fromId"), relayed=packet.get("from") == self.my_num)
+
+    def note_trace(self, packet):
+        """Someone else's traceroute, overheard (a phone on another node, say).
+        The request carries the route so far; the answer the whole way there,
+        with each hop's SNR, and the way back so far. Ours go through trace()."""
+        d = packet.get("decoded") or {}
+        rd = d.get("traceroute")
+        frm, to = packet.get("from"), packet.get("to")
+        if rd is None or not frm or not to or self.my_num in (frm, to) or to == 0xFFFFFFFF:
+            return
+        reply = bool(d.get("requestId"))
+
+        def nid(n):
+            return "?" if n == 0xFFFFFFFF else f"!{n:08x}"
+
+        def snrs(xs):
+            return [None if x == UNKNOWN_SNR else x / 4 for x in xs]
+
+        origin, target = (to, frm) if reply else (frm, to)
+        emit(ev="heard_trace", origin=nid(origin), to=nid(target), reply=reply, id=packet.get("id"),
+             route=[nid(n) for n in rd.get("route") or []], snr_towards=snrs(rd.get("snrTowards") or []),
+             route_back=[nid(n) for n in rd.get("routeBack") or []] if reply else None,
+             snr_back=snrs(rd.get("snrBack") or []) if reply else None)
 
     def note_neighbors(self, packet):
         """A node's NeighborInfo: who it hears directly, with SNR. Kept per

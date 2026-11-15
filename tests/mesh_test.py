@@ -366,6 +366,9 @@ try:
     check("hears us: RDG's NeighborInfo lists us", h.get(("!0000cafe", "neighbor")), 7.25)
     check("  RDG is the traceroute's first hop", h.get(("!0000cafe", "trace")), 6.0)
     check("  BASE ACKed our DM", ("!0000beef", "dm") in h, True)
+    ht = {(h["origin"], h["to"]): h for h in snap.hello["mesh"].get("heard_traces") or []}
+    check("overheard traceroute BASE -> TRK in a page's snapshot",
+          (ht.get(("!0000beef", "!0000dead")) or {}).get("route"), ["!0000cafe"])
     check("  BASE is not said to hear us directly", ("!0000beef", "neighbor") in h or ("!0000beef", "trace") in h, False)
     page.events.clear()
     page.send({"t": "mesh_request", "to": "!0000beef", "kind": "position"})
@@ -478,6 +481,8 @@ try:
         h = hears_of(e.get("hears"))
     check("restart: RDG still hears us (from the links file)", h.get(("!0000cafe", "neighbor")), 7.25)
     check("restart: the traceroute's first hop kept", h.get(("!0000cafe", "trace")), 6.0)
+    ht = {(h["origin"], h["to"]): h for h in page.hello["mesh"].get("heard_traces") or []}
+    check("restart: the overheard traceroute kept", (ht.get(("!0000beef", "!0000dead")) or {}).get("snr_towards"), [5.5, -2.0])
     check("restart: BASE's NeighborInfo kept", [x["id"] for x in page.hello["mesh"]["neighbors"].get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])
     check("restart: a reaction keeps emoji", (hist.get("👍", {}).get("emoji"), hist.get("👍", {}).get("reply_id")), (True, 1001))
     chans = {c["name"]: c for c in (page.latest("info", 3) or {}).get("channels", [])}

@@ -14,7 +14,7 @@ updates the values and sends config again, except hop_limit 6, which the
 answers via !0000cafe; to !0000dead, NO_RESPONSE. Every message heard is
 also an "rx" (activity). !0000cafe replies to the first message (reply_id
 1001); "react to me" gets a 👍 reaction from !0000beef. NeighborInfo: BASE
-hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
+hears RDG (and an overheard traceroute BASE -> TRK via RDG); on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
 telemetry one fills its air_tx, a neighbours one says it hears us at 4.0 dB); to anyone else, "no reply". "node" ignore /
 unignore / remove change the node list; "reboot" is done.
 $FAKE_MESH_NODES_PAD adds that many far nodes to the node list (a long line).
@@ -117,6 +117,9 @@ def main():
     if first_start:                     # only once: a restart must keep it from the links file
         nb["!0000cafe"] = {"t": now, "neighbors": [{"id": ME["id"], "snr": 7.25}, {"id": "!0000beef", "snr": 2.0}]}
     emit(ev="neighbors", neighbors=nb)
+    # Someone else's traceroute, overheard: BASE asked TRK, the answer came back via RDG
+    emit(ev="heard_trace", origin="!0000beef", to="!0000dead", reply=True, id=9001, route=["!0000cafe"],
+         snr_towards=[5.5, -2.0], route_back=["!0000cafe"], snr_back=[-1.5])
     next_id = [5000]
 
     def ack_later(pid, ok, reason):
