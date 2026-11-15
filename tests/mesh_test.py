@@ -5,7 +5,8 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - the channel key check comes through as key_ok only; the key never reaches
     a page, the history file or the log; a wrong key shows as key_ok false
   - channel and direct sends go sending -> sent -> delivered; a NAK and a
-    failed write show as failed; bad sends are refused before the bridge
+    failed write show as failed; a send the node never reports on becomes
+    unknown after MESH_ACK_WAIT_S; bad sends are refused before the bridge
   - the node going away: disconnected, the bridge restarts, the send fails
   - message history (with ACK states) survives a restart, mode 600
   - settings are schema-checked before the bridge; a good change is written
@@ -121,7 +122,7 @@ class Page:
 
 
 def start(*extra, mesh=True, key=GOOD_KEY):
-    env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS)
+    env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS, MESH_ACK_WAIT_S="1.5")
     args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
             "--rigctl-port", "0", "--addons-state", os.path.join(TMP, "addons.json"), *extra]
     if mesh:
@@ -205,6 +206,14 @@ try:
     check("NAK: failed with the reason", e and e["update"].get("why"), "MAX_RETRANSMIT")
     page.send({"t": "mesh_send", "text": "fail", "ch": 1})
     check("write error: failed", bool(page.wait(ack_of("fail", "failed"))), True)
+    page.send({"t": "mesh_send", "text": "silent", "ch": 1})
+    check("sent, then nothing from the node", bool(page.wait(ack_of("silent", "sent"))), True)
+    e = page.wait(ack_of("silent", "unknown"), 5)
+    check("  after MESH_ACK_WAIT_S: unknown, saying why", e and e["update"].get("why"),
+          "no ACK or failure from the node in 1.5 s")
+    time.sleep(2)
+    check("  a delivered message is not touched by the timer",
+          any(ack_of("hello ranch", "unknown")(x) for x in page.events), False)
 
     before = len(commands())
     for name, msg in [("empty text", {"text": "   ", "ch": 1}),

@@ -45,6 +45,11 @@ COMPACT_AT = 4 * MESSAGES_KEEP  # log records before the file is rewritten to th
 NODE_ID = re.compile(r"^![0-9a-f]{8}$")
 TRACE_GAP_S = 30.0            # firmware drops traceroutes sent closer together than this
 TRACES_KEEP = 50
+# A sent message whose node reports neither an ACK nor a failure in this long
+# becomes "unknown" (and the page offers Retry). Seen live 2026-11-14 on
+# a station: a reaction lost on the air stayed "sent" for good, no NAK ever came.
+# A late ACK still settles it. MESH_ACK_WAIT_S overrides (tests).
+ACK_WAIT_S = float(os.environ.get("MESH_ACK_WAIT_S", "120"))
 REQUEST_KINDS = {"position": "position", "telemetry": "telemetry", "env": "environment",
                  "nodeinfo": "user info"}
 REQUEST_GAP_S = 60.0          # each kind to one node at most this often: every request is airtime
@@ -217,6 +222,7 @@ class MeshEngine:
             if rec is not None:
                 rec["id"] = m["id"]
                 self._settle(rec, "sent")
+                asyncio.get_running_loop().call_later(ACK_WAIT_S, self._ack_timeout, rec)
         elif ev == "send_failed":
             rec = self._by_ref.pop(m["ref"], None)
             if rec is not None:
@@ -241,6 +247,10 @@ class MeshEngine:
             rec["why"] = why
         self._write({"k": "ack", "id": rec.get("id"), "ref_t": rec["t"], "ack": state, "why": why})
         self._send({"update": rec})
+
+    def _ack_timeout(self, rec):
+        if rec.get("ack") == "sent" and not self._closing:
+            self._settle(rec, "unknown", f"no ACK or failure from the node in {ACK_WAIT_S:g} s")
 
     def _fail_pending(self, why):
         for rec in list(self._by_ref.values()):
