@@ -15,7 +15,7 @@ answers via !0000cafe; to !0000dead, NO_RESPONSE. Every message heard is
 also an "rx" (activity). !0000cafe replies to the first message (reply_id
 1001); "react to me" gets a 👍 reaction from !0000beef. NeighborInfo: BASE
 hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
-telemetry one fills its air_tx); to anyone else, "no reply". "node" ignore /
+telemetry one fills its air_tx, a neighbours one says it hears us at 4.0 dB); to anyone else, "no reply". "node" ignore /
 unignore / remove change the node list; "reboot" is done.
 Each start appends a line to $FAKE_MESH_STARTS (restart counting) and every
 command received goes to $FAKE_MESH_LOG.
@@ -141,7 +141,9 @@ def main():
             def answer(m=m):
                 time.sleep(0.3)
                 if m["to"] != "!0000beef":
-                    emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=False, error="no reply")
+                    nak = m["kind"] == "neighbors" and m["to"] == "!0000dead"   # its NeighborInfo is off
+                    emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=False,
+                         error="NO_RESPONSE" if nak else "no reply")
                     return
                 for n in nodes:
                     if n["id"] == "!0000beef":
@@ -149,6 +151,9 @@ def main():
                             n["lat"], n["pos_t"] = 40.92, int(time.time())
                         elif m["kind"] == "telemetry":
                             n["air_tx"] = 2.5
+                if m["kind"] == "neighbors":    # BASE: it hears RDG, and us at 4.0 dB
+                    emit(ev="neighbors", neighbors={"!0000beef": {"t": int(time.time()), "neighbors": [
+                        {"id": "!0000cafe", "snr": 6.5}, {"id": ME["id"], "snr": 4.0}]}})
                 emit(ev="nodes", nodes=nodes)
                 emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=True, error=None)
             threading.Thread(target=answer).start()

@@ -18,8 +18,9 @@ package. This side:
     node for every page, and passes "heard a packet from X" on as activity
   - replies and emoji reactions (mesh_send reply_to / emoji), checked
     against a message it holds
-  - asks a node for its position, telemetry or user info (mesh_request),
-    one request in flight per node and each kind at most every REQUEST_GAP_S
+  - asks a node for its position, telemetry, user info or neighbours
+    (mesh_request), one request in flight per node and each kind at most every
+    REQUEST_GAP_S (neighbours: 180 s, the firmware's own limit)
   - ignores, unignores or removes a node in the node's DB (mesh_node) and
     reboots the node (mesh_reboot)
   - keeps each node's NeighborInfo (who it hears, with SNR) for the map, and
@@ -55,8 +56,11 @@ TRACES_KEEP = 50
 # A late ACK still settles it. MESH_ACK_WAIT_S overrides (tests).
 ACK_WAIT_S = float(os.environ.get("MESH_ACK_WAIT_S", "120"))
 REQUEST_KINDS = {"position": "position", "telemetry": "telemetry", "env": "environment",
-                 "nodeinfo": "user info"}
+                 "nodeinfo": "user info", "neighbors": "neighbours"}
 REQUEST_GAP_S = 60.0          # each kind to one node at most this often: every request is airtime
+# A node answers a NeighborInfo request at most once every 3 minutes
+# (NeighborInfoModule::allocReply); asking sooner only spends airtime.
+REQUEST_GAP_BY_KIND = {"neighbors": 180.0}
 EMOJI_MAX_BYTES = 16          # a reaction is one emoji (with modifiers), not a message
 NODE_ACTIONS = {"ignore": "ignore", "unignore": "unignore", "remove": "remove"}
 LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
@@ -257,7 +261,10 @@ class MeshEngine:
             rec = self.requests.get(to, {}).get(kind)
             if rec is None:
                 return
-            rec.update(state="done" if m["ok"] else "failed", error=m.get("error"), done_t=time.time())
+            error = m.get("error")
+            if kind == "neighbors" and error == "NO_RESPONSE":
+                error = "NO_RESPONSE: its NeighborInfo module is off, or it answered in the last 3 minutes"
+            rec.update(state="done" if m["ok"] else "failed", error=error, done_t=time.time())
             log.info("mesh: %s request to %s %s%s", kind, to, rec["state"],
                      f" ({rec['error']})" if rec["error"] else "")
             self._send({"request": {"to": to, "kind": kind, **rec}})
@@ -495,9 +502,10 @@ class MeshEngine:
         if why is None and any(r["state"] == "running" for r in mine.values()):
             why = "A request to that node is already waiting for its answer."
         last = mine.get(kind)
-        wait = REQUEST_GAP_S - (time.time() - last["t"]) if last else 0
+        gap = REQUEST_GAP_BY_KIND.get(kind, REQUEST_GAP_S)
+        wait = gap - (time.time() - last["t"]) if last else 0
         if why is None and wait > 0:
-            why = f"Asked for its {REQUEST_KINDS[kind]} {REQUEST_GAP_S - wait:.0f} s ago; try again in {wait:.0f} s."
+            why = f"Asked for its {REQUEST_KINDS[kind]} {gap - wait:.0f} s ago; try again in {wait:.0f} s."
         if why:
             self.station.notice(why, "warn", ws)
             return

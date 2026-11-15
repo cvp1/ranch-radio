@@ -7,8 +7,8 @@ this covers what the bridge itself builds and parses:
   - an incoming reply / reaction keeps reply_id and emoji
   - NeighborInfo is kept per node, with its neighbours' SNR
   - requests: an empty Position, an empty device or environment Telemetry
-    (the variant set, so the far end knows what to answer), and our own User
-    for user info, each with want_response; an answer, a NAK and a bad kind
+    (the variant set, so the far end knows what to answer), our own User
+    for user info, a dummy NeighborInfo for neighbours, each with want_response; an answer, a NAK and a bad kind
   - ignore / unignore / remove reach the local node's admin calls and update
     the node DB; reboot
   - the node list carries environment telemetry, the node's own counters
@@ -112,7 +112,7 @@ res["neighbors"] = [b.neighbors_dirty, json.loads(json.dumps(b.neighbors))]
 out.clear()
 
 # --- requests
-for i, kind in enumerate(("position", "telemetry", "env", "nodeinfo"), 10):
+for i, kind in enumerate(("position", "telemetry", "env", "nodeinfo", "neighbors"), 10):
     b.request({"ref": i, "to": "!0000beef", "kind": kind})
 d = iface.sent_data
 res["req_ports"] = [portnums_pb2.PortNum.Name(kw["portNum"]) for _, kw in d]
@@ -121,6 +121,7 @@ res["req_dest"] = [kw["destinationId"] for _, kw in d]
 res["pos_empty"] = d[0][0].ByteSize()
 res["tel_variant"] = [d[1][0].WhichOneof("variant"), d[2][0].WhichOneof("variant")]
 res["user_sent"] = [d[3][0].long_name, d[3][0].short_name, d[3][0].id]
+res["nb_ask"] = [(x.node_id, x.snr) for x in d[4][0].neighbors]
 d[0][1]["onResponse"]({"decoded": {"portnum": "POSITION_APP"}})
 d[1][1]["onResponse"]({"decoded": {"portnum": "ROUTING_APP", "routing": {"errorReason": "NO_RESPONSE"}}})
 d[1][1]["onResponse"]({"decoded": {"portnum": "TELEMETRY_APP"}})          # too late: already settled
@@ -185,8 +186,10 @@ check("NeighborInfo kept per node with SNR", r["neighbors"],
       [True, {"!0000beef": {"t": 1700000000, "neighbors": [{"id": "!0000cafe", "snr": 6.5},
                                                            {"id": "!0000dead", "snr": -3.0}]}}])
 check("requests: the right port each", r["req_ports"],
-      ["POSITION_APP", "TELEMETRY_APP", "TELEMETRY_APP", "NODEINFO_APP"])
-check("  all want a response, to the node's number", (r["req_want"], r["req_dest"]), ([True] * 4, [0xbeef] * 4))
+      ["POSITION_APP", "TELEMETRY_APP", "TELEMETRY_APP", "NODEINFO_APP", "NEIGHBORINFO_APP"])
+check("  all want a response, to the node's number", (r["req_want"], r["req_dest"]), ([True] * 5, [0xbeef] * 5))
+check("  neighbours: the apps' dummy (one neighbour, id 0, SNR 0), which the far end ignores",
+      r["nb_ask"], [[0, 0.0]])
 check("  the position asked with is empty (ours never sent)", r["pos_empty"], 0)
 check("  telemetry: device / environment variant set", r["tel_variant"], ["device_metrics", "environment_metrics"])
 check("  user info: our own User", r["user_sent"], ["Test Node", "TEST", "!b2a6fd78"])

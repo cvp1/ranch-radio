@@ -2,7 +2,7 @@
 
 // Mesh panel: a Meshtastic node's channels, direct conversations (one per
 // node), replies and emoji reactions, the node list (a node's card: message
-// it, traceroute, ask for its position / telemetry / user info, favorite,
+// it, traceroute, ask for its position / telemetry / user info / neighbours, favorite,
 // ignore, remove), the map (meshmap.js, with NeighborInfo links), who hears
 // this node ("heard by N": the server's hears_us) and settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
 // mesh_send / mesh_config / mesh_favorite / mesh_trace / mesh_request /
@@ -34,7 +34,8 @@ const mesh = (() => {
   const REQUESTS = [["position", "Position", "Ask it for its position"],
     ["telemetry", "Telemetry", "Ask it for its battery, voltage and channel use"],
     ["env", "Environment", "Ask it for its sensor readings (temperature, humidity, pressure)"],
-    ["nodeinfo", "User info", "Swap user info with it (its name and key; it gets ours)"]];
+    ["nodeinfo", "User info", "Swap user info with it (its name and key; it gets ours)"],
+    ["neighbors", "Neighbours", "Ask it which nodes it hears directly, with SNR (answers only with its NeighborInfo module on; once every 3 minutes)"]];
   const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true) });
   const LIVE_S = 15 * 60;
   const unread = {};        // channel index or "dm" -> count
