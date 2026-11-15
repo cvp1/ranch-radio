@@ -4,11 +4,23 @@ import socket
 import time
 
 
+_handed_out = set()
+
+
 def free_port():
-    """A TCP port the OS says is free (bind to port 0)."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A TCP port the OS says is free (bind to port 0), never one this process
+    was already given. The socket is closed before the caller binds, so the
+    OS may offer the same port to the next call: a Winlink rigctl listener and
+    the station's web server both got 51425 and the station failed to start
+    (CI, 2026-11-15)."""
+    for _ in range(1000):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            p = s.getsockname()[1]
+        if p not in _handed_out:
+            _handed_out.add(p)
+            return p
+    raise RuntimeError("free_port: the OS kept offering ports already handed out")
 
 
 def pair_port(taken=()):
@@ -19,13 +31,14 @@ def pair_port(taken=()):
     taken = set(taken)
     while True:
         p = free_port()
-        if p in taken or p + 1 in taken:
+        if p in taken or p + 1 in taken or p + 1 in _handed_out:
             continue
         with socket.socket() as s:
             try:
                 s.bind(("127.0.0.1", p + 1))
             except OSError:
                 continue
+        _handed_out.add(p + 1)
         return p
 
 
