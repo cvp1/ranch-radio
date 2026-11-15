@@ -34,6 +34,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
     first), a switch per layer, a 15 / 30 / 60 minute window, Fit and Me
     buttons, zoom at the pointer.
 
+- **The Mesh map shows who hears this node and who it hears, without
+  selecting anything.** With no node selected, this node's own links are
+  drawn in the colours a selected node's have: green to a node that hears
+  you (its NeighborInfo lists you, or it was a traceroute's first hop), blue
+  to one you hear directly (a packet from it arrived with no hop used in the
+  last day), purple both ways, each with its SNR; the map's note is the key.
+  Before, your own node could not be selected, so the map never answered
+  this for you. A message of yours pulses red at your node as it goes out.
+
 ### Changed
 
 - **A click on a Map station opens its card; Answer is a button on it.** The
