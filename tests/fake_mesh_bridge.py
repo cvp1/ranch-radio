@@ -6,7 +6,8 @@
 On start: connected, info (LongFast + HomeNet, whose key_ok compares --key's
 file with FAKE_KEY), two nodes, then one message from !0000beef on HomeNet.
 Sending: "fail" -> send_failed, "nak" -> ack with MAX_RETRANSMIT, "die" ->
-the node goes away (exit 3), anything else -> sent, then ack from !0000beef.
+the node goes away (exit 3), "silent" -> sent and nothing more, anything
+else -> sent, then ack from !0000beef.
 Settings: a cut-down copy of the real schema (owner, device, lora). "set"
 updates the values and sends config again, except hop_limit 6, which the
 "node" refuses; "favorite" flips the node's star in the node list. "trace" to !0000beef
@@ -176,6 +177,8 @@ def main():
             continue
         next_id[0] += 1
         emit(ev="sent", ref=m["ref"], id=next_id[0])
+        if m["text"] == "silent":     # sent, and then the node never says
+            continue
         nak = m["text"] == "nak"
         threading.Thread(target=ack_later, args=(next_id[0], not nak,
                                                  "MAX_RETRANSMIT" if nak else "NONE")).start()

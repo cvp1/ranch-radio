@@ -6,7 +6,7 @@ DMs from a node card, unread counts; favorites; the node list and map;
 traceroute; Settings (dirty marking, validation, only changed fields sent,
 risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
-incoming ones on our message), Retry on a failed send, Direct as a list of
+incoming ones on our message), Retry on a failed or unknown send, Direct as a list of
 conversations, the header's counters, a card's distance / environment / Ask
 for (position) / Ignore, NeighborInfo links on the map, Reboot node.
 
@@ -55,7 +55,7 @@ def start(mesh=True):
             json.dump({"mesh": {"port": "/dev/null", "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py",
                                 "keys": [f"HomeNet={KEY}"], "log": ""}}, f)
         args += ["--addons", adds]
-    p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG),
+    p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG, MESH_ACK_WAIT_S="1.5"),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:
@@ -232,6 +232,11 @@ try:
         b.js(f"({ROW.format(json.dumps('nak'))}).querySelector('[data-act=retry]').click()")
         time.sleep(0.5)
         check("  Retry sends it again", len([c for c in commands() if c.get("text") == "nak"]), 2)
+        type_text("silent")
+        b.js("document.querySelector('#mesh-send').click()")
+        check("no ACK at all: unknown, and Retry offered",
+              bool(b.wait(f"!!({ROW.format(json.dumps('silent'))})?.querySelector('.mesh-ack.unknown') && "
+                          f"!!({ROW.format(json.dumps('silent'))})?.querySelector('[data-act=retry]')")), True)
 
         # Direct: the conversations
         b.js(f"{tab('Direct')}.click()")

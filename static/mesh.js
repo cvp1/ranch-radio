@@ -14,7 +14,7 @@ const mesh = (() => {
   const HEARD_RECENT_S = 24 * 3600;
   const ACK = { sending: ["…", "Sending"], sent: ["✓?", "Sent, waiting for an ACK"],
     relayed: ["✓", "A neighbour rebroadcast it"], delivered: ["✓✓", "Delivered"],
-    failed: ["✗", "Not delivered"], unknown: ["?", "ACK unknown (the server or node restarted)"] };
+    failed: ["✗", "Not delivered"], unknown: ["?", "No ACK came back; it may not have gone out"] };
   let info = null, nodes = [], messages = [], connected = false, linkError = null, textMax = 200;
   let switchedOff = false;  // the Mesh add-on is off: the bridge is stopped and the node's port free
   let view = null;          // channel index, or "dm"
@@ -169,7 +169,7 @@ const mesh = (() => {
     const canAct = connected && m.id != null && m.ack !== "failed";
     const acts = canAct ? `<span class="mesh-acts"><button data-act="reply" title="Reply">↩</button>` +
       REACTIONS.map((e) => `<button data-react="${esc(e)}" title="React ${esc(e)}">${esc(e)}</button>`).join("") + "</span>" : "";
-    const retry = m.mine && m.ack === "failed" && connected ? `<button class="chip chip-mini mesh-retry" data-act="retry" title="Send it again">Retry</button>` : "";
+    const retry = m.mine && (m.ack === "failed" || m.ack === "unknown") && connected ? `<button class="chip chip-mini mesh-retry" data-act="retry" title="Send it again">Retry</button>` : "";
     div.innerHTML = `<span class="mesh-time">${hhmm(m.t)}</span>` +
       `<button class="mesh-who" title="${esc(m.mine ? "" : `${long(m.from)} ${m.from || ""}`)}">${esc(who)}</button>` +
       `<span class="mesh-text">${quote}<span class="mesh-body">${esc(m.text)}</span>` +
