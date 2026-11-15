@@ -58,7 +58,7 @@ def start(mesh=True):
             json.dump({"mesh": {"port": "/dev/null", "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py",
                                 "keys": [f"HomeNet={KEY}"], "log": ""}}, f)
         args += ["--addons", adds]
-    p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG, MESH_ACK_WAIT_S="1.5"),
+    p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG, MESH_ACK_WAIT_S="1.5", MESH_SELF_NEIGHBORS_FIRST_S="3600"),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:

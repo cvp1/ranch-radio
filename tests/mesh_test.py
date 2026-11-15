@@ -21,6 +21,8 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
     traceroute's first hop, a node that ACKed our DM; NeighborInfo and
     traceroutes kept across a bridge restart and a server restart, mode 600
   - a node list longer than asyncio's default 64 KiB line still arrives
+  - the station asks its own node for its neighbours by itself (only that
+    kind may go to this node)
   - without the Mesh add-on, mesh commands are refused
 
     python3 tests/mesh_test.py
@@ -128,7 +130,8 @@ class Page:
 
 def start(*extra, mesh=True, key=GOOD_KEY, env_extra=None):
     env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS, MESH_ACK_WAIT_S="1.5",
-               **(env_extra or {}))
+               MESH_SELF_NEIGHBORS_FIRST_S="3600")    # the self-ask only where a run wants it
+    env.update(env_extra or {})
     args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
             "--rigctl-port", "0", "--addons-state", os.path.join(TMP, "addons.json"), *extra]
     if mesh:
@@ -484,11 +487,20 @@ finally:
     stop(server)
 
 # A node DB too big for asyncio's default 64 KiB line (seen live: 179 nodes, 81 KB)
-server = start(env_extra={"FAKE_MESH_NODES_PAD": "400"})
+server = start(env_extra={"FAKE_MESH_NODES_PAD": "400", "MESH_SELF_NEIGHBORS_FIRST_S": "0.5"})
 try:
     page = Page()
     got = page.latest("nodes", 10) or []
     check("a node list over 64 KiB on one line arrives", len(got), 404)
+    # Our own node's neighbours, asked of itself soon after it connects (no page asked)
+    e = page.wait(lambda e: "!b2a6fd78" in (e.get("neighbors") or {}), 8)
+    check("own node's NeighborInfo asked of itself, unprompted",
+          e and [x["id"] for x in e["neighbors"]["!b2a6fd78"]["neighbors"]], ["!0000cafe", "!0000beef"])
+    c = [x for x in commands() if x.get("cmd") == "request" and x.get("to") == "!b2a6fd78"]
+    check("  one request, kind neighbors, to this node", [(x["kind"]) for x in c], ["neighbors"])
+    n = len(page.events)
+    page.send({"t": "mesh_request", "to": "!b2a6fd78", "kind": "position"})
+    check("  any other kind to this node is still refused", page.warned(n), True)
     page.send({"t": "mesh_send", "text": "after a big list", "ch": 1})
     check("  and the bridge keeps going (a send is delivered)", bool(page.wait(ack_of("after a big list", "delivered"))), True)
     page.close()

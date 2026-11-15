@@ -31,6 +31,14 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **The station knows who its own node hears.** It asks its own node for its
+  NeighborInfo a little after connecting and every 30 minutes (answered inside
+  the node; nothing goes on the air), when the node has the module on; a page
+  can ask too (Ask for → Neighbours on its own card). With every station
+  holding its own node's list, the map's green "hears it" lines appear: who
+  hears a selected node. The card no longer calls nodes at one position
+  "not on the map": the map draws them apart now.
+
 - **The Mesh map shows which way a node's links go, and nodes sharing a spot
   apart.** Select a node: green lines are the nodes that hear it, blue the
   ones it hears, purple both, each labelled with its SNR (both ways when both)
