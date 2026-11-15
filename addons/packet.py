@@ -116,12 +116,14 @@ class Packet(Addon):
             tail = webguard.canonical_tail(request)
             if tail is None:
                 return web.json_response({"error": "not a plain path"}, status=400)
-            if tail in ("api/lend", "api/return") and request.remote not in ("127.0.0.1", "::1"):
+            if tail in ("api/lend", "api/return") and not webguard.from_this_machine(request):
                 return web.json_response({"error": "lending the radio is only allowed from this machine"},
                                          status=403)
             url = f"{self.url}/{tail}" + (f"?{request.query_string}" if request.query_string else "")
-            headers = {k: v for k, v in request.headers.items() if k.lower() not in webguard.HOP | {"origin"}}
+            headers = {k: v for k, v in request.headers.items()
+                       if k.lower() not in webguard.HOP | {"origin", "x-forwarded-for"}}
             headers["X-Ranch-Radio"] = "1"
+            headers["X-Forwarded-For"] = webguard.forwarded_for(request)
             try:
                 async with self._session.request(request.method, url, headers=headers,
                                                  data=await request.read() if request.body_exists else None,

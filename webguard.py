@@ -71,6 +71,32 @@ def same_origin(request):
             and o.netloc.lower() == (request.host or "").lower())
 
 
+LOOPBACK = ("127.0.0.1", "::1")
+
+
+def from_this_machine(request):
+    """True only for a caller on this machine. A proxy on this machine (the
+    station in front of a radio, `tailscale serve` in front of the station)
+    makes every caller's connection look like loopback, so the forwarded
+    chain counts too: every X-Forwarded-For hop must be loopback as well,
+    and a request through Tailscale Serve (Tailscale-Headers-Info, sent on
+    every one) never is. Tailscale sets X-Forwarded-For to the tailnet
+    peer (seen live 2026-11-15); the station chains it (forwarded_for)."""
+    if request.remote not in LOOPBACK:
+        return False
+    if "Tailscale-Headers-Info" in request.headers:
+        return False
+    hops = [h.strip() for v in request.headers.getall("X-Forwarded-For", []) for h in v.split(",")]
+    return all(h in LOOPBACK for h in hops if h)
+
+
+def forwarded_for(request):
+    """The X-Forwarded-For a proxy here sends on: what it was given, then the
+    caller it saw. A caller can add hops but never remove the real one."""
+    prior = ", ".join(request.headers.getall("X-Forwarded-For", []))
+    return f"{prior}, {request.remote}" if prior else str(request.remote)
+
+
 def cross_site_guard(allow_hosts=(), log=None):
     """aiohttp middleware: the LAN is trusted and any of its pages may
     transmit (by design); a web page from elsewhere, open in a browser on the
