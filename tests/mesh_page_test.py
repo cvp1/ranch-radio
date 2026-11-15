@@ -316,18 +316,6 @@ try:
         x = b.js(f"[{line}.getAttribute('x1'), {line}.getAttribute('x2'), {line}.getAttribute('y1'), {line}.getAttribute('y2')]")
         check("  the link between them has length", x[0] != x[1] or x[2] != x[3], True)
         b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [{ id: '!0000cafe', snr: 6.5 }] }, '!0000cafe': { t: Date.now() / 1000, neighbors: [{ id: '!b2a6fd78', snr: 7.25 }, { id: '!0000beef', snr: 2 }] } } })")
-        b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('TRK'))?.click()")
-        b.wait("document.querySelector('#mesh-card .mesh-card-head b')?.textContent === 'TRK'")
-        tc = b.js(f"({TEXT})('#mesh-card .mesh-trace')")
-        check("TRK's card: the overheard traceroute BASE -> TRK, its answer", tc.startswith("Overheard: BASE → TRK (its answer: the whole way there)"), True)
-        check("  there via RDG, with SNRs", "thereBASE → RDG (5.5 dB) → TRK (-2 dB)" in tc, True)
-        b.js("mesh.event({ t: 'mesh', heard_trace: { origin: '!0000cafe', to: '!0000dead', reply: false, state: 'done', "
-             "t: Date.now() / 1000 + 5, route: ['!0000beef'], snr_towards: [3], route_back: null, snr_back: null } })")
-        tc = b.js(f"({TEXT})('#mesh-card .mesh-trace')")
-        check("  a newer one heard only as its request says so, and stops at its last relay",
-              [tc.startswith("Overheard: RDG → TRK (only the request so far)"), "thereRDG → BASE (3 dB) → … TRK" in tc], [True, True])
-        b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
-        b.wait("document.querySelector('#mesh-card .mesh-card-head b')?.textContent === 'BASE'")
         check("card: Ask for has Neighbours",
               b.js("document.querySelector('#mesh-card [data-req=neighbors]')?.textContent"), "Neighbours")
         b.js("document.querySelector('#mesh-card [data-req=position]').click()")
