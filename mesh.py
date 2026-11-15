@@ -28,8 +28,6 @@ package. This side:
   - keeps each node's NeighborInfo (who it hears, with SNR) for the map, and
     the finished traceroutes, in --mesh-log's -links.json (a restart and a
     new bridge keep them: nodes send NeighborInfo hours apart)
-  - keeps others' traceroutes it overhears (a phone's on another node):
-    the request's route so far, or the answer's whole route with each SNR
   - works out who hears this node (hears_us): a node whose NeighborInfo lists
     us, the first hop of a traceroute, a node that ACKed our DM
 
@@ -58,8 +56,6 @@ NODE_ID = re.compile(r"^![0-9a-f]{8}$")
 LINE_MAX = 4 << 20
 TRACE_GAP_S = 30.0            # firmware drops traceroutes sent closer together than this
 TRACES_KEEP = 50
-HEARD_TRACES_KEEP = 30        # others' traceroutes, overheard
-HEARD_REPLY_HOLD_S = 300      # an answer stands over a fresh copy of its own request this long
 # A sent message whose node reports neither an ACK nor a failure in this long
 # becomes "unknown" (and the page offers Retry). Seen live 2026-11-14 on
 # a station: a reaction lost on the air stayed "sent" for good, no NAK ever came.
@@ -145,7 +141,6 @@ class MeshEngine:
         self.traces = {}              # node id -> the last traceroute to it (running or finished)
         self._trace_ref = None        # ref of the traceroute in flight
         self._trace_t = 0.0
-        self.heard_traces = {}        # "origin>to" -> someone else's traceroute, overheard
         self.requests = {}            # node id -> {kind: {"state", "t", "error"}}
         self._req_refs = {}           # request ref -> (node id, kind)
         self.neighbors = {}           # node id -> {"t", "neighbors": [{"id", "snr"}]}
@@ -273,22 +268,6 @@ class MeshEngine:
             if rec["state"] == "done":
                 self._save_links()
                 self._send_hears()
-        elif ev == "heard_trace":
-            key = f"{m['origin']}>{m['to']}"
-            old = self.heard_traces.get(key)
-            now = time.time()
-            if old and old.get("reply") and not m.get("reply") and now - old["t"] < HEARD_REPLY_HOLD_S:
-                return                    # a late copy of the request: the answer says more
-            rec = {"origin": m["origin"], "to": m["to"], "t": now, "reply": bool(m.get("reply")), "state": "done",
-                   **{k: m.get(k) for k in ("route", "snr_towards", "route_back", "snr_back")}}
-            self.heard_traces.pop(key, None)
-            self.heard_traces[key] = rec
-            while len(self.heard_traces) > HEARD_TRACES_KEEP:
-                self.heard_traces.pop(next(iter(self.heard_traces)))
-            log.info("mesh: overheard traceroute %s -> %s (%s) via %s", m["origin"], m["to"],
-                     "answer" if rec["reply"] else "request", rec["route"])
-            self._save_links()
-            self._send({"heard_trace": rec})
         elif ev == "nodes":
             self.nodes = m["nodes"]
             self._send({"nodes": self.nodes})
@@ -388,8 +367,7 @@ class MeshEngine:
                 "info": self.info, "config": self.config, "nodes": self.nodes,
                 "traces": list(self.traces.values()), "messages": list(self.messages),
                 "requests": self.requests, "neighbors": self.neighbors,
-                "hears": self.hears(), "heard_traces": list(self.heard_traces.values()),
-                "text_max": TEXT_MAX_BYTES}
+                "hears": self.hears(), "text_max": TEXT_MAX_BYTES}
 
     def hears(self):
         me = ((self.info or {}).get("me") or {}).get("id")
@@ -650,12 +628,6 @@ class MeshEngine:
                 self.traces[tr["to"]] = tr
         while len(self.traces) > TRACES_KEEP:
             self.traces.pop(next(iter(self.traces)))
-        for tr in d.get("heard_traces") or []:
-            if (isinstance(tr, dict) and NODE_ID.match(str(tr.get("origin"))) and NODE_ID.match(str(tr.get("to")))
-                    and now - (tr.get("t") or 0) <= LINKS_KEEP_S):
-                self.heard_traces[f"{tr['origin']}>{tr['to']}"] = tr
-        while len(self.heard_traces) > HEARD_TRACES_KEEP:
-            self.heard_traces.pop(next(iter(self.heard_traces)))
         log.info("mesh: NeighborInfo of %d nodes and %d traceroutes from %s",
                  len(self.neighbors), len(self.traces), self.links_path)
 
@@ -663,8 +635,7 @@ class MeshEngine:
         if not self.links_path:
             return
         d = {"neighbors": self.neighbors,
-             "traces": [t for t in self.traces.values() if t.get("state") == "done"],
-             "heard_traces": list(self.heard_traces.values())}
+             "traces": [t for t in self.traces.values() if t.get("state") == "done"]}
         tmp = self.links_path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self.links_path), exist_ok=True)

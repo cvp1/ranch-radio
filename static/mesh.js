@@ -23,7 +23,6 @@ const mesh = (() => {
   let selected = null;      // node id whose card is open
   let replyTo = null;       // the message being replied to
   const traces = {};        // node id -> the last traceroute to it
-  let heard = {};           // "origin>to" -> someone else's traceroute, overheard
   let requests = {};        // node id -> {kind: {state, t, error}}: position / telemetry / user info asks
   let neighbors = {};       // node id -> {t, neighbors: [{id, snr}]}: who each node hears directly
   let hears = [];           // [{id, t, snr, how}]: who hears this node (mesh.py hears_us)
@@ -450,7 +449,7 @@ const mesh = (() => {
   function select(id, fromMap = false) {
     selected = selected === id && !fromMap ? null : id;
     map.select(selected);
-    map.setTrace(traceFor(selected));
+    map.setTrace(traces[selected] || null);
     drawLinks();
     renderNodes();
     if (fromMap && selected) $(`#mesh-nodes [data-id="${selected}"]`)?.scrollIntoView({ block: "nearest" });
@@ -466,27 +465,15 @@ const mesh = (() => {
     if (!tr) return "";
     if (tr.state === "running") return `<div class="mesh-trace"><span class="wl-dim">Traceroute…</span>waiting for ${esc(short(tr.to))} (up to 90 s)</div>`;
     if (tr.state === "failed") return `<div class="mesh-trace failed">Traceroute failed: ${esc(tr.error || "?")} <span class="wl-dim">${esc(when(tr.done_t))}</span></div>`;
-    const from = tr.origin || myId(), overheard = !!tr.origin;
-    // An overheard request has only got as far as its last relay: no target yet.
-    const there = overheard && !tr.reply ? [from, ...(tr.route || [])] : [from, ...(tr.route || []), tr.to];
-    const out = there.map((id, i) => hop(id, i ? tr.snr_towards?.[i - 1] : undefined)).join(" → ") +
-      (overheard && !tr.reply ? ` → … ${esc(short(tr.to))}` : "");
+    const there = [myId(), ...(tr.route || []), tr.to];
+    const out = there.map((id, i) => hop(id, i ? tr.snr_towards?.[i - 1] : undefined)).join(" → ");
     let back = "";
     if (tr.route_back) {
-      const path = [tr.to, ...tr.route_back, ...(overheard ? [] : [from])];
-      back = `<div><span class="wl-dim">back</span>${path.map((id, i) => hop(id, i ? tr.snr_back?.[i - 1] : undefined)).join(" → ")}` +
-        `${overheard ? ` → … ${esc(short(from))}` : ""}</div>`;
+      const path = [tr.to, ...tr.route_back, myId()];
+      back = `<div><span class="wl-dim">back</span>${path.map((id, i) => hop(id, i ? tr.snr_back?.[i - 1] : undefined)).join(" → ")}</div>`;
     }
-    const head = overheard ? `<div class="wl-dim">Overheard: ${esc(short(from))} → ${esc(short(tr.to))} ` +
-      `(${tr.reply ? "its answer: the whole way there" : "only the request so far"})</div>` : "";
-    return `<div class="mesh-trace">${head}<div><span class="wl-dim">there</span>${out}</div>${back}` +
-      `<div class="wl-dim">${(tr.route || []).length} hop${(tr.route || []).length === 1 ? "" : "s"} between · ${esc(when(tr.done_t || tr.t))}</div></div>`;
-  }
-
-  // The traceroute to show for a node: ours to it, else the newest overheard one it is an end of.
-  function traceFor(id) {
-    if (traces[id]) return traces[id];
-    return Object.values(heard).filter((h) => h.to === id || h.origin === id).sort((a, b) => b.t - a.t)[0] || null;
+    return `<div class="mesh-trace"><div><span class="wl-dim">there</span>${out}</div>${back}` +
+      `<div class="wl-dim">${(tr.route || []).length} hop${(tr.route || []).length === 1 ? "" : "s"} between · ${esc(when(tr.done_t))}</div></div>`;
   }
 
   // Why a link can't be a line on the map: the map places a node only by its
@@ -524,7 +511,7 @@ const mesh = (() => {
     const n = byId(selected);
     card.hidden = !n;
     if (!n) return;
-    const tr = traceFor(n.id);
+    const tr = traces[n.id];
     const w = where(n), env = n.env || {};
     const fields = [["hops", hopsText(n)], ["SNR", n.snr != null ? `${n.snr} dB` : ""],
       ["battery", n.battery != null ? (n.battery > 100 ? "powered" : `${n.battery}%`) : ""],
@@ -737,8 +724,6 @@ const mesh = (() => {
     textMax = snap.text_max || textMax;
     setConfig(snap.config || null);
     for (const tr of snap.traces || []) traces[tr.to] = tr;
-    heard = {};
-    for (const h of snap.heard_traces || []) heard[`${h.origin}>${h.to}`] = h;
     requests = snap.requests || {};
     neighbors = snap.neighbors || {};
     hears = snap.hears || [];
@@ -787,11 +772,6 @@ const mesh = (() => {
     if (m.status) renderHears();
     if (m.request) onRequest(m.request);
     if (m.trace) onTrace(m.trace);
-    if (m.heard_trace) {
-      const h = m.heard_trace;
-      heard[`${h.origin}>${h.to}`] = h;
-      if (selected === h.to || selected === h.origin) { map.setTrace(traceFor(selected)); renderCard(); }
-    }
     if (m.rx) map.pulse(m.rx.from);
     if (m.msg) addMessage(m.msg);
     if (m.update) updateMessage(m.update);

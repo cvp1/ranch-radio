@@ -6,8 +6,6 @@ this covers what the bridge itself builds and parses:
     TEXT_MESSAGE_APP packet with emoji=1 and reply_id set, sent with an ACK
   - an incoming reply / reaction keeps reply_id and emoji
   - NeighborInfo is kept per node, with its neighbours' SNR
-  - someone else's traceroute overheard (request or answer) is reported with
-    who asked, the route and SNRs; ours are left to trace()
   - requests: an empty Position, an empty device or environment Telemetry
     (the variant set, so the far end knows what to answer), our own User
     for user info, a dummy NeighborInfo for neighbours, each with want_response; an answer, a NAK and a bad kind
@@ -129,20 +127,6 @@ b.on_receive({"from": 0xbeef, "fromId": "!0000beef", "rxTime": 1700000000,
                   "nodeId": 0xbeef, "neighbors": [{"nodeId": 0xcafe, "snr": 6.5}, {"nodeId": 0xdead, "snr": -3.0}]}}}, iface)
 res["neighbors"] = [b.neighbors_dirty, json.loads(json.dumps(b.neighbors))]
 out.clear()
-# Someone else's traceroute, overheard: BASE's answer to TRK's request, and TRK's request; ours are not
-tr_ans = {"from": 0xbeef, "fromId": "!0000beef", "to": 0xdead, "id": 9001,
-          "decoded": {"portnum": "TRACEROUTE_APP", "requestId": 9000,
-                      "traceroute": {"route": [0xcafe], "snrTowards": [24, 18], "routeBack": [0xcafe], "snrBack": [-128]}}}
-tr_req = {"from": 0xdead, "fromId": "!0000dead", "to": 0xbeef, "id": 9000,
-          "decoded": {"portnum": "TRACEROUTE_APP", "traceroute": {"route": [0xffffffff], "snrTowards": [10]}}}
-tr_ours = {"from": 0xbeef, "fromId": "!0000beef", "to": 0xb2a6fd78, "id": 9002,
-           "decoded": {"portnum": "TRACEROUTE_APP", "requestId": 8000, "traceroute": {"route": []}}}
-for p in (tr_ans, tr_req, tr_ours):
-    b.on_receive(p, iface)
-res["heard_traces"] = [{k: e[k] for k in ("origin", "to", "reply", "route", "snr_towards", "route_back", "snr_back")}
-                       for e in out if e["ev"] == "heard_trace"]
-out.clear()
-out.clear()
 
 # --- requests
 for i, kind in enumerate(("position", "telemetry", "env", "nodeinfo", "neighbors"), 10):
@@ -243,12 +227,6 @@ check("reaction: TEXT_MESSAGE_APP, emoji=1, reply_id, the emoji, ch, dest, ACK",
 check("  each send answered 'sent'", r["sent_events"], ["sent", "sent", "sent"])
 check("a reaction without a target fails, not crashes", r["emoji_no_target"], ["send_failed"])
 check("incoming: reply_id and emoji kept", r["rx_msgs"], [["\U0001F44D", 7002, True], ["plain", None, False]])
-check("overheard traceroutes: the answer (origin = who asked) and the request; not ours",
-      r["heard_traces"],
-      [{"origin": "!0000dead", "to": "!0000beef", "reply": True, "route": ["!0000cafe"], "snr_towards": [6.0, 4.5],
-        "route_back": ["!0000cafe"], "snr_back": [None]},
-       {"origin": "!0000dead", "to": "!0000beef", "reply": False, "route": ["?"], "snr_towards": [2.5],
-        "route_back": None, "snr_back": None}])
 check("NeighborInfo kept per node with SNR", r["neighbors"],
       [True, {"!0000beef": {"t": 1700000000, "neighbors": [{"id": "!0000cafe", "snr": 6.5},
                                                            {"id": "!0000dead", "snr": -3.0}]}}])

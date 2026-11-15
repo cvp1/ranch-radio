@@ -155,11 +155,8 @@ const meshMap = (() => {
       if (!trace || trace.state !== "done") return;
       const path = (ids) => ids.map(byId).filter((n) => n && n.lat != null && (n.lat || n.lon))
         .map((n) => spot(n).join(",")).join(" ");
-      // An overheard one (trace.origin) starts at its own origin; its request
-      // (no reply yet) has only got as far as its last relay.
-      const from = trace.origin || myId, part = trace.origin && !trace.reply;
-      const out = path([from, ...(trace.route || []), ...(part ? [] : [trace.to])]);
-      const back = trace.route_back ? path([trace.to, ...trace.route_back, ...(trace.origin ? [] : [myId])]) : "";
+      const out = path([myId, ...(trace.route || []), trace.to]);
+      const back = trace.route_back ? path([trace.to, ...trace.route_back, myId]) : "";
       if (back) traceG.innerHTML += `<polyline class="mm-back" points="${back}"></polyline>`;
       if (out) traceG.innerHTML += `<polyline class="mm-out" points="${out}"></polyline>`;
     }
