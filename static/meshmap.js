@@ -16,6 +16,9 @@
 // Nodes at the very same position (a channel shares positions only to a grid
 // cell, so a site's nodes all land on its centre) are fanned out in a small
 // ring around it, so each one and the links between them can be seen.
+// A page may say more of a node (shape, ring, glyph, pin, tip: drawNodes), ask
+// for distance rings around this node (rings), keep a list of its own beside
+// the map (side) and offer a button for more room (onExpand); mesh.js does all four.
 // No library: Web Mercator tiles in a div, an SVG on top in world pixels.
 
 const meshMap = (() => {
@@ -24,13 +27,16 @@ const meshMap = (() => {
   const SVGNS = "http://www.w3.org/2000/svg";
   const FAN_PX = 14;                 // radius of the ring nodes sharing a position are drawn on
 
-  function create(el, { onSelect, meSelectable = false }) {
+  // rings: distance rings around this node (km). onExpand: a button that asks
+  // the page for more room (the page resizes the map; it redraws itself).
+  function create(el, { onSelect, meSelectable = false, rings = false, onExpand = null }) {
     el.innerHTML = `<div class="mm-tiles"></div><svg class="mm-svg"><g class="mm-world">` +
-      `<g class="mm-boxes"></g><g class="mm-links"></g><g class="mm-track"></g><g class="mm-trace"></g><g class="mm-nodes"></g><g class="mm-pulses"></g></g></svg>` +
-      `<div class="mm-note"></div>` +
+      `<g class="mm-rings"></g><g class="mm-boxes"></g><g class="mm-links"></g><g class="mm-track"></g><g class="mm-trace"></g><g class="mm-nodes"></g><g class="mm-pulses"></g></g></svg>` +
+      `<div class="mm-note"></div><div class="mm-side" hidden></div>` +
       `<div class="mm-ctl"><button class="chip chip-mini" data-z="1" title="Zoom in">+</button>` +
       `<button class="chip chip-mini" data-z="-1" title="Zoom out">−</button>` +
-      `<button class="chip chip-mini" data-fit title="Frame the nodes heard in the last day">Fit</button></div>` +
+      `<button class="chip chip-mini" data-fit title="Frame the nodes heard in the last day">Fit</button>` +
+      (onExpand ? `<button class="chip chip-mini" data-big title="Give the map the room, or give it back">⤢</button>` : "") + `</div>` +
       `<a class="mm-attr" target="_blank" rel="noopener"></a>`;
     const tilesEl = el.querySelector(".mm-tiles"), svg = el.querySelector(".mm-svg");
     // The background (basemaps.js): one choice for all the local maps, with its menu beside Fit.
@@ -40,7 +46,8 @@ const meshMap = (() => {
     const world = el.querySelector(".mm-world"), traceG = el.querySelector(".mm-trace");
     const nodesG = el.querySelector(".mm-nodes"), pulsesG = el.querySelector(".mm-pulses");
     const boxesG = el.querySelector(".mm-boxes"), trackG = el.querySelector(".mm-track");
-    const linksG = el.querySelector(".mm-links");
+    const linksG = el.querySelector(".mm-links"), ringsG = el.querySelector(".mm-rings");
+    const side = el.querySelector(".mm-side");      // the page's own list beside the map (mesh.js: who hears whom)
     let nodes = [], myId = null, selected = null, trace = null, track = [], links = [], legend = "";
     let fan = new Map();               // node id -> [dx, dy] screen px, for nodes sharing a position
     let z = 12, cx = 0, cy = 0, moved = false, w = 0, h = 0;
@@ -70,6 +77,8 @@ const meshMap = (() => {
     // Where a node is drawn: its position, moved onto its ring when it shares one.
     const spot = (n) => { const d = fan.get(n.id) || [0, 0]; return [px(n.lon) + d[0], py(n.lat) + d[1]]; };
     const age = (n) => (n.last_heard ? Date.now() / 1000 - n.last_heard : Infinity);
+    // How much of the right edge the page's list covers (nothing when it is shut, or on a phone, where it sits below).
+    const sideWidth = () => (!side.hidden && !side.classList.contains("shut") && w > 700 ? side.offsetWidth : 0);
 
     function fit() {
       // noFit: shown, but not framed (APRS-IS stations far from here).
@@ -79,9 +88,10 @@ const meshMap = (() => {
       if (!pts.length || !w || !h) return false;
       const lons = pts.map((n) => n.lon), lats = pts.map((n) => n.lat);
       const [lo0, lo1, la0, la1] = [Math.min(...lons), Math.max(...lons), Math.min(...lats), Math.max(...lats)];
+      const pad = sideWidth() ? sideWidth() + 8 : 0;      // clear of the list on the right
       z = 13;
-      while (z > ZMIN && (px(lo1) - px(lo0) > w - 60 || py(la0) - py(la1) > h - 60)) z--;
-      cx = (px(lo0) + px(lo1)) / 2;
+      while (z > ZMIN && (px(lo1) - px(lo0) > w - pad - 60 || py(la0) - py(la1) > h - 60)) z--;
+      cx = (px(lo0) + px(lo1)) / 2 + pad / 2;
       cy = (py(la0) + py(la1)) / 2;
       return true;
     }
@@ -96,6 +106,7 @@ const meshMap = (() => {
       const x0 = cx - w / 2, y0 = cy - h / 2;
       base.render(z, cx, cy, w, h);
       world.setAttribute("transform", `translate(${-x0} ${-y0})`);
+      drawRings();
       drawNodes();
       drawLinks();
       drawTrace();
@@ -105,17 +116,49 @@ const meshMap = (() => {
         : `${on} of ${all} nodes on the map${legend ? ` · ${legend}` : ""}`;
     }
 
+    // Distance rings around this node: the three largest round distances that
+    // fit the view, so the map has a scale and a link's length can be read off.
+    function drawRings() {
+      ringsG.innerHTML = "";
+      const me = rings && placed().find((n) => n.me);
+      if (!me) return;
+      const perKm = (TILE * 2 ** z) / (40075.017 * Math.cos((me.lat * Math.PI) / 180));
+      const fits = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].filter((km) => km * perKm >= 34 && km * perKm <= Math.max(w, h) * 0.6);
+      for (const km of fits.slice(-3)) {
+        const r = km * perKm, x = px(me.lon), y = py(me.lat);
+        ringsG.innerHTML += `<circle class="mm-range" cx="${x}" cy="${y}" r="${r}"></circle>` +
+          `<text class="mm-range-t" x="${x}" y="${y - r - 3}" text-anchor="middle">${km} km</text>`;
+      }
+    }
+
+    // A node may say more about itself (all optional): shape "diamond" (a
+    // router), ring "in" / "out" / "both" (it hears us, we hear it), glyph (a
+    // character in the mark: its hops), pin (label it before the others), tip
+    // (the hover text, lines and all), kind (a class).
     function drawNodes() {
       nodesG.innerHTML = "";
       boxesG.innerHTML = "";
       const pts = placed().sort((a, b) => age(b) - age(a));       // freshest on top
-      const labels = pts.length <= 40 || z >= 12;
+      // Labels: this node, the selected one and the pinned ones first, then the
+      // rest freshest first, each only where it would not cover one already
+      // placed. A crowd of names is no map; unnamed nodes still say who they are on hover.
+      const few = pts.length <= 40 || z >= 11;
+      const rank = (n) => (n.me ? 0 : n.id === selected ? 1 : n.pin ? 2 : 3);
+      const boxes = [], named = new Set();
+      for (const nd of [...pts].sort((a, b) => rank(a) - rank(b) || age(a) - age(b))) {
+        if (rank(nd) === 3 && !few) continue;
+        const [sx, sy] = spot(nd), wd = String(nd.shortName || nd.id).length * 6.8 + 6;
+        const box = [sx + 7, sy - 8, sx + 7 + wd, sy + 6];
+        if (rank(nd) > 1 && boxes.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+        boxes.push(box);
+        named.add(nd.id);
+      }
       for (const nd of pts) {
         const a = age(nd);
         const cls = nd.me ? "me" : a < LIVE_S ? "live" : a < RECENT_S ? "recent" : "old";
         const g = document.createElementNS(SVGNS, "g");
         g.setAttribute("class", `mm-node ${cls}${nd.id === selected ? " sel" : ""}${nd.fav ? " fav" : ""}` +
-          (nd.kind ? ` k-${nd.kind}` : ""));
+          (nd.kind ? ` k-${nd.kind}` : "") + (nd.shape ? ` s-${nd.shape}` : ""));
         const [sx, sy] = spot(nd);
         g.setAttribute("transform", `translate(${sx} ${sy})`);
         if (nd.box_deg > 0) {                     // position ambiguity: the area it could be in
@@ -126,10 +169,13 @@ const meshMap = (() => {
           r.setAttribute("width", x1 - x0); r.setAttribute("height", y1 - y0);
           boxesG.append(r);
         }
-        g.innerHTML = `<circle r="${nd.me || nd.id === selected ? 6 : 4.5}"></circle>` +
-          (nd.glyph ? `<text class="mm-glyph" x="0" y="3.5" text-anchor="middle">${esc(nd.glyph)}</text>` : "") +
-          (labels || nd.me || nd.id === selected ? `<text x="8" y="4">${esc(nd.shortName || nd.id)}</text>` : "") +
-          `<title>${esc(`${nd.longName || ""} ${nd.id || ""}`)}</title>`;
+        const r = nd.me || nd.id === selected ? 6 : nd.shape === "diamond" ? 5.5 : 4.5;
+        g.innerHTML = (nd.ring ? `<circle class="mm-ring ${esc(nd.ring)}" r="${r + 3.5}"></circle>` : "") +
+          (nd.shape === "diamond" ? `<path class="mm-mark" d="M0,${-r - 1} L${r + 1},0 L0,${r + 1} L${-r - 1},0 Z"></path>`
+            : `<circle class="mm-mark" r="${r}"></circle>`) +
+          (nd.glyph ? `<text class="mm-glyph" x="0" y="2.6" text-anchor="middle">${esc(nd.glyph)}</text>` : "") +
+          (named.has(nd.id) ? `<text x="${r + 4.5}" y="4">${esc(nd.shortName || nd.id)}</text>` : "") +
+          `<title>${esc(nd.tip || `${nd.longName || ""} ${nd.id || ""}`)}</title>`;
         g.onclick = (e) => { e.stopPropagation(); if (!nd.me || meSelectable) onSelect(nd.id); };
         nodesG.append(g);
       }
@@ -161,9 +207,12 @@ const meshMap = (() => {
         const a = at(l.from), b = at(l.to);
         if (!a || !b) continue;
         const [x1, y1] = spot(a), [x2, y2] = spot(b);
+        // Its SNR is written on the line only where the line has room for it
+        // (nodes a ring apart had theirs piled on one another); the hover text has it always.
+        const room = Math.hypot(x2 - x1, y2 - y1) >= 56;
         linksG.innerHTML += `<line class="mm-link${l.cls ? ` ${l.cls}` : ""}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">` +
           (l.title ? `<title>${esc(l.title)}</title>` : "") + `</line>` +
-          (l.label ? `<text class="mm-link-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 3}" text-anchor="middle">${esc(l.label)}</text>` : "");
+          (l.label && room ? `<text class="mm-link-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 3}" text-anchor="middle">${esc(l.label)}</text>` : "");
       }
     }
 
@@ -191,7 +240,7 @@ const meshMap = (() => {
 
     let drag = null;
     el.addEventListener("pointerdown", (e) => {
-      if (e.target.closest(".mm-ctl, .mm-attr, .mm-node")) return;
+      if (e.target.closest(".mm-ctl, .mm-attr, .mm-node, .mm-side")) return;
       drag = { x: e.clientX, y: e.clientY, cx, cy };
       el.setPointerCapture(e.pointerId);
       el.classList.add("dragging");
@@ -207,11 +256,13 @@ const meshMap = (() => {
     el.addEventListener("pointerup", endDrag);
     el.addEventListener("pointercancel", endDrag);
     el.addEventListener("wheel", (e) => {
+      if (e.target.closest(".mm-side")) return;   // the list scrolls
       e.preventDefault();
       const r = el.getBoundingClientRect();
       zoomBy(e.deltaY < 0 ? 1 : -1, e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
     el.addEventListener("dblclick", (e) => {
+      if (e.target.closest(".mm-side, .mm-ctl")) return;
       const r = el.getBoundingClientRect();
       zoomBy(1, e.clientX - r.left, e.clientY - r.top);
     });
@@ -219,6 +270,7 @@ const meshMap = (() => {
       const b = e.target.closest("button");
       if (!b) return;
       if (b.dataset.fit !== undefined) { moved = false; pulsesG.innerHTML = ""; render(); }
+      else if (b.dataset.big !== undefined) onExpand();
       else zoomBy(Number(b.dataset.z));
     });
     new ResizeObserver(render).observe(el);
@@ -243,6 +295,19 @@ const meshMap = (() => {
         pulsesG.append(c);
         setTimeout(() => c.remove(), 1600);
       },
+      // Bring a node into view if it is off the map (a click in the page's list).
+      show(id) {
+        const nd = byId(id);
+        if (!nd || nd.lat == null || (!nd.lat && !nd.lon) || !w) return;
+        const [sx, sy] = spot(nd), x = sx - cx + w / 2, y = sy - cy + h / 2;
+        const right = w - sideWidth() - 30;
+        if (x >= 30 && x <= right && y >= 30 && y <= h - 30) return;
+        cx = sx + sideWidth() / 2;
+        cy = sy;
+        moved = true;
+        render();
+      },
+      side,
       render,
     };
   }

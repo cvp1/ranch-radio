@@ -4,7 +4,9 @@
 // node), replies and emoji reactions, the node list (a node's card: message
 // it, traceroute, ask for its position / telemetry / user info / neighbours, favorite,
 // ignore, remove), the map (meshmap.js, with NeighborInfo links; with nothing
-// selected, this node's own: who hears it and who it hears directly), who hears
+// selected, this node's own: who hears it and who it hears directly; each
+// node's mark says its role, hops and reach; beside it the same by name, as
+// on the Map tab; ⤢ gives the map the room), who hears
 // this node ("heard by N": the server's hears_us) and settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
 // mesh_send / mesh_config / mesh_favorite / mesh_trace / mesh_request /
 // mesh_node / mesh_reboot out); the server keeps the history, so a page
@@ -37,7 +39,7 @@ const mesh = (() => {
     ["env", "Environment", "Ask it for its sensor readings (temperature, humidity, pressure)"],
     ["nodeinfo", "User info", "Swap user info with it (its name and key; it gets ours)"],
     ["neighbors", "Neighbours", "Ask it which nodes it hears directly, with SNR (answers only with its NeighborInfo module on; once every 3 minutes)"]];
-  const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true) });
+  const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true), rings: true, onExpand: () => toggleBig() });
   const LIVE_S = 15 * 60;
   const unread = {};        // channel index or "dm" -> count
   const unreadDm = {};      // node id -> count
@@ -325,6 +327,7 @@ const mesh = (() => {
     renderTabs();
     renderMessages();
     renderCompose();
+    if (bigMap) toggleBig(false);       // a conversation was asked for: the map gives the room back
     $("#mesh-text").focus();
   }
 
@@ -423,15 +426,22 @@ const mesh = (() => {
   // us, or it was a traceroute's first hop; a DM's ACK is not direct, so not
   // here). We hear it: a packet from it arrived with no hop used in the last
   // day, or our own node's NeighborInfo lists it.
-  function myLinks() {
+  // -> Map: node id -> {inn: the SNR it hears us at, out: the SNR we hear it at};
+  // a side nobody vouches for is absent, one with no SNR given is null.
+  function reach() {
     const me = myId(), now = Date.now() / 1000, by = new Map();
-    if (!me) return [];
+    if (!me) return by;
     const rec = (id) => by.get(id) || by.set(id, {}).get(id);
     for (const n of nodes) {
       if (!n.me && n.id !== me && n.hops === 0 && n.last_heard && now - n.last_heard < HEARD_RECENT_S) rec(n.id).out = n.snr ?? null;
     }
     for (const x of neighbors[me]?.neighbors || []) if (x.id !== me && !("out" in rec(x.id))) rec(x.id).out = x.snr ?? null;
     for (const h of hears) if (h.how !== "dm" && h.id !== me && !("inn" in rec(h.id))) rec(h.id).inn = h.snr ?? null;   // newest first
+    return by;
+  }
+
+  function myLinks() {
+    const me = myId(), by = reach();
     const db = (v) => (v != null ? `${v} dB` : "?");
     return [...by].map(([id, r]) => {
       const inn = "inn" in r, outw = "out" in r;
@@ -470,9 +480,77 @@ const mesh = (() => {
     }
     return [...out, ...mine];
   }
-  const legend = () => (selected ? `${short(selected)}: green hears it, blue it hears, purple both`
-    : myLinks().length ? "you: green hears you, blue you hear, purple both" : "");
-  const drawLinks = () => map.setLinks(links(), legend());
+  const legend = () => `${selected ? `${short(selected)}: green hears it, blue it hears, purple both`
+    : reach().size ? "you: green hears you, blue you hear, purple both" : ""}${nodes.length > 1 ? " · ◆ a router, a number its hops" : ""}`.replace(/^ · /, "");
+  const drawLinks = () => { map.setLinks(links(), legend()); renderReach(); };
+
+  // What the map draws of each node beyond its place: a router is a diamond;
+  // one more than a hop away carries its hops; one this node hears or is
+  // heard by wears that link's colour as a ring and is named first; its hover
+  // text says the rest (role, how it reached us, when, how far, its battery).
+  const ROUTERS = new Set(["ROUTER", "ROUTER_CLIENT", "ROUTER_LATE", "REPEATER"]);
+  function mapNodes() {
+    const r = reach(), db = (v) => (v != null ? `${v} dB` : "an SNR it didn't give");
+    return nodes.map((n) => {
+      if (n.me) return { ...n, tip: `${n.longName || ""} (${n.shortName || "?"}) ${n.id}\nthis node` };
+      const x = r.get(n.id) || {}, w = where(n), inn = "inn" in x, outw = "out" in x;
+      const how = n.hops == null ? "" : n.hops === 0 ? `direct${n.snr != null ? `, ${n.snr} dB` : ""}` : hopsText(n);
+      const heard = n.last_heard ? (ago(n.last_heard) === "now" ? "heard just now" : `heard ${ago(n.last_heard)} ago`) : "never heard";
+      const tip = [`${n.longName || n.shortName || n.id} (${n.shortName || "?"}) ${n.id}`,
+        [n.role, how, n.mqtt ? "by MQTT" : ""].filter(Boolean).join(" · "),
+        [heard, w ? `${kmText(w)} ${compass(w.deg)}` : "", n.battery != null ? (n.battery > 100 ? "powered" : `battery ${n.battery}%`) : ""].filter(Boolean).join(" · "),
+        [inn ? `hears you at ${db(x.inn)}` : "", outw ? `you hear it at ${db(x.out)}` : ""].filter(Boolean).join(" · ")].filter(Boolean).join("\n");
+      return { ...n, tip, shape: ROUTERS.has(n.role) ? "diamond" : "", ring: inn && outw ? "both" : inn ? "in" : outw ? "out" : "",
+        glyph: n.hops > 0 ? String(Math.min(n.hops, 9)) : "", pin: !!(n.fav || inn || outw), kind: n.mqtt ? "mqtt" : "" };
+    });
+  }
+  const drawMap = () => map.setNodes(mapNodes(), myId());
+
+  // ---------- who hears whom, by name, beside the map (as on the Map tab)
+
+  let reachTab = "in", reachOpen = store.get("mesh.reach", window.innerWidth > 700);
+  function renderReach() {
+    const box = map.side, me = myId();
+    box.hidden = !me;
+    if (!me) return;
+    box.classList.toggle("shut", !reachOpen);
+    if (!reachOpen) {
+      box.innerHTML = `<button class="chip chip-mini" data-toggle title="Who hears this node, and whom it hears, by name">Reach</button>`;
+      return;
+    }
+    const all = [...reach()].map(([id, x]) => ({ id, n: byId(id), inn: "inn" in x, out: "out" in x, x, w: where(byId(id)) }));
+    const of = { both: all.filter((r) => r.inn && r.out), in: all.filter((r) => r.inn), out: all.filter((r) => r.out) };
+    const db = (v) => (v != null ? (v > 0 ? `+${v}` : `${v}`) : "?");
+    const rows = of[reachTab].sort((a, b) => (b.w?.km ?? -1) - (a.w?.km ?? -1)).map((r) =>
+      `<button class="mm-row${r.id === selected ? " sel" : ""}" data-id="${esc(r.id)}" title="${esc(`${long(r.id)} ${r.id}` +
+        `${r.inn ? `; hears you at ${db(r.x.inn)} dB` : ""}${r.out ? `; you hear it at ${db(r.x.out)} dB` : ""}`)}">` +
+      `<b>${esc(short(r.id))}</b><span class="mm-long">${esc(r.n?.longName || r.id)}</span>` +
+      `<span class="mm-num">${esc(r.w ? kmText(r.w) : "")}</span>` +
+      `<span class="mm-num mm-out" title="You hear it at">${r.out ? `▼${db(r.x.out)}` : ""}</span>` +
+      `<span class="mm-num mm-in" title="It hears you at">${r.inn ? `▲${db(r.x.inn)}` : ""}</span></button>`).join("");
+    const empty = { both: "No node both hears this one and is heard by it, yet.", in: "No node has said it hears this one yet. Traceroute a node to find out.",
+      out: "No packet has come straight from a node in the last day." }[reachTab];
+    const top = box.querySelector(".mm-rows")?.scrollTop || 0;
+    box.innerHTML = `<div class="mm-side-h"><span class="seg">` +
+      [["both", "Two-way"], ["in", "Hear you"], ["out", "You hear"]].map(([k, t]) =>
+        `<button class="chip chip-mini${k === reachTab ? " on" : ""}" data-tab="${k}">${t} ${of[k].length}</button>`).join("") +
+      `</span><button class="chip chip-mini" data-toggle title="Hide the list">✕</button></div>` +
+      `<div class="mm-rows">${rows || `<div class="mm-none">${empty}</div>`}</div>` +
+      `<div class="mm-src" title="Who hears you: a node's NeighborInfo or a traceroute's first hop, last 7 days. Whom you hear: packets that used no hop, last day.">` +
+      `Direct links only, from what was already heard. Nothing is sent to find out.</div>`;
+    box.querySelector(".mm-rows").scrollTop = top;
+  }
+  map.side.onclick = (e) => {
+    const tab = e.target.closest("[data-tab]"), row = e.target.closest("[data-id]");
+    if (e.target.closest("[data-toggle]")) { reachOpen = !reachOpen; store.set("mesh.reach", reachOpen); renderReach(); map.render(); }
+    else if (tab) { reachTab = tab.dataset.tab; renderReach(); }
+    else if (row && byId(row.dataset.id)) { if (selected !== row.dataset.id) select(row.dataset.id, true); map.show(row.dataset.id); }
+  };
+
+  // The map given the room, or the conversation back (the map's own ⤢).
+  let bigMap = store.get("mesh.bigmap", false);
+  function showBig() { $("#mesh-main").classList.toggle("mesh-bigmap", bigMap); }
+  function toggleBig(want = !bigMap) { bigMap = want; store.set("mesh.bigmap", bigMap); showBig(); }
 
   function select(id, fromMap = false) {
     selected = selected === id && !fromMap ? null : id;
@@ -755,7 +833,7 @@ const mesh = (() => {
     requests = snap.requests || {};
     neighbors = snap.neighbors || {};
     hears = snap.hears || [];
-    map.setNodes(nodes, myId());
+    drawMap();
     drawLinks();
     renderHead();
     renderHears();
@@ -776,7 +854,7 @@ const mesh = (() => {
     }
     if (m.info) {
       info = m.info;
-      map.setNodes(nodes, myId());
+      drawMap();
       renderHead();
       renderTabs();
       renderMessages();
@@ -785,7 +863,7 @@ const mesh = (() => {
     if (m.config) setConfig(m.config);
     if (m.nodes) {
       nodes = m.nodes;
-      map.setNodes(nodes, myId());
+      drawMap();
       drawLinks();
       renderNodes();
       renderHead();
@@ -793,10 +871,11 @@ const mesh = (() => {
     }
     if (m.neighbors) {
       neighbors = m.neighbors;
+      drawMap();
       drawLinks();
       renderCard();
     }
-    if (m.hears) { hears = m.hears; renderHears(); drawLinks(); }
+    if (m.hears) { hears = m.hears; renderHears(); drawMap(); drawLinks(); }
     if (m.status) renderHears();
     if (m.request) onRequest(m.request);
     if (m.trace) onTrace(m.trace);
@@ -810,7 +889,8 @@ const mesh = (() => {
   $("#mesh-text").oninput = count;
   $("#mesh-find").oninput = renderNodes;
   $("#mesh-all").onclick = () => { recentOnly = !recentOnly; on($("#mesh-all"), recentOnly); renderNodes(); };
-  setInterval(() => { renderNodes(); renderHears(); map.render(); }, 60000);  // keep "heard 5m ago" and the map's colours current
+  setInterval(() => { renderNodes(); renderHears(); drawMap(); renderReach(); }, 60000);  // keep "heard 5m ago" and the map's colours current
+  showBig();
 
   // {"t": "addon", "addon": "mesh", "on", "error", "snapshot"}: switched on or off
   function power(m) {

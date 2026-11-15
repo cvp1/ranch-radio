@@ -539,12 +539,12 @@ body.tx .tx-meters { opacity: 1; }
   border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
 .mm-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .mm-node { cursor: pointer; }
-.mm-node circle { fill: #6b7280; stroke: rgba(0,0,0,.6); stroke-width: 1.5; }
-.mm-node.recent circle { fill: rgba(var(--accent-rgb), .45); }
-.mm-node.live circle { fill: var(--accent); }
-.mm-node.me circle { fill: var(--warm); }
-.mm-node.fav circle { stroke: var(--warm); }
-.mm-node.sel circle { stroke: #fff; stroke-width: 2.5; }
+.mm-node .mm-mark { fill: #6b7280; stroke: rgba(0,0,0,.6); stroke-width: 1.5; }
+.mm-node.recent .mm-mark { fill: rgba(var(--accent-rgb), .45); }
+.mm-node.live .mm-mark { fill: var(--accent); }
+.mm-node.me .mm-mark { fill: var(--warm); }
+.mm-node.fav .mm-mark { stroke: var(--warm); }
+.mm-node.sel .mm-mark { stroke: #fff; stroke-width: 2.5; }
 .mm-node text { font: 600 11px var(--mono); fill: var(--text); paint-order: stroke; stroke: rgba(0,0,0,.85); stroke-width: 3px; }
 .mm-node.old text { fill: var(--dim); }
 /* NeighborInfo links (Mesh tab); with a node selected: in = heard by that node, out = it hears, both */
@@ -561,15 +561,50 @@ body.tx .tx-meters { opacity: 1; }
 .mm-trk-pt { fill: var(--warm); }
 .mm-box { fill: rgba(var(--accent-rgb), .06); stroke: rgba(var(--accent-rgb), .35); stroke-dasharray: 3 3; }
 .mm-node text.mm-glyph { font: 700 7px var(--mono); fill: #0b0f14; stroke: none; pointer-events: none; }
-.mm-node.k-wx circle { fill: #60a5fa; }
-.mm-node.k-obj circle { fill: #c084fc; }
-.mm-node.k-is circle { fill: rgba(167, 139, 250, .55); }
+.mm-node.k-wx .mm-mark { fill: #60a5fa; }
+.mm-node.k-obj .mm-mark { fill: #c084fc; }
+.mm-node.k-is .mm-mark { fill: rgba(167, 139, 250, .55); }
+/* What a node says about itself (meshmap.js drawNodes): a ring for which way
+   it and this node hear each other (the links' colours), heard only by MQTT,
+   and the distance rings around this node. */
+.mm-ring { fill: none; stroke-width: 2.2; }
+.mm-ring.in { stroke: #4ade80; }
+.mm-ring.out { stroke: #60a5fa; stroke-dasharray: 3 2.5; }
+.mm-ring.both { stroke: #c084fc; }
+.mm-node.k-mqtt .mm-mark { stroke: rgba(255,255,255,.75); stroke-dasharray: 2 2; }
+.mm-range { fill: none; stroke: rgba(255,255,255,.32); stroke-width: 1; stroke-dasharray: 3 6; pointer-events: none; }
+.mm-range-t { font: 10px var(--mono); fill: rgba(255,255,255,.75); paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 2.5px; pointer-events: none; }
+/* The page's list beside the map (mesh.js: who hears this node, whom it hears). */
+.mm-side { position: absolute; right: 8px; top: 38px; bottom: 24px; width: 304px; display: flex; flex-direction: column; overflow: hidden;
+  background: rgba(10,13,18,.88); border: 1px solid var(--line-hi); border-radius: 8px; backdrop-filter: blur(4px); cursor: default; font-size: 12px; }
+.mm-side.shut { bottom: auto; width: auto; border: 0; background: none; backdrop-filter: none; }
+.mm-side.shut .chip { background: rgba(0,0,0,.6); }
+.mm-side-h { display: flex; justify-content: space-between; gap: 4px; padding: 5px; border-bottom: 1px solid var(--line); }
+.mm-side-h .seg { display: inline-flex; gap: 3px; }
+.mm-side-h .chip { padding: 0 6px; white-space: nowrap; }
+.mm-rows { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+/* The SNR columns hold a quarter-dB figure with its arrow and sign ("▼-12.75"): measured, 2026-11-15. */
+.mm-row { display: grid; grid-template-columns: 4.4em minmax(0, 1fr) auto 4.3em 4.3em; gap: 5px; align-items: baseline; width: 100%; padding: 3px 7px;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mm-row:hover, .mm-row.sel { background: rgba(255,255,255,.09); }
+.mm-row b { font: 600 11px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-row .mm-long { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-row .mm-num { font: 11px var(--mono); text-align: right; white-space: nowrap; }
+.mm-row .mm-out { color: #60a5fa; }
+.mm-row .mm-in { color: #4ade80; }
+.mm-none { padding: 12px 10px; color: var(--muted); }
+.mm-src { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10.5px; line-height: 1.35; }
+/* The map given the room (⤢): the conversation steps aside until it is asked back. */
+.mesh-bigmap .wl-mail > .wl-bar, .mesh-bigmap .mesh-list, .mesh-bigmap .mesh-to, .mesh-bigmap .mesh-form { display: none; }
+.mesh-bigmap .mesh-map { height: 76vh; }
+@media (max-width: 700px) { .mm-side:not(.shut) { top: auto; left: 8px; width: auto; height: 45%; } }
 .mm-pulse { fill: none; stroke: var(--accent); stroke-width: 2; transform-box: fill-box; transform-origin: center;
   animation: mm-pulse 1.6s ease-out forwards; pointer-events: none; }
 .mm-pulse.tx { stroke: var(--tx); stroke-width: 2.5; }
 @keyframes mm-pulse { from { transform: scale(1); opacity: .95; } to { transform: scale(6); opacity: 0; } }
-.mm-note { position: absolute; left: 8px; top: 6px; font: 11px var(--mono); color: var(--muted);
-  background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 6px; pointer-events: none; }
+.mm-note { position: absolute; left: 8px; top: 6px; font: 11px/1.45 var(--mono); color: var(--muted);
+  background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 6px; pointer-events: none;
+  max-width: max(42%, calc(100% - 330px)); }      /* it wraps short of the buttons on the right */
 .mm-ctl { position: absolute; right: 8px; top: 6px; display: flex; gap: 4px; }
 .mm-ctl .chip { background: rgba(0,0,0,.6); }
 .mm-attr { position: absolute; right: 6px; bottom: 4px; font: 10px var(--sans); color: var(--dim);

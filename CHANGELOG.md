@@ -24,6 +24,22 @@ All notable changes to Ranch Radio are recorded here. The format follows
   background's deepest zoom its deepest tiles are drawn larger, so no map goes
   blank zooming in.
 
+- **The Mesh map says much more.**
+  - *Who hears whom, by name, beside the map*, as on the Map tab: Two-way,
+    Hear you, You hear, each node with its distance, the SNR you hear it at
+    (▼) and the SNR it hears you at (▲), farthest first. A click opens the
+    node's card and brings it into view. ✕ puts the list away.
+  - *Each node's mark*: a router is a diamond; a node more than a hop away
+    carries its hops; a node you hear or that hears you wears a ring in that
+    link's colour; one heard only over MQTT has a dashed edge. Hover for the
+    rest: role, how it reached you, when, how far, battery.
+  - *Distance rings* around your node, so the map has a scale.
+  - *Names that can be read*: your node, the selected one, favorites and the
+    nodes in direct reach are named first, and no name is drawn over another.
+    A link's SNR is written on it only where the line has room.
+  - *⤢ gives the map the room*: the conversation steps aside, and comes back
+    when you ask for one (Message on a node's card) or press ⤢ again.
+
 - **The Map tab shows who you hear, who hears you and what is on the air.**
   - *Hears you*: the stations that reported your callsign to PSKReporter, one
     by one at their own locators (diamonds), with the SNR each gave you and

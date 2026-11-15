@@ -195,6 +195,54 @@ try:
         check("  the map's note is the key", "you: green hears you, blue you hear, purple both" in b.js(f"({TEXT})('#mesh-map .mm-note')"), True)
         check("  a pair is drawn once (ours in colour, not also as a plain NeighborInfo line)",
               b.js("document.querySelectorAll('#mesh-map line.mm-link').length"), 3)
+        # What each node's mark says: routers are diamonds, a ring for which way we hear each other,
+        # the hover text the rest; distance rings around this node.
+        NODE = "((name) => [...document.querySelectorAll('#mesh-map .mm-node')].find((g) => g.querySelector('text:not(.mm-glyph)')?.textContent === name))"
+        check("  marks: both routers are diamonds; RDG's ring is both ways, BASE's the way we hear it; this node a plain dot",
+              b.js(f"[{NODE}('RDG').querySelector('path.mm-mark') !== null, {NODE}('RDG').querySelector('.mm-ring').getAttribute('class'), "
+                   f"{NODE}('BASE').querySelector('.mm-ring').getAttribute('class'), {NODE}('TEST').querySelector('circle.mm-mark') !== null, "
+                   f"{NODE}('TEST').querySelector('.mm-ring')]"),
+              [True, "mm-ring both", "mm-ring out", True, None])
+        tip = b.js(f"{NODE}('RDG').querySelector('title').textContent").split("\n")
+        check("  hover: its name, role and how it reached us, when and how far, and both directions",
+              (tip[0], tip[1], tip[2].split(" · ")[1:], tip[3]),
+              ("Ridge Relay (RDG) !0000cafe", "ROUTER · direct, 3.25 dB", ["11 km NE"], "hears you at 7.25 dB · you hear it at 3.25 dB"))
+        rings = b.js("[...document.querySelectorAll('#mesh-map .mm-range-t')].map((t) => t.textContent)")
+        check("  distance rings around this node, each saying how far", (1 <= len(rings) <= 3, all(r.endswith(" km") for r in rings)), (True, True))
+        b.js("window.__nodes0 = mesh._nodes(); mesh.event({ t: 'mesh', nodes: __nodes0.map((n) => n.id === '!0000dead' ? "
+             "{ ...n, lat: 40.95, lon: -105.2, last_heard: Date.now() / 1000 } : n) })")
+        check("  a node two hops away carries its hops; it wears no ring",
+              b.js(f"[{NODE}('TRK').querySelector('.mm-glyph').textContent, {NODE}('TRK').querySelector('.mm-ring')]"), ["2", None])
+        b.js("mesh.event({ t: 'mesh', nodes: __nodes0 })")
+        # Who hears whom, by name, beside the map (as on the Map tab).
+        SIDE = "document.querySelector('#mesh-map .mm-side')"
+        check("the list beside the map: two-way, hear you, you hear, with counts",
+              b.js(f"[...{SIDE}.querySelectorAll('[data-tab]')].map((t) => t.textContent)"), ["Two-way 1", "Hear you 1", "You hear 2"])
+        ROWS = f"[...{SIDE}.querySelectorAll('.mm-row')].map((r) => [...r.children].map((c) => c.textContent).filter(Boolean).join(' '))"
+        check("  hear you: the node, how far, the SNR we hear it at and the SNR it hears us at", b.js(ROWS), ["RDG Ridge Relay 11 km ▼+3.25 ▲+7.25"])
+        b.js(f"{SIDE}.querySelector('[data-tab=\"out\"]').click()")
+        check("  you hear: farthest first; one that has not said it hears us has no ▲", b.js(ROWS),
+              ["RDG Ridge Relay 11 km ▼+3.25 ▲+7.25", "BASE Ranch Base 2.0 km ▼+7.5"])
+        b.js(f"{SIDE}.querySelector('.mm-row[data-id=\"!0000beef\"]').click()")
+        check("  a click on a row opens that node's card and marks the row",
+              (b.js(f"({TEXT})('#mesh-card .mesh-card-head b')"), b.js(f"{SIDE}.querySelector('.mm-row.sel b').textContent")), ("BASE", "BASE"))
+        b.js(f"{SIDE}.querySelector('[data-toggle]').click()")
+        check("  ✕ puts it away (kept in the browser); Reach brings it back",
+              (b.js(f"{SIDE}.classList.contains('shut')"), b.js("localStorage.getItem('ic7300.mesh.reach')"), b.js(f"{SIDE}.textContent")), (True, "false", "Reach"))
+        b.js(f"{SIDE}.querySelector('[data-toggle]').click()")
+        check("  back", b.js(f"{SIDE}.querySelectorAll('.mm-row').length"), 2)
+        # The map given the room: the conversation steps aside, and comes back when one is asked for.
+        h0 = b.js("document.querySelector('#mesh-map').clientHeight")
+        b.js("document.querySelector('#mesh-map [data-big]').click()")
+        check("⤢: the map takes the room; the conversation is put away",
+              (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-list')).display"),
+               b.js("document.querySelector('#mesh-map').clientHeight") > h0), (True, "none", True))
+        b.js("document.querySelector('#mesh-card [data-act=dm]').click()")
+        check("  Message on a node's card brings the conversation back",
+              (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-list')).display") != "none"),
+              (False, True))
+        b.js(f"{tab('HomeNet')}.click(); document.querySelector('#mesh-nodes .mesh-node.on')?.click()")
+        b.wait("!document.querySelector('#mesh-nodes .mesh-node.on')", 5)
         check("  tiles requested", b.js("document.querySelectorAll('#mesh-map .mm-tile').length > 0"), True)
         # The background (basemaps.js): terrain until the operator picks another, the pick kept in the browser.
         BG = "[document.querySelector('#mesh-map .mm-tile').src.split('/')[2], document.querySelector('#mesh-map .mm-attr').textContent, document.querySelector('#mesh-map .mm-tiles').dataset.basemap]"
