@@ -11,6 +11,8 @@ this covers what the bridge itself builds and parses:
     for user info, a dummy NeighborInfo for neighbours, each with want_response; an answer, a NAK and a bad kind
   - ignore / unignore / remove reach the local node's admin calls and update
     the node DB; reboot
+  - after Reboot or a settings save (not the owner) the bridge leaves the link
+    RELINK_S later, even when the write hangs; a failed write keeps it
   - the node list carries environment telemetry, the node's own counters
     (LocalStats, this node only), air time, uptime, ignored and PKI flags
 
@@ -36,11 +38,26 @@ from meshtastic.protobuf import mesh_pb2, portnums_pb2, telemetry_pb2
 out = []
 mb.emit = lambda **d: out.append(d)
 mb.REQUEST_TIMEOUT_S = 60
+mb.RELINK_S = 0.3
 res = {}
+import threading, time
+from meshtastic.protobuf import localonly_pb2
 
 class Node:
     def __init__(self):
         self.calls = []
+        self.localConfig = localonly_pb2.LocalConfig()
+        self.moduleConfig = localonly_pb2.LocalModuleConfig()
+        self.hang = None              # a threading.Event: writeConfig blocks on it (the USB hang)
+        self.fail = False
+    def writeConfig(self, section):
+        self.calls.append(("writeConfig", section))
+        if self.fail:
+            raise OSError("write failed")
+        if self.hang is not None:
+            self.hang.wait()
+    def setOwner(self, **kw):
+        self.calls.append(("setOwner", kw.get("long_name")))
     def __getattr__(self, name):
         if name in ("setIgnored", "removeIgnored", "removeNode", "reboot"):
             return lambda *a: self.calls.append((name, *a))
@@ -138,9 +155,37 @@ b.node_action({"ref": 32, "to": "!0000beef", "do": "remove"})
 res["removed"] = [0xbeef in iface.nodesByNum, "!0000beef" in iface.nodes, "!0000beef" in b.neighbors]
 b.node_action({"ref": 33, "to": "!0000dead", "do": "factory_reset"})
 b.reboot({"ref": 34})
-res["admin_calls"] = iface.localNode.calls
+res["admin_calls"] = list(iface.localNode.calls)
 res["done"] = [(e["ref"], e["ok"]) for e in out if e["ev"] == "done"]
 out.clear()
+
+# --- the node restarts after Reboot / a settings save: a new link, whatever the old one does
+def relinked(wait=1.0):
+    end = time.time() + wait
+    while time.time() < end and not b.lost.is_set():
+        time.sleep(0.02)
+    st = [e.get("error") for e in out if e["ev"] == "status" and e.get("connected") is False]
+    got = [b.lost.is_set(), st]
+    b.lost = threading.Event()
+    out.clear()
+    return got
+res["relink_reboot"] = relinked()
+b.config = b.info = lambda: None                  # re-reads after a save: not what this covers
+iface.localNode.hang = threading.Event()        # the write never returns
+threading.Thread(target=b.set_config, args=({"ref": 40, "section": "neighbor_info",
+                 "values": {"enabled": True}},), daemon=True).start()
+res["relink_hung_write"] = relinked()
+iface.localNode.hang.set()
+time.sleep(0.1)
+out.clear()
+b.lost = threading.Event()
+iface.localNode.hang, iface.localNode.fail = None, True
+b.set_config({"ref": 41, "section": "neighbor_info", "values": {"enabled": False}})
+res["failed_write_done"] = [(e["ref"], e["ok"]) for e in out if e["ev"] == "done"]
+res["failed_write_relink"] = relinked(0.6)
+iface.localNode.fail = False
+b.set_config({"ref": 42, "section": "owner", "values": {"long_name": "Test Node"}})
+res["owner_relink"] = relinked(0.6)
 
 # --- the node list
 iface.nodesByNum[0xbeef] = {"num": 0xbeef, "user": {"id": "!0000beef", "shortName": "BASE"},
@@ -200,6 +245,13 @@ check("ignore / unignore update the node DB", (r["ignored"], r["unignored"]), (T
 check("remove: gone from both node maps and the neighbours", r["removed"], [False, False, False])
 check("admin calls on the local node", r["admin_calls"],
       [["setIgnored", 0xdead], ["removeIgnored", 0xdead], ["removeNode", 0xbeef], ["reboot", 5]])
+check("after Reboot: a new link (the old one is not trusted)", r["relink_reboot"],
+      [True, ["the node restarts after Reboot; connecting again"]])
+check("  a settings save whose write hangs: a new link anyway", r["relink_hung_write"],
+      [True, ["the node restarts after saving Neighbors; connecting again"]])
+check("  a write that fails: done false, the link kept", (r["failed_write_done"], r["failed_write_relink"]),
+      ([[41, False]], [False, []]))
+check("  the owner (no restart): the link kept", r["owner_relink"], [False, []])
 check("  done for each; an unknown action fails", r["done"], [[30, True], [31, True], [32, True], [33, False], [34, True]])
 check("this node: air tx, uptime, PKI, its counters", r["me_node"],
       [1.5, 3600, True, {"tx": 40, "rx": 900, "online": 3, "noise": -110}])
