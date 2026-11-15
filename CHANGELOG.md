@@ -5,6 +5,44 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The Map tab shows who you hear, who hears you and what is on the air.**
+  - *Hears you*: the stations that reported your callsign to PSKReporter, one
+    by one at their own locators (diamonds), with the SNR each gave you and
+    when. They come from the Propagation add-on's poll, so it needs your
+    callsign there (`"pskreporter": {"call"}`); without it the map says what
+    to set. PSKReporter is asked every ten minutes, so this is minutes old by
+    nature and every station carries its age; a failed poll keeps the last
+    answer and says so.
+  - *You hear*: a decoded station now stays on the map for an hour (the roster
+    forgets after two minutes), fainter as it ages, bigger when stronger, with
+    its best SNR and how often it was decoded.
+  - *Two-way*: a station in both lists on one band gets a white ring. Those
+    are the ones you can work.
+  - A great-circle path to each station (blue in, amber out, white both ways),
+    drawn as one line across the Pacific. Everything is placed in the copy of
+    the world centred on you.
+  - *On the air*, top left, pushed the moment it changes: each radio by its
+    own server's word (keyed or not, frequency, mode) and JTDX by its Status
+    (transmitting, listening, calling whom). While you transmit, rings leave
+    your marker and a beam runs to the station JTDX is calling, and the tab's
+    dot goes red; a fresh decode pulses at its station and runs in along its
+    path. A JTDX that goes silent mid-transmission reads "not heard from"
+    after 45 s, never "transmitting" for ever.
+  - A list of the stations by name (two-way, hear you, you hear; farthest
+    first), a switch per layer, a 15 / 30 / 60 minute window, Fit and Me
+    buttons, zoom at the pointer.
+
+### Changed
+
+- **A click on a Map station opens its card; Answer is a button on it.** The
+  card has both directions, distance and bearing, and what the station is to
+  you. Before, a click on a dot sent JTDX the Reply at once; the Roster tab
+  still answers on one click.
+- **The station watches every radio, not only those with a Winlink lane**, to
+  know what each is doing for the Map tab. The watch only reads.
+
 ### Fixed
 
 - **Mesh: a node with a big node list works again.** The node list goes to the

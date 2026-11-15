@@ -102,6 +102,14 @@ check("  best SNR", psk["10m"]["best_snr"], 0)
 check("  countries busiest first", psk["10m"]["countries"], [["Japan", 2], ["Alaska", 1]])
 check("  farthest from the two locators (FN31 to QM05 is ~10,900 km)", 10500 < psk["10m"]["max_km"] < 11300, True)
 check("  an empty SNR is skipped, not zero", psk["20m"]["best_snr"], None)
+rx = P.psk_receivers(PSK_XML)
+check("PSKReporter, station by station (the Map tab): one row per station and band, newest first",
+      [(r["call"], r["band"], r["snr"], r["t"]) for r in rx],
+      [("JG0CQK", "10m", -16, 1793317588), ("JK1AKC", "10m", 0, 1793317559), ("KL2R", "10m", -16, 1793317545), ("K6ABC", "20m", None, 1793317545)])
+check("  at its own locator, with the distance and country", (rx[1]["grid"], round(rx[1]["lat"], 1), round(rx[1]["lon"], 1), 10500 < rx[1]["km"] < 11300, rx[1]["country"]),
+      ("QM05ft", 35.8, 140.5, True, "Japan"))
+check("  no locator or off-band: dropped; capped", ("X1X" in [r["call"] for r in rx], len(P.psk_receivers(PSK_XML, cap=2))), (False, 2))
+check("  your own locator, as the reports give it", (P.psk_locator(PSK_XML), P.psk_locator("<receptionReports/>")), ("FN31pr", ""))
 check("locator centre: FN31 (lat, lon)", tuple(round(v, 2) for v in P.grid_latlon("FN31")), (41.5, -73.0))
 check("a bad locator is None", (P.grid_latlon(""), P.grid_latlon("ZZ99")), (None, None))
 check("band names from Hz", (P.band_of(7_074_000), P.band_of(50_313_000), P.band_of(9_999)), ("40m", "6m", None))
@@ -249,6 +257,13 @@ async def main():
     check("  and says why", s["heard_error"], "skywatch not reachable")
     check("NOAA down: says so", s["space_error"], "NOAA not reachable")
     check("PSKReporter down: unknown, not none", (s["psk"], s["psk_error"]), ({}, "PSKReporter not reachable"))
+    check("  a restart forgot the stations too", a.heard_by()["receivers"], [])
+    a.psk = {"bands": {"10m": {}}, "receivers": P.psk_receivers(PSK_XML), "locator": "FN31pr", "error": None, "checked": 1}
+    a.psk = await a._poll_psk()                  # an answer was held, and the next poll fails
+    hb = a.heard_by()
+    check("  a failed poll after a good one: the counts go, the Map tab's stations stay (each has its own time), with the error",
+          (a.psk["bands"], len(hb["receivers"]), hb["locator"], hb["error"], hb["call"], hb["every_s"]),
+          ({}, 4, "FN31pr", "PSKReporter not reachable", "N0CALL", 600))
     check("InfluxDB down: the forecast is unknown, not empty", (s["forecast"], s["forecast_error"]),
           ([], "skywatch not reachable"))
     await a.stop()
@@ -266,8 +281,10 @@ async def main():
     n_before = len(queries)
     check("no skywatch configured: nothing heard, no error", (s["skywatch"], s["bands"], s["heard_error"]), (False, {}, None))
     check("  and no InfluxDB query was made", len(queries), n_before)
-    check("no callsign: PSKReporter never asked", (s["pskreporter"], len(psk_seen)), ("", 2))
+    check("no callsign: PSKReporter never asked (twice by the first add-on's loop, once by hand above)",
+          (s["pskreporter"], len(psk_seen)), ("", 3))
     check("a callsign that isn't one is ignored", P.Propagation(Host(), {"pskreporter": {"call": "x; rm"}}).psk_call, "")
+    check("  and there is nobody to draw", P.Propagation(Host(), {}).heard_by(), None)
     await b.stop()
 
     # A skywatch with no forecast measurement: no openings section at all.

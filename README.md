@@ -618,13 +618,31 @@ come back. The station runs it from the host file's `logsync` block:
   It keeps country-files.com's cty.csv (weekly) and ARRL's LoTW user list
   (daily) beside the ledger, and falls back to the cached copy when a fetch
   fails. The roster and map build on it.
-- **The Map tab** (the `map` add-on: `ranch-radio add map`). Grids you have
-  worked (blue) and confirmed (green) on the band JTDX is on, one band or
-  all; who JTDX is hearing now at their grids, coloured by need (click one to
-  answer it, as on the Roster tab); your grid; the gray line; POTA
-  activators spotted on the band (api.pota.app, every minute while the tab
-  is on; `"pota": false` turns them off). OpenStreetMap tiles, as on the Mesh
-  map. Needs the logbook sync.
+- **The Map tab** (the `map` add-on: `ranch-radio add map`). Who you hear,
+  who hears you, and what the station is doing, on one map.
+  - *You hear* (dots): every station JTDX decoded with a grid in the last
+    hour, coloured by need, bigger when stronger, fainter when older.
+  - *Hears you* (diamonds): the stations that reported your callsign to
+    PSKReporter, each at its own locator with the SNR it gave you and when.
+    They come from the Propagation add-on's poll, so give it your callsign
+    (`"pskreporter": {"call": "N0CALL"}`); without it the map says so. This is
+    PSKReporter's answer, asked every ten minutes: minutes old by nature.
+  - *Two-way* (ringed dots): in both lists on one band. A station you can work.
+  - A great-circle path to each: blue in, amber out, white both ways.
+  - *On the air*, top left: each radio by its own server's word (keyed or not,
+    frequency, mode) and JTDX by its Status (transmitting, listening, calling
+    whom). While you transmit, rings leave your marker and a beam runs to the
+    station JTDX is calling; a fresh decode pulses at its station and runs in
+    along its path.
+  - Click a station for its card (both directions, distance, bearing, what it
+    is to you) and Answer, as on the Roster tab. The list on the right has
+    them by name: two-way, hear you, you hear.
+  - Also the grids you have worked (blue) and confirmed (green) on the band
+    JTDX is on, one band or all; the gray line; POTA activators spotted on the
+    band (api.pota.app, every minute while the tab is on; `"pota": false`
+    turns them off). Each layer has its own switch.
+
+  OpenStreetMap tiles, as on the Mesh map. Needs the logbook sync.
 - **The Roster tab** (the `roster` add-on: `ranch-radio add roster`). Who JTDX
   is hearing now, coloured by what you still need — new DXCC, new on this
   band or in this mode, new grid, not yet confirmed, new call — with the

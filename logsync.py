@@ -111,12 +111,15 @@ def scrub(text, secrets=(), cap=500):
 # ---------------------------------------------------------------- the engine
 
 ROSTER_PUSH_S = 1.0               # the roster's push after a burst of decodes
+RIG_SILENT_S = 45.0               # JTDX's heartbeat comes every 15 s: three missed and it is gone
+# What JTDX's Status says it is doing, for the Map tab (rig_view). Nothing here keys or tunes.
+RIG_KEYS = ("transmitting", "tx_enabled", "decoding", "dx_call", "dx_grid", "mode", "dial", "de_call", "de_grid")
 NEEDS_MIN_S = 60.0                # the needs index is rebuilt at most this often
 REPLY_CONFIRM_S = 6.0             # a Reply JTDX took shows as its DX Call in a Status within this
 REPLY_REFUSED = ("JTDX didn't take it. In JTDX: Settings > Reporting, tick \"Accept UDP requests\"{extra}.")
 
 class LogSync:
-    def __init__(self, cfg, notify=None, alert=None, clock=time.time, roster=None):
+    def __init__(self, cfg, notify=None, alert=None, clock=time.time, roster=None, rig=None):
         self.cfg = cfg if isinstance(cfg, Config) else Config(cfg)
         self.notify_cb, self.alert_cb, self.clock = notify, alert, clock
         import logsync_roster
@@ -126,6 +129,9 @@ class LogSync:
         self._needs_dirty = True
         self._needs_built = 0.0
         self._roster_handle = None
+        self.rig_cb = rig                # called (no args) when what JTDX says it is doing changed (rig_view)
+        self._rig = None                 # the last Status's RIG_KEYS, or None: JTDX has said nothing, or went quiet
+        self._rig_handle = None          # the timer that calls JTDX gone after RIG_SILENT_S without a datagram
         self._reply_wait = None          # {"call", "done", "handle", "kind"}: a Reply waiting for JTDX's Status
         self.ledger = None
         self.intake = None
@@ -201,6 +207,10 @@ class LogSync:
             self._notify_handle.cancel()
         if self._roster_handle is not None:
             self._roster_handle.cancel()
+        if self._rig_handle is not None:
+            self._rig_handle.cancel()
+            self._rig_handle = None
+        self._rig = None
         if self._reply_wait is not None:
             self._reply_wait["handle"].cancel()
             self._reply_wait = None
@@ -211,11 +221,13 @@ class LogSync:
     # -- intake
 
     def _message(self, typ, data, addr):
+        self._rig_heard(closed=typ == 6)
         if typ in (1, 2):
             try:
                 if typ == 1:
                     st = udp.parse_status(data)
                     self.roster.status(st)
+                    self._rig_status(st)
                     self._reply_check(st)
                 elif self.roster.add(udp.parse_decode(data)):
                     self._roster_soon()
@@ -239,6 +251,55 @@ class LogSync:
             if w is not None:
                 w[1].cancel()
             self.record(f, "jtdx12")
+
+    # -- what JTDX is doing now (its Status): transmitting, listening, calling whom
+
+    def _rig_heard(self, closed=False):
+        """Any datagram: JTDX is there. Its Close (6), or RIG_SILENT_S with
+        none (it crashed, or the machine slept mid-transmission), and it is
+        gone: a "transmitting" nobody is repeating must not stay on the map."""
+        if self._rig_handle is not None:
+            self._rig_handle.cancel()
+            self._rig_handle = None
+        if closed:
+            self._rig_gone()
+            return
+        try:
+            self._rig_handle = asyncio.get_running_loop().call_later(RIG_SILENT_S, self._rig_gone)
+        except RuntimeError:              # no loop (a test calling _message directly): no timer
+            pass
+
+    def _rig_gone(self):
+        self._rig_handle = None
+        if self._rig is not None:
+            self._rig = None
+            self._rig_changed()
+
+    def _rig_status(self, st):
+        new = {k: st.get(k) for k in RIG_KEYS}
+        if new != self._rig:              # edge-triggered: JTDX repeats an unchanged Status
+            self._rig = new
+            self._rig_changed()
+
+    def _rig_changed(self):
+        if self.rig_cb is not None:
+            try:
+                self.rig_cb()
+            except Exception as e:
+                log.error("logsync: rig push: %s", type(e).__name__)
+
+    def rig_view(self):
+        """{"alive": False}, or what JTDX's last Status said: transmitting,
+        tx_enabled, decoding, the station it is working (dx_call, dx_grid),
+        mode, dial and band."""
+        r = self._rig
+        if r is None:
+            return {"alive": False}
+        dial = r.get("dial") or 0
+        return {"alive": True, "transmitting": bool(r.get("transmitting")), "tx_enabled": bool(r.get("tx_enabled")),
+                "decoding": bool(r.get("decoding")), "dx_call": (r.get("dx_call") or "").upper()[:16],
+                "dx_grid": (r.get("dx_grid") or "")[:6], "mode": (r.get("mode") or "")[:8], "dial": dial,
+                "band": adif.band_of(f"{dial / 1e6:.6f}") if dial else ""}
 
     # -- the roster (logsync_roster) and the needs index behind it (logsync_needs)
 
