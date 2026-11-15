@@ -247,10 +247,12 @@ class RadioWatch:
     (RemoteLane); this one never arms or ends anything."""
 
     KEYS = ("armed", "codec_db", "id")
+    RIG = ("connected", "tx", "freq", "mode", "data")    # the radio's own word on what it is doing, for the Map tab
 
     def __init__(self, station, radio):
         self.station, self.radio = station, radio
         self.state = {"armed": False, "codec_db": None, "id": None}
+        self.rig = {}                  # RIG keys from the radio's hello and state changes; {} until a hello
         self.seen = False              # a hello has been read since the radio appeared
         self._task = None
 
@@ -265,6 +267,9 @@ class RadioWatch:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
         self.seen = False
+        if self.rig:
+            self.rig = {}
+            self.station.rig_changed()
 
     async def _run(self):
         st = self.station
@@ -275,16 +280,28 @@ class RadioWatch:
                                      heartbeat=5) as ws:
                     hello = json.loads((await ws.receive(timeout=5)).data)
                     self._take(hello.get("winlink") or {}, first=True)
+                    self._take_rig(hello.get("state") or {})
                     async for msg in ws:
                         if msg.type == WSMsgType.TEXT:
                             m = json.loads(msg.data)
                             if m.get("t") == "winlink":
                                 self._take(m)
+                            elif m.get("t") == "state":
+                                self._take_rig(m.get("d") or {})
                             elif m.get("t") == "codec" and "current" in m:      # the codec level moved
                                 self._take({"codec_db": m["current"]})
             except (aiohttp.ClientError, OSError, ValueError, TimeoutError, AttributeError) as e:
                 log.debug("watch %s: %s", self.radio.name, e)
+            self._take_rig({"connected": False, "tx": False})     # the socket dropped: nothing known to be keyed
             await asyncio.sleep(WATCH_RETRY_S)
+
+    def _take_rig(self, d):
+        """Meter readings arrive many times a second; only a change to what
+        the radio is doing (RIG) is passed on."""
+        new = {k: d[k] for k in self.RIG if k in d and d[k] != self.rig.get(k)}
+        if new:
+            self.rig.update(new)
+            self.station.rig_changed()
 
     def _take(self, d, first=False):
         changed = {k: d[k] for k in self.KEYS if k in d and d[k] != self.state.get(k)}
@@ -402,7 +419,9 @@ class Station:
             for r in self.radios:
                 if r.lane:
                     r.audio_ok = True
-        self.watches = {r.id: RadioWatch(self, r) for r in self.radios if r.lane}
+        # Every radio is watched (2026-11-15; before, only those with a Winlink
+        # lane): the Map tab shows what each one is doing. A watch only reads.
+        self.watches = {r.id: RadioWatch(self, r) for r in self.radios}
         self.packet_cfg = cfg.get("packet") or {}
         self.packet_url = self.packet_cfg.get("url")
         self.packet_agwpe = self.packet_cfg.get("agwpe")
@@ -769,7 +788,7 @@ class Station:
         try:
             self.logsync = _logsync_module().LogSync(block, notify=self.logsync_changed,
                                                      alert=lambda msg: self.notice(msg, "warn"),
-                                                     roster=self.roster_changed)
+                                                     roster=self.roster_changed, rig=self.rig_changed)
         except Exception as e:
             try:
                 why = _logsync_module().scrub(f"{type(e).__name__}: {e}", cap=200)
@@ -853,6 +872,26 @@ class Station:
         for name in ("roster", "map"):
             if self.addons and self.addons.is_on(name):
                 self.addons.get(name).push()
+
+    def rigs_view(self):
+        """What each radio's own server says it is doing: [{id, name, present,
+        connected, tx, freq, mode, data}], the last five None until its watch
+        has read a hello. Read-only: the radio server owns the transmitter."""
+        out = []
+        for r in self.radios:
+            w = self.watches.get(r.id)
+            rig = w.rig if w is not None and r.present else {}
+            out.append({"id": r.id, "name": r.name, "present": r.present,
+                        **{k: rig.get(k) for k in RadioWatch.RIG}})
+        return out
+
+    def rig_changed(self):
+        """A radio keyed, unkeyed or moved, or JTDX's Status changed: to the Map tab, if on."""
+        if self.addons and self.addons.is_on("map"):
+            try:
+                self.addons.get("map").push_rig()
+            except Exception as e:           # a broken add-on must not stop a radio's watch
+                log.error("map: on-the-air push: %s", type(e).__name__)
 
     def logsync_changed(self, status):
         self._broadcast(json.dumps({"t": "addon", "addon": "logbook", "logsync": status}))

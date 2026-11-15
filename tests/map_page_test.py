@@ -10,6 +10,18 @@ the add-on's loop isn't started; tiles are never asked for).
              the snapshot shows only the band in view
   add-on     without the sync it says why; "show" changes the band; a click
              answers through the sync
+  you hear   a station stays on the map after the roster forgets it, with
+             its best SNR and how often it was decoded; an hour old it goes;
+             the oldest go first past the cap
+  hears you  from the Propagation add-on's PSKReporter stations when it is on
+             and has a callsign, else what to set up; pushed once per answer
+  parts      new decodes send the map and who you hear; a radio or JTDX
+             changing sends only what is on the air, at most ten times a
+             second, and the page redraws only your marker and the panel
+  paths      a locator's centre (4 and 6 characters); distance and bearing;
+             a great circle is one line across the date line
+  the page   two-way needs both directions on one band; the window and the
+             layer switches take stations off; a first look frames them all
   sun        the subsolar point at the June and December solstices; night and
              day at reference places and times (NOAA); the night polygon covers
              the winter pole
@@ -89,7 +101,9 @@ mv = s.map_view(None)
 check("map view: our grid, the band in view", (mv["me"], mv["band"], mv["showing"]), ("FN31", "20m", "20m"))
 check("  the band's grids", mv["grids"], {"PM95": "c", "PM97": "w"})
 check("  only decodes with a grid", sorted(d["call"] for d in mv["decodes"]), ["JA5XYZ", "VK2ABC"])
-check("  each with its need and key", sorted(mv["decodes"][0]) , sorted(["key", "answer", "call", "grid", "need", "snr", "cq", "to_me", "entity"]))
+check("  each with its need, key, distance and age", sorted(mv["decodes"][0]), sorted(R.MAP_KEYS))
+check("  (distance and bearing from our grid)", sorted((d["call"], d["km"] > 10000, d["band"]) for d in mv["decodes"]),
+      [("JA5XYZ", True, "20m"), ("VK2ABC", True, "20m")])
 check("  'all' shows every band's grids", s.map_view("all")["grids"], {"PM95": "c", "PM96": "w", "PM97": "w"})
 
 # ================================================================ POTA
@@ -133,6 +147,110 @@ check("  a click answers through the sync; JTDX's outcome reaches the page", (s.
       ([mv["decodes"][0]["key"]], ("info", "Map: JTDX is calling JA5XYZ.")))
 check("  pota off: none in the snapshot", M.Map(Host(s), {"pota": False}).snapshot()["pota"], None)
 
+# ================================================================ who you hear, remembered; who hears you; the parts
+import json as _json  # noqa: E402
+
+s2 = Sync()
+s2.roster.status(U.parse_status(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31")))
+h = Host(s2)
+m2 = M.Map(h, {"pota": False})
+clock = [1_000_000.0]
+m2.clock = lambda: clock[0]
+rclock = [100.0]
+s2.roster.clock = lambda: rclock[0]
+s2.roster.add(U.parse_decode(J.decode(msg="CQ JA5XYZ PM85", snr=-15, t_ms=1000)))
+m2.push()
+sent = _json.loads(h.sent[-1])
+check("new decodes: the map and who you hear, nothing else", sorted(k for k in sent if k not in ("t", "addon")), ["heard", "map", "now"])
+check("  heard: the station, its grid, band and SNR", [(x["call"], x["grid"], x["band"], x["snr"], x["best"], x["n"]) for x in sent["heard"]],
+      [("JA5XYZ", "PM85", "20m", -15, -15, 1)])
+rclock[0] += 30
+clock[0] += 30
+s2.roster.add(U.parse_decode(J.decode(msg="CQ JA5XYZ PM85", snr=-9, t_ms=31000)))
+m2.push()
+m2.push()                                        # the same decode pushed again is not a second one
+rclock[0] += 30
+clock[0] += 30
+s2.roster.add(U.parse_decode(J.decode(msg="CQ JA5XYZ PM85", snr=-20, t_ms=61000)))
+m2.push()
+hd = m2.snapshot()["heard"][0]
+check("  decoded again: the latest SNR, the best, the count", (hd["snr"], hd["best"], hd["n"]), (-20, -9, 3))
+rclock[0] += 600                                 # the roster forgets after two minutes
+clock[0] += 600
+snap2 = m2.snapshot()
+check("  ten minutes on: gone from the roster, still on the map, at the time it was heard",
+      (snap2["map"]["decodes"], [(x["call"], round(clock[0] - x["t"])) for x in snap2["heard"]]), ([], [("JA5XYZ", 600)]))
+clock[0] += M.HEARD_KEEP_S
+check("  an hour after it was last heard it goes", m2.snapshot()["heard"], [])
+M.HEARD_MAX, keep_max = 3, M.HEARD_MAX
+for i, call in enumerate(("K1AAA", "K2AAA", "K3AAA", "K4AAA", "K5AAA")):
+    rclock[0] += 1
+    clock[0] += 1
+    s2.roster.add(U.parse_decode(J.decode(msg=f"CQ {call} FN42", t_ms=90000 + i)))
+    m2.push()
+check("  past the cap the oldest go first", [x["call"] for x in m2.snapshot()["heard"]], ["K5AAA", "K4AAA", "K3AAA"])
+M.HEARD_MAX = keep_max
+check("who hears you: no Propagation add-on, the snapshot says what to set up",
+      (snap2["hears_me"], "pskreporter" in snap2["hears_me_why"]), (None, True))
+
+
+class Prop:
+    def __init__(self):
+        self.answer = {"call": "N0CALL", "window_min": 60, "every_s": 600, "locator": "FN31pr", "error": None, "checked": 111,
+                       "receivers": [{"call": "JK1AKC", "grid": "QM05ft", "lat": 35.2, "lon": 140.4, "band": "20m", "mode": "FT8",
+                                      "snr": -9, "t": 999_000, "km": 10900, "country": "Japan"}]}
+
+    def heard_by(self):
+        return self.answer
+
+
+class Reg:
+    def __init__(self, on=True):
+        self.on, self.prop = on, Prop()
+
+    def get(self, name):
+        return self.prop if name == "propagation" else None
+
+    def is_on(self, name):
+        return self.on and name == "propagation"
+
+
+h.addons = Reg()
+h.rigs_view = lambda: [{"id": "ic7300", "name": "IC-7300", "present": True, "connected": True, "tx": True, "freq": 14_074_000,
+                        "mode": "USB", "data": True}]
+s2.rig_view = lambda: {"alive": True, "transmitting": True, "dx_call": "JA5XYZ"}
+snap3 = m2.snapshot()
+check("  with it on and a callsign: its stations, and no hint", (snap3["hears_me"]["receivers"][0]["call"], snap3["hears_me_why"]), ("JK1AKC", None))
+check("  the snapshot is whole: the map, who you hear, who hears you, what is on the air, POTA",
+      sorted(snap3), sorted(["now", "map", "heard", "rig", "radios", "hears_me", "hears_me_why", "pota", "pota_age", "pota_error"]))
+h.sent.clear()
+m2.push_hears()
+m2.push_hears()
+check("  a PSKReporter answer is pushed once, on its own", [sorted(k for k in _json.loads(x) if k not in ("t", "addon")) for x in h.sent],
+      [["hears_me", "hears_me_why", "now"]])
+h.addons.prop.answer = dict(h.addons.prop.answer, checked=222)
+m2.push_hears()
+check("  the next answer is pushed", len(h.sent), 2)
+h.addons.on = False
+check("  Propagation switched off: none, and the hint", m2.hears_me()[0], None)
+h.sent.clear()
+m2.push_rig()
+part = _json.loads(h.sent[-1])
+check("a radio or JTDX changes: only what is on the air is sent",
+      (sorted(k for k in part if k not in ("t", "addon")), part["rig"]["transmitting"], part["radios"][0]["tx"]), (["now", "radios", "rig"], True, True))
+
+
+async def burst():
+    h.sent.clear()
+    for _ in range(20):
+        m2.push_rig()
+    at_once = len(h.sent)
+    await asyncio.sleep(M.RIG_PUSH_S + 0.2)
+    return at_once, len(h.sent)
+
+
+check("  a VFO being turned (twenty changes in a row): one push, a tenth of a second on", loop.run_until_complete(burst()), (0, 1))
+
 # ================================================================ the sun, in a real browser
 b = Browser(CHROME, testkit.free_port(), size="400,300")
 try:
@@ -154,6 +272,18 @@ try:
     check("  the night polygon closes on the south pole in June", (poly[0][1], poly[-1][1]), (-90, -90))
     eq = json.loads(b.js("JSON.stringify(rrMapMath.night(new Date(Date.UTC(2026, 2, 20, 14, 46))).slice(1, -1).map(p => p[1]))"))
     check("  at the March equinox the line is nearly a meridian (no lat stuck at the equator)", max(abs(x) for x in eq) > 80, True)
+    mm = json.loads(b.js("""JSON.stringify({c4: rrMapMath.gridCentre('FN31'), c6: rrMapMath.gridCentre('FN31pr'), bad: rrMapMath.gridCentre('ZZ99'),
+      ny_tokyo: rrMapMath.path({lat: 40.7, lon: -74}, {lat: 35.7, lon: 139.7}),
+      arc: rrMapMath.arc({lat: 40.7, lon: -74}, {lat: 35.7, lon: 139.7}, 16),
+      east: rrMapMath.arc({lat: 40.7, lon: -74}, {lat: 51.5, lon: -0.1}, 8)})"""))
+    check("paths: a square's centre, a subsquare's centre, not a locator", (mm["c4"], [round(mm["c6"]["lat"], 3), round(mm["c6"]["lon"], 3)], mm["bad"]),
+          ({"lat": 41.5, "lon": -73}, [41.729, -72.708], None))
+    check("  New York to Tokyo: ~10,850 km, setting out north-north-west (~333°)",
+          (10700 < mm["ny_tokyo"]["km"] < 11000, 328 < mm["ny_tokyo"]["bearing"] < 338), (True, True))
+    lons = [p[1] for p in mm["arc"]]
+    check("  drawn as one line: longitude runs on west past -180 (Tokyo at -220), no jump",
+          (round(lons[-1]), max(abs(a - c) for a, c in zip(lons, lons[1:])) < 60, max(p[0] for p in mm["arc"]) > 60), (-220, True, True))
+    check("  and east to London stays as it is", round(mm["east"][-1][1]), 0)
     check("gridLL: FN31's south-west corner", json.loads(b.js("JSON.stringify(rrMapMath.gridLL('FN31'))")), {"lon": -74, "lat": 41, "w": 2, "h": 1})
     check("  a 6-character grid (as JTDX gives our own) is its square", json.loads(b.js("JSON.stringify(rrMapMath.gridLL('FN31pr'))")),
           {"lon": -74, "lat": 41, "w": 2, "h": 1})
@@ -180,6 +310,48 @@ try:
     check("map hidden then shown: tiles fill the view", shown["tiles"] > 2, True)
     check("  our grid (6 characters) is marked, at the centre", (shown["me"], [abs(shown["mePos"][0] - 400) < 3, abs(shown["mePos"][1] - 150) < 3] if shown["mePos"] else None),
           (True, [True, True]))
+    # ---- the page's own working out, from a snapshot handed to it
+    now = 2_000_000
+    snap_js = {"now": now, "map": {"me": "FN31pr", "band": "20m", "showing": "all", "grids": {}, "decodes": [
+        {"key": "k1", "answer": "cq", "call": "JA1ABC", "grid": "PM95", "need": "dxcc", "reasons": [], "snr": -12, "cq": True, "to_me": False,
+         "entity": "Japan", "km": 10800, "bearing": 334, "age": 5, "band": "20m", "mode": "FT8", "message": "CQ JA1ABC PM95", "lotw": True}]},
+        "heard": [{"call": "JA1ABC", "grid": "PM95", "band": "20m", "mode": "FT8", "snr": -12, "best": -12, "t": now - 5, "n": 1, "need": "dxcc", "entity": "Japan"},
+                  {"call": "VK2ABC", "grid": "QF56", "band": "20m", "mode": "FT8", "snr": -19, "best": -19, "t": now - 1500, "n": 2, "need": None, "entity": "Australia"},
+                  {"call": "K6ABC", "grid": "CM87", "band": "40m", "mode": "FT8", "snr": 1, "best": 1, "t": now - 60, "n": 1, "need": None, "entity": "United States"}],
+        "rig": {"alive": True, "transmitting": False, "tx_enabled": False, "decoding": False, "dx_call": "", "dx_grid": "", "mode": "FT8", "dial": 14074000, "band": "20m"},
+        "radios": [],
+        "hears_me": {"call": "N0CALL", "window_min": 60, "every_s": 600, "locator": "FN31pr", "error": None, "checked": now - 100, "receivers": [
+            {"call": "JA1ABC", "grid": "PM95vq", "lat": 35.7, "lon": 139.8, "band": "40m", "mode": "FT8", "snr": -3, "t": now - 30, "km": 10800, "country": "Japan"},
+            {"call": "JA1ABC", "grid": "PM95vq", "lat": 35.7, "lon": 139.8, "band": "20m", "mode": "FT8", "snr": -17, "t": now - 300, "km": 10800, "country": "Japan"},
+            {"call": "K6ABC", "grid": "CM87", "lat": 37.5, "lon": -123, "band": "20m", "mode": "FT8", "snr": -8, "t": now - 200, "km": 4100, "country": "United States"},
+            {"call": "G4ABC", "grid": "IO91", "lat": 51.5, "lon": -1, "band": "20m", "mode": "FT8", "snr": -20, "t": now - 2400, "km": 5500, "country": "England"}]},
+        "hears_me_why": None, "pota": None}
+    b.js("document.getElementById('mapbox').style.height = '300px'; __impl.hello(" + json.dumps(snap_js) + ")")
+    b.wait("rrMap.stations().length === 4", 5)
+    st = json.loads(b.js("JSON.stringify(Object.fromEntries(rrMap.stations().map((r) => [r.call, [r.kind, r.rx && r.rx.band, r.tx && r.tx.band, r.tx && r.tx.snr]])))"))
+    check("page: every band showing, two-way is the report on the band you hear it on (not the newer one elsewhere)",
+          st["JA1ABC"], ["both", "20m", "20m", -17])
+    check("  heard on 40m and reported on 20m is not two-way", st["K6ABC"], ["rx", "40m", "20m", -8])
+    check("  the others: heard only, reported only", (st["VK2ABC"][0], st["G4ABC"][0]), ("rx", "tx"))
+    view = json.loads(b.js("""JSON.stringify((() => { const w = document.querySelector('#mapbox .rm-wrap').getBoundingClientRect();
+      const inside = [...document.querySelectorAll('#mapbox .rm-s')].every((g) => { const r = g.getBoundingClientRect(); return r.x >= w.x && r.x <= w.right && r.y >= w.y && r.y <= w.bottom; });
+      return {n: document.querySelectorAll('#mapbox .rm-s').length, inside}; })())"""))
+    check("  the first stations are framed: all four on the map at once", view, {"n": 4, "inside": True})
+    b.js("(() => { const s = document.querySelector('#mapbox .rm-win'); s.value = '15'; s.dispatchEvent(new Event('change')); })()")
+    check("  a 15 minute window: what was heard or reported longer ago is off",
+          sorted(json.loads(b.js("JSON.stringify(rrMap.stations().map((r) => r.call))"))), ["JA1ABC", "K6ABC"])
+    b.js("(() => { const s = document.querySelector('#mapbox .rm-win'); s.value = '60'; s.dispatchEvent(new Event('change')); })()")
+    b.js("document.querySelector('#mapbox [data-layer=\"heard\"]').click()")
+    check("  'Hears you' off: only what you hear is drawn, and no amber path",
+          (b.js("document.querySelectorAll('#mapbox .rm-s').length"), b.js("document.querySelectorAll('#mapbox .rm-p-tx').length")), (3, 0))
+    b.js("document.querySelector('#mapbox [data-layer=\"heard\"]').click(); document.querySelector('#mapbox [data-layer=\"paths\"]').click()")
+    check("  'Paths' off: the stations stay, the lines go", (b.js("document.querySelectorAll('#mapbox .rm-s').length"), b.js("document.querySelectorAll('#mapbox .rm-p').length")), (4, 0))
+    b.js("document.querySelector('#mapbox .rm-s').__same = true")
+    b.js("__impl.event({rig: Object.assign({}, " + json.dumps(snap_js["rig"]) + ", {transmitting: true, dx_call: 'ZL1ABC', dx_grid: 'RF73'}), radios: [], now: " + str(now) + "})")
+    check("  transmitting to a station not on the map: the beam runs to the grid JTDX has for it",
+          (b.js("document.querySelectorAll('#mapbox .rm-beamp').length"), b.js("document.querySelector('#mapbox .rm-beamt').textContent")), (1, "→ ZL1ABC"))
+    check("  the nav: transmitting", b.js("__impl.tab().dot"), "tx")
+    check("  what is on the air changing does not redraw the stations", b.js("document.querySelector('#mapbox .rm-s').__same"), True)
 finally:
     b.close()
 

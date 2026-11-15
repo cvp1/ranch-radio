@@ -11,6 +11,8 @@ calls), the layout it fixed is.
              null strings; Reply (4) carries the decode's fields unchanged
   roster     calls to us first, then by need, then signal; old rows age out;
              a stale decode can't be answered
+  rig        JTDX's Status as what it is doing (transmitting, calling whom):
+             told on a change only; silence or its Close reads as gone
   engine     a fake JTDX's decodes through the relay intake fill the roster
              (with needs from a ledger and a cty.csv cut from the real one);
              a click reaches the fake JTDX's own socket as a Reply with that
@@ -184,9 +186,10 @@ led.add({"CALL": "JA1ABC", "BAND": "20m", "MODE": "FT8", "QSO_DATE": "20260101",
 led.db.commit()
 led.close()
 port = testkit.free_port()
-pushes = []
+pushes, rigs = [], []
 eng = logsync.LogSync({"call": "N0CALL", "udp": {"bind": "127.0.0.1", "port": port}, "ledger": str(tmp / "l.db"),
-                       "timing": {"pull_at_start": False}}, roster=lambda: pushes.append(time.time()))
+                       "timing": {"pull_at_start": False}}, roster=lambda: pushes.append(time.time()),
+                      rig=lambda: rigs.append(eng.rig_view()))
 BG.run(eng.start())
 testkit.wait_for(lambda: eng.needs is not None, 10)
 check("engine: the needs index is built from the ledger and the cached cty.csv",
@@ -250,6 +253,33 @@ for row in eng.roster.rows.values():
     row["at"] -= R.REPLY_MAX_AGE_S + 5
 why = BG.call(eng.reply, rows["JA2XYZ"]["key"])
 check("  a stale decode: refused with its age, nothing sent", ("old" in (why or ""), (time.sleep(0.4), jt.poll())[1]), (True, []))
+
+# ---- what JTDX says it is doing (rig_view), for the Map tab: edge-triggered, and never a stale "transmitting"
+dest = ("127.0.0.1", port)
+calling = dict(dial=14_074_000, de="N0CALL", de_grid="FN31", dx_call="VK9NA", dx_grid="RG30", tx_enabled=True, decoding=False)
+testkit.wait_for(lambda: len(rigs) >= 1, 3)
+rigs.clear()
+jt.send(J.status(transmitting=True, **calling), dest)
+check("rig: JTDX transmitting is told at once, with the station it is calling",
+      testkit.wait_for(lambda: len(rigs) == 1, 3) and rigs[-1],
+      {"alive": True, "transmitting": True, "tx_enabled": True, "decoding": False, "dx_call": "VK9NA", "dx_grid": "RG30",
+       "mode": "FT8", "dial": 14_074_000, "band": "20m"})
+jt.send(J.status(transmitting=True, **calling), dest)
+jt.send(J.heartbeat(), dest)
+jt.send(J.status(transmitting=False, **calling), dest)
+check("  an unchanged Status says nothing; its turn ending does",
+      (testkit.wait_for(lambda: len(rigs) == 2, 3), len(rigs), rigs[-1]["transmitting"], rigs[-1]["tx_enabled"]), (True, 2, False, True))
+jt.send(J.status(transmitting=True, **calling), dest)
+testkit.wait_for(lambda: len(rigs) == 3, 3)
+silent, logsync.RIG_SILENT_S = logsync.RIG_SILENT_S, 0.6
+jt.send(J.heartbeat(), dest)                     # then nothing: it crashed, or the machine slept, mid-transmission
+check("  transmitting, then silence: after RIG_SILENT_S it is gone, not transmitting for ever",
+      (testkit.wait_for(lambda: len(rigs) == 4, 5), rigs[-1]), (True, {"alive": False}))
+logsync.RIG_SILENT_S = silent
+jt.send(J.status(transmitting=False, **calling), dest)
+testkit.wait_for(lambda: len(rigs) == 5, 3)
+jt.send(J.close(), dest)
+check("  back, then its Close: gone at once", (testkit.wait_for(lambda: len(rigs) == 6, 3), rigs[-2]["alive"], rigs[-1]), (True, True, {"alive": False}))
 BG.run(eng.stop())
 
 mport = testkit.free_port()

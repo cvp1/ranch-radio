@@ -28,6 +28,9 @@ MAX_ROWS = 150
 _CALL = re.compile(r"^(?=.*[0-9])(?=.*[A-Z])[A-Z0-9/]{3,13}$")
 _GRID = re.compile(r"^[A-R]{2}[0-9]{2}$")
 _CQ_WORD = re.compile(r"^(?:[A-Z]{1,4}|[0-9]{3})$")
+# What the Map tab gets of a roster row (map_view).
+MAP_KEYS = ("key", "answer", "call", "grid", "need", "reasons", "snr", "cq", "to_me", "entity", "km", "bearing", "age",
+            "band", "mode", "message", "lotw")
 NEED_RANK = {"dxcc": 0, "dxcc_band": 1, "dxcc_mode": 2, "grid": 3, "grid_band": 4, "dxcc_unconfirmed": 5,
              "call_band_mode": 6, None: 7}
 
@@ -160,13 +163,12 @@ class Roster:
     def map_view(self, band=None):
         """The Map tab: our grid, worked/confirmed grids (the current band by
         default, one band, or every band with "all"), and the decodes that
-        carry a grid."""
+        carry a grid (MAP_KEYS)."""
         rv = self.view()
         b = rv["band"] if band in (None, "") else (None if band == "all" else band)
         return {"me": self.st.get("de_grid", ""), "band": rv["band"], "showing": b or "all",
                 "grids": self.needs.grid_map(b) if self.needs else {},
-                "decodes": [{k: r[k] for k in ("key", "answer", "call", "grid", "need", "snr", "cq", "to_me", "entity")}
-                            for r in rv["rows"] if r["grid"]]}
+                "decodes": [{k: r[k] for k in MAP_KEYS} for r in rv["rows"] if r["grid"]]}
 
     def for_reply(self, key):
         """The decode to answer (the one key names, the station's CQ or its

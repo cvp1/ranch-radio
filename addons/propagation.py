@@ -62,6 +62,7 @@ FORECAST_H = (1, 27)        # the "next openings" horizon's allowed range, hours
 FORECAST_MAX = 16           # windows sent to the page
 URL_PSK = "https://retrieve.pskreporter.info/query"
 PSK_EVERY_S = 600
+PSK_RECEIVERS_MAX = 600     # the stations kept one by one for the Map tab (newest first)
 CALL = re.compile(r"^[A-Z0-9/]{3,15}$")
 # HF/6m band edges (Hz) for naming a reported frequency.
 BAND_EDGES = [("160m", 1.8e6, 2.0e6), ("80m", 3.5e6, 4.0e6), ("60m", 5.25e6, 5.45e6), ("40m", 7.0e6, 7.3e6),
@@ -286,6 +287,47 @@ def parse_psk(xml_text):
     return bands
 
 
+def psk_receivers(xml_text, cap=PSK_RECEIVERS_MAX):
+    """PSKReporter receptionReports XML -> the stations that heard you, one
+    row per station and band (its newest report), newest first:
+    [{call, grid, lat, lon, band, mode, snr, t, km, country}]. A report with
+    no usable locator can't be placed and is dropped; snr is None when the
+    report gave none. The Map tab draws these (addons/map.py)."""
+    root = ET.fromstring(xml_text)
+    best = {}
+    for r in root.iter("receptionReport"):
+        try:
+            hz = float(r.get("frequency") or 0)
+            t = int(float(r.get("flowStartSeconds") or 0))
+        except ValueError:
+            continue
+        band, to = band_of(hz), grid_latlon(r.get("receiverLocator"))
+        call = (r.get("receiverCallsign") or "").strip().upper()
+        if not band or not to or not t or not CALL.match(call):
+            continue
+        old = best.get((call, band))
+        if old and old["t"] >= t:
+            continue
+        snr = r.get("sNR")
+        snr = int(snr) if snr not in (None, "") and re.fullmatch(r"-?\d+", snr) else None
+        me = grid_latlon(r.get("senderLocator"))
+        best[(call, band)] = {"call": call, "grid": (r.get("receiverLocator") or "").strip()[:6], "lat": round(to[0], 3),
+                              "lon": round(to[1], 3), "band": band, "mode": (r.get("mode") or "")[:8], "snr": snr, "t": t,
+                              "km": int(round(km_between(me, to))) if me else None,
+                              "country": (r.get("receiverDXCC") or "")[:40]}
+    return sorted(best.values(), key=lambda x: -x["t"])[:cap]
+
+
+def psk_locator(xml_text):
+    """Your own locator as the reports give it (senderLocator, the commonest), or ""."""
+    seen = {}
+    for r in ET.fromstring(xml_text).iter("receptionReport"):
+        g = (r.get("senderLocator") or "").strip()
+        if grid_latlon(g):
+            seen[g] = seen.get(g, 0) + 1
+    return max(seen, key=seen.get)[:6] if seen else ""
+
+
 # --------------------------------------------------------------------- add-on
 
 class Propagation(Addon):
@@ -323,7 +365,7 @@ class Propagation(Addon):
     def _reset(self):
         self.space = {"kp": None, "xray": None, "f107": None, "error": None, "checked": None}
         self.heard = {"bands": {}, "error": None, "checked": None}
-        self.psk = {"bands": {}, "error": None, "checked": None}
+        self.psk = {"bands": {}, "receivers": [], "locator": "", "error": None, "checked": None}
         self.forecast = {"windows": [], "issued": None, "error": None, "checked": None}
 
     async def start(self):
@@ -415,10 +457,28 @@ class Propagation(Addon):
                 if r.status != 200:
                     raise ValueError(f"HTTP {r.status}")
                 text = await r.text()
-            return {"bands": parse_psk(text), "error": None, "checked": int(time.time())}
+            return {"bands": parse_psk(text), "receivers": psk_receivers(text),
+                    "locator": psk_locator(text) or self.psk.get("locator") or "", "error": None,
+                    "checked": int(time.time())}
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, ET.ParseError) as e:
             log.info("PSKReporter: %s", e)
-            return {"bands": {}, "error": "PSKReporter not reachable", "checked": int(time.time())}
+            # The counts are dropped (unknown is not zero). The stations are kept: each
+            # carries the time it heard you, so the map shows them at their true age.
+            return {"bands": {}, "receivers": self.psk.get("receivers") or [], "locator": self.psk.get("locator") or "",
+                    "error": "PSKReporter not reachable", "checked": int(time.time())}
+
+    def heard_by(self):
+        """Who heard you, station by station, for the Map tab: None without a
+        callsign, else {call, window_min, every_s, receivers, locator, error,
+        checked}; locator is your own as the reports give it (the map's "you"
+        before JTDX has said where you are). The one PSKReporter poll serves
+        both tabs (it asks for no more than one query every five minutes)."""
+        if not self.psk_call:
+            return None
+        return {"call": self.psk_call, "window_min": self.window_min, "every_s": PSK_EVERY_S,
+                "receivers": self.psk.get("receivers") or [], "locator": self.psk.get("locator") or "",
+                "error": self.psk.get("error"),
+                "checked": self.psk.get("checked")}
 
     async def _run(self):
         while True:

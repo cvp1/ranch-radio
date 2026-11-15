@@ -237,12 +237,14 @@ MANIFESTS = {
         "needs": [],
     },
     "map": {
-        "label": "Map (worked grids, who JTDX hears, gray line, POTA)",
+        "label": "Map (who you hear, who hears you, what is on the air; grids, gray line, POTA)",
         "family": "addon",
         "block": ("addons", "map"),
         "os": ["macos", "linux"],
         # Needs the logbook sync (the host's logsync block). "pota": false
         # turns off the POTA spots (api.pota.app, fetched while the tab is on).
+        # Who hears you comes from the propagation add-on's PSKReporter poll
+        # (its "pskreporter": {"call"}); without it the map says what to set.
         "template": {"any": {"enabled": True}},
         "rules": {},
         "ask": {},
