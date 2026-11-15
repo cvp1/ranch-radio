@@ -17,6 +17,7 @@ also an "rx" (activity). !0000cafe replies to the first message (reply_id
 hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
 telemetry one fills its air_tx, a neighbours one says it hears us at 4.0 dB); to anyone else, "no reply". "node" ignore /
 unignore / remove change the node list; "reboot" is done.
+$FAKE_MESH_NODES_PAD adds that many far nodes to the node list (a long line).
 Each start appends a line to $FAKE_MESH_STARTS (restart counting) and every
 command received goes to $FAKE_MESH_LOG.
 """
@@ -100,6 +101,10 @@ def main():
          "hwModel": "RAK4631", "role": "ROUTER", "last_heard": now - 30, "snr": 7.5, "hops": 0,
          "battery": 88, "lat": 40.9, "lon": -105.1, "fav": False, "me": False, "pkc": True,
          "env": {"temp": 21.5, "humidity": 30.0, "pressure": 850.2}}]
+    pad = int(os.environ.get("FAKE_MESH_NODES_PAD") or 0)     # a big node DB: one long line
+    nodes += [{"num": 0x10000 + i, "id": f"!{0x10000 + i:08x}", "longName": f"Far Node {i:04d} " + "x" * 300,
+               "shortName": f"F{i:03d}", "hwModel": "RAK4631", "last_heard": None, "snr": None, "hops": 3,
+               "battery": None, "lat": None, "lon": None, "fav": False, "me": False} for i in range(pad)]
     emit(ev="nodes", nodes=nodes)
     time.sleep(0.5)
     emit(ev="rx", **{"from": "!0000beef"}, port="TEXT_MESSAGE_APP")

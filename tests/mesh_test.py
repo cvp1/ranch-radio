@@ -20,6 +20,7 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - who hears us (hears_us): a node whose NeighborInfo lists us, a
     traceroute's first hop, a node that ACKed our DM; NeighborInfo and
     traceroutes kept across a bridge restart and a server restart, mode 600
+  - a node list longer than asyncio's default 64 KiB line still arrives
   - without the Mesh add-on, mesh commands are refused
 
     python3 tests/mesh_test.py
@@ -125,8 +126,9 @@ class Page:
         self.run(_c())
 
 
-def start(*extra, mesh=True, key=GOOD_KEY):
-    env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS, MESH_ACK_WAIT_S="1.5")
+def start(*extra, mesh=True, key=GOOD_KEY, env_extra=None):
+    env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS, MESH_ACK_WAIT_S="1.5",
+               **(env_extra or {}))
     args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
             "--rigctl-port", "0", "--addons-state", os.path.join(TMP, "addons.json"), *extra]
     if mesh:
@@ -477,6 +479,18 @@ try:
     check("restart: a reaction keeps emoji", (hist.get("👍", {}).get("emoji"), hist.get("👍", {}).get("reply_id")), (True, 1001))
     chans = {c["name"]: c for c in (page.latest("info", 3) or {}).get("channels", [])}
     check("wrong key: key_ok false", chans.get("HomeNet", {}).get("key_ok"), False)
+    page.close()
+finally:
+    stop(server)
+
+# A node DB too big for asyncio's default 64 KiB line (seen live: 179 nodes, 81 KB)
+server = start(env_extra={"FAKE_MESH_NODES_PAD": "400"})
+try:
+    page = Page()
+    got = page.latest("nodes", 10) or []
+    check("a node list over 64 KiB on one line arrives", len(got), 404)
+    page.send({"t": "mesh_send", "text": "after a big list", "ch": 1})
+    check("  and the bridge keeps going (a send is delivered)", bool(page.wait(ack_of("after a big list", "delivered"))), True)
     page.close()
 finally:
     stop(server)

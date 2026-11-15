@@ -7,6 +7,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Mesh: a node with a big node list works again.** The node list goes to the
+  server as one line, and asyncio's default 64 KiB cap per line stopped the
+  server reading the node for good, quietly: no nodes, sends and asks never
+  answered, while the page said connected. Seen live with 179 nodes (81 KB);
+  the cap is now 4 MiB, and a line over it restarts the link with an error in
+  the log.
+
 - **Mesh: Reboot node, or saving a node setting, no longer leaves a dead link
   that says "connected".** The node restarts after both; the bridge now starts
   over on a new link 15 s later instead of waiting for the old one to notice.
