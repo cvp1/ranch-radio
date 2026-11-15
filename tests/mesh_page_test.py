@@ -9,7 +9,8 @@ Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
 incoming ones on our message), Retry on a failed or unknown send, Direct as a list of
 conversations, the header's counters, a card's distance / environment / Ask
 for (position) / Ignore, who a node hears and who hears it (by name, and why one
-isn't on the map), NeighborInfo links on the map, Reboot node, who
+isn't on the map), NeighborInfo links on the map (lines that show, which way a selected node's go,
+nodes sharing a position fanned apart), Reboot node, who
 hears us ("heard by N" and its list).
 
     python3 tests/mesh_page_test.py [screenshot.png]
@@ -182,7 +183,7 @@ try:
         check("  nodes with a position on it",
               sorted(b.js("[...document.querySelectorAll('#mesh-map .mm-node text')].map((t) => t.textContent)")),
               ["BASE", "RDG", "TEST"])
-        check("  says how many", b.js(f"({TEXT})('#mesh-map .mm-note')"), "2 of 3 nodes on the map")
+        check("  says how many", b.js(f"({TEXT})('#mesh-map .mm-note')").split(" · ")[0], "2 of 3 nodes on the map")
         check("  tiles requested", b.js("document.querySelectorAll('#mesh-map .mm-tile').length > 0"), True)
         b.js("[...document.querySelectorAll('#mesh-map .mm-node')].find((g) => g.textContent.startsWith('RDG'))"
              ".dispatchEvent(new MouseEvent('click', { bubbles: true }))")
@@ -287,10 +288,34 @@ try:
               "hearsRDG 6.5 dBTRK -4 dB (no position)!00c0ffee 1 dB (not in this node's list)")
         b.js("document.querySelector('#mesh-card .mesh-nb[data-go=\"!0000cafe\"]').click()")
         check("  a name opens that node's card", b.js(f"({TEXT})('#mesh-card .mesh-card-head b')"), "RDG")
-        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [{ id: '!0000cafe', snr: 6.5 }] } } })")
+        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [{ id: '!0000cafe', snr: 6.5 }] }, '!0000cafe': { t: Date.now() / 1000, neighbors: [{ id: '!b2a6fd78', snr: 7.25 }, { id: '!0000beef', snr: 2 }] } } })")
         b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
-        check("map: the NeighborInfo link, with its SNR",
-              b.js("[...document.querySelectorAll('#mesh-map .mm-link-label')].map((t) => t.textContent)"), ["6.5 dB"])
+        # BASE selected: it hears RDG (6.5) and RDG hears it (2.0), so one link, both ways.
+        # (The page takes each neighbors event as the whole set, as the server sends it.)
+        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [{ id: '!0000cafe', snr: 6.5 }] }, "
+             "'!0000cafe': { t: Date.now() / 1000, neighbors: [{ id: '!b2a6fd78', snr: 7.25 }, { id: '!0000beef', snr: 2 }] } } })")
+        check("map: BASE's link to RDG, both ways, with both SNRs",
+              b.js("[...document.querySelectorAll('#mesh-map .mm-link-label')].map((t) => t.textContent)"), ["2 dB / 6.5 dB"])
+        line = "document.querySelector('#mesh-map line.mm-link')"
+        check("  drawn as a visible line (a stroke, not none), styled 'both'",
+              b.js(f"[{line}.getAttribute('class'), getComputedStyle({line}).stroke !== 'none', "
+                   f"parseFloat(getComputedStyle({line}).strokeWidth) > 0]"), ["mm-link both", True, True])
+        check("  its tooltip says who hears whom",
+              b.js(f"{line}.querySelector('title').textContent"), "RDG hears BASE at 2 dB; BASE hears RDG at 6.5 dB")
+        check("  the legend", "BASE: green hears it, blue it hears, purple both" in b.js(f"({TEXT})('#mesh-map .mm-note')"), True)
+        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [] }, '!0000cafe': { t: Date.now() / 1000, neighbors: [{ id: '!b2a6fd78', snr: 7.25 }, { id: '!0000beef', snr: 2 }] } } })")
+        check("  only RDG's list has BASE: 'in' (RDG hears BASE)",
+              b.js(f"{line}?.getAttribute('class')"), "mm-link in")
+        # Two nodes at the very same position (a channel's grid cell): fanned apart, and the line between them shows.
+        b.js("mesh.event({ t: 'mesh', nodes: mesh._nodes().map((n) => n.id === '!0000cafe' ? { ...n, lat: 40.9, lon: -105.1 } : n) })")
+        spots = ("[...document.querySelectorAll('#mesh-map .mm-node')].filter((g) => ['BASE', 'RDG'].includes(g.querySelector('text')?.textContent))"
+                 ".map((g) => g.getAttribute('transform'))")
+        got = b.js(spots)
+        check("same position: BASE and RDG drawn apart", len(got) == 2 and got[0] != got[1], True)
+        check("  a ring marks the shared spot", b.js("document.querySelectorAll('#mesh-map .mm-fan').length"), 1)
+        x = b.js(f"[{line}.getAttribute('x1'), {line}.getAttribute('x2'), {line}.getAttribute('y1'), {line}.getAttribute('y2')]")
+        check("  the link between them has length", x[0] != x[1] or x[2] != x[3], True)
+        b.js("mesh.event({ t: 'mesh', neighbors: { '!0000beef': { t: Date.now() / 1000, neighbors: [{ id: '!0000cafe', snr: 6.5 }] }, '!0000cafe': { t: Date.now() / 1000, neighbors: [{ id: '!b2a6fd78', snr: 7.25 }, { id: '!0000beef', snr: 2 }] } } })")
         check("card: Ask for has Neighbours",
               b.js("document.querySelector('#mesh-card [data-req=neighbors]')?.textContent"), "Neighbours")
         b.js("document.querySelector('#mesh-card [data-req=position]').click()")

@@ -9,7 +9,11 @@
 // a clickable "me" (meSelectable), a text glyph and a kind class per node
 // (glyph, kind), an ambiguity box (box_deg, degrees on a side), and noFit.
 // The MeshCore tab (addons/meshcore.js) also draws links between nodes
-// (setLinks: a repeater's neighbours, each with its SNR as the label).
+// (setLinks: a repeater's neighbours, each with its SNR as the label; a
+// link's cls styles it, and setLinks' legend says what the styles mean).
+// Nodes at the very same position (a channel shares positions only to a grid
+// cell, so a site's nodes all land on its centre) are fanned out in a small
+// ring around it, so each one and the links between them can be seen.
 // No library: Web Mercator tiles in a div, an SVG on top in world pixels.
 
 const meshMap = (() => {
@@ -17,6 +21,7 @@ const meshMap = (() => {
   const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const LIVE_S = 15 * 60, RECENT_S = 24 * 3600;
   const SVGNS = "http://www.w3.org/2000/svg";
+  const FAN_PX = 14;                 // radius of the ring nodes sharing a position are drawn on
 
   function create(el, { onSelect, meSelectable = false }) {
     el.innerHTML = `<div class="mm-tiles"></div><svg class="mm-svg"><g class="mm-world">` +
@@ -32,7 +37,8 @@ const meshMap = (() => {
     const boxesG = el.querySelector(".mm-boxes"), trackG = el.querySelector(".mm-track");
     const linksG = el.querySelector(".mm-links");
     const tiles = new Map();
-    let nodes = [], myId = null, selected = null, trace = null, track = [], links = [];
+    let nodes = [], myId = null, selected = null, trace = null, track = [], links = [], legend = "";
+    let fan = new Map();               // node id -> [dx, dy] screen px, for nodes sharing a position
     let z = 12, cx = 0, cy = 0, moved = false, w = 0, h = 0;
 
     // ---------- projection (world pixels at zoom z)
@@ -44,6 +50,21 @@ const meshMap = (() => {
     };
     const placed = () => nodes.filter((n) => n.lat != null && n.lon != null && (n.lat || n.lon));
     const byId = (id) => nodes.find((n) => n.id === id);
+    const key = (n) => `${n.lat},${n.lon}`;
+    function refan() {
+      const groups = new Map();
+      for (const n of placed()) groups.set(key(n), [...(groups.get(key(n)) || []), n]);
+      fan = new Map();
+      for (const g of groups.values()) {
+        if (g.length < 2) continue;
+        g.sort((a, b) => (a.id < b.id ? -1 : 1)).forEach((n, i) => {
+          const t = (2 * Math.PI * i) / g.length - Math.PI / 2;
+          fan.set(n.id, [FAN_PX * Math.cos(t), FAN_PX * Math.sin(t)]);
+        });
+      }
+    }
+    // Where a node is drawn: its position, moved onto its ring when it shares one.
+    const spot = (n) => { const d = fan.get(n.id) || [0, 0]; return [px(n.lon) + d[0], py(n.lat) + d[1]]; };
     const age = (n) => (n.last_heard ? Date.now() / 1000 - n.last_heard : Infinity);
 
     function fit() {
@@ -96,7 +117,7 @@ const meshMap = (() => {
       drawTrack();
       const all = nodes.filter((x) => !x.me).length, on = placed().filter((x) => !x.me).length;
       el.querySelector(".mm-note").textContent = !placed().length ? "No node has reported a position yet"
-        : `${on} of ${all} nodes on the map`;
+        : `${on} of ${all} nodes on the map${legend ? ` · ${legend}` : ""}`;
     }
 
     function drawNodes() {
@@ -110,7 +131,8 @@ const meshMap = (() => {
         const g = document.createElementNS(SVGNS, "g");
         g.setAttribute("class", `mm-node ${cls}${nd.id === selected ? " sel" : ""}${nd.fav ? " fav" : ""}` +
           (nd.kind ? ` k-${nd.kind}` : ""));
-        g.setAttribute("transform", `translate(${px(nd.lon)} ${py(nd.lat)})`);
+        const [sx, sy] = spot(nd);
+        g.setAttribute("transform", `translate(${sx} ${sy})`);
         if (nd.box_deg > 0) {                     // position ambiguity: the area it could be in
           const d = nd.box_deg / 2, r = document.createElementNS(SVGNS, "rect");
           const x0 = px(nd.lon - d), x1 = px(nd.lon + d), y0 = py(nd.lat + d), y1 = py(nd.lat - d);
@@ -132,7 +154,7 @@ const meshMap = (() => {
       traceG.innerHTML = "";
       if (!trace || trace.state !== "done") return;
       const path = (ids) => ids.map(byId).filter((n) => n && n.lat != null && (n.lat || n.lon))
-        .map((n) => `${px(n.lon)},${py(n.lat)}`).join(" ");
+        .map((n) => spot(n).join(",")).join(" ");
       const out = path([myId, ...(trace.route || []), trace.to]);
       const back = trace.route_back ? path([trace.to, ...trace.route_back, myId]) : "";
       if (back) traceG.innerHTML += `<polyline class="mm-back" points="${back}"></polyline>`;
@@ -142,11 +164,20 @@ const meshMap = (() => {
     function drawLinks() {
       linksG.innerHTML = "";
       const at = (id) => { const n = byId(id); return n && n.lat != null && (n.lat || n.lon) ? n : null; };
+      // A shared position: a faint ring, so the fan reads as one place.
+      const rings = new Map();
+      for (const n of placed()) if (fan.has(n.id)) rings.set(key(n), [...(rings.get(key(n)) || []), n]);
+      for (const g of rings.values()) {
+        linksG.innerHTML += `<circle class="mm-fan" cx="${px(g[0].lon)}" cy="${py(g[0].lat)}" r="${FAN_PX}">` +
+          `<title>${esc(`${g.map((n) => n.shortName || n.id).join(", ")} report the same position ` +
+          "(a channel shares positions only to a grid cell); drawn apart so each can be seen")}</title></circle>`;
+      }
       for (const l of links || []) {
         const a = at(l.from), b = at(l.to);
         if (!a || !b) continue;
-        const x1 = px(a.lon), y1 = py(a.lat), x2 = px(b.lon), y2 = py(b.lat);
-        linksG.innerHTML += `<line class="mm-link" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>` +
+        const [x1, y1] = spot(a), [x2, y2] = spot(b);
+        linksG.innerHTML += `<line class="mm-link${l.cls ? ` ${l.cls}` : ""}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">` +
+          (l.title ? `<title>${esc(l.title)}</title>` : "") + `</line>` +
           (l.label ? `<text class="mm-link-label" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 3}" text-anchor="middle">${esc(l.label)}</text>` : "");
       }
     }
@@ -210,18 +241,19 @@ const meshMap = (() => {
     // ---------- from mesh.js
 
     return {
-      setNodes(list, me) { nodes = list || []; myId = me; render(); },
+      setNodes(list, me) { nodes = list || []; myId = me; refan(); render(); },
       select(id) { selected = id; drawNodes(); },
       setTrace(rec) { trace = rec; drawTrace(); },
       setTrack(points) { track = points || []; drawTrack(); },
-      setLinks(list) { links = list || []; drawLinks(); },
+      setLinks(list, note = "") { links = list || []; legend = note; render(); },
       pulse(id) {
         const nd = byId(id);
         if (!nd || nd.lat == null || (!nd.lat && !nd.lon) || !w) return;
         const c = document.createElementNS(SVGNS, "circle");
         c.setAttribute("class", "mm-pulse");
-        c.setAttribute("cx", px(nd.lon));
-        c.setAttribute("cy", py(nd.lat));
+        const [sx, sy] = spot(nd);
+        c.setAttribute("cx", sx);
+        c.setAttribute("cy", sy);
         c.setAttribute("r", 5);
         pulsesG.append(c);
         setTimeout(() => c.remove(), 1600);
