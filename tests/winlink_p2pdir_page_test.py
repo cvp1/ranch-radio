@@ -13,7 +13,10 @@ On the maintainer's station (winlink.directory.maintain): listing requests
 in the inbox show as cards with the exact text Publish writes, HTML in it
 stays text, an internet sender can only be dismissed; Publish puts the text
 in the directory repo (a scratch clone) and the request leaves the list;
-Dismiss commits nothing.
+Dismiss commits nothing. After a Publish the header says the directory is
+updating. A published listing opens in an editor (a re-render keeps the
+typing and the cursor); Save pushes the edited text with the confirmed date
+kept, as one commit; a refused edit commits nothing and keeps the editor.
 
     .venv/bin/python tests/winlink_p2pdir_page_test.py
 """
@@ -252,6 +255,37 @@ try:
         b.js(f"document.querySelector('{other} [data-do=dismiss]').click()")
         check("Dismiss: the list empties", b.wait(f"{CARDS}.length === 0", 15), True)
         check("Dismiss: nothing more committed", R.git(origin, "rev-list", "--count", "main"), "2")
+        check("Publish: the page says the directory is updating",
+              b.wait(f"({TEXT})('#wl-p2pdir .wl-dir-head').includes('updating after a publish')", 15), True)
+        # Edit a published listing: open it, change it, Save.
+        chip = "#wl-p2pdir .wl-intake-listed [data-edit=K7NGS]"
+        check("Edit: the published call is offered", b.wait(f"!!document.querySelector('{chip}')", 15), True)
+        b.js(f"document.querySelector('{chip}').click()")
+        ta = "#wl-p2pdir .wl-intake-edit textarea"
+        shown = b.wait(f"document.querySelector('{ta}')?.value", 15)
+        check("Edit: the editor holds the published text", shown, reqs[0]["Body"].replace("\r\n", "\n"))
+        b.js("{ const t = document.querySelector('%s'); t.focus(); t.value = t.value.replace('14300', '14110'); }" % ta)
+        b.js("document.querySelector('#wl-mode [data-v=peer]').click()")   # a re-render
+        check("Edit: a re-render keeps the typing and the cursor",
+              (b.js(f"document.querySelector('{ta}')?.value.includes('14110')"),
+               b.js(f"document.activeElement === document.querySelector('{ta}')")), (True, True))
+        b.js("document.querySelector('#wl-p2pdir .wl-intake-edit [data-do=save]').click()")
+        got = wait_for(lambda: "14110" in (R.origin_file(origin, "listings/K7NGS.txt") or ""), 20)
+        check("Save: the edited text is in the directory repo", got, True)
+        check("Save: the confirmed date kept", json.loads(R.origin_file(origin, "listings/K7NGS.json"))["confirmed"],
+              "2026-11-15")
+        check("Save: one commit, named as an edit", (R.git(origin, "rev-list", "--count", "main"),
+              R.git(origin, "log", "-1", "--format=%s", "main")), ("3", "listings: edit K7NGS"))
+        check("Save: the editor closes", b.wait("!document.querySelector('#wl-p2pdir .wl-intake-edit')", 15), True)
+        # A refused edit keeps the editor open with the reason.
+        b.js(f"document.querySelector('{chip}').click()")
+        b.wait(f"document.querySelector('{ta}')?.value.includes('14110')", 15)
+        b.js("{ const t = document.querySelector('%s'); t.value = 'grid: CN86\\n'; }" % ta)
+        b.js("document.querySelector('#wl-p2pdir .wl-intake-edit [data-do=save]').click()")
+        time.sleep(2)
+        check("Save refused: nothing committed, the editor stays",
+              (R.git(origin, "rev-list", "--count", "main"),
+               b.js("!!document.querySelector('#wl-p2pdir .wl-intake-edit')")), ("3", True))
     finally:
         stop(server)
 

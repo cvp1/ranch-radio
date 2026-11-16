@@ -436,6 +436,7 @@ class PatEngine:
         except p2p_directory.DirectoryError as e:
             log.error("winlink: P2P directory intake off: %s", e)
             repo = None
+        self._p2pdir_follow = None     # after a publish: refetch until the change is in
         if repo:
             self.p2p_intake = p2p_intake.Intake(repo)
             why = self.p2p_intake.why_not()
@@ -512,6 +513,8 @@ class PatEngine:
                     pass
             for t in self._tasks:
                 t.cancel()
+            if self._p2pdir_follow and not self._p2pdir_follow.done():
+                self._p2pdir_follow.cancel()
             await self._end_child(self.proc)
         if self.http:
             await self.http.close()
@@ -2002,6 +2005,8 @@ class PatEngine:
             grid = (fields or {}).get("locator")
             view = d.view(grid if isinstance(grid, str) else None, self.mycall)
             if self.p2p_intake is not None:
+                view["maintainer"] = True
+                view["listed"] = self.p2p_intake.listed()
                 try:
                     view["intake"] = await self.p2p_intake.requests(self.http, self.base)
                 except p2p_intake.IntakeError as e:
@@ -2019,9 +2024,40 @@ class PatEngine:
             except (ValueError, AttributeError):
                 raise web.HTTPBadRequest(text="expected JSON {mid, do}") from None
             try:
-                return web.json_response(await self.p2p_intake.act(self.http, self.base, mid, do))
+                res = await self.p2p_intake.act(self.http, self.base, mid, do)
             except p2p_intake.IntakeError as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=409)
+            if res.get("commit"):
+                follow()
+            return web.json_response(res)
+
+        def follow():
+            # A change was pushed: refetch the directory until it's in, so the
+            # picker shows it minutes later without anyone asking. One at a time.
+            if self.p2pdir is None:
+                return
+            if self._p2pdir_follow and not self._p2pdir_follow.done():
+                self._p2pdir_follow.cancel()
+            self._p2pdir_follow = asyncio.create_task(self.p2pdir.follow(self.http, self.p2pdir.generated))
+
+        async def p2pdir_listing(request):
+            # The maintainer's station only: read a published listing (GET
+            # ?call=) or replace its text (POST {call, text, base}).
+            if self.p2p_intake is None:
+                raise web.HTTPNotFound()
+            try:
+                if request.method == "GET":
+                    return web.json_response(self.p2p_intake.listing(request.query.get("call")))
+                try:
+                    q = await request.json()
+                    call, text, base = q.get("call"), q.get("text"), q.get("base")
+                except (ValueError, AttributeError):
+                    raise web.HTTPBadRequest(text="expected JSON {call, text, base}") from None
+                res = await self.p2p_intake.edit(call, text, base)
+            except p2p_intake.IntakeError as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=409)
+            follow()
+            return web.json_response(res)
 
         r = app.router
         r.add_get("/winlink/api/mailbox/{box}", guard(mailbox))
@@ -2035,6 +2071,8 @@ class PatEngine:
         r.add_get("/winlink/api/status", guard(status))
         r.add_get("/winlink/api/p2pdir", guard(p2pdir))
         r.add_post("/winlink/api/p2pdir/intake", guard(p2pdir_intake))
+        r.add_get("/winlink/api/p2pdir/listing", guard(p2pdir_listing))
+        r.add_post("/winlink/api/p2pdir/listing", guard(p2pdir_listing))
 
     async def _pass(self, method, path, json_out=False, **kw):
         try:

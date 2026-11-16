@@ -121,6 +121,12 @@ async def main():
 
     async def serve(request):
         state["hits"] += 1
+        state["query"] = request.query_string
+        state["cc"] = request.headers.get("Cache-Control")
+        if state.get("next_after") is not None:
+            state["next_after"] -= 1
+            if state["next_after"] <= 0:
+                state["body"], state["next_after"] = state["next"], None
         return web.Response(status=state["status"], body=state["body"], content_type="application/json")
 
     app = web.Application()
@@ -181,6 +187,27 @@ async def main():
             big = P.Directory(url, 6, cache_path=None, clock=clock)
             await big.refresh(http)
             check("oversize over the wire: refused", ("kB" in (big.view()["error"] or ""), big.view()["rows"]), (True, []))
+
+            # follow(): after a publish, refetch past caches until the new copy is in.
+            state.update(status=200, body=doc([station()]), hits=0)
+            f = P.Directory(url, 6, cache_path=None, clock=clock)
+            await f.refresh(http)
+            before = f.generated
+            state.update(hits=0, next=doc([station(), station("K7NGS", grid="CN86")],
+                                          generated="2026-11-16T13:39:59Z"), next_after=3)
+            got = await f.follow(http, before, first_s=0, every_s=0, tries=6)
+            check("follow: stops once the new copy is in", (got, state["hits"], f.generated),
+                  (True, 3, "2026-11-16T13:39:59Z"))
+            check("follow: the new row served", "K7NGS" in [r["call"] for r in f.view()["rows"]], True)
+            check("follow: each try asks past web caches", (state["query"].startswith("t="), state["cc"]),
+                  (True, "no-cache"))
+            check("follow: not following once done", f.view()["following"], False)
+            state.update(hits=0)
+            got = await f.follow(http, f.generated, first_s=0, every_s=0, tries=4)
+            check("follow: no change -> gives up after its tries, no more", (got, state["hits"]), (False, 4))
+            state.update(hits=0)
+            await f.refresh(http)
+            check("a plain refresh still honours refresh_hours after a follow", state["hits"], 0)
     finally:
         await runner.cleanup()
 

@@ -419,6 +419,10 @@ body.tx .tx-meters { opacity: 1; }
   background: rgba(255,255,255,.03); border-radius: 4px; }
 .wl-intake-flag, .wl-intake-err { font: 11px var(--mono); color: var(--warm); }
 .wl-intake-do { display: flex; gap: 6px; margin-top: 2px; }
+.wl-intake-listed { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px;
+  border-bottom: 1px dashed var(--line); font-size: 12px; }
+textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical; color: inherit;
+  border: 1px solid var(--line); }
 .wl-dir-off:hover { background: transparent; color: var(--muted); }
 .wl-dir-head { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; font-size: 12px;
   border-bottom: 1px solid var(--line); }
