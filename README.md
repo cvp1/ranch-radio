@@ -299,10 +299,17 @@ to that `directory` block. Listing requests in the Winlink inbox (subject
 what it asks (list, confirm or remove), the exact text that will be
 published, and the directory's own check of it. **Publish** writes the
 listing, checks the whole directory with its build, commits and pushes, and
-moves that station's request messages to the archive; the directory updates
-a few minutes later. **Dismiss** only archives them. The callsign is always
-the sender's; a message from an internet address can only be dismissed.
-Nothing here replies to the station.
+moves that station's request messages to the archive. The station then
+fetches the directory again until the change is in (usually a minute or
+two; it gives up after about 13 minutes and the normal refresh carries on),
+and the list updates by itself. **Dismiss** only archives them. The callsign
+is always the sender's; a message from an internet address can only be
+dismissed. Nothing here replies to the station.
+
+Below the requests, the published listings are named; click one to edit its
+text (to fix a frequency, say). **Save to directory** checks it the same way,
+commits `listings: edit CALL` and pushes; the listing's confirmed date stays.
+If the listing changed after you opened it, the save is refused.
 
 **Listening for calls (a listen window).** So that others can leave mail
 at your station when the internet or the gateways are down, the Winlink
