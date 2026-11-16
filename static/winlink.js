@@ -20,6 +20,8 @@ const winlink = (() => {
   const MODEM_LABEL = { ardop: "ARDOP", varahf: "VARA HF" };
   const isHF = (kind) => kind in MODEM_LABEL;
   const PLACEHOLDER = { ardop: "ardop:///CALL?bw=2000MAX&freq=kHz", varahf: "varahf:///CALL?bw=500&freq=kHz" };
+  // The bandwidths Pat accepts in a peer URL's bw= (Hz); none: the modem's default.
+  const PEER_BW = { varahf: [500, 2300, 2750], ardop: [200, 500, 1000, 2000] };
   let mode = store.get("wl.mode", "gateway");   // "gateway" | "peer" (P2P)
   // The message in the read pane: {box, mid, m}. Every action reads it from
   // here, never from the DOM. readGen drops a read() answer that comes back
@@ -421,10 +423,32 @@ const winlink = (() => {
       const host = $("#wl-peer-host").value.trim();
       return `telnet://${me}${pass ? `:${show ? "***" : encodeURIComponent(pass)}` : ""}@${host}/${call}`;
     }
-    const scheme = kind === "packet" ? "ax25+agwpe"
-      : perModem() ? kind : ($("#wl-peer-modem").value || modems[0] || "ardop");
+    const scheme = peerScheme();
     const khz = $("#wl-peer-freq").value.trim();
-    return `${scheme}:///${call}${khz ? `?freq=${encodeURIComponent(khz)}` : ""}`;
+    const bw = PEER_BW[scheme] ? $("#wl-peer-bw").value : "";
+    const q = [bw && `bw=${encodeURIComponent(bw)}`, khz && `freq=${encodeURIComponent(khz)}`].filter(Boolean);
+    return `${scheme}:///${call}${q.length ? `?${q.join("&")}` : ""}`;
+  }
+
+  function peerScheme() {
+    const kind = viaKind();
+    return kind === "packet" ? "ax25+agwpe"
+      : perModem() ? kind : ($("#wl-peer-modem").value || modems[0] || "ardop");
+  }
+
+  // The bandwidth list for the peer's modem; a pick that still fits is kept.
+  function fillPeerBw() {
+    const sel = $("#wl-peer-bw");
+    const list = viaKind() === "telnet" ? null : PEER_BW[peerScheme()];
+    sel.hidden = !list;
+    const key = (list || []).join();
+    if (sel.dataset.list !== key) {
+      const keep = sel.value;
+      sel.innerHTML = `<option value="">Default bandwidth</option>` +
+        (list || []).map((b) => `<option value="${b}">${b} Hz</option>`).join("");
+      sel.dataset.list = key;
+      sel.value = (list || []).map(String).includes(keep) ? keep : "";
+    }
   }
 
   // What is missing before a peer can be called (null = ready).
@@ -435,6 +459,7 @@ const winlink = (() => {
   }
 
   function peerChanged() {
+    fillPeerBw();
     $("#wl-url").value = peerUrl(true);
     $("#wl-url").dataset.peer = "1";
     resetConfirm();
@@ -611,6 +636,8 @@ const winlink = (() => {
     if (kind !== "packet" && !perModem()) $("#wl-peer-modem").value = kind;
     $("#wl-peer-call").value = s.call;
     $("#wl-peer-freq").value = String(e.dial_khz);
+    fillPeerBw();
+    $("#wl-peer-bw").value = PEER_BW[peerScheme()]?.includes(e.bw_hz) ? String(e.bw_hz) : "";
     peerChanged();
     renderDirectory();
   }
@@ -1023,6 +1050,7 @@ const winlink = (() => {
   for (const c of $("#wl-mode").children) c.onclick = () => setMode(c.dataset.v);
   for (const id of ["#wl-peer-call", "#wl-peer-freq", "#wl-peer-host", "#wl-peer-pass"]) $(id).oninput = peerChanged;
   $("#wl-peer-modem").onchange = peerChanged;
+  $("#wl-peer-bw").onchange = peerChanged;
   $("#wl-connect").onclick = connectClick;
   $("#wl-stop").onclick = () => send({ t: "winlink_stop" });
   $("#wl-listen-btn").onclick = listenClick;

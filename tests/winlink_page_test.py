@@ -479,11 +479,22 @@ try:
         check("A-3 HF (ARDOP): ardop:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
               "ardop:///N0XYZ?freq=7101.5")
         check("A-3   one modem: no modem picker", b.js(f"({VISIBLE})('#wl-peer-modem')"), False)
+        check("A-3 HF: a bandwidth picker with ARDOP's widths, the modem's default first",
+              (b.js(f"({VISIBLE})('#wl-peer-bw')"),
+               b.js("[...document.querySelectorAll('#wl-peer-bw option')].map((o) => o.value)")),
+              (True, ["", "200", "500", "1000", "2000"]))
+        b.js("{ const s = document.querySelector('#wl-peer-bw'); s.value = '500'; s.dispatchEvent(new Event('change')) }")
+        check("A-3 HF: a picked bandwidth goes in the URL", b.js("document.querySelector('#wl-url').value"),
+              "ardop:///N0XYZ?bw=500&freq=7101.5")
+        b.js("{ const s = document.querySelector('#wl-peer-bw'); s.value = ''; s.dispatchEvent(new Event('change')) }")
+        check("A-3 HF: back to the default, no bw=", b.js("document.querySelector('#wl-url').value"),
+              "ardop:///N0XYZ?freq=7101.5")
         check("A-3 the hub's radio is a via", bool(b.wait("!!document.querySelector('#wl-via option[value=packet]')", 10)), True)
         set_via("packet")
         type_in("#wl-peer-freq", "145010")
         check("A-3 packet hub: ax25+agwpe:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
               "ax25+agwpe:///N0XYZ?freq=145010")
+        check("A-3 packet hub: no bandwidth picker", b.js(f"({VISIBLE})('#wl-peer-bw')"), False)
         set_via("telnet")
         check("A-3 telnet: host and password fields, no frequency",
               (b.js(f"({VISIBLE})('#wl-peer-host')"), b.js(f"({VISIBLE})('#wl-peer-freq')")), (True, False))
@@ -579,9 +590,14 @@ try:
         check("VARA peer from the VARA via: varahf:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
               "varahf:///N0XYZ?freq=3588.5")
         check("VARA peer: no separate modem picker (the via decides)", b.js(f"({VISIBLE})('#wl-peer-modem')"), False)
+        check("VARA peer: VARA's bandwidths", b.js("[...document.querySelectorAll('#wl-peer-bw option')].map((o) => o.value)"),
+              ["", "500", "2300", "2750"])
+        b.js("{ const s = document.querySelector('#wl-peer-bw'); s.value = '2300'; s.dispatchEvent(new Event('change')) }")
+        check("VARA peer: bw=2300 in the URL", b.js("document.querySelector('#wl-url').value"),
+              "varahf:///N0XYZ?bw=2300&freq=3588.5")
         set_via("ic7300")
-        check("VARA peer from the ARDOP via: ardop:///CALL?freq=", b.js("document.querySelector('#wl-url').value"),
-              "ardop:///N0XYZ?freq=3588.5")
+        check("VARA peer from the ARDOP via: ardop:///CALL?freq= (2300 isn't an ARDOP width: back to default)",
+              b.js("document.querySelector('#wl-url').value"), "ardop:///N0XYZ?freq=3588.5")
         b.js("document.querySelector('#wl-mode [data-v=gateway]').click()")
         check("no JS errors in the VARA cases", b.js("window.__errs"), [])
     finally:
