@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Edit a published P2P directory listing.** On the maintainer's station
+  the Winlink page names the published listings; a click opens one's text
+  in an editor, and Save checks it with the directory's parser and build,
+  commits and pushes. The confirmed date stays; an edit over a listing that
+  changed since it was opened is refused.
+- **The directory follows a publish.** After a Publish or an edit, the
+  station refetches the directory (past web caches) until the change is in,
+  bounded to about 13 minutes, and the page updates by itself, instead of
+  waiting up to 6 hours for the next refresh.
 - **Bandwidth for a Winlink peer call.** The Peer row has a bandwidth
   picker beside the frequency for HF modems (VARA HF 500/2300/2750 Hz,
   ARDOP 200/500/1000/2000 Hz; left on Default, the modem picks). A pick goes

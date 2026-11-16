@@ -15,6 +15,9 @@ contract, and Pat is a small in-process stand-in serving the inbox.
   refusals leave everything as it was: a dirty clone, a build that fails
   (the commit is undone, nothing pushed, nothing archived), a stale MID
   dismiss: archives only, nothing committed
+  edit: a published listing's text replaced, its date kept, one commit;
+        refused (nothing changed) on a stale base, a parser or build refusal,
+        no change, a station not listed
 
     .venv/bin/python tests/p2p_intake_test.py
 """
@@ -204,6 +207,43 @@ async def main():
         await it.act(http, pat, "HHH1", "publish")
         check("remove: both files gone", (origin_file("listings/K7NGS.txt"), origin_file("listings/K7NGS.json")),
               (None, None))
+
+        # edit: the maintainer corrects a published listing
+        check("listed: the calls in the clone", it.listed(), ["N0OLD"])
+        cur = it.listing("n0old")
+        check("listing: its text and date", (cur["call"], cur["text"], cur["confirmed"]),
+              ("N0OLD", old_txt, "2026-11-14"))
+        try:
+            it.listing("K7NGS")
+            check("listing: not listed refused", "shown", "refused")
+        except I.IntakeError as e:
+            check("listing: not listed refused", "isn't listed" in str(e), True)
+
+        async def edit_refused(call, text, base, why_part, name):
+            before = origin_head()
+            try:
+                await it.edit(call, text, base)
+                check(name, "edited", "refused")
+            except I.IntakeError as e:
+                check(name, (why_part in str(e), origin_head() == before, git(repo, "status", "--porcelain")),
+                      (True, True, ""))
+
+        new_txt = "P2PDIR 1\r\ngrid: DM79\r\nentry: 145050 PACKET 1200 sked evenings\r\n"
+        await edit_refused("N0OLD", new_txt, "P2PDIR 1\nstale\n", "changed since", "edit: a stale base refused")
+        await edit_refused("N0OLD", "grid: DM79\n", old_txt, "no-header", "edit: the parser's refusal shown")
+        await edit_refused("N0OLD", old_txt + "BUILDFAIL\n", old_txt, "build refused", "edit: a failing build undone")
+        await edit_refused("N0OLD", old_txt + "\n\n", old_txt, "nothing changed", "edit: no change refused")
+        await edit_refused("K7NGS", new_txt, "", "isn't listed", "edit: a station not listed refused")
+        await edit_refused("not-a-call", new_txt, "", "not a callsign", "edit: a non-callsign refused")
+        before = origin_head()
+        res = await it.edit("N0OLD", new_txt, old_txt)
+        check("edit: ok, one commit pushed", (res["ok"], git(origin, "rev-list", "--count", f"{before}..main")),
+              (True, "1"))
+        check("edit: the new text, LF line ends", origin_file("listings/N0OLD.txt"),
+              "P2PDIR 1\ngrid: DM79\nentry: 145050 PACKET 1200 sked evenings\n")
+        check("edit: the confirmed date unchanged", json.loads(origin_file("listings/N0OLD.json"))["confirmed"],
+              "2026-11-14")
+        check("edit: the commit says so", git(origin, "log", "-1", "--format=%s", "main"), "listings: edit N0OLD")
 
         # dismiss archives only
         before = origin_head()

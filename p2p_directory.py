@@ -30,6 +30,11 @@ log = logging.getLogger("p2p_directory")
 MAX_BYTES = 512 * 1024
 FETCH_TIMEOUT_S = 10
 RETRY_S = 300            # after a failed fetch, the next try waits this long
+# After the maintainer publishes, follow() refetches until the new copy is
+# there: the site rebuilds in ~40 s; each try asks past any web cache.
+FOLLOW_FIRST_S = 45
+FOLLOW_EVERY_S = 60
+FOLLOW_TRIES = 12        # ~13 min, then give up (the normal refresh carries on)
 CACHE_FILE = "p2p-directory.json"
 SCHEMA = 1
 
@@ -179,6 +184,7 @@ class Directory:
         self.fetched = None          # wall time of the copy we hold
         self.error = None            # why the last fetch failed (None after a good one)
         self._tried = None           # wall time of the last attempt
+        self.following = False       # follow() running: the page checks back sooner
         self._lock = asyncio.Lock()
         self._load_cache()
 
@@ -215,18 +221,22 @@ class Directory:
             return False
         return self.fetched is None or now - self.fetched >= self.refresh_s
 
-    async def refresh(self, session, force=False):
-        """Fetch if due (or forced, still at most once per RETRY_S after a failure)."""
+    async def refresh(self, session, force=False, bust=False):
+        """Fetch if due (or forced, at most once per 10 s). bust: past web
+        caches (a query the site ignores), never throttled; follow() only."""
         async with self._lock:
-            if not force and not self.due():
+            if not force and not bust and not self.due():
                 return
-            if force and self._tried is not None and self.clock() - self._tried < 10:
+            if force and not bust and self._tried is not None and self.clock() - self._tried < 10:
                 return
             self._tried = self.clock()
+            url = self.url
+            if bust:
+                url += ("&" if "?" in url else "?") + f"t={int(self.clock())}"
             try:
                 timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT_S)
-                async with session.get(self.url, timeout=timeout,
-                                       headers={"Accept": "application/json"}) as r:
+                async with session.get(url, timeout=timeout,
+                                       headers={"Accept": "application/json", "Cache-Control": "no-cache"}) as r:
                     if r.status != 200:
                         raise DirectoryError(f"the directory answered HTTP {r.status}")
                     # read(n) may return less than n: read to EOF or one byte past the cap
@@ -247,6 +257,24 @@ class Directory:
             if dropped:
                 log.info("p2p directory: %d row(s) dropped as malformed", dropped)
 
+    async def follow(self, session, before, first_s=FOLLOW_FIRST_S, every_s=FOLLOW_EVERY_S, tries=FOLLOW_TRIES):
+        """After a publish: refetch until the file's `generated` moves on from
+        `before`, at most `tries` times. True when the new copy arrived."""
+        self.following = True
+        try:
+            await asyncio.sleep(first_s)
+            for i in range(tries):
+                await self.refresh(session, bust=True)
+                if self.generated != before:
+                    log.info("p2p directory: the published change is in (try %d)", i + 1)
+                    return True
+                await asyncio.sleep(every_s)
+            log.info("p2p directory: the published change didn't show in %d tries; the normal refresh "
+                     "carries on", tries)
+            return False
+        finally:
+            self.following = False
+
     def view(self, here_grid=None, mycall=None):
         now = self.clock()
         base = mycall.split("-")[0].upper() if isinstance(mycall, str) and mycall else None
@@ -258,7 +286,7 @@ class Directory:
         return {"enabled": True, "url": self.url, "rows": rows, "dropped": self.dropped,
                 "generated": self.generated, "age_s": age,
                 "stale": age is not None and age > self.refresh_s * 2,
-                "error": self.error,
+                "error": self.error, "following": self.following,
                 "reason": None if self.fetched is not None else
                           (f"No copy of the directory yet: {self.error}" if self.error
                            else "Fetching the directory…")}

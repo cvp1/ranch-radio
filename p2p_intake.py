@@ -11,7 +11,11 @@ winlink.directory.maintain = the path of a clone of the directory repo
   - act(..., "publish") writes what the operator sent (a listing, `confirm` or
     `remove`), checks the whole directory with the repo's own build (--strict),
     commits, pushes, then moves that station's request messages to the archive;
-  - act(..., "dismiss") only archives them.
+  - act(..., "dismiss") only archives them;
+  - edit(call, text, base) replaces a published listing's text (the
+    maintainer's correction), checked and pushed the same way; the confirmed
+    date stays, and an edit over a listing that changed since it was opened
+    is refused.
 
 Identity (the directory's SPEC.md): the callsign is the sender of a Winlink
 message, never anything in the body; mail from an internet address (Pat's
@@ -206,7 +210,8 @@ class Intake:
             return {"ok": True, "call": req.get("call"), "kind": req["kind"], "commit": commit,
                     "archived": archived}
 
-    async def _publish(self, req):
+    async def _ready(self):
+        """Check the clone, bring it up to date; the commit a change starts from."""
         why = self.why_not()
         if why:
             raise IntakeError(why)
@@ -215,26 +220,13 @@ class Intake:
         if await self._git("rev-parse", "--abbrev-ref", "HEAD") != "main":
             raise IntakeError(f"{self.repo} is not on main")
         await self._git("pull", "-q", "--ff-only")
-        start = await self._git("rev-parse", "HEAD")
-        call, kind = req["call"], req["kind"]
-        txt, meta = self._path(call, "txt"), self._path(call, "json")
-        rel = [os.path.relpath(txt, self.repo), os.path.relpath(meta, self.repo)]
+        return await self._git("rev-parse", "HEAD")
+
+    async def _commit_push(self, start, subject, body, change):
+        """Apply `change` (writes and stages files), check the whole directory
+        with the repo's build, commit, push. Any failure: back to `start`."""
         try:
-            if kind == "remove":
-                await self._git("rm", "-q", "--", *rel)
-            else:
-                if kind == "listing":
-                    parsed, why = await self.parse(call, req["text"])
-                    if not parsed:
-                        raise IntakeError(why)
-                    with open(txt, "w", encoding="utf-8") as f:
-                        f.write(req["text"])
-                elif not os.path.exists(txt):
-                    raise IntakeError(f"{call} isn't listed, so there is nothing to confirm")
-                with open(meta, "w", encoding="utf-8") as f:
-                    json.dump({"confirmed": req["confirmed"], "source": "maintainer"}, f)
-                    f.write("\n")
-                await self._git("add", "--", *rel)
+            await change()
             out = tempfile.mkdtemp(prefix="p2pdir-build-")
             try:
                 rc, o, e = await self._run(self.python, *PY_FLAGS, "build.py", "--strict", "--out", out)
@@ -242,15 +234,99 @@ class Intake:
                 shutil.rmtree(out, ignore_errors=True)
             if rc:
                 raise IntakeError(f"the directory build refused it: {(e or o).strip()[-300:]}")
-            what = {"listing": "list", "confirm": "confirm", "remove": "remove"}[kind]
-            await self._git("commit", "-q", "-m", f"listings: {what} {call}",
-                            "-m", f"Winlink message {req['mid']} from {call}, {req.get('date')}.")
+            await self._git("commit", "-q", "-m", subject, "-m", body)
             await self._git("push", "-q", "origin", "HEAD:main")
         except BaseException:
             # Back to where this started: the tree was clean and on `start`.
             await self._run("git", "reset", "-q", "--hard", start)
             raise
         return await self._git("rev-parse", "HEAD")
+
+    async def _publish(self, req):
+        start = await self._ready()
+        call, kind = req["call"], req["kind"]
+        txt, meta = self._path(call, "txt"), self._path(call, "json")
+        rel = [os.path.relpath(txt, self.repo), os.path.relpath(meta, self.repo)]
+
+        async def change():
+            if kind == "remove":
+                await self._git("rm", "-q", "--", *rel)
+                return
+            if kind == "listing":
+                parsed, why = await self.parse(call, req["text"])
+                if not parsed:
+                    raise IntakeError(why)
+                with open(txt, "w", encoding="utf-8") as f:
+                    f.write(req["text"])
+            elif not os.path.exists(txt):
+                raise IntakeError(f"{call} isn't listed, so there is nothing to confirm")
+            with open(meta, "w", encoding="utf-8") as f:
+                json.dump({"confirmed": req["confirmed"], "source": "maintainer"}, f)
+                f.write("\n")
+            await self._git("add", "--", *rel)
+
+        what = {"listing": "list", "confirm": "confirm", "remove": "remove"}[kind]
+        return await self._commit_push(start, f"listings: {what} {call}",
+                                       f"Winlink message {req['mid']} from {call}, {req.get('date')}.", change)
+
+    # --- the maintainer editing a published listing
+
+    def listed(self):
+        """The callsigns listed in the clone, sorted."""
+        try:
+            names = os.listdir(os.path.join(self.repo, "listings"))
+        except OSError:
+            return []
+        return sorted(n[:-4] for n in names if n.endswith(".txt") and CALL_RE.fullmatch(n[:-4]))
+
+    def listing(self, call):
+        """{call, text, confirmed} of a published listing, or IntakeError."""
+        call = str(call or "").upper()
+        if not CALL_RE.fullmatch(call):
+            raise IntakeError("not a callsign")
+        cur = self.current(call)
+        if not cur:
+            raise IntakeError(f"{call} isn't listed")
+        return {"call": call, **cur}
+
+    async def edit(self, call, text, base):
+        """Replace a published listing's text. `base` is the text the editor
+        opened; if the listing changed since, the edit is refused. The
+        confirmed date stays: an edit is the maintainer's, not the operator
+        confirming."""
+        call = str(call or "").upper()
+        if not CALL_RE.fullmatch(call):
+            raise IntakeError("not a callsign")
+        if not isinstance(text, str) or not isinstance(base, str):
+            raise IntakeError("expected the listing's text")
+        if len(text.encode()) > MAX_BODY:
+            raise IntakeError(f"the listing is over {MAX_BODY} bytes")
+        text = listing_text(text)
+        async with self.lock:
+            start = await self._ready()
+            cur = self.current(call)
+            if not cur:
+                raise IntakeError(f"{call} isn't listed, so there is nothing to edit")
+            if cur["text"] != base:
+                raise IntakeError(f"{call}'s listing changed since you opened it; open it again")
+            if text == cur["text"]:
+                raise IntakeError("nothing changed")
+            parsed, why = await self.parse(call, text)
+            if not parsed:
+                raise IntakeError(why)
+            txt = self._path(call, "txt")
+
+            async def change():
+                with open(txt, "w", encoding="utf-8") as f:
+                    f.write(text)
+                await self._git("add", "--", os.path.relpath(txt, self.repo))
+
+            commit = await self._commit_push(
+                start, f"listings: edit {call}",
+                "Edited by the maintainer on the station's Winlink page; the confirmed date is unchanged.",
+                change)
+            log.info("p2p intake: edit %s as %s", call, commit[:7])
+            return {"ok": True, "call": call, "commit": commit}
 
 
 async def _pat_json(http, url):

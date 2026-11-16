@@ -471,7 +471,8 @@ const winlink = (() => {
   // file). A click on a row fills the Peer fields: call, the DIAL frequency
   // and the via/modem. It never connects: Connect and its confirm stay the
   // operator's, and the server checks the URL exactly as if it were typed.
-  let dir = null, dirAt = 0, dirLoading = false, picked = null;
+  let dir = null, dirAt = 0, dirLoading = false, picked = null, followTimer = null;
+  const FOLLOW_POLL_MS = 15000;     // while the server follows a publish, look again this often
   const DIR_KIND = { VARA_HF: "varahf", ARDOP: "ardop", PACKET: "packet" };
   const DIR_MODE = { VARA_HF: "VARA HF", VARA_FM: "VARA FM", ARDOP: "ARDOP", PACTOR: "PACTOR",
                      PACKET: "Packet", ROBUST_PACKET: "Robust Packet" };
@@ -498,8 +499,9 @@ const winlink = (() => {
     return null;
   }
 
-  async function loadDirectory(force = false) {
-    if (dirLoading || (!force && dir && Date.now() - dirAt < DIR_REFRESH_MS)) return;
+  // force: the server refetches; now: just ask the server again (its copy).
+  async function loadDirectory(force = false, now = false) {
+    if (dirLoading || (!force && !now && dir && Date.now() - dirAt < DIR_REFRESH_MS)) return;
     dirLoading = true;
     if (!dir) $("#wl-p2pdir").innerHTML = `<div class="wl-empty">Loading the P2P directory…</div>`;
     try {
@@ -511,6 +513,10 @@ const winlink = (() => {
       dirAt = Date.now();
     }
     renderDirectory();
+    // After a publish the server refetches until the change is in (bounded
+    // there); the page looks again meanwhile so the new row appears by itself.
+    if (dir.following && !followTimer && mode === "peer")
+      followTimer = setTimeout(() => { followTimer = null; loadDirectory(false, true); }, FOLLOW_POLL_MS);
   }
 
   function renderDirectory() {
@@ -529,6 +535,10 @@ const winlink = (() => {
     const head = [`P2P directory · ${(dir.rows || []).length} stations`];
     if (dir.age_s != null) head.push(`fetched ${ago(dir.age_s)}`);
     if (dir.error && dir.age_s != null) head.push(`couldn't refresh (${dir.error}), showing the last copy`);
+    if (dir.following) head.push("updating after a publish…");
+    // A re-render (the page looking again) must not take the cursor out of the editor.
+    const ta = editorEl?.querySelector("textarea");
+    const caret = ta && document.activeElement === ta ? [ta.selectionStart, ta.selectionEnd] : null;
     el.innerHTML = `<div class="wl-dir-head"><span class="wl-dim">${esc(head.join(" · "))}</span>` +
       (/^https?:\/\//.test(spec) ? `<a href="${esc(spec)}" target="_blank" rel="noopener">Get listed</a>` : "") +
       `</div>` + (dir.reason && !items.length ? `<div class="wl-empty">${esc(dir.reason)}</div>` : "")
@@ -551,6 +561,7 @@ const winlink = (() => {
       if (!why) row.onclick = () => pickDirectory(s, e);
       el.append(row);
     }
+    if (caret && ta.isConnected) { ta.focus(); ta.setSelectionRange(...caret); }
   }
 
   // The maintainer's station only (dir.intake present): listing requests in
@@ -561,7 +572,7 @@ const winlink = (() => {
                         remove: "asks to be removed", refused: "can't be listed" };
   let intakeBusy = null;
   function renderIntake(el) {
-    if (!dir.intake && !dir.intake_error) return;
+    if (!dir.maintainer) return;
     const box = document.createElement("div");
     box.className = "wl-intake";
     const reqs = dir.intake || [];
@@ -597,7 +608,83 @@ const winlink = (() => {
       }
       box.append(card);
     }
+    renderListed(box);
     el.prepend(box);
+  }
+
+  // The maintainer's station: the published listings, each editable. The
+  // editor's node is kept across re-renders so typing in it isn't lost.
+  let editing = null, editorEl = null, editBusy = false;   // editing = {call, base, confirmed}
+  function renderListed(box) {
+    const calls = dir.listed || [];
+    if (!calls.length) return;
+    const line = document.createElement("div");
+    line.className = "wl-intake-listed";
+    line.innerHTML = `<span class="wl-dim">Published listings · click to edit:</span>`;
+    for (const c of calls) {
+      const b = document.createElement("button");
+      b.className = "chip chip-mini" + (editing?.call === c ? " on" : "");
+      b.textContent = c;
+      b.dataset.edit = c;
+      b.disabled = editBusy;
+      b.onclick = () => openEdit(c);
+      line.append(b);
+    }
+    box.append(line);
+    if (editing) box.append(editorEl && editorEl.dataset.call === editing.call ? editorEl : makeEditor());
+  }
+
+  function makeEditor() {
+    const ed = document.createElement("div");
+    ed.className = "wl-intake-req wl-intake-edit";
+    ed.dataset.call = editing.call;
+    ed.innerHTML = `<div><span class="wl-who">${esc(editing.call)}</span> <span class="wl-dim">· editing the ` +
+      `published listing · confirmed ${esc(editing.confirmed || "?")}; an edit keeps that date</span></div>` +
+      `<textarea class="wl-intake-text" rows="6" spellcheck="false" autocomplete="off"></textarea>` +
+      `<div class="wl-intake-do"><button class="chip chip-mini" data-do="save">Save to directory</button>` +
+      `<button class="chip chip-mini" data-do="cancel">Cancel</button></div>`;
+    ed.querySelector("textarea").value = editing.base;
+    ed.querySelector("[data-do=save]").onclick = saveEdit;
+    ed.querySelector("[data-do=cancel]").onclick = () => { editing = editorEl = null; renderDirectory(); };
+    editorEl = ed;
+    return ed;
+  }
+
+  async function openEdit(call) {
+    if (editBusy) return;
+    try {
+      const res = await api(`${BASE}winlink/api/p2pdir/listing?call=${encodeURIComponent(call)}`);
+      const out = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      if (!res.ok || out.ok === false) throw new Error(out.error || `HTTP ${res.status}`);
+      editing = { call: out.call, base: out.text, confirmed: out.confirmed };
+      editorEl = null;
+      renderDirectory();
+      editorEl?.querySelector("textarea")?.focus();
+    } catch (e) {
+      toast(`Can't open ${call}: ${e.message}`, "warn");
+    }
+  }
+
+  async function saveEdit() {
+    if (editBusy || !editing || !editorEl) return;
+    editBusy = true;
+    const { call, base } = editing;
+    const text = editorEl.querySelector("textarea").value;
+    for (const b of editorEl.querySelectorAll("button")) b.disabled = true;
+    try {
+      const res = await api(`${BASE}winlink/api/p2pdir/listing`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ call, text, base }) });
+      const out = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      if (!res.ok || !out.ok) throw new Error(out.error || `HTTP ${res.status}`);
+      toast(`${call} saved (${(out.commit || "").slice(0, 7)}); the directory updates in a few minutes`);
+      editing = editorEl = null;
+    } catch (e) {
+      toast(`Save failed: ${e.message}`, "warn");
+    } finally {
+      editBusy = false;
+      if (editorEl) for (const b of editorEl.querySelectorAll("button")) b.disabled = false;
+      loadDirectory(false, true);
+    }
   }
 
   async function intakeAct(r, what) {
@@ -616,7 +703,7 @@ const winlink = (() => {
       toast(`${what === "dismiss" ? "Dismiss" : "Publish"} failed: ${e.message}`, "warn");
     } finally {
       intakeBusy = null;
-      loadDirectory(true);
+      loadDirectory(false, true);
     }
   }
 
