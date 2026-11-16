@@ -170,7 +170,9 @@ try:
         b.js("document.querySelector('#wl-p2pdir [data-call=N0ARD]').click()")
         check("a click fills the call", b.js("document.querySelector('#wl-peer-call').value"), "N0ARD")
         check("a click fills the DIAL frequency", b.js("document.querySelector('#wl-peer-freq').value"), "7100")
-        check("the URL is the peer URL", b.js("document.querySelector('#wl-url').value"), "ardop:///N0ARD?freq=7100")
+        check("a click fills the listed bandwidth", b.js("document.querySelector('#wl-peer-bw').value"), "500")
+        check("the URL is the peer URL", b.js("document.querySelector('#wl-url').value"),
+              "ardop:///N0ARD?bw=500&freq=7100")
         check("the picked row is marked", b.js("document.querySelector('#wl-p2pdir [data-call=N0ARD]').classList.contains('on')"),
               True)
         time.sleep(2)            # a ceiling for a connect that must not come
@@ -184,7 +186,7 @@ try:
         b.js("document.querySelector('#wl-connect').click()")
         got = wait_for(lambda: recs(flog, "connect")[before:], 15)
         check("control: Connect + confirm reaches Pat with the picked URL", got and got[-1].get("url"),
-              "ardop:///N0ARD?freq=7100")
+              "ardop:///N0ARD?bw=500&freq=7100")
         b.js("document.querySelector('#wl-stop').click()")
         b.wait(f"!({TEXT})('#wl-state').includes('Connecting')", 20)
     finally:

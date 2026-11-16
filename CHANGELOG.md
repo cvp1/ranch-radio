@@ -7,6 +7,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Bandwidth for a Winlink peer call.** The Peer row has a bandwidth
+  picker beside the frequency for HF modems (VARA HF 500/2300/2750 Hz,
+  ARDOP 200/500/1000/2000 Hz; left on Default, the modem picks). A pick goes
+  in the URL as `bw=`; a P2P directory row fills it from the listing.
+
 - **Publish P2P directory listings from the Winlink page.** On the
   directory maintainer's station (`winlink.directory.maintain`), listing
   requests in the inbox appear above the directory in Peer mode, showing the
