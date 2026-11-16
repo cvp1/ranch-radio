@@ -16,6 +16,10 @@ package. This side:
     that schema before the bridge writes them to the node
   - runs one traceroute at a time (mesh_trace), keeps the last result per
     node for every page, and passes "heard a packet from X" on as activity
+  - with auto_trace on (off by default: it transmits), traces a node by
+    itself when it is heard over relays and has no trace yet or its hop
+    count changed since its last one (auto_trace_candidates); queued behind
+    TRACE_GAP_S, capped per hour, one per node per AUTO_TRACE_REPEAT_S
   - replies and emoji reactions (mesh_send reply_to / emoji), checked
     against a message it holds
   - asks its own node for its neighbours now and then (SELF_NEIGHBORS_S;
@@ -75,6 +79,12 @@ SELF_NEIGHBORS_S = float(os.environ.get("MESH_SELF_NEIGHBORS_S", "1800"))
 SELF_NEIGHBORS_FIRST_S = float(os.environ.get("MESH_SELF_NEIGHBORS_FIRST_S", "20"))
 EMOJI_MAX_BYTES = 16          # a reaction is one emoji (with modifiers), not a message
 NODE_ACTIONS = {"ignore": "ignore", "unignore": "unignore", "remove": "remove"}
+# Auto traceroute (idea from MeshSense 1.0.18, 2026-11-16, which traces on every
+# hop-count change with no cap; a flapping node there floods the channel).
+AUTO_TRACE_PER_HOUR = 6       # default cap; the host file's mesh.auto_trace_per_hour overrides (1..30)
+AUTO_TRACE_PER_HOUR_MAX = 30
+AUTO_TRACE_REPEAT_S = float(os.environ.get("MESH_AUTO_TRACE_REPEAT_S", "3600"))  # one node, at most this often
+AUTO_TRACE_QUEUE = 20         # waiting nodes; more are dropped until the queue drains
 LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
 NEIGHBORS_KEEP = 300          # nodes' NeighborInfo kept, newest first
 
@@ -114,6 +124,52 @@ def hears_us(me, neighbors, traces, messages, now=None):
     return sorted(best.values(), key=lambda r: -r["t"])
 
 
+def trace_hops(tr):
+    """How many relays a traceroute found towards its node (None if unknown)."""
+    if tr.get("hops") is not None:
+        return tr["hops"]
+    if tr.get("state") == "done" and isinstance(tr.get("route"), list):
+        return len(tr["route"])
+    return None
+
+
+def auto_trace_candidates(nodes, traces, me, since, auto_last, now, repeat_s=None):
+    """Nodes worth a traceroute of our own accord, oldest-heard first. A node
+    qualifies when it was heard since SINCE (this connection: the node DB's
+    stale entries never trigger), over at least one relay, not over MQTT, not
+    ignored, and either has no finished trace or its hop count now differs
+    from the trace's. A node traced automatically in the last REPEAT_S waits."""
+    repeat_s = AUTO_TRACE_REPEAT_S if repeat_s is None else repeat_s
+    out = []
+    for n in nodes or []:
+        nid, hops, heard = n.get("id"), n.get("hops"), n.get("last_heard") or 0
+        if (not nid or nid == me or n.get("me") or n.get("mqtt") or n.get("ignored")
+                or not NODE_ID.match(str(nid)) or not isinstance(hops, int) or hops < 1
+                or heard < since):
+            continue
+        if now - auto_last.get(nid, -1e18) < repeat_s:
+            continue
+        tr = (traces or {}).get(nid)
+        if tr and tr.get("state") == "running":
+            continue
+        if tr and tr.get("state") == "done" and trace_hops(tr) == hops:
+            continue
+        out.append((heard, nid))
+    return [nid for _, nid in sorted(out)]
+
+
+def auto_trace_wait(now, trace_t, running, sent, per_hour):
+    """Seconds until an automatic trace may go (0: now), or None while one
+    is running. SENT is the times of automatic traces in the last hour."""
+    if running:
+        return None
+    wait = TRACE_GAP_S - (now - trace_t)
+    recent = sorted(t for t in sent if now - t < 3600)
+    if len(recent) >= per_hour:
+        wait = max(wait, recent[-per_hour] + 3600 - now)
+    return max(0.0, wait)
+
+
 class MeshEngine:
     def __init__(self, station, args):
         self.station = station
@@ -145,6 +201,13 @@ class MeshEngine:
         self._req_refs = {}           # request ref -> (node id, kind)
         self.neighbors = {}           # node id -> {"t", "neighbors": [{"id", "snr"}]}
         self._self_nb = None          # the timer for asking our own node for its neighbours
+        self.auto_trace = bool(getattr(args, "mesh_auto_trace", False))
+        self.auto_per_hour = int(getattr(args, "mesh_auto_trace_per_hour", None) or AUTO_TRACE_PER_HOUR)
+        self._auto_queue = {}         # node id -> time queued (insertion order is the order sent)
+        self._auto_last = {}          # node id -> when we last traced it automatically
+        self._auto_sent = deque(maxlen=AUTO_TRACE_PER_HOUR_MAX)  # times of automatic traces
+        self._auto_since = None       # when the bridge last connected: only nodes heard since count
+        self._auto_timer = None
         self._closing = False
         self._reached = False         # this run of the bridge got through to the node
         self._task = None
@@ -159,6 +222,8 @@ class MeshEngine:
         self._closing = True
         if self._self_nb is not None:
             self._self_nb.cancel()
+        if self._auto_timer is not None:
+            self._auto_timer.cancel()
         if self._task:
             self._task.cancel()
         if self.proc and self.proc.returncode is None:
@@ -268,9 +333,11 @@ class MeshEngine:
             if rec["state"] == "done":
                 self._save_links()
                 self._send_hears()
+            self._auto_kick()
         elif ev == "nodes":
             self.nodes = m["nodes"]
             self._send({"nodes": self.nodes})
+            self._auto_enqueue()
         elif ev == "neighbors":
             # The bridge holds only what it heard since it started: merge, the
             # newer report of a node wins, so a restart doesn't forget the rest.
@@ -327,6 +394,11 @@ class MeshEngine:
     def _status(self, connected, error):
         self.connected, self.error = bool(connected), error
         self._reached = self._reached or self.connected
+        if self.connected and self._auto_since is None:
+            self._auto_since = time.time()
+        elif not self.connected:
+            self._auto_since = None
+            self._auto_queue.clear()
         log.info("mesh: %s%s", "connected" if connected else "disconnected",
                  f" ({error})" if error else "")
         self._send({"status": {"connected": self.connected, "error": error}})
@@ -501,16 +573,65 @@ class MeshEngine:
         if why:
             self.station.notice(why, "warn", ws)
             return
+        await self._start_trace(to)
+
+    async def _start_trace(self, to, auto=False):
         self._ref += 1
         self._trace_ref, self._trace_t = self._ref, time.time()
+        hops = next((n.get("hops") for n in self.nodes if n.get("id") == to), None)
         self.traces.pop(to, None)
-        self.traces[to] = {"to": to, "state": "running", "t": self._trace_t}
+        self.traces[to] = {"to": to, "state": "running", "t": self._trace_t, "hops": hops}
+        if auto:
+            self.traces[to]["auto"] = True
         while len(self.traces) > TRACES_KEEP:
             self.traces.pop(next(iter(self.traces)))
         self._send({"trace": self.traces[to]})
         self.proc.stdin.write((json.dumps({"cmd": "trace", "ref": self._ref, "to": to}) + "\n").encode())
         await self.proc.stdin.drain()
-        log.info("mesh: traceroute to %s", to)
+        log.info("mesh: %straceroute to %s", "automatic " if auto else "", to)
+
+    # --- automatic traceroutes (auto_trace)
+
+    def _auto_enqueue(self):
+        if not self.auto_trace or self._auto_since is None:
+            return
+        for nid in auto_trace_candidates(self.nodes, self.traces, self._me(), self._auto_since,
+                                         self._auto_last, time.time()):
+            if nid not in self._auto_queue and len(self._auto_queue) < AUTO_TRACE_QUEUE:
+                self._auto_queue[nid] = time.time()
+        self._auto_kick()
+
+    def _auto_kick(self):
+        """Arm the timer for the next automatic trace, if one is waiting."""
+        if not self.auto_trace or not self._auto_queue or self._auto_timer is not None or self._closing:
+            return
+        wait = auto_trace_wait(time.time(), self._trace_t, self._trace_ref is not None,
+                               self._auto_sent, self.auto_per_hour)
+        if wait is None:              # a trace is running: its end kicks again
+            return
+        self._auto_timer = asyncio.get_running_loop().call_later(wait, self._auto_fire)
+
+    def _auto_fire(self):
+        self._auto_timer = None
+        if (self._closing or not self.connected or self.proc is None or self.proc.returncode is not None
+                or self._auto_since is None):
+            return
+        now = time.time()
+        if auto_trace_wait(now, self._trace_t, self._trace_ref is not None,
+                           self._auto_sent, self.auto_per_hour) != 0:
+            self._auto_kick()
+            return
+        # Still worth it? A manual trace or a new hop count may have settled it.
+        still = set(auto_trace_candidates(self.nodes, self.traces, self._me(), self._auto_since,
+                                          self._auto_last, now))
+        while self._auto_queue:
+            nid = next(iter(self._auto_queue))
+            del self._auto_queue[nid]
+            if nid in still:
+                self._auto_last[nid] = now
+                self._auto_sent.append(now)
+                asyncio.ensure_future(self._start_trace(nid, auto=True))
+                return
 
     def _peer_why(self, to, kind=None):
         if not NODE_ID.match(str(to)):
@@ -597,6 +718,7 @@ class MeshEngine:
         if rec:
             rec.update(state="failed", error=why, done_t=time.time())
             self._send({"trace": rec})
+        self._auto_kick()
 
     # --- history on disk
 

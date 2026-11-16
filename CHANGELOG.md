@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Automatic Meshtastic traceroutes (off by default).** With
+  `"auto_trace": true` in the host file's `mesh` block, the station traces a
+  node by itself when it hears it over relays and has no trace yet, or its
+  hop count changed since the last one. Only nodes heard since the node
+  connected count (not the node DB's old entries); MQTT, ignored and direct
+  nodes are skipped. One trace at a time, 30 s apart, at most
+  `auto_trace_per_hour` (default 6, 1..30) and once an hour per node; a
+  manual trace always goes first. Traces it sends are marked `auto`.
+  Idea from MeshSense, which does this with no cap.
 - **Edit a published P2P directory listing.** On the maintainer's station
   the Winlink page names the published listings; a click opens one's text
   in an editor, and Save checks it with the directory's parser and build,

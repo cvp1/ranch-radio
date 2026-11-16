@@ -41,6 +41,11 @@ class MeshAddon(Addon):
         super().__init__(host, opts)
         if not opts.get("port"):
             raise ValueError("mesh needs a \"port\" (the node's serial device)")
+        if not isinstance(opts.get("auto_trace", False), bool):
+            raise ValueError("mesh \"auto_trace\" must be true or false")   # "false" must not switch TX on
+        per_hour = opts.get("auto_trace_per_hour", 6)
+        if isinstance(per_hour, bool) or not isinstance(per_hour, int) or not 1 <= per_hour <= 30:
+            raise ValueError("mesh \"auto_trace_per_hour\" must be a whole number 1..30")
         self.args = SimpleNamespace(
             mesh_port=opts["port"],
             mesh_python=opts.get("python", "~/.local/share/venvs/meshtastic/bin/python"),
@@ -48,7 +53,9 @@ class MeshAddon(Addon):
             mesh_key=list(opts.get("keys", [])),          # the bridge expands each FILE
             mesh_log=opts.get("log", "~/.local/state/radio-remote/mesh.jsonl"),
             mesh_feed=opts.get("feed"), mesh_feed_cred=opts.get("feed_cred"),
-            mesh_feed_tx=bool(opts.get("feed_tx", False)))
+            mesh_feed_tx=bool(opts.get("feed_tx", False)),
+            # Off by default: it transmits traceroutes on its own (mesh.py auto_trace_candidates).
+            mesh_auto_trace=opts.get("auto_trace", False), mesh_auto_trace_per_hour=per_hour)
         self.engine = None
         self._last = None             # the engine before the last switch-off
 
