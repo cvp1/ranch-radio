@@ -37,6 +37,7 @@ STATION_VALUE_FLAGS = {"--winlink-pat": ("winlink", "pat"), "--winlink-pat-confi
                        "--mesh-key": ("mesh", "_key"), "--mesh-log": ("mesh", "log"), "--mesh-feed": ("mesh", "feed"),
                        "--mesh-feed-cred": ("mesh", "feed_cred"),
                        "--p2pdir-url": ("winlink", "_p2pdir_url"),
+                       "--p2pdir-maintain": ("winlink", "_p2pdir_maintain"),
                        "--winlink-listen-hf": ("winlink", "listen_hf")}
 STATION_BARE_FLAGS = {"--mesh-feed-tx": ("mesh", "feed_tx")}
 NUMERIC = {"pat_port": int, "session_max": float, "_listen_max_h": float, "listen_hf": json.loads}
@@ -223,7 +224,9 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
     # The P2P directory: off unless a test names its own (local) URL, so no
     # test ever fetches the real public file.
     p2pdir_url = wl.pop("_p2pdir_url", None)
-    wl.setdefault("directory", {"url": p2pdir_url} if p2pdir_url else False)
+    p2pdir_maintain = wl.pop("_p2pdir_maintain", None)
+    wl.setdefault("directory", {"url": p2pdir_url, **({"maintain": p2pdir_maintain} if p2pdir_maintain else {})}
+                  if p2pdir_url else False)
     listen = wl.pop("_listen", None)
     max_h = wl.pop("_listen_max_h", None)
     if listen:                                   # METHOD=MHZ -> the host file's block

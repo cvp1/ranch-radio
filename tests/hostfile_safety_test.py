@@ -196,7 +196,8 @@ refused("igate.observe not a bool", aprs_h, lambda h: h["packet"]["igate"].__set
 
 # winlink.directory (the P2P directory the Peer picker reads): false, or an
 # https URL and a refresh of 1 to 168 hours. Positive controls first.
-for ok_block in (False, {"url": "https://example.org/v1/directory.json", "refresh_hours": 12}, {}):
+for ok_block in (False, {"url": "https://example.org/v1/directory.json", "refresh_hours": 12}, {},
+                 {"maintain": "~/p2p-directory"}, {"maintain": "/srv/p2p-directory"}):
     h = copy.deepcopy(station_h)
     h["winlink"]["directory"] = ok_block
     try:
@@ -211,6 +212,11 @@ refused("winlink.directory a URL with a space", station_h,
         setp(("winlink", "directory"), {"url": "https://example.org/x --evil"}))
 refused("winlink.directory refresh 0 h", station_h, setp(("winlink", "directory"), {"refresh_hours": 0}))
 refused("winlink.directory 'yes'", station_h, setp(("winlink", "directory"), "yes"))
+refused("winlink.directory.maintain a relative path", station_h,
+        setp(("winlink", "directory"), {"maintain": "p2p-directory"}))
+refused("winlink.directory.maintain not text", station_h, setp(("winlink", "directory"), {"maintain": True}))
+refused("winlink.directory.maintain a newline in it", station_h,
+        setp(("winlink", "directory"), {"maintain": "/srv/x\n--evil"}))
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

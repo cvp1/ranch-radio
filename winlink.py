@@ -58,6 +58,8 @@ import aiohttp
 from aiohttp import web
 
 import p2p_directory
+import p2p_directory_config
+import p2p_intake
 from listen_plan import (APRS_GUARD_HZ, APRS_HZ, MIN_HOURS, PACKET_BANDS, HfListenPlan,  # noqa: F401
                          ListenError, ListenPlan, packet_band_of)
 from pat_config import pat_config_path, preflight, read_pat_config  # noqa: F401 - re-exported for callers
@@ -426,6 +428,19 @@ class PatEngine:
             cache = (os.path.join(os.path.dirname(os.path.expanduser(state)), p2p_directory.CACHE_FILE)
                      if state else None)
             self.p2pdir = p2p_directory.Directory(*dcfg, cache_path=cache)
+        # The maintainer's station only: listing requests in Pat's inbox,
+        # published to the directory repo by a click (p2p_intake).
+        self.p2p_intake = None
+        try:
+            repo = p2p_directory_config.maintain(getattr(args, "winlink_directory", None)) if dcfg else None
+        except p2p_directory.DirectoryError as e:
+            log.error("winlink: P2P directory intake off: %s", e)
+            repo = None
+        if repo:
+            self.p2p_intake = p2p_intake.Intake(repo)
+            why = self.p2p_intake.why_not()
+            if why:
+                log.error("winlink: P2P directory intake: %s", why)
 
     # --- lifecycle ---
 
@@ -1985,7 +2000,28 @@ class PatEngine:
             await d.refresh(self.http, force=request.query.get("refresh") == "1")
             fields, _ = read_pat_config(self.config_path) if self.config_path else (None, None)
             grid = (fields or {}).get("locator")
-            return web.json_response(d.view(grid if isinstance(grid, str) else None, self.mycall))
+            view = d.view(grid if isinstance(grid, str) else None, self.mycall)
+            if self.p2p_intake is not None:
+                try:
+                    view["intake"] = await self.p2p_intake.requests(self.http, self.base)
+                except p2p_intake.IntakeError as e:
+                    view["intake_error"] = str(e)
+            return web.json_response(view)
+
+        async def p2pdir_intake(request):
+            # The maintainer's click on a listing request: publish it to the
+            # directory repo, or dismiss it. Both archive the request messages.
+            if self.p2p_intake is None:
+                raise web.HTTPNotFound()
+            try:
+                q = await request.json()
+                mid, do = str(q.get("mid") or ""), str(q.get("do") or "")
+            except (ValueError, AttributeError):
+                raise web.HTTPBadRequest(text="expected JSON {mid, do}") from None
+            try:
+                return web.json_response(await self.p2p_intake.act(self.http, self.base, mid, do))
+            except p2p_intake.IntakeError as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=409)
 
         r = app.router
         r.add_get("/winlink/api/mailbox/{box}", guard(mailbox))
@@ -1998,6 +2034,7 @@ class PatEngine:
         r.add_get("/winlink/api/rmslist", guard(rmslist))
         r.add_get("/winlink/api/status", guard(status))
         r.add_get("/winlink/api/p2pdir", guard(p2pdir))
+        r.add_post("/winlink/api/p2pdir/intake", guard(p2pdir_intake))
 
     async def _pass(self, method, path, json_out=False, **kw):
         try:

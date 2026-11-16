@@ -7,6 +7,14 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Publish P2P directory listings from the Winlink page.** On the
+  directory maintainer's station (`winlink.directory.maintain`), listing
+  requests in the inbox appear above the directory in Peer mode, showing the
+  exact text to be published and the directory's own check of it. One click
+  publishes it (written, built, committed and pushed to the directory repo,
+  the request archived) or dismisses it. The callsign is always the
+  message's sender; internet mail can only be dismissed.
+
 - **A choice of map backgrounds, on every map** (`static/basemaps.js`): a menu
   beside the zoom buttons, the pick kept in the browser (one for the world
   map, one for the local maps).

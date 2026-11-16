@@ -292,6 +292,18 @@ keeps the last good copy, shown with its age when the directory can't be
 reached. Turn it off with `"directory": false` in the host file's `winlink`
 block, or point it elsewhere with `{"url": "https://…", "refresh_hours": 6}`.
 
+**Maintaining the directory.** On the station that runs the directory, add
+`"maintain": "~/p2p-directory"` (a clone of the directory repo that can push)
+to that `directory` block. Listing requests in the Winlink inbox (subject
+`P2PDIR listing`) then show above the directory in Peer mode: the station,
+what it asks (list, confirm or remove), the exact text that will be
+published, and the directory's own check of it. **Publish** writes the
+listing, checks the whole directory with its build, commits and pushes, and
+moves that station's request messages to the archive; the directory updates
+a few minutes later. **Dismiss** only archives them. The callsign is always
+the sender's; a message from an internet address can only be dismissed.
+Nothing here replies to the station.
+
 **Listening for calls (a listen window).** So that others can leave mail
 at your station when the internet or the gateways are down, the Winlink
 panel can answer stations that call yours, on one VHF/UHF packet
