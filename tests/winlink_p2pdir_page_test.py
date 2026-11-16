@@ -256,7 +256,7 @@ try:
         check("Dismiss: the list empties", b.wait(f"{CARDS}.length === 0", 15), True)
         check("Dismiss: nothing more committed", R.git(origin, "rev-list", "--count", "main"), "2")
         check("Publish: the page says the directory is updating",
-              b.wait(f"({TEXT})('#wl-p2pdir .wl-dir-head').includes('updating after a publish')", 15), True)
+              b.wait(f"({TEXT})('#wl-p2pdir > .wl-dir-head').includes('updating after a publish')", 15), True)
         # Edit a published listing: open it, change it, Save.
         chip = "#wl-p2pdir .wl-intake-listed [data-edit=K7NGS]"
         check("Edit: the published call is offered", b.wait(f"!!document.querySelector('{chip}')", 15), True)
