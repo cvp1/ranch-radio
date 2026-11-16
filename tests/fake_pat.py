@@ -156,6 +156,13 @@ BOXES = {"in": [{"MID": "ABC123", "Date": "2026-10-14T20:50:00Z",
 BODIES = {"ABC123": "Hello from the test.\r\n", "DEF456": "Attached.\r\n",
           "GHI789": "Shouting, politely.\r\n"}
 ATTACH = {("DEF456", "note.txt"): b"hello"}
+# FAKE_PAT_INBOX_ADD=<file>: more inbox messages, a JSON list in Pat's shape
+# with their Body filled (the P2P directory intake's requests).
+if os.environ.get("FAKE_PAT_INBOX_ADD"):
+    with open(os.environ["FAKE_PAT_INBOX_ADD"]) as _f:
+        for _m in json.load(_f):
+            BODIES[_m["MID"]] = _m.pop("Body", "")
+            BOXES["in"].append(dict(_m, Body=""))
 _out_ids = itertools.count()
 
 clients = set()

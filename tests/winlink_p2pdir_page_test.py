@@ -9,6 +9,11 @@ and the URL; a click NEVER connects (Pat gets no connect), and the positive
 control: Connect then its confirm does reach Pat with the picked URL; a
 stale copy shows its age when the directory can't be reached; switched off
 in the host file, the list is absent. The picker is gone in Gateway mode.
+On the maintainer's station (winlink.directory.maintain): listing requests
+in the inbox show as cards with the exact text Publish writes, HTML in it
+stays text, an internet sender can only be dismissed; Publish puts the text
+in the directory repo (a scratch clone) and the request leaves the list;
+Dismiss commits nothing.
 
     .venv/bin/python tests/winlink_p2pdir_page_test.py
 """
@@ -23,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cdp_browser  # noqa: E402
+import p2pdir_repo as R  # noqa: E402
 import testkit  # noqa: E402
 import winlink_test_lib as L  # noqa: E402
 from winlink_test_lib import fake_log, stop  # noqa: E402
@@ -195,6 +201,55 @@ try:
         head = b.js(f"({TEXT})('#wl-p2pdir .wl-dir-head')")
         check("unreachable: the copy's age is shown", "fetched 7 h ago" in head, True)
         check("unreachable: it says it couldn't refresh", "couldn't refresh" in head, True)
+    finally:
+        stop(server)
+
+    # --- the maintainer's station: listing requests in the inbox ---
+    origin, repo = R.make()
+    reqs = [
+        {"MID": "P2PREQ1", "Date": "2026-11-15T16:58:00-07:00", "From": {"Proto": "", "Addr": "K7NGS"},
+         "To": [{"Proto": "", "Addr": "N9ABC"}], "Cc": None, "Subject": "P2PDIR listing", "BodyHTML": "",
+         "Files": [], "P2POnly": False, "Unread": True,
+         "Body": "P2PDIR 1\r\ngrid: CN86\r\nentry: 14300 VARA_HF 2300 auto listen window 2h\r\n"
+                 "note: <img src=x onerror=alert(1)><b>bold</b>\r\n"},
+        {"MID": "P2PREQ2", "Date": "2026-11-14T10:00:00-07:00", "From": {"Proto": "SMTP", "Addr": "x@example.org"},
+         "To": [{"Proto": "", "Addr": "N9ABC"}], "Cc": None, "Subject": "P2PDIR listing", "BodyHTML": "",
+         "Files": [], "P2POnly": False, "Unread": True, "Body": "P2PDIR 1\r\ngrid: AA00\r\n"}]
+    inbox_add = os.path.join(tempfile.mkdtemp(prefix="wlp2pdir-in-"), "inbox.json")
+    with open(inbox_add, "w") as f:
+        json.dump(reqs, f)
+    state_dir = tempfile.mkdtemp(prefix="wlp2pdir-")
+    server, flog = L.start({"FAKE_PAT_TX_S": "2", "FAKE_PAT_INBOX_ADD": inbox_add},
+                           "--addons-state", os.path.join(state_dir, "addons.json"),
+                           "--p2pdir-url", DIR_URL, "--p2pdir-maintain", repo)
+    CARDS = "[...document.querySelectorAll('#wl-p2pdir .wl-intake-req')]"
+    try:
+        open_peer()
+        n = b.wait(f"{CARDS}.length === 2 && {CARDS}.length", 15)
+        check("maintainer: both requests shown", n, 2)
+        card = "#wl-p2pdir .wl-intake-req[data-mid=P2PREQ1]"
+        check("maintainer: the card names the station and what it asks",
+              "K7NGS wants to be listed" in b.js(f"({TEXT})('{card}')"), True)
+        check("maintainer: the exact text Publish writes is shown",
+              b.js(f"document.querySelector('{card} pre')?.textContent"),
+              "P2PDIR 1\ngrid: CN86\nentry: 14300 VARA_HF 2300 auto listen window 2h\n"
+              "note: <img src=x onerror=alert(1)><b>bold</b>\n")
+        check("maintainer: the listing's HTML stays text (no element made)",
+              b.js("document.querySelectorAll('.wl-intake img, .wl-intake b').length"), 0)
+        check("maintainer: the parser's flag is shown", "97.221(b)" in b.js(f"({TEXT})('{card}')"), True)
+        other = "#wl-p2pdir .wl-intake-req[data-mid=P2PREQ2]"
+        check("maintainer: an internet sender can't be published, only dismissed",
+              (b.js(f"!!document.querySelector('{other} [data-do=publish]')"),
+               "internet address" in b.js(f"({TEXT})('{other}')")), (False, True))
+        check("maintainer: nothing published before a click", R.origin_file(origin, "listings/K7NGS.txt"), None)
+        b.js(f"document.querySelector('{card} [data-do=publish]').click()")
+        got = wait_for(lambda: R.origin_file(origin, "listings/K7NGS.txt"), 20)
+        check("Publish: the shown text is in the directory repo", got, reqs[0]["Body"].replace("\r\n", "\n"))
+        left = b.wait(f"{CARDS}.length === 1 && {CARDS}.map((c) => c.dataset.mid)", 15)
+        check("Publish: the request leaves the list (archived)", left, ["P2PREQ2"])
+        b.js(f"document.querySelector('{other} [data-do=dismiss]').click()")
+        check("Dismiss: the list empties", b.wait(f"{CARDS}.length === 0", 15), True)
+        check("Dismiss: nothing more committed", R.git(origin, "rev-list", "--count", "main"), "2")
     finally:
         stop(server)
 

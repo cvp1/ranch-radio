@@ -29,3 +29,15 @@ def config(block):
     if not isinstance(hours, (int, float)) or isinstance(hours, bool) or not 1 <= hours <= 168:
         raise DirectoryError(f"winlink.directory.refresh_hours = {hours!r}: 1 to 168")
     return url, float(hours)
+
+
+def maintain(block):
+    """The directory repo clone this station publishes from (winlink.directory.maintain),
+    or None. Only the maintainer's station sets it; the clone must be able to push."""
+    if not isinstance(block, dict) or block.get("maintain") is None:
+        return None
+    path = block["maintain"]
+    if not isinstance(path, str) or not re.fullmatch(r"(/|~/)[^\x00-\x1f]+", path):
+        raise DirectoryError(f"winlink.directory.maintain = {path!r}: an absolute path or ~/... to a clone "
+                             "of the directory repo")
+    return path

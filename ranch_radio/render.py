@@ -457,13 +457,15 @@ def _logsync_block(h):
 def _validate_directory(h):
     """winlink.directory (the P2P directory the Peer picker reads): absent
     means on with the default URL; false switches it off; an object names
-    an https URL and refresh_hours (1 to 168)."""
+    an https URL and refresh_hours (1 to 168), and on the maintainer's
+    station `maintain`, the path of the directory repo clone it publishes from."""
     w = h.get("winlink") or {}
     if "directory" not in w:
         return
     pd = _feature("p2p_directory_config")
     try:
         pd.config(w["directory"])
+        pd.maintain(w["directory"])
     except pd.DirectoryError as e:
         raise HostError(f"{h['host']}: {e}") from None
 

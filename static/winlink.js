@@ -508,6 +508,7 @@ const winlink = (() => {
       (/^https?:\/\//.test(spec) ? `<a href="${esc(spec)}" target="_blank" rel="noopener">Get listed</a>` : "") +
       `</div>` + (dir.reason && !items.length ? `<div class="wl-empty">${esc(dir.reason)}</div>` : "")
       + (!dir.reason && !items.length ? `<div class="wl-empty">No stations listed yet</div>` : "");
+    renderIntake(el);
     for (const { s, e, why } of items) {
       const row = document.createElement(why ? "div" : "button");
       row.className = "wl-gw wl-dir" + (why ? " wl-dir-off" : "") + (picked === keyOf(s, e) ? " on" : "");
@@ -524,6 +525,73 @@ const winlink = (() => {
       row.dataset.call = s.call;
       if (!why) row.onclick = () => pickDirectory(s, e);
       el.append(row);
+    }
+  }
+
+  // The maintainer's station only (dir.intake present): listing requests in
+  // the inbox. The card shows the exact text Publish writes to the directory
+  // repo; Publish and Dismiss both move the station's request messages to
+  // the archive. Nothing here sends mail.
+  const INTAKE_KIND = { listing: "wants to be listed", confirm: "confirms its listing",
+                        remove: "asks to be removed", refused: "can't be listed" };
+  let intakeBusy = null;
+  function renderIntake(el) {
+    if (!dir.intake && !dir.intake_error) return;
+    const box = document.createElement("div");
+    box.className = "wl-intake";
+    const reqs = dir.intake || [];
+    box.innerHTML = `<div class="wl-dir-head"><span class="wl-dim">Listing requests in the inbox · ${reqs.length}` +
+      `</span></div>` + (dir.intake_error ? `<div class="wl-empty">${esc(dir.intake_error)}</div>` : "");
+    for (const r of reqs) {
+      const card = document.createElement("div");
+      card.className = "wl-intake-req";
+      card.dataset.mid = r.mid;
+      const who = r.call || r.from || "?";
+      const older = r.mids.length > 1 ? ` · ${r.mids.length - 1} older from ${who} archived with it` : "";
+      const lines = [];
+      for (const e of r.parsed?.entries || []) {
+        const width = "bw_hz" in e ? `${e.bw_hz} Hz` : `${e.baud} bd`;
+        lines.push(`<div class="wl-dim">${esc(e.centre_khz)} kHz centre · ${esc(DIR_MODE[e.mode] || e.mode)} ${esc(width)}` +
+          ` · ${esc(e.control)} · ${esc(e.hours)}</div>` +
+          (e.flags || []).map((f) => `<div class="wl-intake-flag">⚑ ${esc(DIR_FLAG[f] || f)}</div>`).join(""));
+      }
+      const cur = r.current ? `<div class="wl-dim">Listed now, confirmed ${esc(r.current.confirmed)}` +
+        (r.kind === "listing" ? "; this replaces it" : "") + `</div>` : "";
+      const can = !r.error && r.kind !== "refused";
+      card.innerHTML = `<div><span class="wl-who">${esc(who)}</span> ${esc(INTAKE_KIND[r.kind] || r.kind)}` +
+        ` <span class="wl-dim">· Winlink message ${esc(r.date || "")}${esc(older)}</span></div>` +
+        (r.text ? `<pre class="wl-intake-text">${esc(r.text)}</pre>` : "") + lines.join("") + cur +
+        (r.error ? `<div class="wl-intake-err">${esc(r.error)}</div>` : "") +
+        `<div class="wl-intake-do">` +
+        (can ? `<button class="chip chip-mini" data-do="publish">${r.kind === "remove" ? "Remove from directory"
+          : r.kind === "confirm" ? "Confirm in directory" : "Publish to directory"}</button>` : "") +
+        `<button class="chip chip-mini" data-do="dismiss">Dismiss</button></div>`;
+      for (const b of card.querySelectorAll("[data-do]")) {
+        b.disabled = !!intakeBusy;
+        b.onclick = () => intakeAct(r, b.dataset.do);
+      }
+      box.append(card);
+    }
+    el.prepend(box);
+  }
+
+  async function intakeAct(r, what) {
+    if (intakeBusy) return;
+    intakeBusy = r.mid;
+    renderDirectory();
+    try {
+      const res = await api(`${BASE}winlink/api/p2pdir/intake`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mid: r.mid, do: what }) });
+      const out = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      if (!res.ok || !out.ok) throw new Error(out.error || `HTTP ${res.status}`);
+      toast(what === "dismiss" ? `Dismissed ${r.call || r.from}'s request`
+        : `${r.call} ${r.kind === "remove" ? "removed" : r.kind === "confirm" ? "confirmed" : "published"}` +
+          ` (${(out.commit || "").slice(0, 7)}); the directory updates in a few minutes`);
+    } catch (e) {
+      toast(`${what === "dismiss" ? "Dismiss" : "Publish"} failed: ${e.message}`, "warn");
+    } finally {
+      intakeBusy = null;
+      loadDirectory(true);
     }
   }
 
