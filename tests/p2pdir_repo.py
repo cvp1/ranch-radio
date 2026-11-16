@@ -3,7 +3,8 @@ clone that can push to it, with stand-ins for the repo's parser (p2pdir.py)
 and build (build.py) that keep the real ones' contract (the directory repo's
 SPEC.md): the parser prints the listing as JSON, or `rejected: <code>: ...`
 and exits 1; the build exits 1 on any bad listing. The stand-in build calls a
-listing bad when it holds BUILDFAIL; the parser flags auto at 14300 kHz.
+listing bad when it holds BUILDFAIL, and imports a sibling module as the
+real one does; the parser flags auto at 14300 kHz.
 Nothing reaches GitHub."""
 import os
 import subprocess
@@ -30,6 +31,7 @@ print(json.dumps({"call": call, "grid": grid, "note": note, "entries": ents}))
 '''
 BUILD = r'''
 import os, sys
+import p2pdir_rules  # a sibling module, as the real build imports p2pdir.py
 root = os.path.dirname(os.path.abspath(__file__))
 for n in os.listdir(os.path.join(root, "listings")):
     if n.endswith(".txt") and "BUILDFAIL" in open(os.path.join(root, "listings", n)).read():
@@ -55,6 +57,10 @@ def make(seed=None):
         f.write(PARSER)
     with open(os.path.join(repo, "build.py"), "w") as f:
         f.write(BUILD)
+    with open(os.path.join(repo, "p2pdir_rules.py"), "w") as f:
+        f.write("RULES = 1\n")
+    with open(os.path.join(repo, ".gitignore"), "w") as f:
+        f.write("__pycache__/\n")
     for call, (text, confirmed) in (seed or {}).items():
         with open(os.path.join(repo, "listings", f"{call}.txt"), "w") as f:
             f.write(text)

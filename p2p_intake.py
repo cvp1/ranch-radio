@@ -42,6 +42,11 @@ MAX_MESSAGES = 50           # inbox messages looked at per read
 MAX_BODY = 8192             # a listing is at most ~2 KB (SPEC.md); anything bigger is refused
 RUN_TIMEOUT_S = 60          # each git / parser / build run
 PAT_TIMEOUT_S = 10
+# The repo's own tools run with the environment and user site-packages
+# ignored, but NOT -I: isolated mode also drops the script's directory from
+# sys.path, and build.py imports its sibling p2pdir.py (every Publish failed
+# with ModuleNotFoundError, live 2026-11-15).
+PY_FLAGS = ("-E", "-s", "-B")
 
 
 class IntakeError(Exception):
@@ -128,7 +133,7 @@ class Intake:
 
     async def parse(self, call, body):
         """(parsed listing, None) by the repo's parser, or (None, its reason)."""
-        rc, out, err = await self._run(self.python, "-I", "p2pdir.py", "-", "--call", call, stdin=body)
+        rc, out, err = await self._run(self.python, *PY_FLAGS, "p2pdir.py", "-", "--call", call, stdin=body)
         if rc == 0:
             try:
                 return json.loads(out), None
@@ -232,7 +237,7 @@ class Intake:
                 await self._git("add", "--", *rel)
             out = tempfile.mkdtemp(prefix="p2pdir-build-")
             try:
-                rc, o, e = await self._run(self.python, "-I", "build.py", "--strict", "--out", out)
+                rc, o, e = await self._run(self.python, *PY_FLAGS, "build.py", "--strict", "--out", out)
             finally:
                 shutil.rmtree(out, ignore_errors=True)
             if rc:
