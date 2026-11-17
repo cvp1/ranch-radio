@@ -38,7 +38,8 @@ STATION_VALUE_FLAGS = {"--winlink-pat": ("winlink", "pat"), "--winlink-pat-confi
                        "--mesh-feed-cred": ("mesh", "feed_cred"),
                        "--p2pdir-url": ("winlink", "_p2pdir_url"),
                        "--p2pdir-maintain": ("winlink", "_p2pdir_maintain"),
-                       "--winlink-listen-hf": ("winlink", "listen_hf")}
+                       "--winlink-listen-hf": ("winlink", "listen_hf"),
+                       "--winlink-ardop-logs": ("winlink", "ardop_logs")}
 STATION_BARE_FLAGS = {"--mesh-feed-tx": ("mesh", "feed_tx")}
 NUMERIC = {"pat_port": int, "session_max": float, "_listen_max_h": float, "listen_hf": json.loads}
 

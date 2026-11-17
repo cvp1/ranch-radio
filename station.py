@@ -362,6 +362,13 @@ class Ardop:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def session_logdir(self):
+        """ardopcf's --logdir now: an agent's (external) is the host file's
+        ardop_logs itself; one the station runs logs per radio. None: none yet."""
+        if self.external:
+            return self.logs
+        return self.logs / self.radio.id if self.radio is not None else None
+
     async def use(self, radio):
         if self.external:
             if not await self._listening():
@@ -1139,6 +1146,8 @@ def main():
             # The listen window (winlink.listen), parsed as render.py checked it.
             winlink_listen=ListenPlan.from_block(wl["listen"]) if "listen" in wl else None,
             winlink_directory=wl.get("directory"),       # absent: on, default URL; false: off
+            # ardopcf's --logdir, where its sound-card errors show (Ardop.logdir).
+            winlink_ardop_logdir=station.ardop.session_logdir,
             # Attended HF listening (winlink.listen_hf), parsed as render.py checked it.
             winlink_listen_hf=HfListenPlan.from_block(wl["listen_hf"]) if "listen_hf" in wl else None,
             addons_state=cfg.get("addons_state", "~/.local/state/radio-remote/addons.json"))})
