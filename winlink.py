@@ -87,6 +87,11 @@ REPLAY_S = 1.0               # Pat replays its log on every WebSocket connect
 RESTART_S = 2.0              # wait before starting Pat again after it exits
 PING_S = 60.0                # Pat drops a WebSocket silent for 4m10s
 ABORT_GRACE_S = 10.0         # after a dirty abort, wait this long for Pat to return
+# ardopcf failing to open its sound card: each such frame never reaches the
+# air (a Mac station 2026-11-17: 36 of these, two calls "timed out" unheard).
+ARDOP_NO_AUDIO_RE = re.compile(r"\bcannot open (playback|capture) device\b.*")
+ARDOP_LOG_POLL_S = 0.5
+ARDOP_LOG_READ_MAX = 256 * 1024   # bytes read per poll, at most
 READY_WAIT_S = 5.0           # a session waits this long for the event link to Pat
 # After Pat's /api/connect returns: how long a session that transmitted stays
 # armed for ardopcf's end-of-session ID. ardopcf starts it within a few
@@ -343,6 +348,12 @@ class PatEngine:
         self.config_path = pat_config_path(args, self.pat_cmd)
         self.hf_modems = tuple(m for m in (hf_modems or DEFAULT_HF_MODEMS) if m in HF_MODEMS)
         self.session_max = args.winlink_session_max
+        # ardopcf's --logdir (a callable: the folder can follow the radio), or
+        # None: an ARDOP session then can't see the modem's sound-card errors.
+        self.ardop_logdir = getattr(args, "winlink_ardop_logdir", None)
+        self._pat_call = None            # the session's /api/connect, while it runs
+        self._end_reason = None          # why the station ended the session itself
+        self._end_guard = None           # after an abort: ends the session if Pat doesn't return
         # The lifecycle owner (A5). want: what Pat should be, read when a
         # child is spawned; gen counts restarts. proc_gen is the running
         # child's generation, status_gen the one whose first Status is in.
@@ -1053,16 +1064,24 @@ class PatEngine:
         self._send({"session": "started", "url": shown, "peer": bool(peer)})
         # Pat's call runs as its own task, so that after a cap or an abort we
         # can still see when Pat returns (with ardopcf's ID sent by then).
+        self._end_reason = None
         call = asyncio.ensure_future(self._call(pat_url or url))
+        self._pat_call = call
+        watch = None
+        if urlsplit(url).scheme == "ardop" and self.ardop_logdir is not None:
+            watch = asyncio.ensure_future(self._ardop_audio_watch())
         try:
             done, _ = await asyncio.wait({call}, timeout=self.session_max)
-            if call in done:
+            if call in done and call.cancelled():
+                # The station ended it (_end_guard): Pat never returned.
+                reason = self._end_reason or "ended here: Pat did not return"
+            elif call in done:
                 status, body = call.result()
                 tail = body[body.find("{"):] if "{" in body else "{}"
                 received = json.loads(tail).get("NumReceived", 0)
                 ok = status == 200
                 if not ok:
-                    reason = self._last_failure() or "session failed"
+                    reason = self._end_reason or self._last_failure() or "session failed"
             else:
                 reason = f"stopped after the {self.session_max:g}s session limit"
                 log.warning("winlink: %s", reason)
@@ -1077,6 +1096,9 @@ class PatEngine:
         finally:
             if not call.done():
                 call.cancel()
+            if watch is not None and not watch.done():
+                watch.cancel()
+            self._pat_call = None
             self.session_url = None
             lane = self.lane
             try:
@@ -1129,12 +1151,96 @@ class PatEngine:
         dirty = self._stop_asked           # a second Stop aborts the modem hard
         self._stop_asked = True
         await self._disconnect(dirty=dirty)
+        if dirty:
+            self._guard_end("Stop pressed twice")
 
     async def abort(self, why):
         """Operator gone / server stopping: end the session now."""
         if self.session and not self.session.done():
             log.warning("winlink: aborting session (%s)", why)
             await self._disconnect(dirty=True)
+            self._guard_end(why)
+
+    def _guard_end(self, why):
+        """After a dirty disconnect: if Pat hasn't returned within
+        ABORT_GRACE_S, end the session here. Pat can be stuck before it
+        dials (a wedged modem), where a disconnect has nothing to stop
+        (a Mac station 2026-11-17: the page showed a session for minutes)."""
+        if self._end_guard is not None and not self._end_guard.done():
+            return
+        session = self.session
+        if session is None or session.done():
+            return
+
+        async def guard():
+            done, _ = await asyncio.wait({session}, timeout=ABORT_GRACE_S)
+            if done:
+                return
+            call = self._pat_call
+            if call is None or call.done():
+                return
+            log.warning("winlink: Pat did not return %gs after the disconnect (%s); ending the session here",
+                        ABORT_GRACE_S, why)
+            self._end_reason = self._end_reason or (
+                f"ended here: Pat did not return {ABORT_GRACE_S:g} s after the disconnect ({why}); "
+                "the modem may be stuck: restart it before the next call")
+            call.cancel()
+
+        self._end_guard = asyncio.ensure_future(guard())
+
+    def _ardop_log_dir(self):
+        d = self.ardop_logdir
+        try:
+            d = d() if callable(d) else d
+        except Exception:                  # noqa: BLE001 - a folder we can't name is no folder
+            return None
+        return os.fspath(d) if d else None
+
+    async def _ardop_audio_watch(self):
+        """During an ARDOP session: follow ardopcf's newest debug log from
+        the session's start. A "cannot open ... device" line means that frame
+        never reached the air: end the session and say so, instead of a
+        connect timeout that reads as "no answer"."""
+        d = self._ardop_log_dir()
+        if not d:
+            return
+        pos = {}
+
+        def newest():
+            try:
+                names = [n for n in os.listdir(d) if n.startswith("ARDOPDebug") and n.endswith(".log")]
+            except OSError:
+                return None
+            return os.path.join(d, max(names)) if names else None   # ARDOPDebug<port>_<YYYYMMDD>.log
+
+        start = newest()
+        if start:
+            try:
+                pos[start] = os.path.getsize(start)
+            except OSError:
+                pass
+        while True:
+            await asyncio.sleep(ARDOP_LOG_POLL_S)
+            path = newest()
+            if not path:
+                continue
+            try:
+                with open(path, "rb") as f:
+                    f.seek(pos.get(path, 0))
+                    chunk = f.read(ARDOP_LOG_READ_MAX)
+            except OSError:
+                continue
+            end = chunk.rfind(b"\n") + 1           # whole lines only
+            pos[path] = pos.get(path, 0) + end
+            for line in chunk[:end].decode(errors="replace").splitlines():
+                m = ARDOP_NO_AUDIO_RE.search(line)
+                if m:
+                    self._end_reason = (f"ARDOP is not on the air: ardopcf {m.group(0)}. Another program "
+                                        "may be holding the sound card; nothing was heard from this call")
+                    log.warning("winlink: %s", self._end_reason)
+                    await self._disconnect(dirty=True)
+                    self._guard_end("ardopcf can't open its sound card")
+                    return
 
     async def _disconnect(self, dirty):
         try:

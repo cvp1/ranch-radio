@@ -27,6 +27,11 @@ Environment (read once at start: a test that needs one starts its own server):
   FAKE_PAT_BROKEN_READ    "1": the mark-read route answers 500
   FAKE_PAT_SLOW_MID  a MID whose message GET answers only after 2 s
   FAKE_PAT_LISTEN_FAIL  "1": requested listeners never start
+  FAKE_PAT_HANG     "1": an ARDOP /api/connect never returns and a disconnect
+                    doesn't reach it (Pat stuck on a wedged ardopcf on a Mac,
+                    2026-11-17)
+  FAKE_PAT_NO_AUDIO "1": ardopcf can't open its sound card: each key-up logs
+                    "cannot open playback device ..." (FAKE_PAT_ARDOP_LOG)
   FAKE_PAT_P2P      comma list of P2P peer calls, each optionally CALL=FW1+FW2
                     (its advertised forwarders; default CALL). A session to
                     one sends only messages whose ONLY receiver is one of them
@@ -125,6 +130,8 @@ BUSY = os.environ.get("FAKE_PAT_BUSY") == "1"
 QSY = os.environ.get("FAKE_PAT_QSY") == "1"
 ARDOP_LOG = os.environ.get("FAKE_PAT_ARDOP_LOG")
 ID_MODE = os.environ.get("FAKE_PAT_ID", "")
+HANG = os.environ.get("FAKE_PAT_HANG") == "1"
+NO_AUDIO = os.environ.get("FAKE_PAT_NO_AUDIO") == "1"
 LATE_ID_S = float(os.environ.get("FAKE_PAT_LATE_ID_S", "0"))
 SEND_N = os.environ.get("FAKE_PAT_SEND_N")
 BROKEN_BOX = os.environ.get("FAKE_PAT_BROKEN_BOX")
@@ -497,6 +504,8 @@ async def connect(request):
         if not ok:
             return web.Response(status=500, text="Session failure\n" + body)
         return web.Response(text=body, content_type="text/plain")
+    if HANG:
+        await asyncio.Event().wait()   # never returns; /api/disconnect can't reach it
     abort.clear()
     status.update(dialing=True)
     await push({"Status": status})
@@ -537,6 +546,9 @@ async def connect(request):
                 status.update(dialing=False, connected=True)
                 await push({"Status": status})
                 ardop_log("[Main.KeyPTT]  PTT-TRUE")
+                if NO_AUDIO:
+                    ardop_log("cannot open playback device USB Audio CODEC with 1 channels at 12000 Hz "
+                              "(Internal PortAudio error)", "E")
                 try:
                     await asyncio.wait_for(abort.wait(), TX_S)
                     await logline("Connect cancelled")

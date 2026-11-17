@@ -118,6 +118,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **A Winlink session stuck in Pat now ends.** If Pat hasn't returned 10 s
+  after a Stop pressed twice or the page closing, the station ends the
+  session itself and says the modem may be stuck (a Mac station, 2026-11-17: Pat
+  blocked on a wedged ardopcf before dialing, so its disconnect had nothing
+  to stop and the page showed a session for minutes).
+- **ARDOP with no sound card says so.** During an ARDOP session the station
+  follows ardopcf's log; a "cannot open playback/capture device" line ends
+  the session at once with "ARDOP is not on the air" and ardopcf's error,
+  instead of a connect timeout that read as "no answer".
 - **Mesh: a node with a big node list works again.** The node list goes to the
   server as one line, and asyncio's default 64 KiB cap per line stopped the
   server reading the node for good, quietly: no nodes, sends and asks never
