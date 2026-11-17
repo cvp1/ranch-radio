@@ -105,6 +105,9 @@ class Pair:
         if self.radio.poll() is None:            # the radio was never signalled: it goes when the station has
             self.radio.terminate()
         self.radio.wait(timeout)
+        if self.ardop is not None and self.ardop.poll() is None:
+            self.ardop.kill()
+            self.ardop.wait(5)
         return rc
 
     def communicate(self, timeout=None):
@@ -247,7 +250,7 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
                               "audio_in": "x", "audio_out": "x", "hostcommands": ""})
     ardop = subprocess.Popen([sys.executable, "tests/fake_ardopcf.py", str(ARDOP), "x", "x", "--logdir",
                               tempfile.mkdtemp(prefix="ardop-")], cwd=ROOT,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             env=dict(os.environ, FAKE_EXIT_WITH_PARENT="1"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not winlink:
         cfg.pop("winlink")
     wl.setdefault("ardop_logs", tempfile.mkdtemp(prefix="ardoplogs-"))
@@ -284,6 +287,7 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
             time.sleep(0.1)
     else:
         radio.kill()
+        ardop.kill()
         print("FAIL  the radio's server did not start; its log:\n" + (radio.stdout.read() or "")[-3000:])
         raise SystemExit("the radio's server did not start")
     if radio.poll() is None and not testkit.wait_for(lambda: _open(ARDOP), 30):
@@ -311,6 +315,7 @@ def start(env_extra=None, *extra, winlink=True, wait_pat=True):
         pair.kill()
         print("FAIL  the station did not start; the logs:\n" + (pair.read() or "")[-4000:])
         raise SystemExit("the station did not start")
+    ardop.kill()
     print("FAIL  the radio's server died at start; its log:\n" + (radio.stdout.read() or "")[-3000:])
     raise SystemExit("the radio's server did not start")
 
