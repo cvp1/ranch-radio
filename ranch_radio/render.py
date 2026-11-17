@@ -701,7 +701,7 @@ def server_args(h, r, pth):
         x = (w or {}).get("xara")
         if isinstance(x, dict):                     # VARA HF: xara's own lane and log
             a += ["--winlink-vara-log", pth(x["log"]), "--winlink-vara-rigctl-port", str(x["lane_port"]),
-                  "--winlink-vara-port", str(x["port"])]
+                  "--winlink-vara-port", str(x["port"]), "--winlink-vara-label", x["label"]]
         if r.get("codec_db"):
             a += ["--winlink-codec-db", r["codec_db"]]
         if r.get("codec_mixer"):

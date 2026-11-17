@@ -31,6 +31,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import time
 
 from aiohttp import WSCloseCode, WSMsgType, web
@@ -1262,11 +1263,15 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
             app["vara_log"] = station.vara_tail = station_id.VaraLogTail(args.winlink_vara_log, station.id_ledger)
             station.vara_tail.start()
             log.info("station ID: following xara's log %s", args.winlink_vara_log)
+            if args.winlink_vara_label:
+                app["xara_restart"] = asyncio.create_task(restart_xara(args.winlink_vara_label))
         elif getattr(args, "winlink_vara_log", None) or getattr(args, "winlink_vara_rigctl_port", 0):
             log.warning("VARA HF is off: it needs --winlink-vara-log, --winlink-vara-rigctl-port and "
                         "--winlink-rigctl-port together")
 
     async def on_shutdown(app):
+        if app.get("xara_restart") and not app["xara_restart"].done():
+            app["xara_restart"].cancel()
         # F10: close every client before the web server waits on them (an open
         # browser WebSocket held a restart ~7 s). Each close releases that
         # client's PTT through Station.unkey; apps see an orderly EOF/close.
@@ -1417,6 +1422,45 @@ def tls_context(certdir, extra_names=()):
     return ctx
 
 
+XARA_RESTART_TIMEOUT_S = 15
+
+
+def xara_restart_argv(label):
+    """The service manager's restart of xara's agent: launchd on macOS,
+    systemd --user on Linux."""
+    if sys.platform == "darwin":
+        return ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"]
+    return ["systemctl", "--user", "restart", label]
+
+
+async def restart_xara(label):
+    """xara keeps one rigctld connection to its lane open across sessions and
+    does not reconnect when it breaks: after this server (re)starts, its first
+    key fails, xara exits, and that VARA call is lost. Restarting xara once
+    the lane listens again means its next key opens a fresh connection.
+    Nothing is armed this early, so no session is cut."""
+    argv = xara_restart_argv(label)
+    try:
+        p = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    except OSError as e:
+        log.warning("VARA HF: could not restart xara (%s): %s; its first call may fail", label, e)
+        return
+    try:
+        out, _ = await asyncio.wait_for(p.communicate(), XARA_RESTART_TIMEOUT_S)
+    except TimeoutError:
+        p.kill()
+        await p.wait()
+        log.warning("VARA HF: restarting xara (%s) took over %d s; its first call may fail",
+                    label, XARA_RESTART_TIMEOUT_S)
+        return
+    if p.returncode:
+        log.warning("VARA HF: restarting xara (%s) failed (rc %d): %s; its first call may fail",
+                    label, p.returncode, out.decode(errors="replace").strip()[-200:])
+    else:
+        log.info("VARA HF: restarted xara (%s) so its PTT reconnects to this lane", label)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--rig", default="ic7300", help="radio profile (see --list-rigs)")
@@ -1466,6 +1510,10 @@ def main():
     p.add_argument("--winlink-vara-rigctl-port", type=int, default=0,
                    help="rigctl port for xara's --ptt on 127.0.0.1; it may key only while a VARA HF "
                         "session is armed. 0 = off")
+    p.add_argument("--winlink-vara-label", metavar="LABEL",
+                   help="xara's service (launchd label on macOS, systemd --user unit on Linux), restarted "
+                        "once xara's lane listens: xara does not reconnect a PTT connection this server's "
+                        "restart broke, so without it the first VARA call after a restart fails")
     p.add_argument("--winlink-vara-port", type=int, default=8300,
                    help="xara's command port (data = +1), which Pat's varahf.addr must name on this "
                         "machine before a VARA session is let through (default 8300)")

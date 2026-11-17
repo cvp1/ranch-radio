@@ -118,6 +118,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **The first VARA HF call after a radio-server restart no longer fails.**
+  xara keeps its PTT connection to its lane open and doesn't reconnect it, so
+  after any restart of the radio's server (an update or a crash) its first key
+  hit a dead socket, xara exited and launchd restarted it, and that call
+  failed within seconds. The server now restarts xara's agent
+  (`--winlink-vara-label`, rendered from `winlink.xara.label`) as soon as the
+  lane listens again.
 - **A Winlink session stuck in Pat now ends.** If Pat hasn't returned 10 s
   after a Stop pressed twice or the page closing, the station ends the
   session itself and says the modem may be stuck (a Mac station, 2026-11-17: Pat
