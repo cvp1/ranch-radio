@@ -85,8 +85,9 @@ check("vara on: KeepAlive, RunAtLoad, a 10 s throttle, interactive",
 server = next(a for a in arts.values() if a.path.endswith("ic7300-remote.plist")).content["ProgramArguments"]
 i = server.index("--winlink-vara-log")
 check("vara on: the server gets the log, xara's lane and its port",
-      server[i:i + 6], ["--winlink-vara-log", f"{HOME}/Library/Logs/ranch-radio-xara.log",
-                        "--winlink-vara-rigctl-port", "4534", "--winlink-vara-port", "8300"])
+      server[i:i + 8], ["--winlink-vara-log", f"{HOME}/Library/Logs/ranch-radio-xara.log",
+                        "--winlink-vara-rigctl-port", "4534", "--winlink-vara-port", "8300",
+                        "--winlink-vara-label", "ranch-radio.xara"])
 check("vara on: nowhere a paid-speed option", "registered" in json.dumps([a.text() for a in arts.values()]), False)
 check("vara on: the other agents as before", sorted(p for p in arts if "xara" not in p and "ic7300-remote" not in p),
       sorted(g["path"] for g in golden["mac-shack"] if "ic7300-remote" not in g["path"]))
