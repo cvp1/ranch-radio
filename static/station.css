@@ -89,7 +89,7 @@ a.st-card:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text)
   background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), .7), transparent); }
 .mc-band:has(.mc-air.tx) { border-color: rgba(255,77,94,.6); background: linear-gradient(180deg, rgba(255,77,94,.12), rgba(0,0,0,.3)); }
 .mc-band:has(.mc-air.tx)::before { background: linear-gradient(90deg, transparent, #ff4d5e, transparent); }
-.mc-clock { display: grid; grid-template-columns: auto auto; align-items: baseline; column-gap: 6px;
+.mc-clock { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 6px;
   padding-right: 24px; border-right: 1px solid var(--line); }
 .mc-utc { font: 600 30px/1 var(--mono); color: var(--text); letter-spacing: .02em; font-variant-numeric: tabular-nums;
   text-shadow: 0 0 18px rgba(var(--accent-rgb), .35); }
@@ -127,6 +127,8 @@ a.st-card:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text)
   font: 700 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: rgba(var(--lane), .85); }
 .mc-lane-name::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(var(--lane), .35), transparent); }
 .mc-lane .st-cards { padding: 10px 0 4px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+/* A card sharing a row with a tall one (the wide radio card) keeps its own height. */
+.mc-lane .st-cards { align-items: start; }
 
 .mc-card { position: relative; overflow: hidden; cursor: default; gap: 7px;
   border-color: rgba(255,255,255,.07);
