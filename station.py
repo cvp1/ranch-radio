@@ -438,6 +438,8 @@ class Station:
         self.logsync = None           # logsync.LogSync from the config's "logsync" block
         self.logsync_error = None     # why it isn't running: shown on the Logbook tab
         self.settings_plans = None    # logsync_settings.Plans: the Logbook tab's planned host-file edits
+        self.wavelog_cat = None       # wavelog_cat.WavelogCat: each radio's frequency to Wavelog, its clicks back
+        self.wavelog_cat_error = None # why it isn't running
         self._tasks = []
         self._rigctl = None
         self._lane = None
@@ -698,7 +700,8 @@ class Station:
                                                   if self.addons and self.addons.get("winlink") else None),
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {},
-                                      "logsync": self.logsync_status()}))
+                                      "logsync": self.logsync_status(),
+                                      "wavelog_cat": self.wavelog_cat_status()}))
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -769,7 +772,36 @@ class Station:
         if self.addons:
             await self.addons.start()
         await self.start_logsync()
+        await self.start_wavelog_cat()
         self._tasks.append(asyncio.create_task(self.presence_loop()))
+
+    # --- Wavelog CAT (wavelog_cat.py): WaveLogGate's radio-to-Wavelog jobs; its failure stays its own
+
+    def make_wavelog_cat(self, block):
+        self.wavelog_cat, self.wavelog_cat_error = None, None
+        try:
+            import importlib
+            self.wavelog_cat = importlib.import_module("wavelog_cat").WavelogCat(block, self)
+        except Exception as e:
+            self.wavelog_cat_error = f"not loaded: {type(e).__name__}: {str(e)[:200]}"
+            log.error("wavelog_cat %s", self.wavelog_cat_error)
+
+    async def start_wavelog_cat(self):
+        if self.wavelog_cat is None:
+            return
+        try:
+            await self.wavelog_cat.start()
+        except Exception as e:
+            self.wavelog_cat_error = f"did not start: {type(e).__name__}: {str(e)[:200]}"
+            log.error("wavelog_cat %s", self.wavelog_cat_error)
+            self.wavelog_cat = None
+
+    def wavelog_cat_status(self):
+        if self.wavelog_cat is not None:
+            return self.wavelog_cat.status()
+        if self.wavelog_cat_error:
+            return {"loaded": False, "error": self.wavelog_cat_error}
+        return None
 
     # --- the logbook sync (logsync.py): a station module; its failure stays its own
 
@@ -893,7 +925,10 @@ class Station:
         return out
 
     def rig_changed(self):
-        """A radio keyed, unkeyed or moved, or JTDX's Status changed: to the Map tab, if on."""
+        """A radio keyed, unkeyed or moved, or JTDX's Status changed: to the Map
+        tab, if on, and to Wavelog (wavelog_cat), if set up."""
+        if self.wavelog_cat is not None:
+            self.wavelog_cat.kick()
         if self.addons and self.addons.is_on("map"):
             try:
                 self.addons.get("map").push_rig()
@@ -912,6 +947,8 @@ class Station:
             await self.addons.stop()
         if self.logsync is not None:
             await self.logsync.stop()
+        if self.wavelog_cat is not None:
+            await self.wavelog_cat.stop()
         await self.ardop.stop()
         for srv in (self._rigctl, self._lane):
             if srv:
@@ -1054,6 +1091,11 @@ def make_app(station, args):
         r = station.radios[0]
         return await proxy(request, f"http://127.0.0.1:{r.web}", "audio")
 
+    async def wavelog_qsy(request):
+        if station.wavelog_cat is None:
+            return web.json_response({"error": "Wavelog CAT is not set up here"}, status=404)
+        return await station.wavelog_cat.handle_qsy(request)
+
     def slash(prefix):
         async def h(request):
             raise web.HTTPFound(f"{prefix}{request.match_info.get('rid', '')}/" +
@@ -1070,6 +1112,8 @@ def make_app(station, args):
     r.add_route("*", "/packet/{tail:.*}", packet_page)
     if station.addons is not None:
         station.addons.add_routes(app, authorised)      # Winlink's mailbox under /winlink/api/
+    # Wavelog's spot clicks (wavelog_cat.py checks their Origin: a GET passes the guard above)
+    r.add_get("/wavelog/qsy/{rid}/{hz}/{mode}", wavelog_qsy)
     r.add_static("/static", HERE / "static")
 
     @web.middleware
@@ -1164,6 +1208,8 @@ def main():
             wa.engine.idle_lane = IdleLane(station)
     if cfg.get("logsync"):
         station.make_logsync(cfg["logsync"])        # a broken logsync must not take the station down
+    if cfg.get("wavelog_cat"):
+        station.make_wavelog_cat(cfg["wavelog_cat"])  # a broken block must not take the station down
     if cfg.get("host_file"):
         from ranch_radio import pageapi
         # RANCH_RADIO_REPO / RANCH_RADIO_HOME: tests point these at scratch copies.

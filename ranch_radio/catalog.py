@@ -57,6 +57,14 @@ MODULES = [
      "ships": "the host file's logsync block, run by the station (station.json); TQSL for LoTW; credentials in "
               "files (mode 600) the block names; `ranch-radio logsync backfill` reviews the first import"},
 
+    {"name": "wavelog_cat", "kind": "service", "title": "Wavelog CAT: each radio's frequency and mode to Wavelog's "
+                                                         "live QSO form, and Wavelog's spot clicks back to the radio "
+                                                         "(replaces WaveLogGate and the flrig it needed)",
+     "code": "wavelog_cat.py (push, the /wavelog/qsy route; its block check is stdlib only: what render imports)",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's wavelog_cat block, run by the station (station.json); the Wavelog API key file "
+              "logsync.wavelog names, or its own"},
+
     {"name": "audio", "kind": "service", "title": "Radio sound cards: pinned PipeWire names, never the desktop default",
      "code": "ranch_radio/render.py wireplumber_rules (and wait_audio in each radio unit)", "platforms": ["linux"],
      "ships": "Linux: a WirePlumber rule rendered from each radio's audio_in/audio_out (51-ranch-radio-audio.conf)"},
