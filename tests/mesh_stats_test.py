@@ -8,9 +8,10 @@
     LocalStats when there, else the node's device metrics
   - each finding fires, and stays quiet just below its line: busy channel
     (warn at 25 %, bad at 40 %, and not on a stale sample), chatty node (by
-    rate and by share), hop limit over 3, weak direct link, MQTT only, the
+    rate and by share), weak direct link, MQTT only, the
     main relay (named from the node list by its last byte, preferring a
     direct neighbour), traffic on channels without a key
+  - a hop limit, even 7, is never a finding (normal on a sparse mesh)
   - the status follows the worst finding
 
     python3 tests/mesh_stats_test.py
@@ -129,8 +130,8 @@ for i in range(2):
     s.packet(pkt("!0000dead", T0 + i, hops=2, hop_start=7), now=T0 + i)
     s.packet(pkt("!0000beef", T0 + i, hop_start=3), now=T0 + i)
     s.packet(pkt("!0000cafe", T0 + i, hop_start=4), now=T0 + i)
-f = {x["node"]: x["level"] for x in kinds(s.findings(NODES, now=T0 + 5), "hop_limit")}
-check("hop limit: 7 warns, 4 is info, 3 says nothing", f, {"!0000dead": "warn", "!0000cafe": "info"})
+check("hop limit: 7, 4 and 3 all say nothing", kinds(s.findings(NODES, now=T0 + 5), "hop_limit"), [])
+check("  and hop limit 7 alone leaves it healthy", s.summary(NODES, now=T0 + 5)["status"], "healthy")
 s = ms.MeshStats(now=T0)
 for i in range(5):
     s.packet(pkt("!0000cafe", T0 + i, snr=-12.0), now=T0 + i)
@@ -186,8 +187,8 @@ check("  12 of 40 (30 %): nothing", kinds(s.findings(NODES, now=T0 + 50), "encry
 s = ms.MeshStats(now=T0)
 check("nothing heard: healthy, no findings", (s.summary(now=T0)["status"], s.summary(now=T0)["findings"]),
       ("healthy", []))
-for i in range(2):
-    s.packet(pkt("!0000dead", T0 + i, hop_start=7), now=T0 + i)
+for i in range(ms.CHATTY_MIN):
+    s.packet(pkt("!0000dead", T0 + i * 0.1), now=T0 + i * 0.1)
 check("a warning: attention", s.summary(NODES, now=T0 + 5)["status"], "attention")
 s.sample([{"me": True, "util": 45.0}], now=T0 + 5)
 summ = s.summary(NODES, now=T0 + 6)

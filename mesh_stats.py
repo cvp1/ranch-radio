@@ -15,10 +15,14 @@ when):
     highest of each UTIL_SLOT_S slot for the last UTIL_SLOTS slots (24 h)
 
 findings() turns that into a short list, each with what to do about it:
-  busy channel, a chatty node, a sender with a high hop limit, a weak direct
-  link, a node heard only over MQTT, one relay carrying most of what reaches
-  us, and much traffic on channels this node has no key for. Each needs
-  enough packets to say anything: below the minimums it stays quiet.
+  busy channel, a chatty node, a weak direct link, a node heard only over
+  MQTT, one relay carrying most of what reaches us, and much traffic on
+  channels this node has no key for. Each needs enough packets to say
+  anything: below the minimums it stays quiet.
+
+A sender's hop limit is shown (talkers, node card) but never a finding: on a
+sparse rural mesh 7, the firmware's maximum, is normal and needed, so there
+is no level at which it means something is wrong.
 
 Idea from Mesh-Client's Diagnostics tab (2026-11-17); only the parts that can
 be worked out honestly from one node's own receive side are here.
@@ -43,7 +47,6 @@ CHATTY_PER_HOUR = 60          # packets an hour from one node, once we have hear
 CHATTY_SHARE = 0.25           # or this share of everything heard ...
 CHATTY_MIN = 20               # ... from at least this many of its packets
 MIN_SPAN_S = 600              # an hourly rate needs at least 10 minutes of listening
-HOP_START_DEFAULT = 3         # the firmware's default hop limit
 WEAK_SNR_DB = -10.0           # a direct link averaging below this is weak on the longer presets
 WEAK_MIN = 5
 RELAY_SHARE = 0.5
@@ -197,12 +200,6 @@ class MeshStats:
                     f"Mostly {port_name(t['top_port'])} ({t['ports'][t['top_port']]} of {t['n']}).",
                     PORT_FIX.get(t["top_port"], "ask its owner to space out what it sends"), t["id"])
         for t in talkers.values():
-            hs = t["hop_start"]
-            if hs is not None and hs > HOP_START_DEFAULT and t["n"] >= 2:
-                add("warn" if hs >= 6 else "info", "hop_limit", f"{name(t['id'])} sends with hop limit {hs}",
-                    f"Each of its packets may be relayed up to {hs} times; the default is {HOP_START_DEFAULT}.",
-                    f"A hop limit of {HOP_START_DEFAULT} reaches most meshes; more spends everyone's airtime.",
-                    t["id"])
             if t["snr_n"] >= WEAK_MIN and t["snr_avg"] is not None and t["snr_avg"] < WEAK_SNR_DB:
                 add("info", "weak_link", f"Weak direct link to {name(t['id'])}: {t['snr_avg']:g} dB on average",
                     f"Over {t['snr_n']} packets heard directly; packets this weak are often lost.",
