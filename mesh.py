@@ -295,7 +295,7 @@ class MeshEngine:
         if ev == "status":
             self._status(m["connected"], m.get("error"))
         elif ev == "info":
-            self.info = {k: m.get(k) for k in ("me", "channels", "preset", "missing")}
+            self.info = {k: m.get(k) for k in ("me", "channels", "preset", "missing", "link")}
             for c in self.info["channels"]:
                 if c["key_ok"] is False:
                     log.warning("mesh: channel %s on the node does not use the expected key", c["name"])

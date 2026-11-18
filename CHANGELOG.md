@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **A Meshtastic node over Wi-Fi.** The Mesh module's `port` takes
+  `tcp:HOST` or `tcp:HOST:PORT` (port 4403 by default) beside a serial device
+  and `ble:NAME`, in the same comma list tried in order. Wi-Fi needs no cable
+  or Bluetooth bond and leaves the node's one Bluetooth link free for a
+  phone. The node's API port has no login, so keep it on a LAN you trust. A
+  malformed `tcp:` entry stops the bridge with a status saying why instead of
+  being skipped. The header's tooltip names the link in use. Power saving,
+  which turns off Bluetooth and Wi-Fi on an ESP32 node, is now refused over
+  Bluetooth as well as Wi-Fi; set it over USB.
 - **Mission Control replaces the station's Overview.** One look at the
   station: what is on the air (any HF radio keyed, a Winlink session, the
   UV-PRO), with Release TX; what needs you (unread Winlink mail, the outbox,

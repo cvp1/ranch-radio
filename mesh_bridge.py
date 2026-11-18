@@ -9,6 +9,7 @@ server starts it again.
 
     mesh_bridge.py /dev/meshtastic [--key NAME=PATH ...]
     mesh_bridge.py ble:NODEM_7720 [--key NAME=PATH ...]   (Bluetooth: name or address)
+    mesh_bridge.py tcp:192.168.1.60 [--key NAME=PATH ...]   (Wi-Fi/Ethernet: HOST[:PORT], port 4403)
     mesh_bridge.py /dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560   (first that answers)
     mesh_bridge.py ble:NODEM_7720 --feed mqtt://BROKER/PREFIX --feed-cred FILE [--feed-tx]
 
@@ -16,9 +17,14 @@ Bluetooth needs the node bonded to this host once (its PIN) and the node's
 single BLE connection free: while a phone app holds it, this bridge can't
 connect, and while this bridge holds it, the phone can't.
 
+Wi-Fi (tcp:HOST or tcp:HOST:PORT) needs the node's Wi-Fi or Ethernet on; its
+API port (4403) has no login, so anything on the LAN can drive the node: keep
+it on a network you trust. It leaves the node's Bluetooth free for a phone.
+
 Out (stdout, one JSON object per line):
     {"ev": "status", "connected": bool, "error": str|None}
-    {"ev": "info", "me": {...}, "channels": [{"index", "name", "role", "key_ok"}]}
+    {"ev": "info", "me": {...}, "channels": [{"index", "name", "role", "key_ok"}],
+     "link": "serial"|"ble"|"tcp"}
     {"ev": "nodes", "nodes": [...]}               (on change, at most every NODES_EVERY_S)
     {"ev": "msg", "id", "from", "to", "ch", "dm", "text", "snr", "rssi", "hops",
      "reply_id", "emoji"}                         (emoji: a reaction to reply_id)
@@ -52,7 +58,8 @@ Settings: only the fields in SETTINGS are read out or written, so the
 node's private and admin keys, channel PSKs, Wi-Fi and MQTT passwords never
 leave this process, and nothing here can turn off the link the bridge
 itself uses (device.serial_enabled, security.*; over Bluetooth, the whole
-Bluetooth section).
+Bluetooth section; over Bluetooth or Wi-Fi, power saving, which turns both
+off on an ESP32 node).
 """
 
 import argparse
@@ -79,6 +86,8 @@ REBOOT_S = 5
 RELINK_S = REBOOT_S + 10.0
 UNKNOWN_SNR = -128            # RouteDiscovery's "no SNR for this hop"
 NODE_FIELDS_USER = ("longName", "shortName", "hwModel", "role")
+TCP_PORT = 4403                  # the firmware's API port over Wi-Fi or Ethernet
+LINK_NAMES = {"serial": "USB", "ble": "Bluetooth", "tcp": "Wi-Fi"}
 CLOSE_WAIT_S = 3.0               # longest we wait for the node link to close
 ROLES = {0: "DISABLED", 1: "PRIMARY", 2: "SECONDARY"}
 # The node DB's telemetry, by the short names the page uses.
@@ -206,7 +215,7 @@ class Bridge:
     def __init__(self, iface, keys, link="serial"):
         self.iface = iface
         self.keys = keys
-        self.link = link              # "serial" or "ble": the link set_config must not cut
+        self.link = link              # "serial", "ble" or "tcp": the link set_config must not cut
         self.my_num = iface.myInfo.my_node_num
         self.pending = set()          # packet ids we sent with wantAck
         self.nodes_dirty = True
@@ -240,7 +249,7 @@ class Bridge:
         emit(ev="info", me={"num": self.my_num, "id": me.get("id"), "long": me.get("longName"),
                             "short": me.get("shortName"), "hw": me.get("hwModel"),
                             "fw": getattr(meta, "firmware_version", None)},
-             channels=chans, preset=preset_name(preset),
+             channels=chans, preset=preset_name(preset), link=self.link,
              missing=[n for n in self.keys
                       if not any(c.settings.name == n for c in node.channels or [])])
 
@@ -569,6 +578,9 @@ class Bridge:
             if self.link == "ble" and section == "bluetooth":
                 raise ValueError("this bridge reaches the node over Bluetooth; "
                                  "change Bluetooth settings over USB or the phone app")
+            if self.link in ("ble", "tcp") and section == "power" and values.get("is_power_saving") is True:
+                raise ValueError(f"this bridge reaches the node over {LINK_NAMES[self.link]}, which power "
+                                 "saving turns off on an ESP32 node; turn it on over USB")
             node = self.iface.localNode
             if spec[2] == "owner":
                 user = self.iface.nodesByNum.get(self.my_num, {}).get("user", {})
@@ -666,22 +678,63 @@ class Bridge:
         emit(ev="done", ref=ref, ok=True, error=None)
 
 
+def tcp_target(spec):
+    """'tcp:HOST', 'tcp:HOST:PORT' or 'tcp:[V6ADDR]:PORT' -> (host, port), or
+    None when it isn't one (no host, a port outside 1..65535, a bare IPv6)."""
+    rest, port = spec[4:], TCP_PORT
+    if rest.startswith("["):
+        end = rest.find("]")
+        if end < 0:
+            return None
+        host, tail = rest[1:end], rest[end + 1:]
+        if tail:
+            if not tail.startswith(":"):
+                return None
+            port = tail[1:]
+    elif rest.count(":") == 1:
+        host, port = rest.split(":")
+    elif ":" in rest:
+        return None                   # an IPv6 address needs its brackets
+    else:
+        host = rest
+    try:
+        port = int(port)
+    except ValueError:
+        return None
+    if not host or not 0 < port < 65536:
+        return None
+    return host, port
+
+
 def candidates(spec):
-    """'/dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560' -> the ports to try, in
+    """'/dev/meshtastic,tcp:192.168.1.60,ble:NODEA_fd78' -> the ports to try, in
     order. A serial device that isn't there is skipped without a try, so a
-    laptop uses its node on the cable when plugged in and Bluetooth when not."""
+    laptop uses its node on the cable when plugged in and Bluetooth when not.
+    A tcp: entry that isn't HOST[:PORT] is a ValueError: a typo in the host
+    file is said, not quietly skipped."""
     out = []
     for p in (x.strip() for x in spec.split(",")):
-        if p and (p.startswith("ble:") or os.path.exists(p)):
+        if p.startswith("tcp:"):
+            if tcp_target(p) is None:
+                raise ValueError(f"{p!r} is not tcp:HOST or tcp:HOST:PORT")
+            out.append(p)
+        elif p and (p.startswith("ble:") or os.path.exists(p)):
             out.append(p)
     return out
 
 
 def connect(port):
-    """Open one port: ('ble:NAME' or a serial device) -> (interface, link)."""
+    """Open one port ('ble:NAME', 'tcp:HOST[:PORT]' or a serial device) ->
+    (interface, link)."""
     if port.startswith("ble:"):
         from meshtastic.ble_interface import BLEInterface
         return BLEInterface(port[4:] or None), "ble"
+    if port.startswith("tcp:"):
+        target = tcp_target(port)
+        if target is None:
+            raise ValueError(f"not tcp:HOST or tcp:HOST:PORT: {port}")
+        from meshtastic.tcp_interface import TCPInterface
+        return TCPInterface(target[0], portNumber=target[1]), "tcp"
     from meshtastic.serial_interface import SerialInterface
     return SerialInterface(port), "serial"
 
@@ -722,7 +775,8 @@ def start_feed(args, iface, b):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("port", help="serial device of the node, e.g. /dev/meshtastic, "
-                                "or ble:NAME_OR_ADDRESS for Bluetooth, e.g. ble:NODEM_7720; "
+                                "ble:NAME_OR_ADDRESS for Bluetooth, e.g. ble:NODEM_7720, "
+                                "or tcp:HOST[:PORT] for Wi-Fi, e.g. tcp:192.168.1.60; "
                                 "comma-separate several to try in order")
     p.add_argument("--key", action="append", default=[], metavar="NAME=PATH",
                    help="check that channel NAME uses the base64 PSK in PATH")
@@ -736,10 +790,15 @@ def main():
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, stream=sys.stderr,
                         format="mesh_bridge %(levelname)s %(message)s")
 
+    try:
+        ports = candidates(args.port)
+    except ValueError as e:
+        emit(ev="status", connected=False, error=str(e))
+        return 2                  # before the meshtastic imports: checked on any Python
     from pubsub import pub
     keys = read_keys(args.key)
     iface, link, errors = None, None, []
-    for port in candidates(args.port):        # first node that answers wins
+    for port in ports:                        # first node that answers wins
         try:
             iface, link = connect(port)
         except Exception as e:
