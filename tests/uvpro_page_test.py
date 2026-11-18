@@ -3,7 +3,7 @@
 Single-radio page: tab and view, status strip, CHIRP memory table and
 editor (asks before on-air changes, sends only what changed), CSV export and
 import preview, the Radio pane, settings and beacon forms, Switch off/on.
-Station page: tab, Overview card, own view. Auto relay warning. Borrow mode:
+Station page: tab, Mission Control card, own view. Auto relay warning. Borrow mode:
 "With packet" between borrows, editor on the last read, inexact channel locked.
 
     CHROME=/path/to/chromium python3 tests/uvpro_page_test.py
@@ -325,7 +325,7 @@ try:
         b.goto(f"http://127.0.0.1:{WEB}/")
         check("station: UV-PRO tab", bool(b.wait("[...document.querySelectorAll('#st-nav .st-tab')]"
                                                  ".some((t) => t.textContent.includes('UV-PRO'))")), True)
-        check("station: Overview card", bool(b.wait("[...document.querySelectorAll('#st-cards .st-card')]"
+        check("station: Mission Control card", bool(b.wait("[...document.querySelectorAll('#st-cards .st-card')]"
                                                      ".some((c) => c.textContent.includes('UV-PRO') && c.textContent.includes('87%'))")), True)
         b.js("location.hash = '#/uvpro'")
         check("station: the panel in its own view", bool(b.wait(f"({VISIBLE})('#view-addon-uvpro {P} .uv-mem')")), True)

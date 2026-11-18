@@ -901,5 +901,15 @@ const mesh = (() => {
     renderNodes();
   }
 
-  return { hello, event, power, connected: () => connected, _nodes: () => nodes };
+  // For Mission Control (station.js): nodes heard in the last day and the
+  // last quarter hour, and the last message someone sent.
+  function summary() {
+    const now = Date.now() / 1000, me = myId();
+    const others = nodes.filter((n) => n.id !== me && !n.me && n.last_heard);
+    const last = [...messages].reverse().find((m) => !m.mine && !isReaction(m) && m.text);
+    return { connected, day: others.filter((n) => now - n.last_heard < HEARD_RECENT_S).length,
+      live: others.filter((n) => now - n.last_heard < LIVE_S).length,
+      last: last ? { who: short(last.from), text: last.text, t: last.t } : null };
+  }
+  return { hello, event, power, summary, connected: () => connected, _nodes: () => nodes };
 })();

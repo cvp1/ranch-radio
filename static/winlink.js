@@ -1153,5 +1153,23 @@ const winlink = (() => {
   // message, and what an API call would show the operator.
   const _current = () => (current ? { box: current.box, mid: current.mid } : null);
   const _api = (path, opts) => api(path, opts).then((r) => `HTTP ${r.status}`, (e) => e.message);
-  return { hello, event, power, setVias, ownRadio, setPacket, _current, _api };
+  // For Mission Control (station.js): the state line as this panel shows it,
+  // and the mailbox counts (Pat's lists; null when Pat can't be read).
+  function summary() {
+    const el = $("#wl-state");
+    return { text: el?.textContent || "", warn: !!el?.classList.contains("warn"), armed, session, off,
+      blocked: !!blocked, inbound: inbound?.call || null, listening: !!listen?.window,
+      ask: !!(listen?.window?.kind === "hf" && listen.window.ask_until) };
+  }
+  async function counts() {
+    if (off) return null;
+    try {
+      const [inb, out] = await Promise.all(["in", "out"].map((b) =>
+        api(`${BASE}winlink/api/mailbox/${b}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))))));
+      return { unread: (inb || []).filter((m) => m.Unread).length, inbox: (inb || []).length, outbox: (out || []).length };
+    } catch {
+      return null;
+    }
+  }
+  return { hello, event, power, setVias, ownRadio, setPacket, summary, counts, _current, _api };
 })();

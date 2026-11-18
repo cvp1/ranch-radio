@@ -21,6 +21,19 @@ const BANDS = [
   { n: "23", label: "23cm", lo: 1240e6, hi: 1300e6, f: 1_296_100_000, m: "USB" },
 ];
 
+function bandOf(f) { return BANDS.find((b) => f >= b.lo && f <= b.hi); }
+
+// Radio meter units -> human units (IC-7300 CI-V reference scales).
+function sUnits(raw) {
+  if (raw <= 120) {
+    const s = Math.round((raw / 120) * 9);
+    return { text: `S${s}`, dbm: Math.round(-73 - (9 - (raw / 120) * 9) * 6) };
+  }
+  const over = Math.round(((raw - 120) / 121) * 60 / 5) * 5;
+  return { text: `S9+${over}`, dbm: Math.round(-73 + ((raw - 120) / 121) * 60) };
+}
+const poPct = (r) => (r <= 143 ? (r / 143) * 50 : 50 + ((r - 143) / 70) * 50);
+
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));

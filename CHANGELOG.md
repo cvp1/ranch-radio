@@ -7,6 +7,15 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Mission Control replaces the station's Overview.** One look at the
+  station: what is on the air (any HF radio keyed, a Winlink session, the
+  UV-PRO), with Release TX; what needs you (unread Winlink mail, the outbox,
+  new mesh messages, a listen window asking if you're there, gear offline),
+  each a link to the tab that deals with it; then every radio and service
+  live, in lanes named like the tab bar's groups: a radio's frequency, band,
+  mode and S-meter (power while transmitting), Winlink's state and mailbox,
+  the mesh's nodes heard and last message. A card opens its tab; keys 1-9
+  open the cards in order and 0 comes back.
 - **Automatic Meshtastic traceroutes (off by default).** With
   `"auto_trace": true` in the host file's `mesh` block, the station traces a
   node by itself when it hears it over relays and has no trace yet, or its

@@ -33,7 +33,6 @@ function fmtFreq(f) {
   return `${s.slice(0, -6) || "0"}.${s.slice(-6, -3)}.${s.slice(-3)}`;
 }
 
-function bandOf(f) { return BANDS.find((b) => f >= b.lo && f <= b.hi); }
 function modeFamily(m) { return m === "LSB" || m === "USB" ? "SSB" : m.startsWith("CW") ? "CW" : m.startsWith("RTTY") ? "RTTY" : m; }
 
 // Receive passband relative to the dial frequency, in Hz.
@@ -44,16 +43,6 @@ function passband() {
   return [-bw / 2, bw / 2];
 }
 
-// Radio meter units -> human units (IC-7300 CI-V reference scales).
-function sUnits(raw) {
-  if (raw <= 120) {
-    const s = Math.round((raw / 120) * 9);
-    return { text: `S${s}`, dbm: Math.round(-73 - (9 - (raw / 120) * 9) * 6) };
-  }
-  const over = Math.round(((raw - 120) / 121) * 60 / 5) * 5;
-  return { text: `S9+${over}`, dbm: Math.round(-73 + ((raw - 120) / 121) * 60) };
-}
-const poPct = (r) => (r <= 143 ? (r / 143) * 50 : 50 + ((r - 143) / 70) * 50);
 function swrVal(r) {
   const pts = [[0, 1], [48, 1.5], [80, 2], [120, 3], [255, 9.9]];
   for (let i = 1; i < pts.length; i++) {

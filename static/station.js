@@ -30,9 +30,9 @@ const station = (() => {
   // ---------- navigation
 
   function renderNav() {
-    // Grouped (nav.js): Overview, then Radios, Messaging, Mesh, Tools, then
+    // Grouped (nav.js): Mission Control, then Radios, Messaging, Mesh, Tools, then
     // Modules. A service or add-on that is off or not connected leaves the bar
-    // (it got crowded): its Overview card stays, and opening it from there
+    // (it got crowded): its Mission Control card stays, and opening it from there
     // works. Its tab stays while it is the open view.
     const view = route();
     const items = present().map((r) => ({ id: r.id, label: r.name, group: "radios", dot: "ok", sub: portsOf(r),
@@ -46,11 +46,11 @@ const station = (() => {
     for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
     const end = modules.enabled() ? [{ id: "modules", label: "Modules", title: "Every module: what's on, what it needs, add or remove" }] : [];
     const nav = $("#st-nav");
-    // Off or disconnected members leave the bar (nav.js tucks them); Overview
+    // Off or disconnected members leave the bar (nav.js tucks them); Mission Control
     // and, when there is one, the Modules tab name them.
-    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Overview" }], items, end });
+    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Mission Control", title: "Mission Control: what is on the air, what needs you, every radio and service (key 0)" }], items, end });
     if (tucked.length) {
-      nav.firstChild.title = `Off or not connected: ${tucked.join(", ")} (their cards are here)`;
+      nav.firstChild.title += `\nOff or not connected: ${tucked.join(", ")} (their cards are here)`;
       const mods = nav.querySelector('a[href="#/modules"]');
       if (mods) mods.title += `\nOff or not connected: ${tucked.join(", ")}`;
     }
@@ -92,10 +92,11 @@ const station = (() => {
       $(`#view-${r}`).hidden = false;
       if (r === "mesh") { meshUnread = 0; }
       if (r === "modules") modules.shown();
-      document.title = `${r === "home" ? "Overview" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
+      document.title = `${r === "home" ? "Mission Control" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
     }
     renderNav();
     renderStrip();
+    if (r === "home") { renderCards(); refreshWlCounts(); }
   }
 
   function frame(r) {
@@ -137,6 +138,7 @@ const station = (() => {
           if (m.t === "hello") Object.assign(l.S, m.state);
           else if (m.t === "state") Object.assign(l.S, m.d);
           else return;
+          homeChanged();
           if ("freq" in (m.d || m.state || {}) || "tx" in (m.d || m.state || {}) ||
               "mode" in (m.d || m.state || {}) || "data" in (m.d || m.state || {}) || m.t === "hello") renderStrip();
         };
@@ -163,7 +165,7 @@ const station = (() => {
     const el = $("#st-strip");
     const onRadio = radios.some((x) => x.id === route() && x.present);
     const rs = present().filter((r) => live[r.id] && live[r.id].S.freq);
-    el.hidden = onRadio || !rs.length;
+    el.hidden = onRadio || home() || !rs.length;
     if (el.hidden) return;
     el.innerHTML = "";
     for (const r of rs) {
@@ -185,44 +187,211 @@ const station = (() => {
     }
   }
 
-  // ---------- overview
+  // ---------- Mission Control (the home view)
+  //
+  // One look: what is on the air (with Release TX), what needs you (unread
+  // mail and messages, an outbox waiting, a listen window asking if you're
+  // there, something offline), then every radio and service live, in the tab
+  // bar's groups. A card opens its tab; keys 1-9 open the cards in order, 0
+  // comes back here.
 
-  function card(title, state, lines, href) {
-    const c = document.createElement(href ? "a" : "div");
-    c.className = `st-card ${state}`;
-    if (href) c.href = href;
-    c.innerHTML = `<div class="st-card-head"><i class="st-dot ${state}"></i><b>${esc(title)}</b></div>` +
-      lines.map((l) => `<div class="st-card-line">${l}</div>`).join("");
-    return c;
+  const home = () => route() === "home";
+  const keyed = [];               // hrefs of the cards in order: keys 1-9
+  let wlCounts = null, wlCountsAt = 0, wlCountsBusy = false;
+  let homeQueued = false, homeLast = 0;
+
+  // Redraw Mission Control at most ~3 times a second (an S-meter moves often).
+  function homeChanged() {
+    if (!home() || homeQueued) return;
+    homeQueued = true;
+    setTimeout(() => { homeQueued = false; homeLast = Date.now(); renderCards(); },
+      Math.max(0, 330 - (Date.now() - homeLast)));
+  }
+
+  async function refreshWlCounts(force) {
+    if (!wlOn || wlCountsBusy || (!force && Date.now() - wlCountsAt < 60_000)) return;
+    wlCountsBusy = true;
+    try { wlCounts = await winlink.counts(); } finally { wlCountsBusy = false; wlCountsAt = Date.now(); }
+    homeChanged();
+  }
+
+  const ago = (t) => {
+    const s = Math.max(0, Date.now() / 1000 - t);
+    return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+  };
+  const OPEN_RE = /^\s*Open( the radio)?\s*→\s*$/;
+
+  // {title, state ok|off|tx|warn, tag, big, sub, meter: {pct, text, tx}, lines: [html], href}
+  function card(c) {
+    const el = document.createElement("div");
+    el.className = `st-card mc-card ${c.state}`;
+    if (c.href) {
+      el.dataset.href = c.href;
+      el.tabIndex = 0;
+      el.setAttribute("role", "link");
+      el.title = `Open ${c.title}`;
+      keyed.push(c.href);
+      if (keyed.length <= 9) el.dataset.key = keyed.length;
+    }
+    const dot = { ok: "ok", tx: "tx", warn: "warn" }[c.state] || "off";
+    el.innerHTML = `<div class="st-card-head"><i class="st-dot ${dot}"></i><b>${esc(c.title)}</b>` +
+      (c.tag ? `<span class="mc-tag ${c.state}">${esc(c.tag)}</span>` : "") +
+      (el.dataset.key ? `<kbd class="mc-key">${el.dataset.key}</kbd>` : "") + `</div>` +
+      (c.big ? `<div class="mc-big">${c.big}${c.sub ? ` <small>${c.sub}</small>` : ""}</div>` : "") +
+      (c.meter ? `<div class="mc-meter${c.meter.tx ? " tx" : ""}"><i style="width:${clamp(c.meter.pct, 0, 100).toFixed(0)}%"></i>` +
+        `<span>${esc(c.meter.text)}</span></div>` : "") +
+      (c.lines || []).filter((l) => l && !OPEN_RE.test(l)).map((l) => `<div class="st-card-line">${l}</div>`).join("");
+    return el;
+  }
+
+  function radioCard(r) {
+    const S = live[r.id]?.S || {};
+    const ports = `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
+    if (!r.present) return { title: r.name, state: "off", tag: "not connected", lines: [`${ports} when plugged in`] };
+    const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? "VARA HF" : "ARDOP")).join(" and ")}` : "";
+    if (!S.freq) return { title: r.name, state: "ok", big: "…", lines: [ports, lane], href: `#/${r.id}` };
+    const band = bandOf(S.freq);
+    const tx = !!S.tx;
+    const watts = Math.round((poPct(S.po || 0) / 100) * (S.max_watts || 100));
+    const su = sUnits(S.smeter || 0);
+    return { title: r.name, state: tx ? "tx" : "ok", tag: tx ? "ON AIR" : "",
+      big: `<span class="mc-f">${fmtF(S.freq)}</span>`,
+      sub: esc(`${S.mode || ""}${S.data ? "-D" : ""}${band ? ` · ${band.label || `${band.n} m`}` : ""}`),
+      meter: tx ? { pct: poPct(S.po || 0), text: `${watts} W`, tx: true }
+        : { pct: ((S.smeter || 0) / 241) * 100, text: su.text },
+      lines: [ports, lane], href: `#/${r.id}` };
+  }
+
+  function winlinkCard() {
+    const w = winlink.summary();
+    const n = wlCounts;
+    const mail = n ? `Inbox ${n.inbox}${n.unread ? ` · <span class="mc-hot">${n.unread} unread</span>` : ""} · Outbox ${n.outbox}` : "";
+    const state = wlArmed ? "tx" : w.off || w.blocked || w.ask ? "warn" : "ok";
+    return { title: "Winlink", state, tag: wlArmed ? "SESSION" : w.listening ? "LISTENING" : w.off ? "off" : "",
+      big: "", lines: [esc(w.text || "Idle"), mail], href: "#/winlink" };
+  }
+
+  function meshCard() {
+    const m = mesh.summary();
+    if (!meshConnected) return { title: "Mesh", state: "off", tag: "not connected", lines: ["Meshtastic node not connected"], href: "#/mesh" };
+    return { title: "Mesh", state: "ok", tag: meshUnread ? `${meshUnread} new` : "",
+      big: `${m.day} <small>node${m.day === 1 ? "" : "s"} heard today · ${m.live} in the last 15 min</small>`,
+      lines: [m.last ? `<span class="mc-who">${esc(m.last.who)}</span> ${esc(m.last.text.slice(0, 80))}` +
+        ` <span class="mc-dim">${esc(ago(m.last.t))}</span>` : "No messages yet"], href: "#/mesh" };
+  }
+
+  // What is transmitting now: HF radios (with Release TX), a Winlink
+  // session, an add-on on the air (the UV-PRO).
+  function renderAir() {
+    const el = $("#mc-air");
+    el.innerHTML = "";
+    const on = [];
+    for (const r of present()) {
+      const S = live[r.id]?.S;
+      if (S?.tx) on.push({ r, text: `${r.name} · ${fmtF(S.freq)} ${S.mode || ""}${S.data ? "-D" : ""}`, href: `#/${r.id}` });
+    }
+    if (wlOn && wlArmed) on.push({ text: `Winlink · ${winlink.summary().text}`, href: "#/winlink" });
+    for (const d of addons.list()) {
+      const c = addons.card(d.name);
+      if (c?.state === "tx") on.push({ text: `${d.label} transmitting`, href: `#/${d.name}` });
+    }
+    el.classList.toggle("tx", on.length > 0);
+    if (!on.length) {
+      const w = wlOn ? winlink.summary() : null;
+      el.innerHTML = `<div class="mc-air-row"><i class="st-dot ok"></i><span><b>Nothing on the air</b>` +
+        (w && (w.listening || w.inbound) ? `<span class="mc-dim"> · Winlink: ${esc(w.text)}</span>` : "") + `</span></div>`;
+      return;
+    }
+    for (const o of on) {
+      const row = document.createElement("div");
+      row.className = "mc-air-row";
+      row.innerHTML = `<i class="st-dot tx"></i><a href="${o.href}"><b>ON AIR</b> ${esc(o.text)}</a>`;
+      if (o.r) {
+        const b = document.createElement("button");
+        b.textContent = "Release TX";
+        b.title = `Unkey the ${o.r.name} (anyone may unkey)`;
+        b.onclick = () => release(o.r.id);
+        row.append(b);
+      }
+      el.append(row);
+    }
+  }
+
+  // What needs you: each chip opens the tab that deals with it.
+  function renderNeeds(offline) {
+    const el = $("#mc-needs");
+    const needs = [];
+    if (wlOn) {
+      const w = winlink.summary();
+      if (w.ask) needs.push(["warn", "Winlink: still there? Confirm to keep listening", "#/winlink"]);
+      if (w.off) needs.push(["warn", "Winlink is switched off", "#/winlink"]);
+      else if (w.blocked) needs.push(["warn", "Winlink can't start Pat", "#/winlink"]);
+      if (wlCounts?.unread) needs.push(["hot", `${wlCounts.unread} unread Winlink message${wlCounts.unread === 1 ? "" : "s"}`, "#/winlink"]);
+      if (wlCounts?.outbox) needs.push(["", `${wlCounts.outbox} in the Winlink outbox`, "#/winlink"]);
+    }
+    if (meshUnread) needs.push(["hot", `${meshUnread} new on Mesh`, "#/mesh"]);
+    for (const d of addons.list()) {
+      const t = addons.tab(d.name) || {};
+      const n = parseInt(t.badge, 10);
+      if (n) needs.push(["hot", `${n} new on ${d.label}`, `#/${d.name}`]);
+    }
+    if (offline.length) needs.push(["off", `Offline: ${offline.map((o) => o[0]).join(", ")}`, offline[0][1]]);
+    el.innerHTML = needs.length ? "" : `<span class="mc-clear">Nothing needs you</span>`;
+    for (const [cls, text, href] of needs) {
+      const a = document.createElement("a");
+      a.className = `mc-need ${cls}`;
+      a.href = href;
+      a.textContent = text;
+      el.append(a);
+    }
   }
 
   function renderCards() {
     const el = $("#st-cards");
-    el.innerHTML = "";
-    // Cards in the bar's group order (nav.js): radios, messaging, mesh, tools.
-    const cards = [];
-    const put = (group, c) => cards.push([navGroups.rank(group), cards.length, c]);
+    keyed.length = 0;
+    // Cards in the bar's groups (nav.js): radios, messaging, mesh, tools.
+    const lanes = navGroups.GROUPS.map((g) => ({ ...g, cards: [] }));
+    const put = (group, c) => lanes[navGroups.rank(group)].cards.push(c);
+    const offline = [];
     for (const r of radios) {
-      put("radios", card(r.name, r.present ? "ok" : "off", r.present ? [
-        `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`,
-        r.winlink ? "Winlink over ARDOP" : "",
-        "Open the radio →"].filter(Boolean) : ["Not connected", `rigctl <code>${r.rigctl}</code> when plugged in`],
-        r.present ? `#/${r.id}` : null));
+      put("radios", radioCard(r));
+      if (!r.present) offline.push([r.name, "#/home"]);
     }
-    if (wlOn) put("messaging", card("Winlink", wlArmed ? "tx" : "ok", [wlArmed ? "Session on the air" : "Mailbox and sessions", "Open →"], "#/winlink"));
-    if (meshOn) put("mesh", card("Mesh", meshConnected ? "ok" : "off",
-      [meshConnected ? `Meshtastic node connected${meshUnread ? ` · ${meshUnread} new` : ""}` : "Node not connected", meshConnected ? "Open →" : ""].filter(Boolean),
-      "#/mesh"));
+    if (wlOn) put("messaging", winlinkCard());
     const packetTitle = packet.title || `Packet (${packetName()})`;
-    if (packet.configured) put("messaging", card(packetTitle, packet.present ? "ok" : "off",
-      [packet.present ? "APRS and Winlink packet hub" : "Hub not running", packet.present ? "Open →" : ""].filter(Boolean),
-      packet.present ? "#/packet" : null));
+    if (packet.configured) {
+      put("messaging", { title: packetTitle, state: packet.present ? "ok" : "off", tag: packet.present ? "" : "not running",
+        lines: [packet.present ? "APRS and the Winlink packet link" : "The packet hub is not running"],
+        href: packet.present ? "#/packet" : null });
+      if (!packet.present) offline.push([packetName(), "#/home"]);
+    }
+    if (meshOn) {
+      put("mesh", meshCard());
+      if (!meshConnected) offline.push(["Mesh", "#/mesh"]);
+    }
     for (const d of addons.list()) {
       const c = addons.card(d.name);
-      if (c) put(d.group, card(d.label, c.state, c.lines, `#/${d.name}`));
+      if (!c) continue;
+      const known = ["ok", "off", "tx"].includes(c.state);
+      put(d.group, { title: d.label, state: known ? c.state : "ok", tag: known ? (c.state === "off" ? "off" : "") : c.state,
+        lines: c.lines, href: `#/${d.name}` });
+      const t = addons.tab(d.name);
+      if (c.state === "off" && t?.off) offline.push([d.label, `#/${d.name}`]);
     }
-    cards.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
-    el.append(...cards.map((x) => x[2]));
+    el.innerHTML = "";
+    for (const g of lanes) {
+      if (!g.cards.length) continue;
+      const lane = document.createElement("section");
+      lane.className = "mc-lane";
+      lane.innerHTML = `<h2 class="mc-lane-name">${esc(g.label)}</h2>`;
+      const grid = document.createElement("div");
+      grid.className = "st-cards";
+      grid.append(...g.cards.map(card));
+      lane.append(grid);
+      el.append(lane);
+    }
+    renderAir();
+    renderNeeds(offline);
     const p = present();
     const sp = sharedPort ?? 0;
     $("#st-help").innerHTML = !p.length
@@ -231,6 +400,24 @@ const station = (() => {
           ? `Apps that don't care which radio: rigctl <code>${sp}</code> (now the ${esc(p.find((r) => r.shared)?.name || "?")}). ` +
             `An app set up for one radio: use that radio's own port, which never changes.`
           : `An app set up for a radio: use that radio's own port, which never changes.`);
+  }
+
+  // A card opens its tab: a click (not on a link inside it), Enter, or its key.
+  function openCard(e) {
+    const c = e.target.closest?.(".mc-card[data-href]");
+    if (!c || e.target.closest("a, button")) return;
+    if (e.type === "keydown" && e.key !== "Enter") return;
+    location.hash = c.dataset.href;
+  }
+
+  function hotkey(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (e.key === "0") { location.hash = "#/home"; e.preventDefault(); return; }
+    if (!/^[1-9]$/.test(e.key) || !home()) return;
+    const href = keyed[Number(e.key) - 1];
+    if (href) { location.hash = href; e.preventDefault(); }
   }
 
   function viaOptions() {
@@ -260,7 +447,7 @@ const station = (() => {
     viaOptions();
     renderCards();
     // A station of one radio opens on that radio (a Mac with one rig: the page
-    // is the radio's, as it always was); every other station opens on Overview.
+    // is the radio's, as it always was); every other station opens on Mission Control.
     if (!landed && !location.hash && present().length === 1) location.hash = `#/${present()[0].id}`;
     landed = true;
     show();
@@ -293,9 +480,12 @@ const station = (() => {
         applyRadios(m);
       } else if (m.t === "winlink") {
         winlink.event(m);
+        if (m.session === "ended" || "inbound" in m) refreshWlCounts(true);
+        homeChanged();
         if ("armed" in m) { wlArmed = !!m.armed; renderNav(); renderCards(); }
       } else if (m.t === "mesh") {
         mesh.event(m);
+        homeChanged();
         if (m.status) { meshConnected = !!m.status.connected; renderNav(); renderCards(); }
         if (m.msg && !m.msg.mine && !m.msg.emoji && route() !== "mesh") { meshUnread++; renderNav(); renderCards(); }
       } else if (m.t === "addon" && m.addon === "winlink") {
@@ -353,6 +543,10 @@ const station = (() => {
     });
     modules.mount($("#modules"), { changed: renderNav, visible: () => route() === "modules" });
     window.addEventListener("hashchange", show);
+    $("#st-cards").addEventListener("click", openCard);
+    $("#st-cards").addEventListener("keydown", openCard);
+    document.addEventListener("keydown", hotkey);
+    setInterval(() => { if (home()) { refreshWlCounts(); homeChanged(); } }, 30_000);
     clock();
     setInterval(clock, 1000);
     connect();
