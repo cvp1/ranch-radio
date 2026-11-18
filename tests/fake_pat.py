@@ -39,7 +39,7 @@ Environment (read once at start: a test that needs one starts its own server):
                     everything except P2POnly
 
 VARA HF (varahf:// URLs): as Pat with varahf.ptt_ctrl false, this fake never
-keys the lane; the modem (tests/fake_xara.py at varahf.addr) does. Like
+keys the lane; the modem (the fake xara at varahf.addr) does. Like
 Pat-Vara it opens command and data ports on first use, sends the init lines,
 then CONNECT; /api/connect returns at DISCONNECTED. A dead modem connection is
 reopened on the next session. /api/disconnect sends DISCONNECT or (dirty)
