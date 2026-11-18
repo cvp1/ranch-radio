@@ -182,6 +182,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **Mission Control cards keep their own height.** A card in the same row as
+  the wide radio card no longer stretches to match it, and on a phone the
+  clock's UTC label sits beside the time instead of drifting to the right.
+
 - **The first VARA HF call after a radio-server restart no longer fails.**
   xara keeps its PTT connection to its lane open and doesn't reconnect it, so
   after any restart of the radio's server (an update or a crash) its first key
