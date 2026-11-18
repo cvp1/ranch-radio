@@ -133,6 +133,13 @@ try:
         check("compose form closes", bool(b.wait(f"!({VISIBLE})('#wl-compose')")), True)
         got = b.wait(f"({TEXT})('#wl-list').includes('From the page')")
         check("outbox shows the new message", bool(got), True)
+        # The console layout: the strip and the queue line say what waits to go.
+        check("strip: the queue counts it", bool(b.wait(f"/^\\d+ waiting$/.test(({TEXT})('#wl-strip-queue'))")), True)
+        check("queue line names the addressee", "N0DAJ" in b.js(f"({TEXT})('#wl-queue-text')"), True)
+        check("the Outbox tab carries the count",
+              b.js("document.querySelector('#wl-boxes [data-v=out] .wl-count')?.textContent") ==
+              b.js(f"({TEXT})('#wl-strip-queue')").split()[0], True)
+        check("strip: unread is a number", b.js(f"/^\\d+$/.test(({TEXT})('#wl-strip-unread'))"), True)
 
         vias = b.wait("[...document.querySelectorAll('#wl-via option')].map((o) => o.textContent).length === 2 && "
                       "[...document.querySelectorAll('#wl-via option')].map((o) => o.textContent)")
@@ -146,6 +153,8 @@ try:
         b.js("(() => { const s = document.querySelector('#wl-via'); s.value = 'ic7300'; s.dispatchEvent(new Event('change')); })()")
         check("  back to the radio: gateways shown", b.js("document.querySelector('#wl-gateways').hidden"), False)
 
+        got = b.wait(f"({TEXT})('#wl-gateways').includes('N0DAJ')")
+        check("gateway list loads by itself (no Refresh click)", bool(got), True)
         b.js("document.querySelector('#wl-gw-refresh').click()")
         got = b.wait(f"({TEXT})('#wl-gateways').includes('N0DAJ')")
         check("gateway list from Pat", bool(got), True)
@@ -166,6 +175,9 @@ try:
         b.js("document.querySelector('#wl-connect').click()")
         got = b.wait(f"({TEXT})('#wl-log').includes('Connecting to')")
         check("session log shows Pat's lines", bool(got), True)
+        check("session log: one element per line", b.js("document.querySelectorAll('#wl-log .wl-log-line').length")
+              == len(b.js(f"({TEXT})('#wl-log')").split("\n")), True)
+        check("strip: the state pill shows the session", "N0DAJ" in b.js(f"({TEXT})('#wl-state')"), True)
         check("panel shows armed", bool(b.wait(f"({TEXT})('#wl-state').toLowerCase().includes('armed')")), True)
         check("codec at the data level during the session", bool(b.wait(f"({TEXT})('#wl-codec').includes('-38 dB')")), True)
         check("Stop enabled during the session", b.js("!document.querySelector('#wl-stop').disabled"), True)
@@ -236,6 +248,9 @@ try:
         got = wait_for(lambda: recs(flog, "read", mid="ABC123"), 5)
         check("P1   Pat got {read: true} for ABC123", [r["read"] for r in got or []], [True])
         check("P1   then the row is no longer bold", bool(b.wait(f"!{row('ABC123')}.classList.contains('unread')")), True)
+        n_unread = len([m for m in api_get("/winlink/api/mailbox/in") if m.get("Unread")])
+        check("P1   the strip's Unread follows Pat's inbox",
+              bool(b.wait(f"({TEXT})('#wl-strip-unread') === '{n_unread}'", 10)), True)
         inbox = api_get("/winlink/api/mailbox/in")
         check("P1   Pat's inbox says ABC123 is read",
               [m["Unread"] for m in inbox if m["MID"] == "ABC123"] if isinstance(inbox, list) else inbox, [False])

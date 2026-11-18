@@ -7,6 +7,8 @@ here, no packet radio, a mode it doesn't run, this station's own call); a
 flag is shown; HTML in a note stays text; a click fills call, DIAL frequency
 and the URL; a click NEVER connects (Pat gets no connect), and the positive
 control: Connect then its confirm does reach Pat with the picked URL; a
+row's own Connect fills the row and arms Connect's confirm but never
+connects by itself (its confirm does; inert while a session runs); a
 stale copy shows its age when the directory can't be reached; switched off
 in the host file, the list is absent. The picker is gone in Gateway mode.
 On the maintainer's station (winlink.directory.maintain): listing requests
@@ -190,6 +192,29 @@ try:
         got = wait_for(lambda: recs(flog, "connect")[before:], 15)
         check("control: Connect + confirm reaches Pat with the picked URL", got and got[-1].get("url"),
               "ardop:///N0ARD?bw=500&freq=7100")
+        b.js("document.querySelector('#wl-stop').click()")
+        b.wait(f"!({TEXT})('#wl-state').includes('Connecting')", 20)
+
+        # A row's own Connect (the console layout): picks the row and asks for
+        # Connect's confirm. It never transmits by itself; the confirm does.
+        check("session over: Stop disabled again", bool(b.wait("document.querySelector('#wl-stop').disabled", 20)), True)
+        check("a dimmed row has no Connect of its own",
+              b.js("!!document.querySelector('#wl-p2pdir [data-call=N0VAR] .wl-quick')"), False)
+        before = len(recs(flog, "connect"))
+        b.js("document.querySelector('#wl-p2pdir [data-call=K1AUT] .wl-quick').click()")
+        check("row Connect fills the call", b.js("document.querySelector('#wl-peer-call').value"), "K1AUT")
+        check("row Connect arms the confirm, naming the peer",
+              bool(b.wait(f"({TEXT})('#wl-connect').startsWith('Confirm') && ({TEXT})('#wl-connect').includes('peer K1AUT')", 3)),
+              True)
+        check("the strip names the target", "K1AUT" in b.js(f"({TEXT})('#wl-strip-target')"), True)
+        time.sleep(2)            # a ceiling for a connect that must not come
+        check("row Connect does NOT connect by itself", len(recs(flog, "connect")), before)
+        b.js("document.querySelector('#wl-connect').click()")
+        got = wait_for(lambda: recs(flog, "connect")[before:], 15)
+        check("control: row Connect + confirm reaches Pat", got and got[-1].get("url"), "ardop:///K1AUT?bw=500&freq=7088.5")
+        b.wait("!document.querySelector('#wl-stop').disabled", 10)
+        b.js("document.querySelector('#wl-p2pdir [data-call=N0ARD] .wl-quick').click()")
+        check("row Connect is inert while a session runs", b.js("document.querySelector('#wl-peer-call').value"), "K1AUT")
         b.js("document.querySelector('#wl-stop').click()")
         b.wait(f"!({TEXT})('#wl-state').includes('Connecting')", 20)
     finally:
