@@ -8,7 +8,8 @@ Checks:
     Packet off the tab bar while the hub is down (its card stays)
   - Mission Control: a card per radio and service in lanes named like the
     tab bar's groups, names the shared port; a radio's card live (frequency,
-    S-meter; on the air: power), the on-air line with Release TX, what needs
+    S-meter, signal trace, its mini spectrum from scope frames; on the air:
+    power), an icon on every card, the UTC clock, the on-air line with Release TX, what needs
     you (unread mail, offline gear), keys 1-9 and 0, a click opens a tab, a
     key typed into a field is not a jump
   - a radio's tab shows that radio's own page in a frame, connected, without
@@ -228,6 +229,19 @@ try:
     check("  a radio's card: its frequency live",
           bool(b.wait(f"/\\d+\\.\\d{{3}}\\.\\d{{3}}/.test({CARD.format('G90')}?.querySelector('.mc-f')?.textContent || '')")), True)
     check("  and its S-meter", bool(b.wait(f"/^S\\d/.test({CARD.format('G90')}?.querySelector('.mc-meter span')?.textContent || '')")), True)
+    check("  every card has its icon", b.js("[...document.querySelectorAll('#st-cards .mc-card')]"
+                                          ".every((c) => c.querySelector('.st-card-head svg.mc-ico'))"), True)
+    check("  the clock: UTC to the second", bool(b.wait("/^\\d\\d:\\d\\d:\\d\\d$/.test(document.querySelector('#mc-clock .mc-utc').textContent)")), True)
+    check("  a radio's card is double width, with its signal trace",
+          bool(b.wait(f"{CARD.format('G90')}?.classList.contains('mc-wide') && "
+                      f"!!{CARD.format('G90')}.querySelector('.mc-trace-slot canvas.mc-trace')")), True)
+    # A scope frame (type 1: start, end, values) as the radio's server sends one.
+    b.js("(() => { const n = 200, buf = new ArrayBuffer(17 + n), dv = new DataView(buf); dv.setUint8(0, 1);"
+         " dv.setFloat64(1, 14_060_000, true); dv.setFloat64(9, 14_090_000, true);"
+         " const d = new Uint8Array(buf, 17); for (let i = 0; i < n; i++) d[i] = 30 + (i === 93 ? 90 : (i * 7) % 11);"
+         " for (let k = 0; k < 5; k++) mission.scopeOf('g90').push(buf.slice(0)); })()")
+    check("  its mini spectrum, once scope frames come",
+          bool(b.wait(f"{CARD.format('G90')}?.querySelector('.mc-scope-slot canvas.mc-scope')?.width > 0")), True)
     check("  nothing on the air", b.js(f"({TEXT})('#mc-air')"), "Nothing on the air")
     needs = b.wait("document.querySelectorAll('#mc-needs .mc-need').length >= 2 && "
                    "[...document.querySelectorAll('#mc-needs .mc-need')].map((a) => [a.textContent, a.getAttribute('href')])")
