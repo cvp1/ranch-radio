@@ -23,6 +23,9 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - a node list longer than asyncio's default 64 KiB line still arrives
   - the station asks its own node for its neighbours by itself (only that
     kind may go to this node)
+  - the Health view: rx carries hops, hop limit and relay; the counts and
+    findings (chatty node, hop limit, main relay) reach the page and a later
+    page's snapshot
   - without the Mesh add-on, mesh commands are refused
 
     python3 tests/mesh_test.py
@@ -518,6 +521,34 @@ try:
     check("  any other kind to this node is still refused", page.warned(n), True)
     page.send({"t": "mesh_send", "text": "after a big list", "ch": 1})
     check("  and the bridge keeps going (a send is delivered)", bool(page.wait(ack_of("after a big list", "delivered"))), True)
+    page.close()
+finally:
+    stop(server)
+
+# The Health view's counts: a node chatty with position packets at hop limit 7,
+# relayed by RDG (its number ends in fe), and BASE heard directly.
+server = start(env_extra={"FAKE_MESH_BURST": "1", "MESH_HEALTH_EVERY_S": "0.3"})
+try:
+    page = Page()
+    e = page.wait(lambda e: (e.get("rx") or {}).get("from") == "!0000dead")
+    check("health: rx carries what the view counts", e and {k: e["rx"].get(k) for k in ("port", "hops", "hop_start", "relay")},
+          {"port": "POSITION_APP", "hops": 2, "hop_start": 7, "relay": 0xfe})
+    e = page.wait(lambda e: (e.get("health") or {}).get("total", 0) >= 36)
+    h = e and e["health"]
+    check("health: an update with every packet heard", h and h["total"], 36)
+    kinds = {(f["kind"], f.get("node")) for f in (h or {}).get("findings", [])}
+    check("  the chatty node", ("chatty", "!0000dead") in kinds, True)
+    check("  its hop limit of 7", ("hop_limit", "!0000dead") in kinds, True)
+    check("  RDG as the main relay", ("main_relay", "!0000cafe") in kinds, True)
+    check("  status: attention", h and h["status"], "attention")
+    check("  top talker first, with its port", h and (h["talkers"][0]["id"], h["talkers"][0]["top_port"]),
+          ("!0000dead", "POSITION_APP"))
+    check("  our channel load from the node list", h and h["util_now"] and h["util_now"][1], 12.5)
+    late = Page()
+    check("  a page opened later gets it in its snapshot",
+          (late.hello["mesh"].get("health") or {}).get("total", 0) >= 36, True)
+    check("  and the packet log", len(late.hello["mesh"].get("packets") or []) >= 36, True)
+    late.close()
     page.close()
 finally:
     stop(server)

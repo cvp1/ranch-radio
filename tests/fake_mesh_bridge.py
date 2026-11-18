@@ -18,6 +18,9 @@ hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !00
 telemetry one fills its air_tx, a neighbours one says it hears us at 4.0 dB); to anyone else, "no reply". "node" ignore /
 unignore / remove change the node list; "reboot" is done.
 $FAKE_MESH_NODES_PAD adds that many far nodes to the node list (a long line).
+$FAKE_MESH_BURST=1 also "hears" 30 position packets from !0000dead (hop limit
+7, 2 hops, relayed by a node ending in fe: RDG) and 5 texts from !0000beef
+heard directly (the Health view's chatty node, hop limit and main relay).
 Each start appends a line to $FAKE_MESH_STARTS (restart counting) and every
 command received goes to $FAKE_MESH_LOG.
 """
@@ -108,7 +111,15 @@ def main():
                "battery": None, "lat": None, "lon": None, "fav": False, "me": False} for i in range(pad)]
     emit(ev="nodes", nodes=nodes)
     time.sleep(0.5)
-    emit(ev="rx", **{"from": "!0000beef"}, port="TEXT_MESSAGE_APP")
+    rx_direct = {"hops": 0, "hop_start": 3, "snr": 7.5, "rssi": -90, "mqtt": False, "relay": 0xef, "ch": 1,
+                 "to_me": False, "size": 40}
+    emit(ev="rx", **{"from": "!0000beef"}, port="TEXT_MESSAGE_APP", **rx_direct)
+    if os.environ.get("FAKE_MESH_BURST"):
+        for _ in range(30):
+            emit(ev="rx", **{"from": "!0000dead"}, port="POSITION_APP", hops=2, hop_start=7, snr=-2.0, rssi=-118,
+                 mqtt=False, relay=0xfe, ch=0, to_me=False, size=60)
+        for _ in range(5):
+            emit(ev="rx", **{"from": "!0000beef"}, port="TEXT_MESSAGE_APP", **rx_direct)
     emit(ev="msg", id=1001, **{"from": "!0000beef"}, to="^all", ch=1, dm=False,
          text="gate is closed", snr=7.5, rssi=-90, hops=0)
     emit(ev="msg", id=1002, **{"from": "!0000cafe"}, to="^all", ch=1, dm=False,

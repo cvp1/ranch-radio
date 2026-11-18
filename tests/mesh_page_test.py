@@ -4,7 +4,8 @@ Covers: the panel only with a mesh node; node, state, channel tabs and key
 check (never the key); messages, a long text's parts and Send's 9-part limit, delivery ticks,
 an automatic resend's countdown and Cancel,
 DMs from a node card, unread counts; favorites; the node list and map;
-traceroute; Settings (dirty marking, validation, only changed fields sent,
+traceroute; Health (band, findings, charts, talkers, packet log, a finding
+opens its node); Settings (dirty marking, validation, only changed fields sent,
 risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
 incoming ones on our message), Retry on a failed or unknown send, Direct as a list of
@@ -60,7 +61,8 @@ def start(mesh=True):
                                 "keys": [f"HomeNet={KEY}"], "log": ""}}, f)
         args += ["--addons", adds]
     p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG, MESH_ACK_WAIT_S="1.5", MESH_SELF_NEIGHBORS_FIRST_S="3600",
-                                          MESH_RESEND_S="600,600,600"),   # a resend waits: the page shows it
+                                          MESH_RESEND_S="600,600,600",   # a resend waits: the page shows it
+                                          FAKE_MESH_BURST="1", MESH_HEALTH_EVERY_S="0.3"),   # traffic for Health
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:
@@ -413,6 +415,31 @@ try:
               bool(b.wait("[...document.querySelectorAll('#mesh-nodes .mesh-node.ignored')].some((n) => n.textContent.includes('BASE'))")), True)
         b.js("document.querySelector('#mesh-card [data-act=ignore]').click()")
         b.wait("![...document.querySelectorAll('#mesh-nodes .mesh-node.ignored')].length")
+
+        # Health
+        b.js("document.querySelector('#mesh-health-btn').click()")
+        check("Health: the view replaces messages", b.js(f"({VISIBLE})('#mesh-health') && !({VISIBLE})('#mesh-list')"), True)
+        check("  the band says Attention", bool(b.wait("document.querySelector('.mesh-health-band b')?.textContent === 'Attention'")), True)
+        check("  the button is marked too", b.js("document.querySelector('#mesh-health-btn').classList.contains('mesh-health-warn')"), True)
+        check("  the chatty node, by name", bool(b.wait("[...document.querySelectorAll('.mesh-finding')].some((f) => f.textContent.includes('TRK is chatty'))")), True)
+        check("  the main relay, by name", b.js("[...document.querySelectorAll('.mesh-finding')].some((f) => f.textContent.includes('through RDG'))"), True)
+        check("  two charts", b.js("document.querySelectorAll('#mesh-health svg.mh-chart').length"), 2)
+        check("  the packets-a-minute chart has a bar", b.js("document.querySelectorAll('#mesh-health .mh-bar').length > 0"), True)
+        check("  top talker first: TRK", b.js("document.querySelector('.mesh-click tbody tr td')?.textContent"), "TRK")
+        check("  the packet log", b.js("document.querySelectorAll('#mesh-packets tbody tr').length >= 36"), True)
+        if SHOT:
+            b.js("document.querySelector('#mesh').scrollIntoView()")
+            b.screenshot(SHOT.replace(".png", "-health.png"))
+        b.js("[...document.querySelectorAll('.mesh-finding')].find((f) => f.textContent.includes('TRK is chatty')).click()")
+        check("  a finding opens its node's card", b.js(f"({VISIBLE})('#mesh-card') && ({TEXT})('#mesh-card').includes('Old Truck')"), True)
+        check("    with its traffic", b.js(f"({TEXT})('#mesh-card').includes('mostly position')"), True)
+        check("    and the view closes", b.js(f"({VISIBLE})('#mesh-health')"), False)
+        b.js("document.querySelector('#mesh-card [data-act=close]')?.click()")
+        b.js("document.querySelector('#mesh-cfg-btn').click()")
+        b.js("document.querySelector('#mesh-health-btn').click()")
+        check("  Health after Settings: only Health shows", b.js(f"({VISIBLE})('#mesh-health') && !({VISIBLE})('#mesh-cfg')"), True)
+        b.js("document.querySelector('#mesh-health-btn').click()")
+        check("  Health again: back to messages", b.js(f"({VISIBLE})('#mesh-list')"), True)
 
         # Settings
         CFG_TABS = "[...document.querySelectorAll('#mesh-cfg-tabs .chip')]"
