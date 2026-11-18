@@ -190,7 +190,10 @@ def serve_cmd(conn):
         except OSError:
             data = b""
         if not data:
-            if current is not None and current.stop is None:
+            # Only the connection that started the session can drop it: a
+            # readiness probe or an earlier Pat closing late (a loaded CI
+            # runner) must not cut the next session (ci 44386463903).
+            if current is not None and current.conn is conn and current.stop is None:
                 current.stop = "dropped"     # xara's host_dropped -> drop_link
             event(route="cmd_closed")
             return

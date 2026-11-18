@@ -83,6 +83,10 @@ check("station.py and render.py never import logsync* statically (the seam)",
       (_static_imports("station.py"), _static_imports("ranch_radio/render.py")), ([], []))
 
 check("a fake reaches the test that spawns it", "civ_safety_test" in affected.select(["tests/fake_civ.py"]), True)
+xa = affected.select(["tests/fake_xara.py"])
+check("tests/fake_xara.py: the tests that spawn it", ("winlink_vara_test" in xa, "winlink_page_test" in xa), (True, True))
+check("  not every testkit user (fake_pat only names it in prose)",
+      [n for n in xa if n in ("mesh_test", "logsync_test", "uvpro_test", "opengd77_test")], [])
 
 app = affected.select(["static/app.js"])
 page = [n for n, _ in affected.runs() if n.endswith("_page_test")]
