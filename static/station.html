@@ -56,13 +56,64 @@
     <div class="wl-head">
       <span class="label">Winlink</span>
       <span class="wl-call" id="wl-mycall"></span>
-      <span class="wl-state" id="wl-state">Idle</span>
+      <span class="spacer"></span>
+      <button class="chip chip-mini" id="wl-power" title="Stop Pat; arming a radio for the station still works">Switch off</button>
+    </div>
+    <!-- The status strip: one glance says what the station is doing, where a
+         session would go, and what is waiting to go (2026-11-18, after K7NGS's
+         XarAC dashboard: status first, controls left, traffic centre, stations right). -->
+    <div class="wl-strip" id="wl-strip">
+      <span class="wl-pill wl-pill-state"><span class="wl-pill-k">State</span><span class="wl-state" id="wl-state">Idle</span></span>
+      <span class="wl-pill" id="wl-pill-via" title="Where the next session goes out"><span class="wl-pill-k">Via</span><span id="wl-strip-via">—</span></span>
+      <span class="wl-pill" id="wl-pill-target" title="Who the next session calls"><span class="wl-pill-k">Target</span><span id="wl-strip-target">—</span></span>
+      <span class="wl-pill" id="wl-pill-queue" title="Messages in the outbox, waiting for a session"><span class="wl-pill-k">Queue</span><span id="wl-strip-queue">—</span></span>
+      <span class="wl-pill" id="wl-pill-unread" title="Unread messages in the inbox"><span class="wl-pill-k">Unread</span><span id="wl-strip-unread">—</span></span>
       <span class="spacer"></span>
       <span class="stat wl-id" id="wl-id"></span>
       <span class="stat" id="wl-codec" title="USB codec output level"></span>
-      <button class="chip chip-mini" id="wl-power" title="Stop Pat; arming a radio for the station still works">Switch off</button>
     </div>
-    <div class="wl-cols">
+    <div class="wl-cols wl-cols3">
+      <div class="wl-session">
+        <div class="wl-sec">Session &amp; link</div>
+        <div class="seg" id="wl-mode" title="Gateway: a Winlink gateway (to the servers); Peer: another station directly (P2P)">
+          <button class="chip on" data-v="gateway">Gateway</button>
+          <button class="chip" data-v="peer">Peer</button>
+        </div>
+        <select id="wl-via" title="Which radio the session goes out on"></select>
+        <div class="wl-peer" id="wl-peer" hidden>
+          <input id="wl-peer-call" class="wl-url" placeholder="Peer callsign" autocomplete="off" spellcheck="false">
+          <select id="wl-peer-modem" title="HF modem" hidden></select>
+          <input id="wl-peer-freq" class="wl-url" placeholder="Frequency, kHz" inputmode="decimal" autocomplete="off">
+          <select id="wl-peer-bw" title="Bandwidth (the modem's default when not set)" hidden></select>
+          <input id="wl-peer-host" class="wl-url" placeholder="host:port (its telnet P2P listener)" autocomplete="off" spellcheck="false">
+          <input id="wl-peer-pass" class="wl-url" type="password" placeholder="Its telnet P2P password" autocomplete="off">
+        </div>
+        <input id="wl-url" class="wl-url" placeholder="ardop:///CALL?bw=2000MAX&amp;freq=kHz" autocomplete="off" spellcheck="false"
+               title="The connect URL: pick a station on the right, or type one">
+        <div class="wl-row wl-go">
+          <button class="chip wl-connect" id="wl-connect">Connect</button>
+          <button class="chip wl-stop" id="wl-stop" disabled>Stop</button>
+        </div>
+        <div class="wl-prompt" id="wl-prompt" hidden>
+          <span id="wl-prompt-msg"></span>
+          <button class="chip" data-v="continue">Send anyway</button>
+          <button class="chip" data-v="abort">Abort</button>
+        </div>
+        <div class="wl-sec wl-sec-listen" id="wl-sec-listen" hidden>Listen for callers</div>
+        <div class="wl-row wl-listen" id="wl-listen" hidden
+             title="Answer stations that call this one on the listen frequency, for a bounded time (VHF/UHF packet through the hub)">
+          <select id="wl-listen-hours" title="How long to answer calls"></select>
+          <button class="chip wl-connect" id="wl-listen-btn">Listen</button>
+          <button class="chip" id="wl-listen-stop" hidden>Stop listening</button>
+        </div>
+        <div class="wl-row wl-listen" id="wl-listen-hf" hidden
+             title="Answer HF peer calls while you are here (attended): it ends when this page closes, when nobody answers Still there?, or at its time limit">
+          <select id="wl-listen-hf-ch" title="The HF channel to answer on (centre frequency)"></select>
+          <button class="chip wl-connect" id="wl-listen-hf-btn">Listen on HF (attended)</button>
+          <button class="chip wl-confirm" id="wl-listen-here" hidden>I'm here</button>
+          <button class="chip" id="wl-listen-hf-stop" hidden>Stop listening</button>
+        </div>
+      </div>
       <div class="wl-mail">
         <div class="wl-bar">
           <div class="seg" id="wl-boxes">
@@ -71,6 +122,7 @@
             <button class="chip" data-v="sent">Sent</button>
             <button class="chip" data-v="archive">Archive</button>
           </div>
+          <span class="spacer"></span>
           <button class="chip chip-mini" id="wl-compose-btn">Compose</button>
         </div>
         <div class="wl-list" id="wl-list"></div>
@@ -89,7 +141,7 @@
           <input id="wl-to" placeholder="To (callsigns or email, space separated)" autocomplete="off" spellcheck="false" required>
           <input id="wl-cc" placeholder="Cc (optional)" autocomplete="off" spellcheck="false">
           <input id="wl-subject" placeholder="Subject" autocomplete="off" required>
-          <textarea id="wl-text" rows="7" placeholder="Message"></textarea>
+          <textarea id="wl-text" rows="7" placeholder="Message (Ctrl+Enter queues it)"></textarea>
           <input type="file" id="wl-files" multiple>
           <div class="wl-note" id="wl-compose-note" hidden></div>
           <label class="wl-check" title="Sent only in a peer-to-peer session with the station it is addressed to"><input type="checkbox" id="wl-p2ponly"> P2P only (never via the Winlink servers)</label>
@@ -98,51 +150,22 @@
             <button type="button" class="chip" id="wl-compose-cancel">Cancel</button>
           </div>
         </form>
-      </div>
-      <div class="wl-session">
-        <div class="wl-bar">
-          <div class="seg" id="wl-mode" title="Gateway: a Winlink gateway (to the servers); Peer: another station directly (P2P)">
-            <button class="chip on" data-v="gateway">Gateway</button>
-            <button class="chip" data-v="peer">Peer</button>
-          </div>
-          <select id="wl-via" title="Which radio the session goes out on"></select>
-          <select id="wl-band" title="Band"></select>
-          <button class="chip chip-mini" id="wl-gw-refresh">Gateways</button>
+        <div class="wl-queue" id="wl-queue" title="What the next session sends: the outbox">
+          <span class="wl-sec">In queue</span><span id="wl-queue-text" class="wl-dim">—</span>
         </div>
-        <div class="wl-gateways" id="wl-gateways"></div>
-        <div class="wl-row wl-peer" id="wl-peer" hidden>
-          <input id="wl-peer-call" class="wl-url" placeholder="Peer callsign" autocomplete="off" spellcheck="false">
-          <select id="wl-peer-modem" title="HF modem" hidden></select>
-          <input id="wl-peer-freq" class="wl-url" placeholder="Frequency, kHz" inputmode="decimal" autocomplete="off">
-          <select id="wl-peer-bw" title="Bandwidth (the modem's default when not set)" hidden></select>
-          <input id="wl-peer-host" class="wl-url" placeholder="host:port (its telnet P2P listener)" autocomplete="off" spellcheck="false">
-          <input id="wl-peer-pass" class="wl-url" type="password" placeholder="Its telnet P2P password" autocomplete="off">
-        </div>
-        <div class="wl-gateways wl-p2pdir" id="wl-p2pdir" hidden></div>
-        <input id="wl-url" class="wl-url" placeholder="ardop:///CALL?bw=2000MAX&amp;freq=kHz" autocomplete="off" spellcheck="false">
-        <div class="wl-row">
-          <button class="chip wl-connect" id="wl-connect">Connect</button>
-          <button class="chip" id="wl-stop" disabled>Stop</button>
-        </div>
-        <div class="wl-row wl-listen" id="wl-listen" hidden
-             title="Answer stations that call this one on the listen frequency, for a bounded time (VHF/UHF packet through the hub)">
-          <select id="wl-listen-hours" title="How long to answer calls"></select>
-          <button class="chip wl-connect" id="wl-listen-btn">Listen</button>
-          <button class="chip" id="wl-listen-stop" hidden>Stop listening</button>
-        </div>
-        <div class="wl-row wl-listen" id="wl-listen-hf" hidden
-             title="Answer HF peer calls while you are here (attended): it ends when this page closes, when nobody answers Still there?, or at its time limit">
-          <select id="wl-listen-hf-ch" title="The HF channel to answer on (centre frequency)"></select>
-          <button class="chip wl-connect" id="wl-listen-hf-btn">Listen on HF (attended)</button>
-          <button class="chip wl-confirm" id="wl-listen-here" hidden>I'm here</button>
-          <button class="chip" id="wl-listen-hf-stop" hidden>Stop listening</button>
-        </div>
-        <div class="wl-prompt" id="wl-prompt" hidden>
-          <span id="wl-prompt-msg"></span>
-          <button class="chip" data-v="continue">Send anyway</button>
-          <button class="chip" data-v="abort">Abort</button>
-        </div>
+        <div class="wl-sec">Session log</div>
         <pre class="wl-log" id="wl-log"></pre>
+      </div>
+      <div class="wl-stations">
+        <div class="wl-bar">
+          <span class="wl-sec" id="wl-stations-title">Gateways</span>
+          <span class="spacer"></span>
+          <select id="wl-band" title="Band"></select>
+          <button class="chip chip-mini" id="wl-gw-refresh" title="Reload the gateway list">Refresh</button>
+        </div>
+        <div class="wl-empty wl-stations-hint" id="wl-stations-hint" hidden></div>
+        <div class="wl-gateways" id="wl-gateways"></div>
+        <div class="wl-gateways wl-p2pdir" id="wl-p2pdir" hidden></div>
       </div>
     </div>
   </section>

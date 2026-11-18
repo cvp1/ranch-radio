@@ -75,10 +75,68 @@ const winlink = (() => {
         row.onclick = () => read(m.MID, row);
         list.append(row);
       }
+      if (box === "in") setUnread(msgs);
+      if (box === "out") setQueue(msgs);
     } catch (e) {
       if (g !== boxGen) return;
       list.innerHTML = `<div class="wl-empty">Mailbox unavailable: ${esc(e.message)}</div>`;
     }
+    if (g === boxGen) refreshCounts(box);
+  }
+
+  // ---------- the strip's counts and the queue line (the console layout, 2026-11-18)
+  // What is waiting to go and what is unread, whichever box is open: the
+  // other box is read in the background. A failed read shows "?", never 0.
+  let countsGen = 0;
+  async function refreshCounts(skip) {
+    if (off) { setUnread(null); setQueue(null); return; }
+    const g = ++countsGen;
+    for (const b of ["in", "out"]) {
+      if (b === skip) continue;
+      try {
+        const msgs = await (await api(`${BASE}winlink/api/mailbox/${b}`)).json();
+        if (g !== countsGen) return;
+        (b === "in" ? setUnread : setQueue)(msgs);
+      } catch {
+        if (g === countsGen) (b === "in" ? setUnread : setQueue)(undefined);
+      }
+    }
+  }
+
+  function boxCount(b, n) {
+    const c = $(`#wl-boxes [data-v="${b}"]`);
+    if (!c) return;
+    let el = c.querySelector(".wl-count");
+    if (!n) { el?.remove(); return; }
+    if (!el) { el = document.createElement("span"); el.className = "wl-count"; c.append(el); }
+    el.textContent = String(n);
+  }
+
+  function setUnread(msgs) {
+    const n = Array.isArray(msgs) ? msgs.filter((m) => m.Unread).length : null;
+    $("#wl-strip-unread").textContent = msgs === null ? "—" : n == null ? "?" : String(n);
+    $("#wl-pill-unread").classList.toggle("wl-pill-hot", !!n);
+    boxCount("in", n);
+  }
+
+  function setQueue(msgs) {
+    const q = $("#wl-queue"), t = $("#wl-queue-text");
+    if (!Array.isArray(msgs)) {
+      $("#wl-strip-queue").textContent = msgs === null ? "—" : "?";
+      t.textContent = msgs === null ? "—" : "outbox unreadable";
+      q.classList.remove("wl-queue-some");
+      boxCount("out", 0);
+      return;
+    }
+    const n = msgs.length, p2p = msgs.filter((m) => m.P2POnly).length;
+    const to = [...new Set(msgs.flatMap((m) => addrList(m.To)))];
+    $("#wl-strip-queue").textContent = n ? `${n} waiting` : "empty";
+    $("#wl-pill-queue").classList.toggle("wl-pill-hot", n > 0);
+    t.textContent = n ? `${n} message${n > 1 ? "s" : ""} · to ${to.slice(0, 4).join(", ")}${to.length > 4 ? ` +${to.length - 4}` : ""}` +
+      (p2p ? ` · ${p2p} P2P only (a peer session with its addressee)` : "")
+      : "Nothing waiting · Compose queues a message for the next session";
+    q.classList.toggle("wl-queue-some", n > 0);
+    boxCount("out", n);
   }
 
   async function read(mid, row) {
@@ -114,6 +172,7 @@ const winlink = (() => {
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ read: true }) });
       if (b === box) $("#wl-list").querySelector(`.wl-msg[data-mid="${CSS.escape(mid)}"]`)?.classList.remove("unread");
       if (isCurrent(b, mid)) current.m.Unread = false;
+      if (b === "in") refreshCounts();      // the strip's Unread and the Inbox count
     } catch (e) {
       toast(`Could not mark it read: ${e.message}`, "warn");
     }
@@ -316,6 +375,45 @@ const winlink = (() => {
     }
   }
 
+  // ---------- one-click Connect on a station row (the console layout, 2026-11-18)
+  // The row's Connect picks the station and presses Connect once: the main
+  // button then asks for its confirm, naming the radio and frequency. It never
+  // transmits by itself; the second click is still the operator's.
+  const QUICK = `<span class="wl-quick" role="button" tabindex="0" title="Pick this station and ask to transmit (Connect confirms)">Connect</span>`;
+  function quick(row, pick) {
+    const q = row.querySelector(".wl-quick");
+    if (!q) return;
+    const go = (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (session || armed || off || blocked) return;
+      pick();
+      resetConfirm();
+      connectClick();
+      $("#wl-connect").focus({ preventScroll: true });
+    };
+    q.onclick = go;
+    q.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") go(ev); };
+  }
+
+  // ---------- the status strip: where the next session goes, and to whom
+  function targetOf(url) {
+    if (!url) return "";
+    const t = /^telnet:\/\/[^@]*@([^/]+)\/?(.*)$/.exec(url);
+    if (t) return t[2] ? `${decodeURIComponent(t[2])} (telnet ${t[1]})` : `CMS (${t[1]})`;
+    const m = /^[a-z0-9+]+:\/\/\/([^?/]+)/i.exec(url);
+    if (!m) return url;
+    const f = freqOf(url);
+    return decodeURIComponent(m[1]) + (f ? ` · ${f}` : "");
+  }
+  function renderStrip() {
+    const via = vias.find((v) => v.id === viaSel()?.value);
+    $("#wl-strip-via").textContent = via ? `${via.label}${mode === "peer" ? " · peer" : ""}` : "—";
+    const url = session || $("#wl-url").value.trim();
+    $("#wl-strip-target").textContent = targetOf(url) || (mode === "peer" ? "pick a station" : "pick a gateway");
+    $("#wl-pill-target").classList.toggle("wl-pill-hot", !!session);
+  }
+
   // ---------- gateways
 
   // Via: which radio a session goes out on. Its kind picks the gateway list:
@@ -375,6 +473,11 @@ const winlink = (() => {
     $("#wl-peer").hidden = !peer;
     $("#wl-url").readOnly = peer;
     $("#wl-band").hidden = $("#wl-gw-refresh").hidden = $("#wl-gateways").hidden = kind === "telnet" || peer;
+    $("#wl-stations-title").textContent = peer ? "P2P directory" : kind === "packet" ? "Packet gateways" : "Gateways";
+    const hint = $("#wl-stations-hint");
+    hint.hidden = !(kind === "telnet" && !peer);
+    hint.textContent = "Telnet goes straight to the Winlink servers over the internet: no gateway to pick.";
+    queueMicrotask(renderStrip);
     if (peer) {
       $("#wl-peer-freq").hidden = kind === "telnet";
       $("#wl-peer-host").hidden = $("#wl-peer-pass").hidden = kind !== "telnet";
@@ -402,7 +505,9 @@ const winlink = (() => {
       if (save && isHF(sch) && sch !== kind) { $("#wl-url").value = ""; resetConfirm(); }
     }
     fillBands();
-    if (save) loadGateways();
+    // The list loads by itself the first time a via's kind is shown (it used
+    // to wait for a click on Gateways, an empty pane nobody understood).
+    if (save || gwKind !== kind) loadGateways();
   }
 
   // ---------- peer (P2P): a station, not a gateway
@@ -463,6 +568,7 @@ const winlink = (() => {
     $("#wl-url").value = peerUrl(true);
     $("#wl-url").dataset.peer = "1";
     resetConfirm();
+    renderStrip();
   }
 
   // ---------- the P2P directory (plan winlink-directory, phase 1)
@@ -558,7 +664,11 @@ const winlink = (() => {
         `<span>${esc(DIR_MODE[e.mode] || e.mode)} ${esc(width)}</span>` +
         `<span class="wl-dim">${s.distance_km != null ? `${esc(s.distance_km)} km · ` : ""}${esc(notes.join(" · "))}</span>`;
       row.dataset.call = s.call;
-      if (!why) row.onclick = () => pickDirectory(s, e);
+      if (!why) {
+        row.insertAdjacentHTML("beforeend", QUICK);
+        row.onclick = () => pickDirectory(s, e);
+        quick(row, () => pickDirectory(s, e));
+      }
       el.append(row);
     }
     if (caret && ta.isConnected) { ta.focus(); ta.setSelectionRange(...caret); }
@@ -748,10 +858,12 @@ const winlink = (() => {
     sel.value = store.get(key, vhf ? "2m" : "80m");
   }
 
+  let gwKind = null;             // the via kind the gateway list was last asked for
   async function loadGateways() {
     const el = $("#wl-gateways");
     const band = $("#wl-band").value;
     const kind = viaKind();
+    gwKind = kind;
     store.set(kind === "packet" ? "wl.band.vhf" : "wl.band", band);
     el.innerHTML = `<div class="wl-empty">Loading gateways…</div>`;
     try {
@@ -764,12 +876,16 @@ const winlink = (() => {
         row.className = "wl-gw";
         row.dataset.url = g.url;
         row.innerHTML = `<span class="wl-who">${esc(g.callsign)}</span><span>${esc(g.dial?.khz)} kHz</span>` +
-          `<span>${Math.round(g.distance)} km ${Math.round(g.azimuth)}°</span><span class="wl-dim">${esc(g.modes)}</span>`;
-        row.onclick = () => {
+          `<span>${Math.round(g.distance)} km ${Math.round(g.azimuth)}°</span>` + QUICK;
+        row.title = [g.modes, g.url].filter(Boolean).join(" · ");
+        const pick = () => {
           $("#wl-url").value = g.url;
           for (const r of el.children) r.classList.toggle("on", r === row);
           resetConfirm();
+          renderStrip();
         };
+        row.onclick = pick;
+        quick(row, pick);
         el.append(row);
       }
     } catch (e) {
@@ -832,7 +948,7 @@ const winlink = (() => {
     else if (listen?.busy === "ending") setState("Ending the listen window…", "on");
     else if (w?.kind === "hf" && w.ask_until) setState(`Still there? Press I'm here before ${clock(w.ask_until)} or HF listening ends`, "warn");
     else if (w) setState(`Listening${w.kind === "hf" ? " (attended)" : ""} on ${listenWhere(w)} until ${clock(w.until)} · answering calls to ${w.call}`, "on");
-    else setState(session ? `Armed · session to ${session}` : armed ? "Armed" : "Idle", armed ? "on" : "");
+    else setState(session ? `Armed · session to ${targetOf(session) || session}` : armed ? "Armed" : "Idle", armed ? "on" : "");
   }
 
   function renderSession() {
@@ -840,6 +956,8 @@ const winlink = (() => {
     $("#wl-stop").disabled = !session;
     $("#wl-connect").disabled = !!session || off || !!blocked || !!inbound || listening;
     renderListen();
+    $("#wl-sec-listen").hidden = $("#wl-listen").hidden && $("#wl-listen-hf").hidden;
+    renderStrip();
     $("#wl-compose-btn").disabled = off;
     $("#winlink").classList.toggle("wl-armed", armed);
     $("#winlink").classList.toggle("wl-off", off);
@@ -972,11 +1090,31 @@ const winlink = (() => {
     send({ t: "addon", addon: "winlink", do: "power", on: want });
   };
 
+  // The session log: Pat's lines, the time in its own column and the lines
+  // that matter coloured. textContent stays the plain lines (tests read it).
+  let logLines = [];
+  const LOG_ERR = /\b(error|failed|failure|refused|abort(ed)?|timed? ?out|unable|denied)\b/i;
+  const LOG_OK = /\b(connected to|connection established|sent \d|received \d|exchange complete|ID sent)\b/i;
+  function logHtml(line) {
+    const m = /^(\d{4}\/\d\d\/\d\d )?(\d\d:\d\d:\d\d) (.*)$/s.exec(line);
+    const body = m ? m[3] : line;
+    const cls = LOG_ERR.test(body) ? " wl-log-err" : LOG_OK.test(body) ? " wl-log-ok" : "";
+    return `<span class="wl-log-line${cls}">` + (m ? `<span class="wl-log-t">${esc(m[1] || "")}${esc(m[2])}</span> ` : "") +
+      `${esc(body)}</span>`;
+  }
+  function setLog(lines) {
+    logLines = lines.slice(-LOG_KEEP);
+    const el = $("#wl-log");
+    el.innerHTML = logLines.map(logHtml).join("\n");
+    el.scrollTop = el.scrollHeight;
+  }
   function log(line) {
     const el = $("#wl-log");
-    const lines = (el.textContent ? el.textContent.split("\n") : []).concat(line).slice(-LOG_KEEP);
-    el.textContent = lines.join("\n");
-    el.scrollTop = el.scrollHeight;
+    const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;   // don't yank a reader back down
+    logLines.push(line);
+    if (logLines.length > LOG_KEEP) { logLines = logLines.slice(-LOG_KEEP); setLog(logLines); }
+    else el.insertAdjacentHTML("beforeend", (logLines.length > 1 ? "\n" : "") + logHtml(line));
+    if (stick) el.scrollTop = el.scrollHeight;
   }
 
   function codec(db) {
@@ -1046,7 +1184,7 @@ const winlink = (() => {
       ownVias();                       // a VARA HF via when the server has it
     }
     $("#wl-mycall").textContent = snap.mycall || "";
-    $("#wl-log").textContent = (snap.log || []).join("\n");
+    setLog(snap.log || []);
     codec(snap.codec_db);
     idState(snap.id);
     idleState();
@@ -1070,7 +1208,7 @@ const winlink = (() => {
     if ("codec_db" in m) codec(m.codec_db);
     if ("armed" in m) {
       armed = m.armed;
-      if (armed) setState(session ? `Armed · session to ${session}` : "Armed", "on");
+      if (armed) setState(session ? `Armed · session to ${targetOf(session) || session}` : "Armed", "on");
       renderSession();
     }
     if (m.id) idState(m.id);
@@ -1097,7 +1235,7 @@ const winlink = (() => {
     if (m.status && "mycall" in m.status) $("#wl-mycall").textContent = m.status.mycall;
     if (m.session === "started") {
       session = m.url;
-      setState(`Armed · session to ${m.url}`, "on");
+      setState(`Armed · session to ${targetOf(m.url) || m.url}`, "on");
       renderSession();
     } else if (m.session === "ended") {
       session = null;
@@ -1125,6 +1263,9 @@ const winlink = (() => {
   $("#wl-compose-btn").onclick = () => { fwdGen++; openCompose($("#wl-compose").hidden); };
   $("#wl-compose-cancel").onclick = () => openCompose(false);
   $("#wl-compose").onsubmit = submitCompose;
+  $("#wl-text").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("#wl-compose").requestSubmit(); }
+  });
   $("#wl-compose").addEventListener("reset", () => setNote(""));
   $("#wl-reply").onclick = () => reply(false);
   $("#wl-reply-all").onclick = () => reply(true);
@@ -1133,7 +1274,7 @@ const winlink = (() => {
   $("#wl-delete").onclick = deleteClick;
   $("#wl-gw-refresh").onclick = loadGateways;
   $("#wl-band").onchange = loadGateways;
-  $("#wl-url").oninput = resetConfirm;
+  $("#wl-url").oninput = () => { resetConfirm(); renderStrip(); };
   for (const c of $("#wl-mode").children) c.onclick = () => setMode(c.dataset.v);
   for (const id of ["#wl-peer-call", "#wl-peer-freq", "#wl-peer-host", "#wl-peer-pass"]) $(id).oninput = peerChanged;
   $("#wl-peer-modem").onchange = peerChanged;

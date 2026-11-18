@@ -7,6 +7,16 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Winlink panel, console layout.** A status strip on top (state, the via,
+  who the next session calls, how many messages wait in the outbox, unread),
+  then three columns: session controls on the left, mailbox and session log
+  in the middle, gateways or the P2P directory on the right. Each station row
+  has its own Connect, which picks it and asks for Connect's confirm (it never
+  transmits by itself). The gateway list loads without a click, the Inbox and
+  Outbox tabs carry counts, an "In queue" line names what the next session
+  sends, the log colours errors and successes, and Ctrl+Enter queues a
+  composed message. The state line names the station and frequency instead of
+  the raw connect URL (a telnet URL's password no longer shows there).
 - **HaLow tab (`halow` add-on).** Watches and runs an OpenWrt Wi-Fi HaLow bridge over SSH, installing nothing on it: radios, networks, stations (signal, rates, retries, address), box health, services, log, and a DHCP guard that turns red if the bridge starts handing out LAN addresses. Changes (reboot, disconnect a station, channel, power, network name, hidden, on/off, service restarts, DHCP off) are planned server-side, shown as the exact command with what it will drop, and run once on Confirm; an unconfirmed plan expires after two minutes. Every applied change goes to `halow-actions.log`. Wi-Fi keys are never read or shown.
 - **Wavelog CAT, in place of WaveLogGate.** A `wavelog_cat` block sends each
   radio's frequency and mode to Wavelog's live QSO form (on every change, and
