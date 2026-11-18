@@ -162,7 +162,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `vara` | Winlink over VARA HF beside ARDOP, picked per session (macOS; xara, unregistered) | `winlink`; xara (built with cargo, below) |
-| `mesh` | A Meshtastic node on the page: channels, conversations, replies and reactions, nodes (telemetry, ask for position / telemetry / user info, ignore, remove), a map with neighbour links, hops, routers, distance rings and the list of who hears you and whom you hear, settings, reboot | a node over USB or Bluetooth; the `meshtastic` package |
+| `mesh` | A Meshtastic node on the page: channels, conversations, replies and reactions, nodes (telemetry, ask for position / telemetry / user info, ignore, remove), a map with neighbour links, hops, routers, distance rings and the list of who hears you and whom you hear, settings, reboot | a node over USB, Bluetooth or Wi-Fi (`tcp:HOST`; its port has no login, so a trusted LAN only); the `meshtastic` package |
 | `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO / UV-50PRO over Bluetooth (BlueZ on Linux, IOBluetooth on macOS); optional receive-only iGate | Direwolf, a network TNC, or Bluetooth |
 | `uvpro` | UV-PRO / UV-50PRO control: channels, settings, beacon | `benlink`; the packet hub on the same radio |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |

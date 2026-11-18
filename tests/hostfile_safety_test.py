@@ -106,6 +106,7 @@ for name, h, m in (
          setp(("winlink", "ardopcf", "audio_in"), "USB Audio CODEC")),
         ("callsign with SSID", station_h, setp(("packet", "mycall"), "N9ABC-10")),
         ("mesh port list of serial and ble", station_h, setp(("mesh", "port"), "/dev/meshtastic,ble:NODEA_fd78")),
+        ("mesh port on Wi-Fi first, then serial", station_h, setp(("mesh", "port"), "tcp:192.168.1.60,/dev/meshtastic")),
         ("mesh feed URL with a port and path", station_h, setp(("mesh", "feed"), "mqtt://192.168.1.5:1883/meshfeed/a-1")),
         ("codec table", station_h, lambda h: h["radios"][0].update(codec_db="default=-32,40m=-32"))):
     h = copy.deepcopy(h)

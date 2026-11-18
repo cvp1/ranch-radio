@@ -11,6 +11,8 @@ across restarts like any add-on's.
 
 Config (station.json "mesh", or server.py --mesh-*, both become this):
     {"port": "/dev/meshtastic", "keys": ["HomeNet=~/.config/ranch-radio/keys/..."],
+     (port: a serial device, ble:NAME, or tcp:HOST[:PORT] for a node on Wi-Fi;
+      comma-separate several to try in order)
      "python": "...", "bridge": "...", "log": "...",
      "feed": "mqtt://BROKER/PREFIX", "feed_cred": "FILE", "feed_tx": false}
 "feed" also publishes the node's traffic to an MQTT broker (mesh_feed.py).
@@ -40,7 +42,7 @@ class MeshAddon(Addon):
     def __init__(self, host, opts):
         super().__init__(host, opts)
         if not opts.get("port"):
-            raise ValueError("mesh needs a \"port\" (the node's serial device)")
+            raise ValueError("mesh needs a \"port\" (the node: a serial device, ble:NAME or tcp:HOST)")
         if not isinstance(opts.get("auto_trace", False), bool):
             raise ValueError("mesh \"auto_trace\" must be true or false")   # "false" must not switch TX on
         per_hour = opts.get("auto_trace_per_hour", 6)

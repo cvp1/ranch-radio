@@ -97,7 +97,8 @@ const mesh = (() => {
     st.textContent = switchedOff ? "Switched off" : connected ? "Connected" : "Not connected";
     // Why, e.g. the meshtastic CLI holding the port ("Could not exclusively lock port").
     st.className = "mesh-state" + (connected ? " on" : " warn");
-    st.title = connected ? `${me?.hw || ""} · firmware ${me?.fw || "?"} · ${info?.preset || ""}` : linkError || "";
+    const via = { serial: "USB", ble: "Bluetooth", tcp: "Wi-Fi" }[info?.link];
+    st.title = connected ? `${me?.hw || ""} · firmware ${me?.fw || "?"} · ${info?.preset || ""}${via ? ` · over ${via}` : ""}` : linkError || "";
     const keys = (info?.channels || []).filter((c) => c.key_ok !== null && c.key_ok !== undefined);
     $("#mesh-key").innerHTML = keys.map((c) => c.key_ok
       ? `<span class="stat mesh-key-ok" title="The node's key for ${esc(c.name)} is the expected one">${esc(c.name)} key ✓</span>`
