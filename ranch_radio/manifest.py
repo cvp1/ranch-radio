@@ -49,6 +49,7 @@ RULES = {
                                   r"(,(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)){0,3}")),
     "audio_name": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")),
     "http_url": (str, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]{0,200})?")),
+    "origin_list": (list, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")),
 }
 
 
@@ -74,6 +75,11 @@ def normalize(rule, value):
             value = [v for v in re.split(r"[,\s]+", value) if v]
         if isinstance(value, list):
             return [v.strip().upper() if isinstance(v, str) else v for v in value]
+    if rule == "origin_list":
+        if isinstance(value, str):
+            value = [v for v in re.split(r"[,\s]+", value) if v]
+        if isinstance(value, list):
+            return [v.strip().rstrip("/") if isinstance(v, str) else v for v in value]
     if rule == "tnc" and isinstance(value, str) and value.lower().startswith("bt:"):
         return "bt:" + value[3:].upper()
     return value.strip() if isinstance(value, str) else value
@@ -277,6 +283,21 @@ MANIFESTS = {
         "rules": {"wavelog.url": "http_url"},
         "ask": {"wavelog.url": "your Wavelog's address, e.g. http://127.0.0.1:8086 (QRZ and LoTW are added by "
                                "hand: see the README's Logbook sync section)"},
+        "needs": [],
+    },
+    # Wavelog CAT (wavelog_cat.py): a station module. Each radio's frequency and
+    # mode to Wavelog's live QSO form, and Wavelog's spot clicks back to the
+    # radio (qsy). With a logsync block it takes logsync.wavelog's url and key
+    # file; without one, add "url" and "key_file" by hand.
+    "wavelog_cat": {
+        "label": "Wavelog CAT (the radio's frequency to Wavelog, its spot clicks back)",
+        "family": "files",
+        "block": ("wavelog_cat",),
+        "os": ["macos", "linux"],
+        "template": {"any": {"qsy": {"station_url": ASK, "origins": ASK}}},
+        "rules": {"qsy.station_url": "http_url", "qsy.origins": "origin_list"},
+        "ask": {"qsy.station_url": "this station's address as the browser opens it, e.g. https://192.168.1.21:7300",
+                "qsy.origins": "your Wavelog's address as the browser opens it, e.g. https://192.168.1.21:8087"},
         "needs": [],
     },
     "macos-widget": {

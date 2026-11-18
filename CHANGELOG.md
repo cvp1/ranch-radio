@@ -7,6 +7,14 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **Wavelog CAT, in place of WaveLogGate.** A `wavelog_cat` block sends each
+  radio's frequency and mode to Wavelog's live QSO form (on every change, and
+  every minute while quiet), and a click on a spot in Wavelog's DX cluster or
+  bandmap tunes the radio through the station (`/wavelog/qsy/<radio>`). The
+  click is taken only from the Wavelog address the block names, never while
+  the radio transmits or its Winlink lane is armed. WaveLogGate and the flrig
+  it needed can go; JTDX's QSOs were already the logbook sync's.
+
 - **A Meshtastic node over Wi-Fi.** The Mesh module's `port` takes
   `tcp:HOST` or `tcp:HOST:PORT` (port 4403 by default) beside a serial device
   and `ble:NAME`, in the same comma list tried in order. Wi-Fi needs no cable

@@ -130,6 +130,8 @@ RULES = [
     (("logsync", "qrz", "key_file"), TOKEN), (("logsync", "qrz", "url"), TOKEN),
     (("logsync", "lotw", "tqsl"), TOKEN), (("logsync", "lotw", "location"), TEXT), (("logsync", "lotw", "login"), TOKEN),
     (("logsync", "lotw", "password_file"), TOKEN), (("logsync", "lotw", "url"), TOKEN),
+    (("wavelog_cat", "url"), TOKEN), (("wavelog_cat", "key_file"), TOKEN), (("wavelog_cat", "radios", "*"), LABEL),
+    (("wavelog_cat", "qsy", "station_url"), TOKEN), (("wavelog_cat", "qsy", "origins", "*"), TOKEN),
     (("addons", "*"), None),     # add-on names: checked below
 ]
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"),
@@ -426,6 +428,40 @@ def validate(h):
     listen_hf_plan(h)
     _validate_directory(h)
     _validate_logsync(h)
+    _validate_wavelog_cat(h)
+
+
+def _validate_wavelog_cat(h):
+    """wavelog_cat (wavelog_cat.py: each radio's frequency to Wavelog, its
+    spot clicks back): checked the way the station reads it."""
+    if "wavelog_cat" not in h:
+        return
+    import importlib
+    try:
+        b = _wavelog_cat_block(h)
+        importlib.import_module("wavelog_cat").check_block(b)
+        ids = {r.get("id") for r in h.get("radios") or []}
+        missing = sorted(set(b.get("radios") or {}) - ids)
+        if missing:
+            raise ValueError(f"wavelog_cat.radios names no radio in this host file: {missing}")
+    except ValueError as e:
+        raise HostError(f"{h['host']}: {e}") from None
+    except Exception as e:
+        raise HostError(f"{h['host']}: wavelog_cat: not a valid block ({type(e).__name__})") from None
+
+
+def _wavelog_cat_block(h):
+    """The station's wavelog_cat block: the host file's, with logsync.wavelog's
+    url and key_file when it names none (one Wavelog, one key file)."""
+    b = h.get("wavelog_cat")
+    if not isinstance(b, dict):
+        return b
+    b = dict(b)
+    wl = (h.get("logsync") or {}).get("wavelog") if isinstance(h.get("logsync"), dict) else None
+    for f in ("url", "key_file"):
+        if f not in b and isinstance(wl, dict) and wl.get(f):
+            b[f] = wl[f]
+    return b
 
 
 def _validate_logsync(h):
@@ -952,6 +988,8 @@ def station_json(h):
         d["mesh"] = dict(h["mesh"])
     if h.get("logsync"):
         d["logsync"] = _logsync_block(h)
+    if h.get("wavelog_cat"):
+        d["wavelog_cat"] = _wavelog_cat_block(h)
     if h.get("addons"):
         d["addons"] = h["addons"]
     d["host_file"] = h["host"]                  # the station page's Modules tab

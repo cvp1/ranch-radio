@@ -169,6 +169,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
 | `logsync` | Every QSO JTDX logs, to Wavelog, QRZ and LoTW, with receipts and confirmations back; status on the Logbook tab | Wavelog's API key; QRZ's logbook key; TQSL with a password-free certificate |
+| `wavelog_cat` | Each radio's frequency and mode to Wavelog's live QSO form; Wavelog's spot clicks tune the radio (replaces WaveLogGate) | Wavelog's API key (the logsync one by default) |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
@@ -699,6 +700,29 @@ come back. The station runs it from the host file's `logsync` block:
   *Test* checks each destination live and read-only (the key, the profile,
   the login, the TQSL location).
 
+
+### Wavelog CAT (`wavelog_cat`)
+
+What WaveLogGate did beyond the uploads: the radio's frequency and mode reach
+Wavelog's live QSO form, and a click on a DX-cluster or bandmap spot in
+Wavelog tunes the radio. The station does it for each radio from the host
+file's `wavelog_cat` block (url and key_file default to `logsync.wavelog`'s):
+
+```json
+"wavelog_cat": {"radios": {"ic7300": "IC-7300"},
+                "qsy": {"station_url": "https://192.168.1.21:7300",
+                        "origins": ["https://192.168.1.21:8087"]}}
+```
+
+- `radios`: radio id to the name Wavelog shows (default: every radio, by name).
+  Pick that radio in Wavelog's QSO form.
+- `qsy.station_url`: this station as the browser opens it; Wavelog's page calls
+  `<station_url>/wavelog/qsy/<radio>/<hz>/<mode>`. `qsy.origins`: Wavelog's
+  address(es) as the browser opens them. A click from anywhere else, or with
+  no Origin, is refused. Leave `qsy` out to send the frequency only;
+  `"mode": false` moves the frequency and leaves the mode alone.
+- Never keys the radio; refused while it transmits or a Winlink session has
+  its lane. Not offered on a station with a token.
 ## How it fits together
 
 - `server.py` runs one radio: its page, audio, rigctl port and Winlink lane,
