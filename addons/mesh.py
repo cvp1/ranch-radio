@@ -76,6 +76,8 @@ class MeshAddon(Addon):
         self.engine = MeshEngine(self.host, self.args)
         if self._last is not None and self.engine.log_path is None:
             self.engine.messages = self._last.messages
+        if self._last is not None:
+            self.engine.stats = self._last.stats      # the Health view's counts outlive a switch-off
         await self.engine.start()
 
     async def stop(self):

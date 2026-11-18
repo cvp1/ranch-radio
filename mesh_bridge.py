@@ -32,7 +32,8 @@ Out (stdout, one JSON object per line):
     {"ev": "ack", "id", "ok", "by", "reason"}
     {"ev": "config", "sections": [...], "values": {section: {field: value}}}
     {"ev": "done", "ref", "ok", "error"}         (a set or favorite was written, or not)
-    {"ev": "rx", "from": "!xxxxxxxx", "port": str}  (any packet heard: activity on the map)
+    {"ev": "rx", "from": "!xxxxxxxx", "port": str, "hops", "hop_start", "snr", "rssi", "mqtt",
+     "relay", "ch", "to_me", "size"}             (any packet heard: activity, and the Health view)
     {"ev": "trace", "ref", "to", "ok", "error", "route", "snr_towards", "route_back", "snr_back"}
     {"ev": "req", "ref", "to", "kind", "ok", "error"}   (a request's answer came, or didn't)
     {"ev": "neighbors", "neighbors": {"!xxxxxxxx": {"t", "neighbors": [{"id", "snr"}]}}}
@@ -211,6 +212,26 @@ def read_keys(specs):
     return keys
 
 
+def rx_detail(packet, my_num):
+    """What the Health view counts of a packet (mesh_stats.py): its hops and the
+    hop limit its sender set, signal, MQTT, the relay byte (the last byte of the
+    node that passed it to us; firmware 2.6+, 0 = not said), its size."""
+    hops = hop_start = None
+    if packet.get("hopStart"):
+        hop_start = packet["hopStart"]
+        if "hopLimit" in packet:
+            hops = hop_start - packet["hopLimit"]
+    raw = packet.get("raw")
+    try:
+        size = raw.ByteSize() if raw is not None else None
+    except Exception:
+        size = None
+    return {"hops": hops if hops is None or hops >= 0 else None, "hop_start": hop_start,
+            "snr": packet.get("rxSnr"), "rssi": packet.get("rxRssi") or None, "mqtt": bool(packet.get("viaMqtt")),
+            "relay": packet.get("relayNode") or None, "ch": packet.get("channel", 0),
+            "to_me": packet.get("to") == my_num, "size": size}
+
+
 class Bridge:
     def __init__(self, iface, keys, link="serial"):
         self.iface = iface
@@ -312,7 +333,7 @@ class Bridge:
         d = packet.get("decoded") or {}
         port = d.get("portnum")
         if packet.get("from") != self.my_num and packet.get("fromId"):
-            emit(ev="rx", **{"from": packet["fromId"]}, port=port or "ENCRYPTED")
+            emit(ev="rx", **{"from": packet["fromId"]}, port=port or "ENCRYPTED", **rx_detail(packet, self.my_num))
         if port == "TEXT_MESSAGE_APP":
             to = packet.get("to")
             hops = None

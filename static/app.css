@@ -621,6 +621,42 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mm-attr { position: absolute; right: 6px; bottom: 4px; font: 10px var(--sans); color: var(--dim);
   background: rgba(0,0,0,.55); padding: 1px 5px; border-radius: 4px; text-decoration: none; }
 .mesh-cfg { display: flex; flex-direction: column; gap: 10px; }
+/* Mesh Health (mesh.js renderHealth) */
+.mesh-health { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mesh-health .label { margin-top: 4px; }
+#mesh-health-btn.mesh-health-warn { color: var(--warm); border-color: rgba(var(--warm-rgb), .5); }
+#mesh-health-btn.mesh-health-bad { color: var(--tx); border-color: rgba(var(--tx-rgb), .6); }
+.mesh-health-band { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 12.5px; }
+.mesh-health-band b { font-size: 14px; color: var(--accent); }
+.mesh-health-band.attention b { color: var(--warm); }
+.mesh-health-band.busy b { color: var(--tx); }
+.mesh-health-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.mh-chart { display: block; width: 100%; height: 72px; }
+.mh-bar { fill: var(--accent); opacity: .8; }
+.mh-axis { stroke: var(--line-hi); stroke-width: 1; }
+.mh-warn { stroke: var(--warm); stroke-dasharray: 4 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.mh-bad { stroke: var(--tx); stroke-dasharray: 4 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.mh-util { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.mh-air { fill: none; stroke: var(--muted); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.mh-util-dot { fill: var(--accent); }
+.mh-scale { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--muted); }
+.mh-key { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin: 0 3px 0 6px; background: var(--accent); }
+.mh-key.mh-air { background: var(--muted); }
+.mesh-findings { display: flex; flex-direction: column; gap: 6px; }
+.mesh-finding { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 8px 12px; font: inherit;
+  font-size: 12.5px; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--muted); border-radius: 8px; cursor: pointer; }
+.mesh-finding:disabled { cursor: default; color: var(--text); opacity: 1; }
+.mesh-finding.warn { border-left-color: var(--warm); }
+.mesh-finding.bad { border-left-color: var(--tx); }
+.mesh-talkers { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.mesh-talkers th { text-align: left; font-weight: 500; color: var(--muted); padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); }
+.mesh-talkers td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.mesh-scroll { overflow-x: auto; }
+.mesh-click tbody tr { cursor: pointer; }
+.mesh-click tbody tr:hover { background: var(--panel-hi); }
+.mesh-packets { max-height: 320px; overflow: auto; }
 .mesh-nbs { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; font-size: 12px; }
 .mesh-nbs > div > .wl-dim:first-child { display: inline-block; min-width: 5.5em; }
 .mesh-nb { margin-right: 10px; cursor: pointer; white-space: nowrap; }

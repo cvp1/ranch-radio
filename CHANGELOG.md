@@ -32,6 +32,29 @@ All notable changes to Ranch Radio are recorded here. The format follows
   those after it. The counter shows how many parts it takes. A reply or a
   reaction is still one packet. After a restart, parts never sent show
   failed.
+- **Mesh Health: what this node hears, added up.** A **Health** button in
+  the Mesh header opens a view of the last hour and the last day:
+  - a status band (Healthy, Attention, Busy), also shown on the button;
+  - packets a minute for the last hour, and this node's channel
+    utilization and its own air-tx over 24 hours, with the firmware's 25 %
+    and 40 % lines;
+  - **What looks wrong**, each with what to do: a busy channel, a chatty
+    node (by rate, or a quarter of all traffic, with its main port), a
+    sender with a hop limit over 3, a weak direct link, a node heard only
+    over MQTT, one relay carrying most of what reaches us (named from the
+    firmware's relay byte), much traffic on channels without a key. Each
+    needs enough packets before it says anything. A finding with a node
+    opens that node's card;
+  - the top talkers with their ports, hop limit, hops and direct SNR, and
+    the last 200 packets heard with path, signal, relay and size.
+
+  The node card gains a traffic line (packets in the last hour, mostly what,
+  hop limit). The bridge's `rx` events now carry hops, hop limit, SNR,
+  RSSI, MQTT, relay byte, channel and size. Counts are in memory only: they
+  start over when the station restarts (the view says since when) and
+  survive a Mesh switch-off. Pages get an update at most every 10 s. (The
+  idea is from Mesh-Client's Diagnostics tab, keeping only what one node's
+  receive side can show honestly.)
 - **Mission Control replaces the station's Overview.** One look at the
   station: what is on the air (any HF radio keyed, a Winlink session, the
   UV-PRO), with Release TX; what needs you (unread Winlink mail, the outbox,

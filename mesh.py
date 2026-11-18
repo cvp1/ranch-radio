@@ -41,6 +41,9 @@ package. This side:
   - sends a text too long for one packet as up to PARTS_MAX parts
     ("[n/N] ..."), one at a time: the next once the one before is ACKed (or
     its ACK wait runs out), the rest dropped if one finally fails
+  - adds up what the node hears for the Health view (mesh_stats.py: traffic
+    per node and per minute, this node's channel load over 24 h, findings),
+    in memory, sent to the pages at most every HEALTH_EVERY_S
 
 Channel keys stay with the bridge (--mesh-key NAME=PATH): only "the node's
 key matches" (key_ok) comes back here and goes to the pages.
@@ -53,6 +56,8 @@ import os
 import re
 import time
 from collections import deque
+
+from mesh_stats import MeshStats
 
 log = logging.getLogger("mesh")
 
@@ -104,6 +109,8 @@ RESEND_REASONS = {"MAX_RETRANSMIT", "TIMEOUT", "NO_RESPONSE", "NO_ROUTE", "DUTY_
 PARTS_MAX = 9
 PART_PREFIX_BYTES = len("[9/9] ")
 PART_GAP_S = float(os.environ.get("MESH_PART_GAP_S", "2"))   # between one part's ACK and the next
+HEALTH_EVERY_S = float(os.environ.get("MESH_HEALTH_EVERY_S", "10"))   # the Health view's updates, at most
+RX_FIELDS = ("port", "hops", "hop_start", "snr", "rssi", "mqtt", "relay", "ch", "to_me", "size")
 LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
 NEIGHBORS_KEEP = 300          # nodes' NeighborInfo kept, newest first
 
@@ -265,6 +272,8 @@ class MeshEngine:
         self.auto_resend = bool(getattr(args, "mesh_auto_resend", True))
         self._resends = {}            # message t -> the timer that sends it again
         self._parts = {}              # group (first part's t) -> {"cur": part in flight, "rest": [...], "timer"}
+        self.stats = MeshStats()
+        self._health_timer = None
         self._closing = False
         self._reached = False         # this run of the bridge got through to the node
         self._task = None
@@ -286,6 +295,8 @@ class MeshEngine:
         for g in self._parts.values():
             if g.get("timer"):
                 g["timer"].cancel()
+        if self._health_timer is not None:
+            self._health_timer.cancel()
         if self._task:
             self._task.cancel()
         if self.proc and self.proc.returncode is None:
@@ -382,7 +393,10 @@ class MeshEngine:
                 log.warning("mesh: %s not written: %s", what, m.get("error"))
                 self.station.notice(f"Mesh: {what} not saved: {m.get('error')}", "warn", ws)
         elif ev == "rx":
-            self._send({"rx": {"from": m["from"], "port": m.get("port"), "t": time.time()}})
+            rx = {"from": m["from"], "t": time.time(), **{k: m.get(k) for k in RX_FIELDS}}
+            self.stats.packet(rx)
+            self._send({"rx": rx})
+            self._health_soon()
         elif ev == "trace":
             rec = self.traces.get(m["to"])
             if rec is None or m["ref"] != self._trace_ref:
@@ -399,7 +413,9 @@ class MeshEngine:
             self._auto_kick()
         elif ev == "nodes":
             self.nodes = m["nodes"]
+            self.stats.sample(self.nodes)
             self._send({"nodes": self.nodes})
+            self._health_soon()
             self._auto_enqueue()
         elif ev == "neighbors":
             # The bridge holds only what it heard since it started: merge, the
@@ -610,7 +626,20 @@ class MeshEngine:
                 "traces": list(self.traces.values()), "messages": list(self.messages),
                 "requests": self.requests, "neighbors": self.neighbors,
                 "hears": self.hears(), "text_max": TEXT_MAX_BYTES, "parts_max": PARTS_MAX,
-                "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend}
+                "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend,
+                "health": self.health(), "packets": list(self.stats.log)}
+
+    def health(self):
+        return self.stats.summary(self.nodes)
+
+    def _health_soon(self):
+        if self._health_timer is None and not self._closing:
+            self._health_timer = asyncio.get_running_loop().call_later(HEALTH_EVERY_S, self._health_send)
+
+    def _health_send(self):
+        self._health_timer = None
+        if not self._closing:
+            self._send({"health": self.health()})
 
     def hears(self):
         me = ((self.info or {}).get("me") or {}).get("id")

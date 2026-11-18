@@ -47,6 +47,9 @@ const mesh = (() => {
   const unreadDm = {};      // node id -> count
   let cfg = null;           // {sections, values}: the bridge's settings schema and the node's values
   let cfgOpen = false, cfgSec = null;
+  let healthOpen = false;
+  let health = null;        // mesh_stats.py summary(): traffic, channel load, findings
+  let packets = [];         // the last packets heard ({"rx"} events), for the Health view's log
   const edits = {};         // section -> {field: value} not yet saved
 
   const byId = (id) => nodes.find((n) => n.id === id);
@@ -635,6 +638,13 @@ const mesh = (() => {
     return `<div class="mesh-nbs">${hears}${heardBy}</div>`;
   }
 
+  // A node's line from the Health view's counts: packets in the last hour, what, and its hop limit.
+  function trafficText(id) {
+    const t = health?.talkers.find((x) => x.id === id);
+    if (!t) return "";
+    return `${t.n} packet${t.n === 1 ? "" : "s"} last hour, mostly ${portName(t.top_port)}` + (t.hop_start != null ? ` · hop limit ${t.hop_start}` : "");
+  }
+
   function renderCard() {
     const card = $("#mesh-card");
     const n = byId(selected);
@@ -658,7 +668,8 @@ const mesh = (() => {
       ["IAQ", env.iaq != null ? `${env.iaq}` : ""], ["light", env.lux != null ? `${Math.round(env.lux)} lx` : ""],
       ["wind", env.wind != null ? `${env.wind.toFixed(1)} m/s` : ""],
       ["key", n.pkc ? "PKI ✓" : ""], ["via", n.mqtt ? "MQTT" : ""],
-      ["ignored", n.ignored ? "yes: its packets are dropped" : ""]].filter(([, v]) => v);
+      ["ignored", n.ignored ? "yes: its packets are dropped" : ""],
+      ["traffic", trafficText(n.id)]].filter(([, v]) => v);
     const reqs = requests[n.id] || {};
     const busy = Object.values(reqs).some((r) => r.state === "running");
     const reqNote = Object.entries(reqs).filter(([, r]) => r.state !== "done" || Date.now() / 1000 - (r.done_t || 0) < 120)
@@ -825,13 +836,126 @@ const mesh = (() => {
     renderCfg();
   }
 
+  // Settings and Health each take the place of the conversation and node list.
+  function showViews() {
+    on($("#mesh-cfg-btn"), cfgOpen);
+    on($("#mesh-health-btn"), healthOpen);
+    $("#mesh-cfg").hidden = !cfgOpen;
+    $("#mesh-health").hidden = !healthOpen;
+    $("#mesh-main").hidden = cfgOpen || healthOpen;
+  }
   $("#mesh-cfg-btn").onclick = () => {
     cfgOpen = !cfgOpen;
-    on($("#mesh-cfg-btn"), cfgOpen);
-    $("#mesh-cfg").hidden = !cfgOpen;
-    $("#mesh-main").hidden = cfgOpen;
+    healthOpen = false;
+    showViews();
     if (cfgOpen) renderCfg();
   };
+  $("#mesh-health-btn").onclick = () => {
+    healthOpen = !healthOpen;
+    cfgOpen = false;
+    showViews();
+    if (healthOpen) renderHealth();
+  };
+
+  // ---------- health: what this node hears, added up (mesh_stats.py)
+
+  const HEALTH = { healthy: ["Healthy", "Nothing stands out in what this node hears"],
+    attention: ["Attention", "Something below is worth a look"], busy: ["Busy", "The channel is busy: nodes hold back what they send"] };
+  const PACKETS_KEEP = 200;
+
+  function renderHealthBtn() {
+    const b = $("#mesh-health-btn"), st = health?.status || "healthy";
+    b.classList.toggle("mesh-health-warn", st === "attention");
+    b.classList.toggle("mesh-health-bad", st === "busy");
+    b.title = `${HEALTH[st][0]}: ${HEALTH[st][1]}. What this node hears: traffic, channel load, what looks wrong.`;
+  }
+
+  // Packets a minute for the last hour, one bar a minute.
+  function rateChart(rate) {
+    const W = 600, H = 72, n = rate.length || 1, max = Math.max(4, ...rate), bw = W / n;
+    const bars = rate.map((v, i) => v ? `<rect class="mh-bar" x="${(i * bw + 0.5).toFixed(1)}" y="${(H - (v / max) * (H - 4)).toFixed(1)}" ` +
+      `width="${Math.max(1, bw - 1).toFixed(1)}" height="${((v / max) * (H - 4)).toFixed(1)}"><title>${n - i} min ago: ${v}</title></rect>` : "").join("");
+    return `<svg class="mh-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Packets a minute, last hour">` +
+      `<line class="mh-axis" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/>${bars}</svg>` +
+      `<div class="mh-scale"><span>60 min ago</span><span>top ${max}/min</span><span>now</span></div>`;
+  }
+
+  // This node's channel utilization (and its own air-tx) over 24 h, with the firmware's 25 % and 40 % lines.
+  function utilChart(h) {
+    const W = 600, H = 72, end = h.now, start = end - 86400;
+    const top = Math.max(h.util_bad + 10, ...h.util.map(([, u]) => u || 0));
+    const x = (t) => ((t - start) / 86400 * W).toFixed(1), y = (v) => (H - (v / top) * (H - 2)).toFixed(1);
+    const line = (i, cls) => {
+      const pts = h.util.filter((r) => r[i] != null).map((r) => `${x(r[0] + h.util_slot_s / 2)},${y(r[i])}`);
+      return pts.length ? `<polyline class="${cls}" points="${pts.join(" ")}"/>` : "";
+    };
+    const guide = (v, cls) => `<line class="${cls}" x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}"><title>${v} %</title></line>`;
+    const dots = h.util.length < 2 ? h.util.filter((r) => r[1] != null).map((r) => `<circle class="mh-util-dot" cx="${x(r[0] + h.util_slot_s / 2)}" cy="${y(r[1])}" r="3"/>`).join("") : "";
+    return `<svg class="mh-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Channel utilization, last 24 hours">` +
+      `<line class="mh-axis" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/>${guide(h.util_warn, "mh-warn")}${guide(h.util_bad, "mh-bad")}` +
+      `${line(2, "mh-air")}${line(1, "mh-util")}${dots}</svg>` +
+      `<div class="mh-scale"><span>24 h ago</span><span><i class="mh-key mh-util"></i>channel <i class="mh-key mh-air"></i>our tx · lines at ${h.util_warn} % and ${h.util_bad} %</span><span>now</span></div>`;
+  }
+
+  const portName = (p) => String(p || "?").replace(/_APP$/, "").replace(/_/g, " ").toLowerCase();
+
+  function renderHealth() {
+    const el = $("#mesh-health");
+    const h = health;
+    if (!h) { el.innerHTML = `<div class="wl-empty">Nothing heard yet.</div>`; return; }
+    const [label, why] = HEALTH[h.status] || HEALTH.healthy;
+    const u = h.util_now;
+    const head = `<div class="mesh-health-band ${esc(h.status)}" title="${esc(why)}"><b>${esc(label)}</b>` +
+      `<span>${h.total} packet${h.total === 1 ? "" : "s"} from ${h.nodes} node${h.nodes === 1 ? "" : "s"} in the last hour</span>` +
+      (u && u[1] != null ? `<span>channel ${u[1].toFixed(1)} %${u[2] != null ? ` · our tx ${u[2].toFixed(1)} %` : ""}</span>` : "") +
+      `<span class="spacer"></span><span class="wl-dim">counted since ${esc(hhmm(h.since))} (starts over when the station restarts)</span></div>`;
+    const charts = `<div class="mesh-health-charts"><div><div class="label">Packets a minute</div>${rateChart(h.rate)}</div>` +
+      `<div><div class="label">Channel utilization</div>${h.util.length ? utilChart(h) : `<div class="wl-empty">No reading from the node yet</div>`}</div></div>`;
+    const finds = h.findings.length ? h.findings.map((f, i) => `<button class="mesh-finding ${esc(f.level)}" data-i="${i}"${f.node ? "" : " disabled"}>` +
+      `<b>${esc(f.title)}</b><span>${esc(f.detail)}</span><span class="wl-dim">${esc(f.fix)}</span></button>`).join("")
+      : `<div class="wl-empty">Nothing stands out.</div>`;
+    const rows = h.talkers.map((t) => `<tr data-id="${esc(t.id)}"><td title="${esc(`${long(t.id)} ${t.id}`)}">${esc(short(t.id))}</td>` +
+      `<td>${t.n}${t.per_hour != null ? ` <span class="wl-dim">(${t.per_hour}/h)</span>` : ""}</td>` +
+      `<td title="${esc(Object.entries(t.ports).map(([p, n]) => `${portName(p)} ${n}`).join(", "))}">${esc(portName(t.top_port))}</td>` +
+      `<td>${t.hop_start ?? ""}</td><td>${t.hops ?? ""}</td><td>${t.snr_avg != null ? `${t.snr_avg} dB` : ""}</td><td>${t.mqtt || ""}</td></tr>`).join("");
+    const table = h.talkers.length ? `<div class="mesh-scroll"><table class="mesh-talkers mesh-click"><thead><tr><th>Node</th><th>Packets</th><th>Mostly</th>` +
+      `<th title="The hop limit it sends with">Hop limit</th><th>Hops</th><th title="Average, heard directly">SNR</th><th>MQTT</th></tr></thead><tbody>${rows}</tbody></table></div>` : "";
+    el.innerHTML = head + charts + `<div class="label">What looks wrong</div><div class="mesh-findings">${finds}</div>` +
+      (table ? `<div class="label">Top talkers, last hour</div>${table}` : "") +
+      `<div class="label">Packets heard <span class="wl-dim">(newest first, the last ${PACKETS_KEEP})</span></div><div class="mesh-packets" id="mesh-packets"></div>`;
+    el.querySelector(".mesh-findings").onclick = (e) => {
+      const f = h.findings[e.target.closest(".mesh-finding")?.dataset.i];
+      if (f?.node) openNode(f.node);
+    };
+    for (const tr of el.querySelectorAll(".mesh-talkers tbody tr")) tr.onclick = () => openNode(tr.dataset.id);
+    renderPackets();
+  }
+
+  function renderPackets() {
+    const el = $("#mesh-packets");
+    if (!el) return;
+    const rows = packets.slice(-PACKETS_KEEP).reverse().map((p) => `<tr><td>${p.t ? esc(new Date(p.t * 1000).toTimeString().slice(0, 8)) : ""}</td>` +
+      `<td title="${esc(`${long(p.from)} ${p.from}`)}">${esc(short(p.from))}</td><td>${esc(portName(p.port))}</td>` +
+      `<td>${p.mqtt ? "MQTT" : p.hops == null ? "" : p.hops === 0 ? "direct" : `${p.hops} hop${p.hops > 1 ? "s" : ""}`}</td>` +
+      `<td>${p.hop_start ?? ""}</td><td>${p.snr != null ? `${p.snr} dB` : ""}</td><td>${p.rssi != null ? `${p.rssi} dBm` : ""}</td>` +
+      `<td title="The last byte of the node that passed it to us">${p.relay != null && p.hops ? `…${Number(p.relay).toString(16).padStart(2, "0")}` : ""}</td>` +
+      `<td>${p.size != null ? `${p.size} B` : ""}</td></tr>`).join("");
+    el.innerHTML = rows ? `<table class="mesh-talkers"><thead><tr><th>Time</th><th>From</th><th>Port</th><th>Path</th><th>Hop limit</th>` +
+      `<th>SNR</th><th>RSSI</th><th>Relay</th><th>Size</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="wl-empty">None yet</div>`;
+  }
+
+  let packetsDue = null;
+  function onPacket(p) {
+    packets.push(p);
+    if (packets.length > PACKETS_KEEP) packets.splice(0, packets.length - PACKETS_KEEP);
+    if (healthOpen && !packetsDue) packetsDue = setTimeout(() => { packetsDue = null; renderPackets(); }, 1000);
+  }
+
+  function openNode(id) {
+    healthOpen = false;
+    showViews();
+    if (selected !== id) select(id, true);
+  }
   $("#mesh-cfg-form").onsubmit = (e) => e.preventDefault();
   $("#mesh-cfg-save").onclick = saveCfg;
   $("#mesh-cfg-revert").onclick = () => { delete edits[cfgSec]; renderCfg(); };
@@ -858,6 +982,10 @@ const mesh = (() => {
     requests = snap.requests || {};
     neighbors = snap.neighbors || {};
     hears = snap.hears || [];
+    health = snap.health || null;
+    packets = snap.packets || [];
+    renderHealthBtn();
+    if (healthOpen) renderHealth();
     drawMap();
     drawLinks();
     renderHead();
@@ -904,7 +1032,13 @@ const mesh = (() => {
     if (m.status) renderHears();
     if (m.request) onRequest(m.request);
     if (m.trace) onTrace(m.trace);
-    if (m.rx) map.pulse(m.rx.from);
+    if (m.rx) { map.pulse(m.rx.from); onPacket(m.rx); }
+    if (m.health) {
+      health = m.health;
+      renderHealthBtn();
+      if (healthOpen) renderHealth();
+      renderCard();
+    }
     if (m.msg && m.msg.mine) map.pulse(myId(), "tx");        // ours, handed to the node to send: red, at us
     if (m.msg) addMessage(m.msg);
     if (m.update) updateMessage(m.update);
