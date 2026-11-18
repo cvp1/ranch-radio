@@ -98,6 +98,11 @@ MODULES = [
      "code": "addons/roster.py, static/addons/roster.js; logsync_roster.py and logsync_needs.py (the sync's intake and ledger)",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block; needs the logbook sync (logsync) in unicast relay mode"},
+    {"name": "halow", "kind": "addon", "title": "An OpenWrt Wi-Fi HaLow bridge (cameras on long-range Wi-Fi): who is on it and how well, "
+                                                "the box's health, its DHCP guard, and its settings, changed by confirmed plans",
+     "code": "addons/halow.py, halow_ap.py, static/addons/halow.js (over SSH; nothing installed on the bridge)",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's addons block: \"host\" and \"key\""},
     {"name": "logbook", "kind": "addon", "title": "Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation",
      "code": "addons/logbook.py, static/addons/logbook.js (the browser frames the logbook; the server never talks to it)",
      "platforms": ["macos", "linux"],

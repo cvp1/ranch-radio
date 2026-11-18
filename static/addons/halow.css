@@ -1,0 +1,22 @@
+/* The HaLow panel (static/addons/halow.js). */
+.halow { position: relative; }
+.halow h4 { margin: 0.8em 0 0.3em; }
+.hl-bar { display: flex; flex-wrap: wrap; gap: 0.4em 1em; align-items: center; }
+.hl-t { border-collapse: collapse; width: 100%; font-size: 0.9em; }
+.hl-t th, .hl-t td { text-align: left; padding: 0.2em 0.5em; border-bottom: 1px solid rgba(127, 127, 127, 0.2); }
+.hl-num { text-align: right; }
+.hl-mac { font-family: ui-monospace, monospace; }
+.hl-good { color: #2e9d57; }
+.hl-fair { color: #c99a1c; }
+.hl-poor, .hl-bad { color: #d9534f; }
+.hl-tag { font-size: 0.75em; padding: 0 0.4em; border-radius: 0.6em; background: rgba(46, 157, 87, 0.18); }
+.hl-alarm { margin: 0.5em 0; padding: 0.4em 0.6em; border-left: 3px solid #d9534f; background: rgba(217, 83, 79, 0.1); }
+.hl-ok-line { margin: 0.5em 0; padding: 0.3em 0.6em; border-left: 3px solid #2e9d57; }
+.hl-warn { margin: 0.3em 0; color: #c99a1c; }
+.hl-cmd, .hl-log { font-family: ui-monospace, monospace; font-size: 0.85em; white-space: pre-wrap; word-break: break-all;
+  max-height: 20em; overflow: auto; padding: 0.4em; background: rgba(127, 127, 127, 0.1); }
+.hl-plan { margin: 0.5em 0; padding: 0.6em 0.8em; border: 2px solid #c99a1c; border-radius: 0.4em; }
+.hl-plan-title { font-weight: bold; }
+.hl-plan-btns { display: flex; gap: 0.6em; align-items: center; }
+.hl-ttl { opacity: 0.7; font-size: 0.85em; }
+.hl-svcs { display: flex; flex-wrap: wrap; gap: 0.5em 1.2em; }

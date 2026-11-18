@@ -50,6 +50,7 @@ RULES = {
     "audio_name": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")),
     "http_url": (str, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]{0,200})?")),
     "origin_list": (list, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")),
+    "net_host": (str, re.compile(r"[A-Za-z0-9.-]{1,253}")),
 }
 
 
@@ -255,6 +256,19 @@ MANIFESTS = {
         "template": {"any": {"enabled": True}},
         "rules": {},
         "ask": {},
+        "needs": [],
+    },
+    "halow": {
+        "label": "HaLow (an OpenWrt Wi-Fi HaLow bridge: stations, health, settings, changes)",
+        "family": "addon",
+        "block": ("addons", "halow"),
+        "os": ["macos", "linux"],
+        # Reads the bridge over SSH with "key" (its public half in the bridge's
+        # /etc/dropbear/authorized_keys); installs nothing there. Changes are
+        # planned, shown and confirmed on the page (addons/halow.py).
+        "template": {"any": {"enabled": True, "host": ASK, "key": "~/.config/radio-remote/halow_ed25519"}},
+        "rules": {"host": "net_host"},
+        "ask": {"host": "the bridge's address, e.g. 192.168.1.65"},
         "needs": [],
     },
     "roster": {
