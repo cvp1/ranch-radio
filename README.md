@@ -170,6 +170,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
 | `logsync` | Every QSO JTDX logs, to Wavelog, QRZ and LoTW, with receipts and confirmations back; status on the Logbook tab | Wavelog's API key; QRZ's logbook key; TQSL with a password-free certificate |
 | `wavelog_cat` | Each radio's frequency and mode to Wavelog's live QSO form; Wavelog's spot clicks tune the radio (replaces WaveLogGate) | Wavelog's API key (the logsync one by default) |
+| `halow` | An OpenWrt Wi-Fi HaLow (802.11ah) bridge, such as one carrying cameras: its radios and networks, every station's signal, rates and retries, the box's health, a DHCP guard (a bridge on the main LAN must not hand out addresses), services and log; reboot, disconnect, channel, power, network name, on/off and service restarts, each shown as its exact command and run only when you confirm | SSH to the bridge with a key in its `/etc/dropbear/authorized_keys`; nothing installed on it |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |

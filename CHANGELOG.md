@@ -7,6 +7,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- **HaLow tab (`halow` add-on).** Watches and runs an OpenWrt Wi-Fi HaLow bridge over SSH, installing nothing on it: radios, networks, stations (signal, rates, retries, address), box health, services, log, and a DHCP guard that turns red if the bridge starts handing out LAN addresses. Changes (reboot, disconnect a station, channel, power, network name, hidden, on/off, service restarts, DHCP off) are planned server-side, shown as the exact command with what it will drop, and run once on Confirm; an unconfirmed plan expires after two minutes. Every applied change goes to `halow-actions.log`. Wi-Fi keys are never read or shown.
 - **Wavelog CAT, in place of WaveLogGate.** A `wavelog_cat` block sends each
   radio's frequency and mode to Wavelog's live QSO form (on every change, and
   every minute while quiet), and a click on a spot in Wavelog's DX cluster or
