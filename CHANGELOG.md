@@ -40,7 +40,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
     and 40 % lines;
   - **What looks wrong**, each with what to do: a busy channel, a chatty
     node (by rate, or a quarter of all traffic, with its main port), a
-    sender with a hop limit over 3, a weak direct link, a node heard only
+    weak direct link, a node heard only
     over MQTT, one relay carrying most of what reaches us (named from the
     firmware's relay byte), much traffic on channels without a key. Each
     needs enough packets before it says anything. A finding with a node

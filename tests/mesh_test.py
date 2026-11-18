@@ -538,7 +538,7 @@ try:
     check("health: an update with every packet heard", h and h["total"], 36)
     kinds = {(f["kind"], f.get("node")) for f in (h or {}).get("findings", [])}
     check("  the chatty node", ("chatty", "!0000dead") in kinds, True)
-    check("  its hop limit of 7", ("hop_limit", "!0000dead") in kinds, True)
+    check("  its hop limit of 7 is not a finding", ("hop_limit", "!0000dead") in kinds, False)
     check("  RDG as the main relay", ("main_relay", "!0000cafe") in kinds, True)
     check("  status: attention", h and h["status"], "attention")
     check("  top talker first, with its port", h and (h["talkers"][0]["id"], h["talkers"][0]["top_port"]),
