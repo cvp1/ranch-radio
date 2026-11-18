@@ -16,6 +16,13 @@ All notable changes to Ranch Radio are recorded here. The format follows
   mode and S-meter (power while transmitting), Winlink's state and mailbox,
   the mesh's nodes heard and last message. A card opens its tab; keys 1-9
   open the cards in order and 0 comes back.
+- **Mission Control, dressed up.** A large UTC clock with local time and
+  date; each radio a double-width card with a live mini spectrum and
+  waterfall (from the scope frames its server already sends; the tuned
+  frequency marked), a segmented S-meter with its scale, and the last two
+  minutes of signal (red where it transmitted). Every card has an icon and
+  its lane's colour; on the air pulses red. Motion stops with the system's
+  reduced-motion setting.
 - **Automatic Meshtastic traceroutes (off by default).** With
   `"auto_trace": true` in the host file's `mesh` block, the station traces a
   node by itself when it hears it over relays and has no trace yet, or its

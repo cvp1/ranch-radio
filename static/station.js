@@ -131,13 +131,16 @@ const station = (() => {
       const open = () => {
         if (live[r.id] !== l) return;
         const w = new WebSocket(withToken(`r/${encodeURIComponent(r.id)}/ws`));
+        w.binaryType = "arraybuffer";
         l.ws = w;
         w.onmessage = (e) => {
-          if (typeof e.data !== "string") return;   // a scope frame (binary): not for the strip
+          // A scope frame: Mission Control's mini spectrum (drawn only while shown).
+          if (typeof e.data !== "string") { mission.scopeOf(r.id).push(e.data); return; }
           const m = JSON.parse(e.data);
           if (m.t === "hello") Object.assign(l.S, m.state);
           else if (m.t === "state") Object.assign(l.S, m.d);
           else return;
+          instruments(r.id, l.S);
           homeChanged();
           if ("freq" in (m.d || m.state || {}) || "tx" in (m.d || m.state || {}) ||
               "mode" in (m.d || m.state || {}) || "data" in (m.d || m.state || {}) || m.t === "hello") renderStrip();
@@ -146,6 +149,7 @@ const station = (() => {
       };
       open();
     }
+    mission.forget(present().map((r) => r.id));
     for (const id of Object.keys(live)) {
       if (!present().some((r) => r.id === id)) {
         const l = live[id];
@@ -221,10 +225,20 @@ const station = (() => {
   };
   const OPEN_RE = /^\s*Open( the radio)?\s*→\s*$/;
 
-  // {title, state ok|off|tx|warn, tag, big, sub, meter: {pct, text, tx}, lines: [html], href}
+  // A radio's state into its instruments: the trace's level (S-meter, or
+  // power on the air) and the scope's tuned-frequency marker.
+  function instruments(id, S) {
+    const tr = mission.traceOf(id), sc = mission.scopeOf(id);
+    tr.tx = sc.tx = !!S.tx;
+    tr.cur = S.tx ? clamp(poPct(S.po || 0) / 100, 0, 1) : clamp((S.smeter || 0) / 241, 0, 1);
+    if (sc.freq !== S.freq) { sc.freq = S.freq || 0; sc.dirty = true; }
+  }
+
+  // {title, icon, wide, state ok|off|tx|warn, tag, big, sub, meter: {pct, text, tx, scale},
+  //  scope: radio id, lines: [html], href}
   function card(c) {
     const el = document.createElement("div");
-    el.className = `st-card mc-card ${c.state}`;
+    el.className = `st-card mc-card ${c.state}${c.wide ? " mc-wide" : ""}`;
     if (c.href) {
       el.dataset.href = c.href;
       el.tabIndex = 0;
@@ -234,12 +248,15 @@ const station = (() => {
       if (keyed.length <= 9) el.dataset.key = keyed.length;
     }
     const dot = { ok: "ok", tx: "tx", warn: "warn" }[c.state] || "off";
-    el.innerHTML = `<div class="st-card-head"><i class="st-dot ${dot}"></i><b>${esc(c.title)}</b>` +
+    el.innerHTML = `<div class="st-card-head">${mission.icon(c.icon)}<i class="st-dot ${dot}"></i><b>${esc(c.title)}</b>` +
       (c.tag ? `<span class="mc-tag ${c.state}">${esc(c.tag)}</span>` : "") +
       (el.dataset.key ? `<kbd class="mc-key">${el.dataset.key}</kbd>` : "") + `</div>` +
       (c.big ? `<div class="mc-big">${c.big}${c.sub ? ` <small>${c.sub}</small>` : ""}</div>` : "") +
+      (c.scope ? `<div class="mc-scope-slot" data-scope="${esc(c.scope)}"></div>` : "") +
       (c.meter ? `<div class="mc-meter${c.meter.tx ? " tx" : ""}"><i style="width:${clamp(c.meter.pct, 0, 100).toFixed(0)}%"></i>` +
-        `<span>${esc(c.meter.text)}</span></div>` : "") +
+        `<span>${esc(c.meter.text)}</span>${c.meter.scale ? `<div class="mc-scale">${c.meter.scale.map(([p, t]) =>
+          `<em style="left:${p}%">${t}</em>`).join("")}</div>` : ""}</div>` : "") +
+      (c.scope ? `<div class="mc-trace-slot" data-trace="${esc(c.scope)}" title="The last two minutes: signal, red where it transmitted"></div>` : "") +
       (c.lines || []).filter((l) => l && !OPEN_RE.test(l)).map((l) => `<div class="st-card-line">${l}</div>`).join("");
     return el;
   }
@@ -247,35 +264,39 @@ const station = (() => {
   function radioCard(r) {
     const S = live[r.id]?.S || {};
     const ports = `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
-    if (!r.present) return { title: r.name, state: "off", tag: "not connected", lines: [`${ports} when plugged in`] };
+    if (!r.present) return { title: r.name, icon: "radio", state: "off", tag: "not connected", lines: [`${ports} when plugged in`] };
     const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? "VARA HF" : "ARDOP")).join(" and ")}` : "";
-    if (!S.freq) return { title: r.name, state: "ok", big: "…", lines: [ports, lane], href: `#/${r.id}` };
+    if (!S.freq) return { title: r.name, icon: "radio", wide: true, state: "ok", big: "…", lines: [ports, lane], href: `#/${r.id}` };
     const band = bandOf(S.freq);
     const tx = !!S.tx;
     const watts = Math.round((poPct(S.po || 0) / 100) * (S.max_watts || 100));
     const su = sUnits(S.smeter || 0);
-    return { title: r.name, state: tx ? "tx" : "ok", tag: tx ? "ON AIR" : "",
+    return { title: r.name, icon: "radio", wide: true, scope: r.id, state: tx ? "tx" : "ok", tag: tx ? "ON AIR" : "",
       big: `<span class="mc-f">${fmtF(S.freq)}</span>`,
       sub: esc(`${S.mode || ""}${S.data ? "-D" : ""}${band ? ` · ${band.label || `${band.n} m`}` : ""}`),
       meter: tx ? { pct: poPct(S.po || 0), text: `${watts} W`, tx: true }
-        : { pct: ((S.smeter || 0) / 241) * 100, text: su.text },
+        : { pct: ((S.smeter || 0) / 241) * 100, text: su.text, scale: S_SCALE },
       lines: [ports, lane], href: `#/${r.id}` };
   }
+
+  // S-meter ticks (raw 0..241: S9 = 120, +60 dB = 241).
+  const S_SCALE = [[(40 / 241) * 100, "3"], [(80 / 241) * 100, "6"], [(120 / 241) * 100, "9"],
+    [(160 / 241) * 100, "+20"], [(201 / 241) * 100, "+40"]];
 
   function winlinkCard() {
     const w = winlink.summary();
     const n = wlCounts;
     const mail = n ? `Inbox ${n.inbox}${n.unread ? ` · <span class="mc-hot">${n.unread} unread</span>` : ""} · Outbox ${n.outbox}` : "";
     const state = wlArmed ? "tx" : w.off || w.blocked || w.ask ? "warn" : "ok";
-    return { title: "Winlink", state, tag: wlArmed ? "SESSION" : w.listening ? "LISTENING" : w.off ? "off" : "",
+    return { title: "Winlink", icon: "mail", state, tag: wlArmed ? "SESSION" : w.listening ? "LISTENING" : w.off ? "off" : "",
       big: "", lines: [esc(w.text || "Idle"), mail], href: "#/winlink" };
   }
 
   function meshCard() {
     const m = mesh.summary();
-    if (!meshConnected) return { title: "Mesh", state: "off", tag: "not connected", lines: ["Meshtastic node not connected"], href: "#/mesh" };
-    return { title: "Mesh", state: "ok", tag: meshUnread ? `${meshUnread} new` : "",
-      big: `${m.day} <small>node${m.day === 1 ? "" : "s"} heard today · ${m.live} in the last 15 min</small>`,
+    if (!meshConnected) return { title: "Mesh", icon: "mesh", state: "off", tag: "not connected", lines: ["Meshtastic node not connected"], href: "#/mesh" };
+    return { title: "Mesh", icon: "mesh", state: "ok", tag: meshUnread ? `${meshUnread} new` : "",
+      big: `${m.day} <small>heard today · ${m.live} in 15 min</small>`,
       lines: [m.last ? `<span class="mc-who">${esc(m.last.who)}</span> ${esc(m.last.text.slice(0, 80))}` +
         ` <span class="mc-dim">${esc(ago(m.last.t))}</span>` : "No messages yet"], href: "#/mesh" };
   }
@@ -360,7 +381,7 @@ const station = (() => {
     if (wlOn) put("messaging", winlinkCard());
     const packetTitle = packet.title || `Packet (${packetName()})`;
     if (packet.configured) {
-      put("messaging", { title: packetTitle, state: packet.present ? "ok" : "off", tag: packet.present ? "" : "not running",
+      put("messaging", { title: packetTitle, icon: "packet", state: packet.present ? "ok" : "off", tag: packet.present ? "" : "not running",
         lines: [packet.present ? "APRS and the Winlink packet link" : "The packet hub is not running"],
         href: packet.present ? "#/packet" : null });
       if (!packet.present) offline.push([packetName(), "#/home"]);
@@ -373,7 +394,7 @@ const station = (() => {
       const c = addons.card(d.name);
       if (!c) continue;
       const known = ["ok", "off", "tx"].includes(c.state);
-      put(d.group, { title: d.label, state: known ? c.state : "ok", tag: known ? (c.state === "off" ? "off" : "") : c.state,
+      put(d.group, { title: d.label, icon: mission.KIND[d.name] || (d.group === "radios" ? "handheld" : "dot"), state: known ? c.state : "ok", tag: known ? (c.state === "off" ? "off" : "") : c.state,
         lines: c.lines, href: `#/${d.name}` });
       const t = addons.tab(d.name);
       if (c.state === "off" && t?.off) offline.push([d.label, `#/${d.name}`]);
@@ -382,7 +403,7 @@ const station = (() => {
     for (const g of lanes) {
       if (!g.cards.length) continue;
       const lane = document.createElement("section");
-      lane.className = "mc-lane";
+      lane.className = `mc-lane mc-lane-${g.id}`;
       lane.innerHTML = `<h2 class="mc-lane-name">${esc(g.label)}</h2>`;
       const grid = document.createElement("div");
       grid.className = "st-cards";
@@ -390,6 +411,10 @@ const station = (() => {
       lane.append(grid);
       el.append(lane);
     }
+    mission.mount(el);
+    // The view is redrawn often: every pulse starts at the same point of one
+    // 3.2 s clock (its periods divide it), so a redraw never restarts one.
+    $("#view-home").style.setProperty("--sync", `-${Date.now() % 3200}ms`);
     renderAir();
     renderNeeds(offline);
     const p = present();
@@ -516,7 +541,14 @@ const station = (() => {
   }
 
   function clock() {
-    $("#utc").textContent = new Date().toISOString().slice(11, 19) + " UTC";
+    const now = new Date();
+    $("#utc").textContent = now.toISOString().slice(11, 19) + " UTC";
+    const c = $("#mc-clock");
+    if (c && home()) {
+      c.querySelector(".mc-utc").textContent = now.toISOString().slice(11, 19);
+      c.querySelector(".mc-local").textContent =
+        `${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} local · ${now.toISOString().slice(0, 10)}`;
+    }
   }
 
   function start() {
@@ -543,6 +575,7 @@ const station = (() => {
     });
     modules.mount($("#modules"), { changed: renderNav, visible: () => route() === "modules" });
     window.addEventListener("hashchange", show);
+    mission.hooks.firstFrame = homeChanged;
     $("#st-cards").addEventListener("click", openCard);
     $("#st-cards").addEventListener("keydown", openCard);
     document.addEventListener("keydown", hotkey);
