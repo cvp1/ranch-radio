@@ -3,10 +3,14 @@
 Two simulated radios (G90, QMX), station.py in front with fake
 Pat and mesh bridge, and a packet hub that is configured but not running.
 Checks:
-  - the navigation: Overview, one tab per connected radio with its rigctl
+  - the navigation: Mission Control, one tab per connected radio with its rigctl
     ports (one carries the shared port), Winlink, Mesh, and
-    Packet off the tab bar while the hub is down (its Overview card stays)
-  - the overview has a card per radio and service and names the shared port
+    Packet off the tab bar while the hub is down (its card stays)
+  - Mission Control: a card per radio and service in lanes named like the
+    tab bar's groups, names the shared port; a radio's card live (frequency,
+    S-meter; on the air: power), the on-air line with Release TX, what needs
+    you (unread mail, offline gear), keys 1-9 and 0, a click opens a tab, a
+    key typed into a field is not a jump
   - a radio's tab shows that radio's own page in a frame, connected, without
     its own brand (the tab names it); the other radio's frame stays hidden
   - the address follows the view (#/qmx) and a reload comes back to it
@@ -126,13 +130,13 @@ try:
     b.goto(f"http://127.0.0.1:{WEB}/")
     b.wait(f"({TEXT})('#conn b') === 'Connected'")
     b.wait(f"{TABS}.length >= 4")
-    check("nav, grouped: Overview, Radios, Winlink, Mesh (Packet's hub is down: no tab)",
-          [x.split()[0] for x in tabs()], ["Overview", "Radios", "Winlink", "Mesh"])
+    check("nav, grouped: Mission Control, Radios, Winlink, Mesh (Packet's hub is down: no tab)",
+          [x.split()[0] for x in tabs()], ["Mission", "Radios", "Winlink", "Mesh"])
     check("  Radios is a closed group with both radios in its title",
           b.js(f"(() => {{ const t = {TABS}[1]; return [t.classList.contains('st-group-tab'), t.title]; }})()"),
           [True, "Radios: G90, QMX"])
-    check("  the Overview tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
-    check("overview: a card per radio and service, in the bar's group order",
+    check("  the Mission Control tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
+    check("mission control: a card per radio and service, in the bar's group order",
           b.js("[...document.querySelectorAll('.st-card b')].map((e) => e.textContent)"),
           ["G90", "QMX", "Winlink", "Packet (UV-PRO)", "Mesh"])
     check("  names the shared port", str(SHARED) in b.js(f"({TEXT})('#st-help')"), True)
@@ -140,7 +144,7 @@ try:
     b.wait("location.hash === '#/g90'")
     check("opening Radios opens its first radio and shows the group",
           b.wait(f"{TABS}.length >= 5 && {TABS}.map((t) => t.querySelector('span').textContent)"),
-          ["Overview", "G90", "QMX", "Winlink", "Mesh"])
+          ["Mission Control", "G90", "QMX", "Winlink", "Mesh"])
     check("  inside a frame named Radios",
           b.js("document.querySelector('#st-nav .st-group .st-group-name')?.textContent"), "Radios")
     t = tabs()
@@ -205,29 +209,61 @@ try:
     check("  the dot comes back", b.wait(f"!{MESH_TAB}.classList.contains('off') && 'ok'"), "ok")
 
     # The radio strip: every HF radio's frequency and TX on views that hide its page.
-    b.js("location.hash = '#/home'")
+    b.js("location.hash = '#/winlink'")
     b.wait("document.querySelectorAll('#st-strip .sr').length === 2")
-    check("strip: both radios on the Overview",
+    check("strip: both radios on Winlink",
           b.js("[...document.querySelectorAll('#st-strip .sr b')].map((x) => x.textContent)"), ["G90", "QMX"])
     check("  with a frequency", b.js("/\\d+\\.\\d{3}\\.\\d{3}/.test(document.querySelector('#st-strip .sr .f').textContent)"), True)
-    with socket.create_connection(("127.0.0.1", G90["rigctl"]), timeout=3) as c:
-        f = c.makefile("r")
-        c.sendall(b"T 1\n"); f.readline()
-        b.wait("!!document.querySelector('#st-strip .sr.tx')")
-        check("  the G90 keyed: ON AIR and Release TX",
-              (b.js("document.querySelector('#st-strip .sr.tx b').textContent"),
-               b.js("!!document.querySelector('#st-strip button')")), ("G90", True))
-        shot("strip-tx")
-        b.js("document.querySelector('#st-strip button').click()")
-        b.wait("!document.querySelector('#st-strip .sr.tx')")
-        c.sendall(b"t\n")
-        check("  Release TX unkeys the radio", f.readline().strip(), "0")
     b.js("location.hash = '#/g90'")
     b.wait("document.querySelector('#st-strip').hidden")
     check("  hidden on a radio's own page", b.js("document.querySelector('#st-strip').hidden"), True)
-    b.js("location.hash = '#/winlink'")
-    b.wait("!document.querySelector('#st-strip').hidden")
-    check("  shown on Winlink", b.js("document.querySelector('#st-strip').hidden"), False)
+    b.js("location.hash = '#/home'")
+    b.wait("document.querySelector('#st-strip').hidden")
+    check("  hidden on Mission Control (its own on-air line says it)", b.js("document.querySelector('#st-strip').hidden"), True)
+
+    # Mission Control: live cards, what is on the air, what needs you, keys.
+    CARD = "[...document.querySelectorAll('#st-cards .mc-card')].find((c) => c.querySelector('b').textContent === '{}')"
+    check("mission control: lanes named like the tab bar's groups",
+          b.js("[...document.querySelectorAll('.mc-lane-name')].map((e) => e.textContent)"), ["Radios", "Messaging", "Mesh"])
+    check("  a radio's card: its frequency live",
+          bool(b.wait(f"/\\d+\\.\\d{{3}}\\.\\d{{3}}/.test({CARD.format('G90')}?.querySelector('.mc-f')?.textContent || '')")), True)
+    check("  and its S-meter", bool(b.wait(f"/^S\\d/.test({CARD.format('G90')}?.querySelector('.mc-meter span')?.textContent || '')")), True)
+    check("  nothing on the air", b.js(f"({TEXT})('#mc-air')"), "Nothing on the air")
+    needs = b.wait("document.querySelectorAll('#mc-needs .mc-need').length >= 2 && "
+                   "[...document.querySelectorAll('#mc-needs .mc-need')].map((a) => [a.textContent, a.getAttribute('href')])")
+    check("  needs you: unread Winlink mail, opening Winlink",
+          any("unread Winlink" in t and h == "#/winlink" for t, h in needs), True)
+    check("  needs you: the packet hub offline", any(t == "Offline: UV-PRO" for t, _ in needs), True)
+    check("  Winlink's card: its state and mailbox",
+          bool(b.wait(f"/Inbox \\d+/.test({CARD.format('Winlink')}?.textContent || '')")), True)
+    with socket.create_connection(("127.0.0.1", G90["rigctl"]), timeout=3) as c:
+        f = c.makefile("r")
+        c.sendall(b"T 1\n"); f.readline()
+        b.wait("document.querySelector('#mc-air').classList.contains('tx')")
+        check("  the G90 keyed: ON AIR with Release TX",
+              (b.js("document.querySelector('#mc-air .mc-air-row a').textContent.startsWith('ON AIR G90')"),
+               b.js("!!document.querySelector('#mc-air button')")), (True, True))
+        check("  its card on the air, with power", bool(b.wait(f"{CARD.format('G90')}?.classList.contains('tx') && "
+              f"/^\\d+ W$/.test({CARD.format('G90')}.querySelector('.mc-meter span').textContent)")), True)
+        shot("mission-tx")
+        b.js("document.querySelector('#mc-air button').click()")
+        b.wait("!document.querySelector('#mc-air').classList.contains('tx')")
+        c.sendall(b"t\n")
+        check("  Release TX unkeys the radio", f.readline().strip(), "0")
+    shot("mission")
+    KEY = "document.dispatchEvent(new KeyboardEvent('keydown', {{ key: '{}', bubbles: true }}))"
+    check("  the cards' keys in order", b.js("[...document.querySelectorAll('.mc-card[data-key]')].map((c) => "
+                                             "[c.dataset.key, c.dataset.href])"),
+          [["1", "#/g90"], ["2", "#/qmx"], ["3", "#/winlink"], ["4", "#/mesh"]])
+    b.js(KEY.format("2"))
+    check("  key 2 opens the QMX", b.wait("location.hash === '#/qmx' && location.hash"), "#/qmx")
+    b.js(KEY.format("0"))
+    check("  key 0 comes back", b.wait("location.hash === '#/home' && location.hash"), "#/home")
+    b.js(f"{CARD.format('Winlink')}.click()")
+    check("  a click on a card opens its tab", b.wait("location.hash === '#/winlink' && location.hash"), "#/winlink")
+    b.js("(() => { const i = document.createElement('input'); document.body.append(i); i.focus(); "
+         "i.dispatchEvent(new KeyboardEvent('keydown', { key: '0', bubbles: true })); i.remove(); })()")
+    check("  a key typed into a field is not a jump", b.js("location.hash"), "#/winlink")
 finally:
     b.close()
     stop(front)

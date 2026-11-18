@@ -57,7 +57,7 @@ const navGroups = (() => {
 
   // Draw the bar. items: [{id, label, short?, group, dot, off, badge, title, sub}]
   // in the order wanted within each group; first/end: ungrouped tabs before and
-  // after the groups (Overview, Modules). tuck: an item that is off leaves the
+  // after the groups (Mission Control, Modules). tuck: an item that is off leaves the
   // bar unless it is the open view. Returns the labels it tucked away.
   function render(nav, { view, first = [], items = [], end = [], tuck = true }) {
     nav.innerHTML = "";

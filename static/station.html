@@ -33,10 +33,17 @@
 <div class="st-strip" id="st-strip" hidden aria-live="polite"></div>
 
 <main class="st-main">
-  <!-- Overview: every radio and service, with its ports -->
+  <!-- Mission Control: what is on the air, what needs you, and every radio
+       and service live, in the tab bar's groups; a card (or its number key)
+       opens its tab -->
   <section class="st-view" id="view-home" hidden>
-    <div class="st-cards" id="st-cards"></div>
+    <div class="mc-band">
+      <div class="mc-air" id="mc-air" aria-live="polite"></div>
+      <div class="mc-needs" id="mc-needs" aria-live="polite"></div>
+    </div>
+    <div class="mc-lanes" id="st-cards"></div>
     <p class="st-help" id="st-help"></p>
+    <p class="st-help mc-keys">Keys: <kbd>1</kbd>–<kbd>9</kbd> open a card's tab · <kbd>0</kbd> back here</p>
   </section>
 
   <!-- One frame per connected HF radio: its own Radio Remote page -->

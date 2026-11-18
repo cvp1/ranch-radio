@@ -11,7 +11,7 @@
 //   event(m)           a {"t": "addon", addon: name, ...} message
 //   off()              it was switched off: forget the device's state
 //   tab()              {dot: "ok"|"off"|"tx", off: bool, badge, title} for the nav
-//   card()             {state, lines: [html]} for the station's Overview
+//   card()             {state, lines: [html]} for the station's Mission Control
 // The page (tabs.js / station.js) sets a host: {place(name, panel), changed()}.
 // Uses common.js ($, esc, toast) and the page's send().
 
