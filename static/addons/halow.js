@@ -90,7 +90,9 @@
             <button class="chip chip-mini hl-kick" data-if="${esc(x.ifname)}" data-mac="${esc(x.mac)}">disconnect…</button></td></tr>`).join("");
     const svcs = (s.services || []).map((v) => `<span class="hl-svc ${v.running ? "hl-good" : "hl-poor"}">${esc(v.name)} ${v.running ? "running" : "stopped"}${v.enabled ? "" : " (not at boot)"}
         <button class="chip chip-mini hl-svc-btn" data-n="${esc(v.name)}" data-a="${v.running ? "restart" : "start"}">${v.running ? "restart" : "start"}…</button>
-        ${v.running ? `<button class="chip chip-mini hl-svc-btn" data-n="${esc(v.name)}" data-a="stop">stop…</button>` : ""}</span>`).join("");
+        ${v.running ? `<button class="chip chip-mini hl-svc-btn" data-n="${esc(v.name)}" data-a="stop">stop…</button>` : ""}
+        <button class="chip chip-mini hl-svc-btn" data-n="${esc(v.name)}" data-a="${v.enabled ? "disable" : "enable"}">${v.enabled ? "off at boot…" : "on at boot…"}</button></span>`).join("");
+    const outb = (s.outbound || []).map((c) => `<tr><td>${esc(c.proto)}</td><td>${esc(c.remote)}</td><td>${esc(c.state)}</td><td>${esc(c.local)}</td></tr>`).join("");
     body.innerHTML = `<div class="halow">${renderPlan()}${head}${guard}
       ${last ? `<div class="${last.ok ? "hl-ok-line" : "hl-alarm"}">${esc(last.title)}: ${last.ok ? "done" : "failed"}
           ${last.undo ? `<button class="chip chip-mini hl-undo">Undo…</button>` : ""}
@@ -101,6 +103,9 @@
       ${st ? `<table class="hl-t"><tr><th>MAC</th><th>Name</th><th>Address</th><th>On</th><th>Signal</th><th>TX</th><th>RX</th><th>Retries</th><th>Joined</th><th></th></tr>${st}</table>`
            : `<div class="st-empty">Nothing is joined to the bridge.</div>`}
       <h4>Services</h4><div class="hl-svcs">${svcs || "none found"}</div>
+      <h4>Outbound (off the LAN)</h4>
+      ${outb ? `<table class="hl-t"><tr><th>Proto</th><th>Remote</th><th>State</th><th>Local</th></tr>${outb}</table>`
+             : `<div class="hl-ok-line">No connections from the bridge to anywhere off the LAN right now.</div>`}
       <details><summary>Log (last ${(s.log || []).length} lines)</summary><pre class="hl-log">${esc((s.log || []).join("\n"))}</pre></details>
     </div>`;
     wire();
@@ -147,6 +152,7 @@
       const n = (snap.stations || []).length;
       if (!snap.at) return { dot: "off", title: snap.error || "HaLow: not read yet" };
       if (snap.stale || ((snap.dhcp || {}).serving || []).length) return { dot: "tx", title: snap.error || "HaLow: the bridge is serving DHCP" };
+      if ((snap.outbound || []).length) return { dot: "tx", badge: n, title: `HaLow: ${snap.outbound.length} connection(s) off the LAN` };
       return { dot: "ok", badge: n, title: `${n} on the HaLow bridge` };
     },
     card() {

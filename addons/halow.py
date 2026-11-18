@@ -12,7 +12,9 @@ installs nothing there: these boxes have little flash. What it shows:
   - the box: model, firmware, uptime, load, memory, free flash
   - the DHCP guard: a bridge on the main LAN must not hand out addresses; a
     pool that is serving is shown red, with the one-click fix
-  - its services (MediaMTX, the camera uploader, dnsmasq) and its log tail
+  - its services (MediaMTX, the camera uploader, dnsmasq, the web shell) and its log tail
+  - outbound: every connection from the bridge to an address off the LAN,
+    noticed the first time each address appears
 
 Changes are two steps. The page asks for a plan ({"do": "plan", "what": ...});
 the server validates it, builds the exact command and sends it back with what
@@ -20,7 +22,8 @@ it will do. Only a {"do": "apply", "id": ...} for that plan, within
 PLAN_TTL seconds, runs it, once. A plan that is not confirmed expires. Every
 applied command, and its result, is appended to halow-actions.log beside the
 add-on state. Changes: reboot, disconnect a station, set a radio's channel or
-power, a network's name, hidden flag, on/off, restart a service, switch the
+power, a network's name, hidden flag, on/off, start/stop/restart a service or
+switch it off at boot, switch the
 bridge's DHCP off. Wi-Fi keys are never read, shown or set here.
 
 Options (the host file's addons block):
@@ -88,6 +91,7 @@ class Halow(Addon):
         self._task = None
         self._wake = None
         self._known = set()       # station MACs seen on the last good read
+        self._seen_remote = set() # off-LAN addresses already noticed (once each per run)
 
     # --- SSH
 
@@ -154,6 +158,11 @@ class Halow(Addon):
             if serving and serving != old_serving:
                 self.notice(f"HaLow: the bridge is serving DHCP on the LAN ({', '.join(sorted(serving))}); "
                             "that races the router. Fix it on the HaLow tab.", "warn")
+            remotes = {c["remote_ip"] for c in self.view["outbound"]}
+            for ip in sorted(remotes - self._seen_remote):
+                ports = sorted({c["remote"] for c in self.view["outbound"] if c["remote_ip"] == ip})
+                self.notice(f"HaLow: the bridge is talking off the LAN, to {', '.join(ports)}.", "warn")
+            self._seen_remote |= remotes
             macs = {s["mac"] for s in self.view["stations"]}
             if self._known:
                 for m in sorted(self._known - macs):

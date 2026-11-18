@@ -19,6 +19,8 @@
   - every applied change is in halow-actions.log
   - an unreachable bridge: the error shows, the last reading is kept and marked stale,
     one notice, and one more when it answers again
+  - outbound: only connections off the LAN are listed, each new address noticed once
+  - a service can be switched off at boot; enabling the AWS uploader or the web shell warns
   - it is in the module catalog and the manifest
 
     python3 tests/halow_addon_test.py
@@ -141,6 +143,13 @@ Station 02:00:00:00:aa:01 (on wlan0)
 mediamtx 1 1
 aws_kvs 0 0
 dnsmasq 1 1
+ttyd 1 1
+@@conn
+Active Internet connections (w/o servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State
+tcp        0      0 192.168.1.65:22         192.168.1.21:58685      ESTABLISHED
+tcp        0      0 192.168.1.65:443        192.168.1.30:51000      TIME_WAIT
+udp        0      0 192.168.1.65:123        0.0.0.0:*
 @@log
 Wed Nov 18 09:00:01 2026 daemon.info hostapd: wlan0: STA 02:00:00:00:aa:01 IEEE 802.11: associated
 """
@@ -209,7 +218,7 @@ async def main():
     check("no Wi-Fi key in the snapshot", "leaked-if-the-box-filter-failed" in json.dumps(s), False)
     check("the box-side filter drops keys too", "grep -v -E" in halow_ap.READ_SCRIPT and "sae_password" in halow_ap.READ_SCRIPT, True)
     check("DHCP guard clean", s["dhcp"]["serving"], [])
-    check("services", [(v["name"], v["running"]) for v in s["services"]], [("mediamtx", True), ("aws_kvs", False), ("dnsmasq", True)])
+    check("services", [(v["name"], v["running"]) for v in s["services"]], [("mediamtx", True), ("aws_kvs", False), ("dnsmasq", True), ("ttyd", True)])
     check("no notices on a clean first read", host.notices, [])
 
     # --- DHCP guard trips (edge) and stations change
@@ -304,6 +313,36 @@ async def main():
     await a.read()
     check("answers again: noticed, no longer stale", (host.notices[-1][1], a.snapshot()["stale"]),
           ("HaLow: the bridge answers again.", False))
+
+    # --- outbound: off-LAN connections only, noticed once per address
+    check("no outbound when only LAN peers", a.snapshot()["outbound"], [])
+    host.notices.clear()
+    (tmp / "read.txt").write_text(READ.replace("@@log\n", "tcp        0      0 192.168.1.65:40112       52.94.236.248:443       ESTABLISHED\n"
+                                                         "udp        0      0 192.168.1.65:41000       162.159.200.1:123       ESTABLISHED\n@@log\n", 1))
+    await a.read()
+    await a.read()
+    ob = a.snapshot()["outbound"]
+    check("outbound lists the off-LAN peers, not the LAN ones", sorted(c["remote"] for c in ob),
+          ["162.159.200.1:123", "52.94.236.248:443"])
+    check("each off-LAN address is noticed once, not every read",
+          sorted(m for _, m in host.notices if "off the LAN" in m),
+          ["HaLow: the bridge is talking off the LAN, to 162.159.200.1:123.",
+           "HaLow: the bridge is talking off the LAN, to 52.94.236.248:443."])
+    check("private and link-local ranges are LAN", [halow_ap._private(x) for x in
+          ("192.168.1.9", "198.51.100.7", "fe80::1", "fd00::1", "2001:db8::1", "::ffff:192.168.1.9", "224.0.0.251")],
+          [True, False, True, True, False, True, True])
+
+    # --- services: switch off at boot, and the warnings that matter
+    host.sent.clear()
+    await a.command(None, "plan", {"what": "service", "service": "ttyd", "action": "disable"})
+    p = [m for m in host.sent if m.get("event") == "plan"][-1]
+    check("switching a service off stops it and keeps it off at boot",
+          (p["title"], p["cmd"]), ("Switch ttyd off (now and at boot)", "/etc/init.d/ttyd stop; /etc/init.d/ttyd disable"))
+    await a.command(None, "plan", {"what": "service", "service": "aws_kvs", "action": "enable"})
+    p = [m for m in host.sent if m.get("event") == "plan"][-1]
+    check("enabling the camera uploader warns that video goes to AWS", "Amazon Kinesis" in p["warn"], True)
+    await a.command(None, "plan", {"what": "service", "service": "ttyd", "action": "chmod"})
+    check("refused: not a service action", host.notices[-1][0], "warn")
 
     # --- the registry lifecycle
     await reg.start()

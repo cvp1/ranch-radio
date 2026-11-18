@@ -19,7 +19,7 @@ import shlex
 
 # --- what is read --------------------------------------------------------
 
-SERVICES = ("mediamtx", "aws_kvs", "dnsmasq", "mesh11sd", "trelay")
+SERVICES = ("mediamtx", "aws_kvs", "dnsmasq", "mesh11sd", "trelay", "ttyd")
 SECRET_OPTS = ("key", "key1", "key2", "key3", "key4", "sae_password", "password",
                "auth_secret", "acct_secret", "priv_key", "wpa_psk", "psk")
 _SECRET_RE = "|".join(SECRET_OPTS)
@@ -42,6 +42,7 @@ READ_SCRIPT = "; ".join([
     "echo @@svc",
     "for s in " + " ".join(SERVICES) + "; do [ -x /etc/init.d/$s ] || continue; "
     "/etc/init.d/$s running >/dev/null 2>&1 && r=1 || r=0; /etc/init.d/$s enabled && e=1 || e=0; echo \"$s $r $e\"; done",
+    "echo @@conn", "netstat -tun 2>/dev/null",
     "echo @@log", f"logread 2>/dev/null | grep -v -E '{LOG_NOISE}' | tail -n 80",
 ])
 
@@ -196,6 +197,40 @@ def parse_host(sec):
     return host
 
 
+def _private(ip):
+    """LAN, loopback, link-local or multicast: not off the ranch."""
+    ip = ip.strip("[]").lower()
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    if ":" in ip:
+        return ip in ("::", "::1") or ip.startswith(("fe80:", "fc", "fd", "ff"))
+    try:
+        a, b = (int(x) for x in ip.split(".")[:2])
+    except ValueError:
+        return True
+    return a in (0, 10, 127) or (a == 169 and b == 254) or (a == 172 and 16 <= b <= 31) \
+        or (a == 192 and b == 168) or a >= 224
+
+
+def parse_conns(lines):
+    """`netstat -tun` -> connections to addresses off the LAN:
+    [{proto, local, remote, remote_ip, state}]. Listening sockets and LAN peers are left out."""
+    out = []
+    for line in lines:
+        p = line.split()
+        if len(p) < 5 or p[0] not in ("tcp", "tcp6", "udp", "udp6"):
+            continue
+        remote = p[4]
+        rip, _, _port = remote.rpartition(":")
+        if not rip or rip in ("0.0.0.0", "::", "*") or _private(rip):
+            continue
+        state = p[5] if len(p) > 5 else ""
+        if state in ("LISTEN", "TIME_WAIT"):
+            continue
+        out.append({"proto": p[0], "local": p[3], "remote": remote, "remote_ip": rip, "state": state})
+    return out
+
+
 def parse_services(lines):
     out = []
     for line in lines:
@@ -259,6 +294,7 @@ def parse_read(text):
             "stations": sorted(stations, key=lambda s: (s["ifname"], -(s.get("signal") or -999))),
             "dhcp": dhcp_guard(parse_uci(sec.get("dhcp", []))),
             "services": parse_services(sec.get("svc", [])),
+            "outbound": parse_conns(sec.get("conn", [])),
             "log": sec.get("log", [])[-80:]}
 
 
@@ -347,14 +383,23 @@ def plan_set(view, section, option, value):
 
 
 def plan_service(view, name, action):
-    if action not in ("restart", "start", "stop"):
+    if action not in ("restart", "start", "stop", "disable", "enable"):
         raise Refused(f"not a service action: {action!r}")
     if name not in {s["name"] for s in view.get("services", [])}:
         raise Refused(f"no service {name!r} on the bridge")
     warn = "dnsmasq is the bridge's DNS; its DHCP pools stay off." if name == "dnsmasq" else ""
-    if name == "mediamtx" and action != "start":
+    if name == "mediamtx" and action in ("restart", "stop", "disable"):
         warn = "Camera restreams (RTSP/HLS/WebRTC) through the bridge drop."
-    return {"title": f"{action.capitalize()} {name}", "cmd": f"/etc/init.d/{q(name)} {action}", "warn": warn}
+    if name == "aws_kvs" and action in ("start", "enable"):
+        warn = "This uploads camera video to Amazon Kinesis Video Streams if it is configured with an AWS account."
+    if name == "ttyd" and action in ("start", "enable"):
+        warn = "ttyd is a root login shell in the browser, open to the whole LAN."
+    cmd = f"/etc/init.d/{q(name)} {action}"
+    if action == "disable":          # off now and at boot
+        cmd = f"/etc/init.d/{q(name)} stop; /etc/init.d/{q(name)} disable"
+    title = {"disable": f"Switch {name} off (now and at boot)", "enable": f"Start {name} at boot"}.get(action,
+                                                                                                    f"{action.capitalize()} {name}")
+    return {"title": title, "cmd": cmd, "warn": warn}
 
 
 def plan_dhcp_off(view):
