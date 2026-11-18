@@ -1568,7 +1568,7 @@ def make_web(hub):
         return web.json_response(out, status=code)
 
     def local(req):
-        return req.remote in ("127.0.0.1", "::1")
+        return webguard.from_this_machine(req)   # a caller through a proxy here is not local
 
     async def hold(req):
         if not local(req):

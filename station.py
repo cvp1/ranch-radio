@@ -994,8 +994,10 @@ def make_app(station, args):
             return ws
         # The browser's Origin was checked above (cross_site_guard); the
         # backend sees this station, so it gets the station's header instead.
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP | {"origin"}}
+        headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in HOP | {"origin", "x-forwarded-for"}}
         headers["X-Ranch-Radio"] = "1"
+        headers["X-Forwarded-For"] = webguard.forwarded_for(request)   # the backend's from_this_machine
         try:
             async with http["s"].request(request.method, url, headers=headers,
                                          data=body if body is not None else
@@ -1027,12 +1029,12 @@ def make_app(station, args):
         tail = canonical_tail(request)
         if tail is None:
             return web.json_response({"error": "not a plain path"}, status=400)
-        if tail in ("api/lend", "api/return") and request.remote not in ("127.0.0.1", "::1"):
+        if tail in ("api/lend", "api/return") and not webguard.from_this_machine(request):
             # The hub lends the radio only to its own machine (the UV-PRO
             # add-on's control channel); through this proxy, check the real caller.
             return web.json_response({"error": "lending the radio is only allowed from this machine"},
                                      status=403)
-        if tail == "api/hold" and request.remote not in ("127.0.0.1", "::1"):
+        if tail == "api/hold" and not webguard.from_this_machine(request):
             # An off-channel hold is the UV-PRO add-on's, on this machine (the
             # hub sees the proxy as loopback). Releasing one is the operator's,
             # from any page, as transmit Off is.
