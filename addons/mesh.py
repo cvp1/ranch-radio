@@ -3,7 +3,7 @@
 The first add-on with its own tab rather than an add-on panel: its page is
 the Mesh tab (static/mesh.js), so it keeps that tab's wire protocol. The page
 sends {"t": "mesh_send" | "mesh_config" | "mesh_trace" | "mesh_favorite" |
-"mesh_request" | "mesh_node" | "mesh_reboot"}
+"mesh_request" | "mesh_node" | "mesh_reboot" | "mesh_cancel"}
 (this add-on's ROUTES) and gets {"t": "mesh", ...} back. What the add-on
 system adds is the on/off switch: off stops the bridge and frees the node's
 serial port (the meshtastic CLI needs it to itself), and the choice is kept
@@ -16,6 +16,9 @@ Config (station.json "mesh", or server.py --mesh-*, both become this):
      "python": "...", "bridge": "...", "log": "...",
      "feed": "mqtt://BROKER/PREFIX", "feed_cred": "FILE", "feed_tx": false}
 "feed" also publishes the node's traffic to an MQTT broker (mesh_feed.py).
+"auto_resend" (default true) sends a message of ours again when the mesh
+NAKs it for a reason it may get over, up to three more times (mesh.py);
+false leaves that to the page's Retry.
 
 Delete this file and the Mesh tab goes away; the radio page runs on.
 """
@@ -37,7 +40,7 @@ class MeshAddon(Addon):
     title = "Meshtastic node"
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel
     routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite",
-              "mesh_request", "mesh_node", "mesh_reboot")
+              "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -45,6 +48,8 @@ class MeshAddon(Addon):
             raise ValueError("mesh needs a \"port\" (the node: a serial device, ble:NAME or tcp:HOST)")
         if not isinstance(opts.get("auto_trace", False), bool):
             raise ValueError("mesh \"auto_trace\" must be true or false")   # "false" must not switch TX on
+        if not isinstance(opts.get("auto_resend", True), bool):
+            raise ValueError("mesh \"auto_resend\" must be true or false")
         per_hour = opts.get("auto_trace_per_hour", 6)
         if isinstance(per_hour, bool) or not isinstance(per_hour, int) or not 1 <= per_hour <= 30:
             raise ValueError("mesh \"auto_trace_per_hour\" must be a whole number 1..30")
@@ -57,7 +62,10 @@ class MeshAddon(Addon):
             mesh_feed=opts.get("feed"), mesh_feed_cred=opts.get("feed_cred"),
             mesh_feed_tx=bool(opts.get("feed_tx", False)),
             # Off by default: it transmits traceroutes on its own (mesh.py auto_trace_candidates).
-            mesh_auto_trace=opts.get("auto_trace", False), mesh_auto_trace_per_hour=per_hour)
+            mesh_auto_trace=opts.get("auto_trace", False), mesh_auto_trace_per_hour=per_hour,
+            # On by default: only a message the operator sent, only after the mesh NAKed it,
+            # at most len(mesh.RESEND_S) more times (mesh.py _schedule_resend).
+            mesh_auto_resend=opts.get("auto_resend", True))
         self.engine = None
         self._last = None             # the engine before the last switch-off
 
@@ -98,6 +106,12 @@ class MeshAddon(Addon):
             await e.node_action(ws, str(m["to"]), str(m["action"]))  # "do" is the router's
         elif verb == "mesh_reboot":
             await e.reboot(ws)
+        elif verb == "mesh_cancel":
+            t = m.get("msg_t")
+            if isinstance(t, bool) or not isinstance(t, (int, float)):
+                self.host.notice("Not a message to cancel.", "warn", ws)
+                return
+            await e.cancel(ws, float(t))
         else:
             await super().command(ws, verb, m)
 

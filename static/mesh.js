@@ -17,8 +17,10 @@ const mesh = (() => {
   const HEARD_RECENT_S = 24 * 3600;
   const ACK = { sending: ["…", "Sending"], sent: ["✓?", "Sent, waiting for an ACK"],
     relayed: ["✓", "A neighbour rebroadcast it"], delivered: ["✓✓", "Delivered"],
-    failed: ["✗", "Not delivered"], unknown: ["?", "No ACK came back; it may not have gone out"] };
+    failed: ["✗", "Not delivered"], unknown: ["?", "No ACK came back; it may not have gone out"],
+    queued: ["⋯", "Waiting for the part before it"] };
   let info = null, nodes = [], messages = [], connected = false, linkError = null, textMax = 200;
+  let partsMax = 9, partBytes = 194; // a long text goes as up to partsMax parts of partBytes (mesh.py split_text)
   let switchedOff = false;  // the Mesh add-on is off: the bridge is stopped and the node's port free
   let view = null;          // channel index, or "dm"
   let dmTo = null;          // node id for a direct message
@@ -208,6 +210,14 @@ const mesh = (() => {
     return [...by].map(([e, who]) => `<span class="mesh-react" title="${esc(who.join(", "))}">${esc(e)}${who.length > 1 ? ` ${who.length}` : ""}</span>`).join("");
   }
 
+  function againIn(at) {
+    const s = Math.max(0, Math.round(at - Date.now() / 1000));
+    return s ? `again in ${s < 90 ? `${s} s` : `${Math.round(s / 60)} min`}` : "sending again…";
+  }
+  setInterval(() => {
+    for (const el of document.querySelectorAll("#mesh-list .mesh-retry-in")) el.textContent = againIn(Number(el.dataset.at));
+  }, 1000);
+
   function row(m) {
     const div = document.createElement("div");
     div.className = "mesh-msg" + (m.mine ? " mine" : "");
@@ -224,7 +234,11 @@ const mesh = (() => {
     const canAct = connected && m.id != null && m.ack !== "failed";
     const acts = canAct ? `<span class="mesh-acts"><button data-act="reply" title="Reply">↩</button>` +
       REACTIONS.map((e) => `<button data-react="${esc(e)}" title="React ${esc(e)}">${esc(e)}</button>`).join("") + "</span>" : "";
-    const retry = m.mine && (m.ack === "failed" || m.ack === "unknown") && connected ? `<button class="chip chip-mini mesh-retry" data-act="retry" title="Send it again">Retry</button>` : "";
+    const retry = !m.mine ? ""
+      : m.retry_at ? `<span class="mesh-retry-in wl-dim" data-at="${m.retry_at}" title="The mesh did not take it; the station sends it again by itself">${esc(againIn(m.retry_at))}</span>` +
+        `<button class="chip chip-mini mesh-retry" data-act="cancel" title="Don't send it again">Cancel</button>`
+      : m.ack === "queued" ? `<button class="chip chip-mini mesh-retry" data-act="cancel" title="Don't send this part or the ones after it">Cancel</button>`
+      : (m.ack === "failed" || m.ack === "unknown") && connected ? `<button class="chip chip-mini mesh-retry" data-act="retry" title="Send it again">Retry</button>` : "";
     div.innerHTML = `<span class="mesh-time">${hhmm(m.t)}</span>` +
       `<button class="mesh-who" title="${esc(m.mine ? "" : `${long(m.from)} ${m.from || ""}`)}">${esc(who)}</button>` +
       `<span class="mesh-text">${quote}<span class="mesh-body">${esc(m.text)}</span>` +
@@ -244,6 +258,8 @@ const mesh = (() => {
         $("#mesh-text").focus();
       } else if (btn.dataset.act === "retry") {
         send({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
+      } else if (btn.dataset.act === "cancel") {
+        send({ t: "mesh_cancel", msg_t: m.t });
       }
     };
     return div;
@@ -359,9 +375,15 @@ const mesh = (() => {
   function count() {
     const n = bytes($("#mesh-text").value.trim());
     const c = $("#mesh-count");
-    c.textContent = n > textMax * 0.75 ? `${n}/${textMax}` : "";
-    c.classList.toggle("warn", n > textMax);
-    $("#mesh-send").disabled = !connected || !n || n > textMax || (view === "dm" && !dmTo);
+    // Over one packet a text goes in parts (a reply can't); the server splits
+    // between words, so this is the least it takes and it has the last word.
+    const parts = n <= textMax ? 1 : Math.ceil(n / partBytes);
+    const tooLong = replyTo ? n > textMax : parts > partsMax;
+    c.textContent = n > textMax ? (replyTo ? `${n}/${textMax}` : `${n} B · ${parts} parts`)
+      : n > textMax * 0.75 ? `${n}/${textMax}` : "";
+    c.title = n > textMax && !replyTo ? `Sent as ${parts} or more messages, "[1/${parts}] …", one after another (at most ${partsMax})` : "";
+    c.classList.toggle("warn", tooLong);
+    $("#mesh-send").disabled = !connected || !n || tooLong || (view === "dm" && !dmTo);
   }
 
   function submit(e) {
@@ -829,6 +851,8 @@ const mesh = (() => {
     connected = !!snap.status?.connected;
     linkError = snap.status?.error || null;
     textMax = snap.text_max || textMax;
+    partsMax = snap.parts_max || partsMax;
+    partBytes = snap.part_bytes || partBytes;
     setConfig(snap.config || null);
     for (const tr of snap.traces || []) traces[tr.to] = tr;
     requests = snap.requests || {};

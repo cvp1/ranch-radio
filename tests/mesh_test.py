@@ -130,6 +130,7 @@ class Page:
 
 def start(*extra, mesh=True, key=GOOD_KEY, env_extra=None):
     env = dict(os.environ, FAKE_MESH_LOG=CMD_LOG, FAKE_MESH_STARTS=STARTS, MESH_ACK_WAIT_S="1.5",
+               MESH_RESEND_S="0.3,0.3,0.3", MESH_PART_GAP_S="0.2",
                MESH_SELF_NEIGHBORS_FIRST_S="3600")    # the self-ask only where a run wants it
     env.update(env_extra or {})
     args = [sys.executable, "server.py", "--sim", "--no-audio", "--listen", str(WEB),
@@ -241,6 +242,20 @@ try:
     page.send({"t": "mesh_send", "text": "nak", "ch": 1})
     e = page.wait(ack_of("nak", "failed"))
     check("NAK: failed with the reason", e and e["update"].get("why"), "MAX_RETRANSMIT")
+    check("  and a time it goes again by itself",
+          bool(page.wait(lambda e: ack_of("nak", "failed")(e) and e["update"].get("retry_at"))), True)
+    e = page.wait(lambda e: ack_of("nak", "failed")(e) and e["update"].get("tries") == 3
+                  and not e["update"].get("retry_at"))
+    check("  sent again 3 times, then left failed", bool(e), True)
+    check("  the bridge got it 4 times in all", len([c for c in commands() if c.get("text") == "nak"]), 4)
+
+    long_text = " ".join(f"word{i:03d}" for i in range(50))     # 399 bytes: 3 parts
+    page.send({"t": "mesh_send", "text": long_text, "ch": 1})
+    check("long text: the last part delivered", bool(page.wait(
+        lambda e: (e.get("update") or {}).get("part") == [3, 3] and e["update"].get("ack") == "delivered")), True)
+    got = [c["text"] for c in commands() if c.get("text", "").startswith("[") and "word0" in c.get("text", "")]
+    check("  the bridge got 3 parts, in order", [g[:6] for g in got], ["[1/3] ", "[2/3] ", "[3/3] "])
+    check("  nothing lost", " ".join(g[6:] for g in got) == long_text, True)
     page.send({"t": "mesh_send", "text": "fail", "ch": 1})
     check("write error: failed", bool(page.wait(ack_of("fail", "failed"))), True)
     page.send({"t": "mesh_send", "text": "silent", "ch": 1})
@@ -254,8 +269,8 @@ try:
 
     before = len(commands())
     for name, msg in [("empty text", {"text": "   ", "ch": 1}),
-                      ("201 bytes", {"text": "x" * 201, "ch": 1}),
-                      ("100 two-byte chars (200 B ok) + 1", {"text": "é" * 100 + "x", "ch": 1}),
+                      ("over 9 parts", {"text": "x" * (194 * 9 + 1), "ch": 1}),
+                      ("a reply over 200 bytes", {"text": "é" * 100 + "x", "ch": 1, "reply_to": 1001}),
                       ("unknown channel 5", {"text": "hi", "ch": 5}),
                       ("bad node id", {"text": "hi", "ch": 0, "to": "beef"})]:
         n = len(page.events)

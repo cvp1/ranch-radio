@@ -16,6 +16,22 @@ All notable changes to Ranch Radio are recorded here. The format follows
   being skipped. The header's tooltip names the link in use. Power saving,
   which turns off Bluetooth and Wi-Fi on an ESP32 node, is now refused over
   Bluetooth as well as Wi-Fi; set it over USB.
+- **Mesh: a message the mesh NAKs goes again by itself.** When the node
+  reports a failure the mesh may get over (no relay heard it, a timeout, the
+  duty-cycle limit), the station sends the message again 15 s, 1 min and
+  3 min later, at most three more times. The message shows when it goes
+  next and a **Cancel**. Not resent: a reaction, a write error, another NAK
+  reason, anything after the node goes away (Retry stays for those). A
+  resend's ACK wait is its own, so the first try's no longer marks it
+  unknown early. `"auto_resend": false` in the host file's `mesh` block
+  leaves it all to Retry. (An idea from Mesh-Client.)
+- **Mesh: long messages go in parts.** A text over one packet's 200 bytes is
+  split between words into up to nine parts, `[1/3] …`, sent one at a time:
+  the next once the one before is ACKed or its wait runs out. A part that
+  finally fails drops the rest; Cancel on a part not sent yet drops it and
+  those after it. The counter shows how many parts it takes. A reply or a
+  reaction is still one packet. After a restart, parts never sent show
+  failed.
 - **Mission Control replaces the station's Overview.** One look at the
   station: what is on the air (any HF radio keyed, a Winlink session, the
   UV-PRO), with Release TX; what needs you (unread Winlink mail, the outbox,

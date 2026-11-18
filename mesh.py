@@ -34,6 +34,13 @@ package. This side:
     new bridge keep them: nodes send NeighborInfo hours apart)
   - works out who hears this node (hears_us): a node whose NeighborInfo lists
     us, the first hop of a traceroute, a node that ACKed our DM
+  - sends a message of ours again by itself when the mesh NAKs it for a
+    reason it may get over (RESEND_REASONS: no relay heard it, a timeout, the
+    duty-cycle limit), RESEND_S later, at most len(RESEND_S) times; a page
+    can cancel that (mesh_cancel). auto_resend off turns it off
+  - sends a text too long for one packet as up to PARTS_MAX parts
+    ("[n/N] ..."), one at a time: the next once the one before is ACKed (or
+    its ACK wait runs out), the rest dropped if one finally fails
 
 Channel keys stay with the bridge (--mesh-key NAME=PATH): only "the node's
 key matches" (key_ok) comes back here and goes to the pages.
@@ -85,6 +92,18 @@ AUTO_TRACE_PER_HOUR = 6       # default cap; the host file's mesh.auto_trace_per
 AUTO_TRACE_PER_HOUR_MAX = 30
 AUTO_TRACE_REPEAT_S = float(os.environ.get("MESH_AUTO_TRACE_REPEAT_S", "3600"))  # one node, at most this often
 AUTO_TRACE_QUEUE = 20         # waiting nodes; more are dropped until the queue drains
+# Automatic resend (idea from Mesh-Client 6.x, 2026-11-17: it resends after 15 s,
+# 1 min and 3 min). Only for a NAK the mesh may get over; the firmware's own
+# retransmissions sit under each try. MESH_RESEND_S overrides (tests).
+RESEND_S = tuple(float(x) for x in os.environ.get("MESH_RESEND_S", "15,60,180").split(","))
+RESEND_REASONS = {"MAX_RETRANSMIT", "TIMEOUT", "NO_RESPONSE", "NO_ROUTE", "DUTY_CYCLE_LIMIT",
+                  "RATE_LIMIT_EXCEEDED"}
+# A long text goes as parts "[n/N] ...", each one packet (the convention
+# Meshtastic apps read back). More than PARTS_MAX is refused: nine packets of
+# LongFast airtime is already a lot to ask of a shared channel.
+PARTS_MAX = 9
+PART_PREFIX_BYTES = len("[9/9] ")
+PART_GAP_S = float(os.environ.get("MESH_PART_GAP_S", "2"))   # between one part's ACK and the next
 LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
 NEIGHBORS_KEEP = 300          # nodes' NeighborInfo kept, newest first
 
@@ -122,6 +141,41 @@ def hears_us(me, neighbors, traces, messages, now=None):
         if m.get("mine") and m.get("dm") and m.get("ack") == "delivered":
             note(m.get("to"), "dm", m.get("t"))
     return sorted(best.values(), key=lambda r: -r["t"])
+
+
+def split_text(text, limit=TEXT_MAX_BYTES, parts_max=PARTS_MAX):
+    """TEXT as the packets to send: [TEXT] when it fits one, else parts of at
+    most LIMIT bytes each, "[n/N] " first, split between words (a word longer
+    than a part is split between characters, never inside one). None when it
+    would take more than PARTS_MAX parts."""
+    if len(text.encode()) <= limit:
+        return [text]
+    room = limit - PART_PREFIX_BYTES
+    parts, cur = [], ""
+    for w in text.split():
+        while len(w.encode()) > room:            # longer than a part on its own
+            if cur:
+                parts.append(cur)
+                cur = ""
+            head, size = "", 0
+            for ch in w:
+                n = len(ch.encode())
+                if size + n > room:
+                    break
+                head, size = head + ch, size + n
+            parts.append(head)
+            w = w[len(head):]
+        joined = f"{cur} {w}" if cur else w
+        if len(joined.encode()) <= room:
+            cur = joined
+        else:
+            parts.append(cur)
+            cur = w
+    if cur:
+        parts.append(cur)
+    if len(parts) > parts_max:
+        return None
+    return [f"[{i}/{len(parts)}] {part}" for i, part in enumerate(parts, 1)]
 
 
 def trace_hops(tr):
@@ -208,6 +262,9 @@ class MeshEngine:
         self._auto_sent = deque(maxlen=AUTO_TRACE_PER_HOUR_MAX)  # times of automatic traces
         self._auto_since = None       # when the bridge last connected: only nodes heard since count
         self._auto_timer = None
+        self.auto_resend = bool(getattr(args, "mesh_auto_resend", True))
+        self._resends = {}            # message t -> the timer that sends it again
+        self._parts = {}              # group (first part's t) -> {"cur": part in flight, "rest": [...], "timer"}
         self._closing = False
         self._reached = False         # this run of the bridge got through to the node
         self._task = None
@@ -224,6 +281,11 @@ class MeshEngine:
             self._self_nb.cancel()
         if self._auto_timer is not None:
             self._auto_timer.cancel()
+        for h in self._resends.values():
+            h.cancel()
+        for g in self._parts.values():
+            if g.get("timer"):
+                g["timer"].cancel()
         if self._task:
             self._task.cancel()
         if self.proc and self.proc.returncode is None:
@@ -269,6 +331,7 @@ class MeshEngine:
             if self._closing:
                 return
             self._fail_pending("the mesh node went away before sending")
+            self._stop_resends("the mesh node went away")
             for ws, what in self._writes.values():
                 self.station.notice(f"Mesh: the node went away; {what} may not be saved.", "warn", ws)
             self._writes.clear()
@@ -377,17 +440,21 @@ class MeshEngine:
             if rec is not None:
                 rec["id"] = m["id"]
                 self._settle(rec, "sent")
-                asyncio.get_running_loop().call_later(ACK_WAIT_S, self._ack_timeout, rec)
+                asyncio.get_running_loop().call_later(ACK_WAIT_S, self._ack_timeout, rec, m["id"])
         elif ev == "send_failed":
             rec = self._by_ref.pop(m["ref"], None)
             if rec is not None:
                 self._settle(rec, "failed", m.get("error"))
+                self._advance(rec)
         elif ev == "ack":
             rec = next((r for r in reversed(self.messages)
                         if r.get("mine") and r.get("id") == m["id"]), None)
-            if rec is not None:
+            if rec is not None and rec.get("ack") in ("sent", "unknown"):
                 state = ("relayed" if m.get("relayed") else "delivered") if m["ok"] else "failed"
                 self._settle(rec, state, None if m["ok"] else m.get("reason"))
+                if state == "failed":
+                    self._schedule_resend(rec, m.get("reason"))
+                self._advance(rec)
                 if state == "delivered" and rec.get("dm"):
                     self._send_hears()
 
@@ -410,9 +477,112 @@ class MeshEngine:
         self._write({"k": "ack", "id": rec.get("id"), "ref_t": rec["t"], "ack": state, "why": why})
         self._send({"update": rec})
 
-    def _ack_timeout(self, rec):
-        if rec.get("ack") == "sent" and not self._closing:
+    def _ack_timeout(self, rec, pid=None):
+        # pid: the try this timer is for (a resend is a new packet with its own wait)
+        if rec.get("ack") == "sent" and not self._closing and (pid is None or rec.get("id") == pid):
             self._settle(rec, "unknown", f"no ACK or failure from the node in {ACK_WAIT_S:g} s")
+            self._advance(rec)
+
+    # --- automatic resend and long texts in parts
+
+    def _schedule_resend(self, rec, reason):
+        """Send REC again RESEND_S[tries] from now, if REASON is one the mesh
+        may get over and it has tries left. Never a reaction (a lost one is not
+        worth the airtime twice), never after auto_resend is switched off."""
+        tries = rec.get("tries", 0)
+        if (not self.auto_resend or self._closing or rec.get("emoji") or reason not in RESEND_REASONS
+                or tries >= len(RESEND_S) or rec["t"] in self._resends):
+            return
+        delay = RESEND_S[tries]
+        rec["retry_at"] = time.time() + delay
+        self._resends[rec["t"]] = asyncio.get_running_loop().call_later(delay, self._resend_due, rec)
+        log.info("mesh: %s; sending it again in %gs (try %d of %d)", reason, delay, tries + 2, len(RESEND_S) + 1)
+        self._send({"update": rec})
+
+    def _resend_due(self, rec):
+        self._resends.pop(rec["t"], None)
+        rec.pop("retry_at", None)
+        if self._closing:
+            return
+        if not self._live():
+            rec["why"] = f"{rec.get('why') or 'not delivered'}; not sent again: the node is not connected"
+            self._send({"update": rec})
+            self._advance(rec)
+            return
+        rec["tries"] = rec.get("tries", 0) + 1
+        rec.pop("why", None)
+        asyncio.ensure_future(self._transmit(rec))
+
+    def _advance(self, rec):
+        """REC settled: if it is the part of a long text in flight, send the next
+        part (delivered, relayed or unknown) or drop the rest (failed for good)."""
+        group = rec.get("group")
+        g = self._parts.get(group)
+        if g is None or g["cur"] is not rec:
+            return
+        if rec.get("ack") in ("delivered", "relayed", "unknown"):
+            if not g["rest"]:
+                del self._parts[group]
+                return
+            g["cur"] = g["rest"].pop(0)
+            g["timer"] = asyncio.get_running_loop().call_later(PART_GAP_S, self._part_due, group)
+        elif rec.get("ack") == "failed" and rec["t"] not in self._resends:
+            self._drop_parts(group, "an earlier part was not delivered")
+
+    def _part_due(self, group):
+        g = self._parts.get(group)
+        if g is None or self._closing:
+            return
+        g["timer"] = None
+        if not self._live():
+            g["rest"].insert(0, g["cur"])
+            self._drop_parts(group, "not sent: the node is not connected")
+            return
+        asyncio.ensure_future(self._transmit(g["cur"]))
+
+    def _drop_parts(self, group, why):
+        g = self._parts.pop(group, None)
+        if g is None:
+            return
+        if g.get("timer"):
+            g["timer"].cancel()
+        for r in g["rest"]:
+            self._settle(r, "failed", why)
+
+    def _stop_resends(self, why):
+        """The node went away: nothing waits to be sent again or in parts."""
+        for t, h in list(self._resends.items()):
+            h.cancel()
+            rec = next((r for r in self.messages if r.get("t") == t), None)
+            if rec is not None:
+                rec.pop("retry_at", None)
+                rec["why"] = f"{rec.get('why') or 'not delivered'}; not sent again: {why}"
+                self._send({"update": rec})
+        self._resends.clear()
+        for group, g in list(self._parts.items()):
+            if g["cur"].get("ack") == "queued":
+                g["rest"].insert(0, g["cur"])
+            self._drop_parts(group, f"not sent: {why}")
+
+    async def cancel(self, ws, t):
+        """A page's Cancel on a message waiting to be sent again, or on a part
+        of a long text not sent yet: it stays failed, and the parts not sent
+        yet go with it."""
+        rec = next((r for r in self.messages if r.get("mine") and r.get("t") == t), None)
+        h = self._resends.pop(t, None) if rec else None
+        if rec is None or (h is None and rec.get("ack") != "queued"):
+            self.station.notice("Nothing to cancel: that message is not waiting to be sent.", "warn", ws)
+            return
+        if h is not None:
+            h.cancel()
+            rec.pop("retry_at", None)
+            self._settle(rec, "failed", f"{rec.get('why') or 'not delivered'}; not sent again (cancelled)")
+        g = self._parts.get(rec.get("group"))
+        if g is not None:
+            if g["cur"].get("ack") == "queued":
+                g["rest"].insert(0, g["cur"])
+            self._drop_parts(rec["group"], "cancelled")
+        log.info("mesh: cancelled a message waiting to be sent")
 
     def _fail_pending(self, why):
         for rec in list(self._by_ref.values()):
@@ -439,7 +609,8 @@ class MeshEngine:
                 "info": self.info, "config": self.config, "nodes": self.nodes,
                 "traces": list(self.traces.values()), "messages": list(self.messages),
                 "requests": self.requests, "neighbors": self.neighbors,
-                "hears": self.hears(), "text_max": TEXT_MAX_BYTES}
+                "hears": self.hears(), "text_max": TEXT_MAX_BYTES, "parts_max": PARTS_MAX,
+                "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend}
 
     def hears(self):
         me = ((self.info or {}).get("me") or {}).get("id")
@@ -462,8 +633,10 @@ class MeshEngine:
             why = "A reaction is one emoji."
         elif not text:
             why = "Nothing to send."
-        elif len(text.encode()) > TEXT_MAX_BYTES:
-            why = f"Too long for one mesh message ({len(text.encode())} of {TEXT_MAX_BYTES} bytes)."
+        elif len(text.encode()) > TEXT_MAX_BYTES and reply_to is not None:
+            why = f"Too long for one mesh message ({len(text.encode())} of {TEXT_MAX_BYTES} bytes); a reply is one."
+        elif len(text.encode()) > TEXT_MAX_BYTES and split_text(text) is None:
+            why = f"Too long: {len(text.encode())} bytes is more than {PARTS_MAX} mesh messages."
         elif not self.connected or self.proc is None or self.proc.returncode is not None:
             why = "The mesh node is not connected."
         elif not any(c["index"] == ch for c in (self.info or {}).get("channels", [])):
@@ -473,21 +646,42 @@ class MeshEngine:
         if why:
             self.station.notice(why, "warn", ws)
             return
+        texts = [text] if emoji else split_text(text)
+        base = time.time()
+        recs = []
+        for i, part in enumerate(texts):
+            rec = {"k": "msg", "id": None, "t": base + i * 0.001, "from": (self.info["me"] or {}).get("id"),
+                   "to": to, "ch": ch, "dm": to is not None, "text": part, "mine": True,
+                   "ack": "sending" if i == 0 else "queued"}
+            if reply_to is not None:
+                rec["reply_id"] = reply_to
+            if emoji:
+                rec["emoji"] = True
+            if len(texts) > 1:
+                rec["part"], rec["group"] = [i + 1, len(texts)], base
+            self._add(rec)
+            recs.append(rec)
+        if len(recs) > 1:
+            self._parts[base] = {"cur": recs[0], "rest": recs[1:], "timer": None}
+        await self._transmit(recs[0])
+
+    def _live(self):
+        return self.connected and self.proc is not None and self.proc.returncode is None
+
+    async def _transmit(self, rec):
+        """Hand REC to the bridge (a first send, a resend, the next part)."""
         self._ref += 1
-        rec = {"k": "msg", "id": None, "t": time.time(), "from": (self.info["me"] or {}).get("id"),
-               "to": to, "ch": ch, "dm": to is not None, "text": text, "mine": True, "ack": "sending"}
-        if reply_to is not None:
-            rec["reply_id"] = reply_to
-        if emoji:
-            rec["emoji"] = True
         self._by_ref[self._ref] = rec
-        self._add(rec)
-        self.proc.stdin.write((json.dumps({"cmd": "send", "ref": self._ref, "text": text, "ch": ch,
-                                           "to": to, "reply_to": reply_to, "emoji": bool(emoji)})
-                               + "\n").encode())
+        if rec.get("ack") != "sending":
+            rec["ack"] = "sending"
+            self._send({"update": rec})
+        self.proc.stdin.write((json.dumps({"cmd": "send", "ref": self._ref, "text": rec["text"], "ch": rec["ch"],
+                                           "to": rec["to"], "reply_to": rec.get("reply_id"),
+                                           "emoji": bool(rec.get("emoji"))}) + "\n").encode())
         await self.proc.stdin.drain()
-        log.info("mesh: sending %d bytes on channel %d%s", len(text.encode()), ch,
-                 f" to {to}" if to else "")
+        log.info("mesh: sending %d bytes on channel %d%s%s", len(rec["text"].encode()), rec["ch"],
+                 f" to {rec['to']}" if rec["to"] else "",
+                 f" (part {rec['part'][0]} of {rec['part'][1]})" if rec.get("part") else "")
 
     def _usable(self, ws):
         if not self.connected or self.proc is None or self.proc.returncode is not None:
@@ -797,8 +991,11 @@ class MeshEngine:
                 if r.get("why"):
                     m["why"] = r["why"]
         for m in msgs[-MESSAGES_KEEP:]:
+            m.pop("retry_at", None)
             if m.get("ack") in ("sending", "sent"):
                 m["ack"] = "unknown"          # the server restarted before its ACK
+            elif m.get("ack") == "queued":
+                m["ack"], m["why"] = "failed", "not sent: the server restarted"
             self.messages.append(m)
         log.info("mesh: %d messages from %s", len(self.messages), self.log_path)
         if len(recs) > COMPACT_AT:

@@ -1,7 +1,8 @@
 """The Mesh panel on the page (headless Chromium), against tests/fake_mesh_bridge.py.
 
 Covers: the panel only with a mesh node; node, state, channel tabs and key
-check (never the key); messages, Send's 200-byte limit, delivery ticks,
+check (never the key); messages, a long text's parts and Send's 9-part limit, delivery ticks,
+an automatic resend's countdown and Cancel,
 DMs from a node card, unread counts; favorites; the node list and map;
 traceroute; Settings (dirty marking, validation, only changed fields sent,
 risky fields ask first, Revert, disabled while disconnected); the on/off switch.
@@ -58,7 +59,8 @@ def start(mesh=True):
             json.dump({"mesh": {"port": "/dev/null", "python": sys.executable, "bridge": "tests/fake_mesh_bridge.py",
                                 "keys": [f"HomeNet={KEY}"], "log": ""}}, f)
         args += ["--addons", adds]
-    p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG, MESH_ACK_WAIT_S="1.5", MESH_SELF_NEIGHBORS_FIRST_S="3600"),
+    p = subprocess.Popen(args, cwd=ROOT, env=dict(os.environ, FAKE_MESH_LOG=CMD_LOG, MESH_ACK_WAIT_S="1.5", MESH_SELF_NEIGHBORS_FIRST_S="3600",
+                                          MESH_RESEND_S="600,600,600"),   # a resend waits: the page shows it
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:
@@ -131,7 +133,12 @@ try:
               b.js("document.querySelector('#mesh-list .mesh-who')?.textContent"), "BASE")
 
         type_text("x" * 201)
-        check("Send disabled past 200 bytes", b.js("document.querySelector('#mesh-send').disabled"), True)
+        check("past 200 bytes: Send stays enabled, it goes in parts",
+              b.js("document.querySelector('#mesh-send').disabled"), False)
+        check("  the counter says how many", b.js("document.querySelector('#mesh-count').textContent"), "201 B · 2 parts")
+        type_text("x" * (194 * 9 + 1))
+        check("past 9 parts: Send disabled", b.js("document.querySelector('#mesh-send').disabled"), True)
+        check("  the input takes 9 parts' worth", b.js("document.querySelector('#mesh-text').maxLength") >= 194 * 9, True)
         type_text("opening the gate")
         check("Send enabled", b.js("document.querySelector('#mesh-send').disabled"), False)
         b.js("document.querySelector('#mesh-send').click()")
@@ -304,7 +311,12 @@ try:
               bool(b.wait(f"(({ROW.format(json.dumps('react to me'))})?.querySelector('.mesh-reacts')?.textContent || '').includes('👍')")), True)
         type_text("nak")
         b.js("document.querySelector('#mesh-send').click()")
-        check("a failed send offers Retry", bool(b.wait(f"!!({ROW.format(json.dumps('nak'))})?.querySelector('[data-act=retry]')")), True)
+        check("a NAK: it goes again by itself, with a countdown and Cancel",
+              bool(b.wait(f"/again in/.test(({ROW.format(json.dumps('nak'))})?.querySelector('.mesh-retry-in')?.textContent || '') && "
+                          f"!!({ROW.format(json.dumps('nak'))})?.querySelector('[data-act=cancel]')")), True)
+        b.js(f"({ROW.format(json.dumps('nak'))}).querySelector('[data-act=cancel]').click()")
+        check("  Cancel: it stays failed and offers Retry", bool(b.wait(f"!!({ROW.format(json.dumps('nak'))})?.querySelector('[data-act=retry]') && "
+                                                                       f"!({ROW.format(json.dumps('nak'))})?.querySelector('.mesh-retry-in')")), True)
         b.js(f"({ROW.format(json.dumps('nak'))}).querySelector('[data-act=retry]').click()")
         time.sleep(0.5)
         check("  Retry sends it again", len([c for c in commands() if c.get("text") == "nak"]), 2)

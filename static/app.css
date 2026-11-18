@@ -522,6 +522,7 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mesh-acts button { background: none; border: 0; padding: 0 2px; cursor: pointer; font-size: 12px; color: var(--muted); }
 .mesh-acts button:hover { color: var(--text); }
 .mesh-retry { margin-right: 6px; }
+.mesh-retry-in { margin-right: 6px; font-size: 0.85em; }
 .mesh-replying { display: inline-flex; align-items: center; gap: 6px; }
 .mesh-conv { display: grid; grid-template-columns: 5em 1fr 3em 2em; gap: 8px; align-items: baseline; text-align: left;
   background: none; border: 0; border-bottom: 1px solid var(--line); padding: 6px 8px; color: var(--muted); cursor: pointer; font: inherit; }
