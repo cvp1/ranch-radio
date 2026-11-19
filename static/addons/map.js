@@ -545,6 +545,7 @@ const rrMapMath = (() => {
       <div class="rm-dir"><span class="rm-in-t">▼ You hear it</span><span>${rx}</span></div>
       <div class="rm-dir"><span class="rm-out-t">▲ It hears you</span><span>${tx}</span></div>
       ${d ? `<div class="rm-msg">${esc(d.message || "")}</div>` : ""}
+      ${window.callcard ? callcard.block("map", "map", r.call, d || r.rx || {}) : ""}
       <div class="rm-card-f">${need ? `<span class="rm-need"><i class="rm-dot" style="background:${NEED[need]}"></i>${esc(NEED_WORD[need] || need)}</span>` : "<span></span>"}
         <button class="chip chip-mini${can ? " on" : ""}" ${can ? `data-answer="${esc(d.key)}" data-call="${esc(r.call)}"` : "disabled"} title="${esc(why)}">${d && d.answer === "cq" ? "Answer CQ" : "Answer"}</button></div>`;
   }
@@ -581,6 +582,7 @@ const rrMapMath = (() => {
     mount(b) { body = b; built = false; centred = false; fitted = false; cx = null; render(); },
     hello(s) { snap = { chosen: snap.chosen }; take(s || {}); for (const d of (snap.map && snap.map.decodes) || []) seen.add(d.key); render(); },
     event(m) {
+      if (m.callcard) { window.callcard?.answer(m.callcard); return; }     // the station card's call card (static/callcard.js)
       if (m.error) { snap = { chosen: snap.chosen, error: m.error }; render(); return; }
       if (!("map" in m || "rig" in m || "hears_me" in m || "pota" in m)) return;
       delete snap.error;

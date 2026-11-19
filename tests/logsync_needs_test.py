@@ -11,6 +11,9 @@ data (fresh, stale, failed fetch, oversize, not the right file).
   needs      from a ledger: the DXCC field Wavelog wrote wins over the
              lookup; confirmed only from the ledger's confirmed state; each
              level fires on the case that should and not on the one beside it
+  history    one call's latest QSOs for the call card: exact call, newest
+             first, at most 20, date/band/mode/confirmed only, read-only;
+             on 60,000 QSOs the plan searches qso_call and scans nothing
   lotw       a user active within a year counts; an older one doesn't
   refdata    a young copy isn't fetched; a stale one is; a failed fetch, an
              oversize answer or one that isn't the file keeps the cache and
@@ -116,6 +119,51 @@ for args, want, why in [
     check(f"need: {why}", n.need(*args), want)
 check("summary", n.summary(), {"qsos": 4, "dxcc_worked": 4, "dxcc_confirmed": 2, "grids_worked": 4, "grids_confirmed": 2,
                                "lotw_users": 0})
+
+# ================================================================ one call's history (the call card, 2026-11-19, UX plan PR 4b)
+# Ledger.history: the latest QSOs with one exact call, read the way the needs
+# are (confirmed = the ledger's confirmed state), indexed and capped.
+hl = Ledger(str(tmp / "h.db"), ["lotw", "qrz"])
+st_all = {"lotw": "accepted", "qrz": "sent"}
+
+
+def hq(call, t, band="20m", mode="FT8", sub=None):
+    f = {"CALL": call, "BAND": band, "MODE": mode, "QSO_DATE": t[:8], "TIME_ON": t[8:], "STATION_CALLSIGN": "N0CALL"}
+    if sub:
+        f["SUBMODE"] = sub
+    return hl.add(f, "test", st_all, own="N0CALL")[0]
+
+
+hq("W1AW", "20240101120000", "40m", "CW")
+hl.set(hq("W1AW", "20250601130000", "20m", "MFSK", "FT4"), "lotw", "confirmed")
+hq("w1aw", "20260301140000")
+hq("W1AW/P", "20260302150000")
+for i in range(25):
+    hq("N9XYZ", f"2025010110{i:02d}00")
+changes = hl.db.total_changes
+check("history: the call's QSOs, newest first: date, band, mode (submode first), confirmed", hl.history("W1AW"),
+      [{"date": "2026-03-01", "band": "20m", "mode": "FT8", "confirmed": False},
+       {"date": "2025-06-01", "band": "20m", "mode": "FT4", "confirmed": True},
+       {"date": "2024-01-01", "band": "40m", "mode": "CW", "confirmed": False}])
+check("  a portable call is its own; never a prefix match",
+      ([q["date"] for q in hl.history("W1AW/P")], hl.history("W1A")), (["2026-03-02"], []))
+check("  at most 20, the newest", (len(hl.history("N9XYZ")), len(hl.history("N9XYZ", 500))), (20, 20))
+check("  read-only", hl.db.total_changes, changes)
+db = hl.db
+db.execute("BEGIN")
+db.executemany("INSERT INTO qso(key, own, call, band, mode, submode, ts, adif) VALUES(?,?,?,?,?,?,?,?)",
+               ((f"bulk{i}", "N0CALL", f"N{i % 10}{chr(65 + i % 26)}{chr(65 + (i // 26) % 26)}{chr(65 + (i // 676) % 26)}",
+                 "20m", "FT8", "", f"2020{1 + i % 12:02d}01{i % 24:02d}0000", "") for i in range(60000)))
+db.execute("INSERT INTO dest(qso_id, dest, state) SELECT id, 'lotw', 'accepted' FROM qso WHERE key LIKE 'bulk%'")
+db.execute("COMMIT")
+db.execute("ANALYZE")
+plan = [r[3] for r in db.execute("EXPLAIN QUERY PLAN " + Ledger.HISTORY_SQL, ("N0AAA", 20))]
+print("     plan:", plan, flush=True)
+check("  60,000 QSOs: the call is searched on qso_call", any("USING INDEX qso_call (call=?)" in p for p in plan), True)
+check("    confirmed is a key search on dest", any(p.startswith("SEARCH d USING") and "qso_id=?" in p for p in plan), True)
+check("    neither table is scanned", [p for p in plan if p.startswith("SCAN")], [])
+check("    and it answers", len(hl.history("N0AAA")) > 0, True)
+hl.close()
 
 # ================================================================ LoTW users
 today = dt.date(2026, 11, 14)

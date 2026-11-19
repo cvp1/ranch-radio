@@ -266,6 +266,29 @@ class Ledger:
             out.append((q, ds))
         return out
 
+    HISTORY_MAX = 20
+    HISTORY_SQL = ("SELECT q.ts, q.band, q.mode, q.submode, "
+                   "EXISTS(SELECT 1 FROM dest d WHERE d.qso_id=q.id AND d.state='confirmed') AS confirmed "
+                   "FROM qso q WHERE q.call=? ORDER BY q.ts DESC, q.id DESC LIMIT ?")
+
+    def history(self, call, limit=HISTORY_MAX):
+        """The latest QSOs with one exact call, for the call card (2026-11-19,
+        UX plan PR 4b): [{"date", "band", "mode", "confirmed"}], newest first.
+        Read-only, parameterized, and on the qso_call index (call is its first
+        column) so a big ledger costs only that call's rows; recent() sorts the
+        whole table. Nothing else of the QSO leaves the ledger: no ADIF, no
+        grid, no reasons. confirmed: a destination says the other station
+        confirmed it, as logsync_needs counts it."""
+        limit = max(1, min(int(limit), self.HISTORY_MAX))
+        rows = self.db.execute(self.HISTORY_SQL, (call, limit)).fetchall()
+        out = []
+        for r in rows:
+            ts = r["ts"] or ""
+            out.append({"date": f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}" if len(ts) >= 8 else "",
+                        "band": r["band"] or "", "mode": r["submode"] or r["mode"] or "",
+                        "confirmed": bool(r["confirmed"])})
+        return out
+
     # ---------------------------------------------------------------- backfill (PLAN §7)
 
     def backfill_set(self):

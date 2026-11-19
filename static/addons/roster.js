@@ -70,7 +70,7 @@
         : r.answer === "line" ? `${r.call} isn't calling CQ: JTDX answers this only if its UDP reply filter accepts any message`
         : `Nothing fresh from ${r.call} to answer`;
       return `<tr class="rs-row ${cls}${r.to_me ? " rs-me" : ""}${r.answer === "cq" ? "" : " rs-nocq"}" data-key="${esc(r.key)}" data-call="${esc(r.call)}" title="${esc(tip)}">
-        <td class="rs-call">${esc(r.call)}${r.lotw ? ` <span class="rs-lotw" title="uses LoTW">L</span>` : ""}</td>
+        <td class="rs-call">${esc(r.call)}${r.lotw ? ` <span class="rs-lotw" title="uses LoTW">L</span>` : ""}${window.callcard ? callcard.button(r) : ""}</td>
         <td>${r.cq ? `CQ${r.cq_word ? " " + esc(r.cq_word) : ""}` : r.to_me ? "<b>you</b>" : esc(r.to || "")}</td>
         <td class="rs-c-entity">${esc(r.entity)}</td><td class="rs-c-grid">${esc(r.grid)}</td>
         <td class="rs-num">${r.km != null ? `${r.km.toLocaleString()} km ${r.bearing}°` : ""}</td>
@@ -90,14 +90,21 @@
       if (opt.alert !== "off" && window.Notification && Notification.permission === "default") Notification.requestPermission();
     };
     for (const row of body.querySelectorAll(".rs-row")) {
-      row.onclick = () => send({ t: "addon", addon: "roster", do: "reply", key: row.dataset.key, call: row.dataset.call });
+      row.onclick = (e) => {
+        if (e.target.closest(".cc-info")) return;      // the call card's button is never a Reply (2026-11-19, PR 4b)
+        send({ t: "addon", addon: "roster", do: "reply", key: row.dataset.key, call: row.dataset.call });
+      };
     }
+    window.callcard?.wire(body);
   }
 
   addons.register("roster", {
     mount(b) { body = b; render(); },
     hello(s) { snap = s || {}; render(); },
-    event(m) { if (m.roster) { snap = { roster: m.roster }; alertFor(m.roster.rows || []); render(); } },
+    event(m) {
+      if (m.callcard) { window.callcard?.answer(m.callcard); return; }     // a call card's answer (static/callcard.js)
+      if (m.roster) { snap = { roster: m.roster }; alertFor(m.roster.rows || []); render(); }
+    },
     off() { snap = {}; if (body) body.innerHTML = ""; },
     tab() {
       const rows = snap.roster?.rows || [];
