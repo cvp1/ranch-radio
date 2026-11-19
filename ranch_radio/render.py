@@ -140,7 +140,7 @@ PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lan
          ("station", "rigctl_port"), ("logsync", "udp", "port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
-         ("updates", "apply"), ("mesh", "feed_tx")]
+         ("updates", "apply"), ("mesh", "feed_tx"), ("logsync", "adopt_wavelog")]
 
 # APRS messaging (plan 2026-11-07, 3.7): packet.aprs caps -> the hub's flags,
 # with their bounds. The hub's overall runaway cap (300/min) bounds the UI total.

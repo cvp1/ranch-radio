@@ -31,6 +31,12 @@ Backfill (PLAN §7): on first start the Wavelog log is imported with QRZ and
 LoTW held_backfill, which no sender reads; LoTW (qso_qsl=no since 1900) and
 QRZ (the whole log) then mark what they already have. Only
 `ranch-radio logsync backfill --apply HASH` releases the rest.
+
+Several hosts (adopt_wavelog): each host's ledger sends only the QSOs its own
+JTDX logged, so two hosts never send one QSO. A host with "adopt_wavelog":
+false still pulls Wavelog (to confirm its own sends) but takes in nothing it
+didn't log: no backfill, no hand-typed QSOs. Exactly one host keeps the
+default (true) and adopts those.
 """
 
 import asyncio
@@ -830,7 +836,7 @@ class LogSync:
             log.warning("logsync: Wavelog pull failed: %s", self.last_error["wavelog"])
             return False
         found = self._matches(recs)
-        added = 0
+        added = skipped = 0
         for f in recs:
             try:
                 q = adif.qso(f, self.cfg.call)
@@ -839,6 +845,9 @@ class LogSync:
             row = self.ledger.find(q)
             if row is not None:
                 self.ledger.set(row["id"], "wavelog", "sent", only_from=("pending", "unknown", "held_backfill"))
+                continue
+            if not self.cfg.adopt_wavelog:       # another host's (or hand-typed): that host sends it, not this one
+                skipped += 1
                 continue
             later = "held_backfill" if first else "pending"
             states = {d: later for d in self.cfg.dests}
@@ -849,8 +858,9 @@ class LogSync:
         if first:
             self.ledger.set_cursor("backfill_wavelog", int(self.clock()))
             self.imported.set()
-        log.info("logsync: Wavelog pull: %d record(s), %d matched, %d new%s", len(recs), len(found), added,
-                 " (backfill: held)" if first else "")
+        log.info("logsync: Wavelog pull: %d record(s), %d matched, %d new%s%s", len(recs), len(found), added,
+                 " (backfill: held)" if first and added else "",
+                 f", {skipped} not ours (adopt_wavelog off)" if skipped else "")
         if added and not first:
             for e in self.wake.values():
                 e.set()
