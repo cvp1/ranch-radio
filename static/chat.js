@@ -144,10 +144,12 @@ const chat = (() => {
     const reacts = (it.reacts || []).map((r) =>
       `<button type="button" class="mesh-react${r.who.includes("me") ? " me" : ""}" data-react="${esc(r.emoji)}" title="${esc(r.who.join(", "))}"${it.canReact ? "" : " disabled"}>` +
       `${esc(r.emoji)}${r.who.length > 1 ? `<span>${r.who.length}</span>` : ""}</button>`).join("");
-    const bar = it.canReply || it.canReact ? `<span class="mesh-acts chat-bar" role="toolbar" aria-label="Message actions">${it.canReact
+    const tools = (it.canCopy ? `<button type="button" class="chat-tool" data-act="copy" title="Copy the text">⧉</button>` : "") +
+      (it.canDelete ? `<button type="button" class="chat-tool" data-act="delete" title="${esc(it.deleteHint || "Delete")}">🗑</button>` : "");
+    const bar = it.canReply || it.canReact || tools ? `<span class="mesh-acts chat-bar" role="toolbar" aria-label="Message actions">${it.canReact
       ? QUICK.map((e) => `<button type="button" data-react="${esc(e)}" title="React ${esc(e)}">${esc(e)}</button>`).join("") +
         `<button type="button" class="chat-more" data-act="react-more" title="More reactions">＋</button>` : ""}${it.canReply
-      ? `<button type="button" class="chat-reply" data-act="reply" title="Reply (quotes this message)">↩ Reply</button>` : ""}</span>` : "";
+      ? `<button type="button" class="chat-reply" data-act="reply" title="Reply (quotes this message)">↩ Reply</button>` : ""}${tools}</span>` : "";
     const foot = `<span class="chat-foot">${it.sub ? `<span class="chat-hops">${esc(it.sub)}</span>` : ""}` +
       `<time datetime="${new Date(it.t * 1000).toISOString()}" title="${esc(new Date(it.t * 1000).toLocaleString())}">${hhmm(it.t)}</time>` +
       (it.ack ? `<span class="mesh-ack ${esc(it.ack.cls || "")}" title="${esc(it.ack.why || "")}">${esc(it.ack.glyph || "")}</span>` : "") + "</span>";
@@ -180,6 +182,7 @@ const chat = (() => {
       if (btn.dataset.react) { div.classList.remove("act"); return o.onReact?.(it, btn.dataset.react); }
       if (btn.dataset.act === "reply") { div.classList.remove("act"); return o.onReply?.(it); }
       if (btn.dataset.act === "react-more") return picker(btn, (em) => { div.classList.remove("act"); o.onReact?.(it, em); });
+      if (btn.dataset.act === "copy") { div.classList.remove("act"); return copyText(it.text); }
       if (btn.dataset.act) return o.onAct?.(it, btn.dataset.act, btn);
     };
     return div;
@@ -349,19 +352,102 @@ const chat = (() => {
 
   // ---------- the conversation rail
 
-  // rows: [{id, title, glyph, seed, last: {who, text, t} | null, unread, on, hint}]
-  // grouped under headings: [[heading, rows], ...]; onPick(id).
-  function rail(el, sections, onPick) {
+  // rows: [{id, title, glyph, seed, last: {who, text, t} | null, unread, on, hint,
+  //         pinned, muted, menu: [[act, label, cls]]}]
+  // grouped under headings: [[heading, rows, emptyHint, {collapsed, onToggle}], ...];
+  // onPick(id). o: {find: {value, placeholder, onInput}} puts a search box on
+  // top (kept across redraws, so typing is not interrupted), onMenu(id, act).
+  function rail(el, sections, onPick, o = {}) {
     el.classList.add("chat-rail");
-    el.innerHTML = sections.map(([head, rows, emptyHint]) =>
-      `<div class="chat-rail-head">${esc(head)}</div>` + (rows.length ? rows.map((r) =>
-        `<button type="button" class="chat-conv${r.on ? " on" : ""}${r.unread ? " unread" : ""}" data-conv="${esc(String(r.id))}" title="${esc(r.hint || r.title)}">` +
-        `${avatar(r.title, r.seed, r.glyph)}<span class="chat-conv-main"><span class="chat-conv-top"><b>${esc(r.title)}</b>` +
-        `<time>${r.last ? esc(agoShort(r.last.t)) : ""}</time></span>` +
-        `<span class="chat-conv-last">${r.last ? esc((r.last.who ? `${r.last.who}: ` : "") + preview(r.last.text, 48)) : `<i>${esc(r.empty || "No messages")}</i>`}</span></span>` +
-        (r.unread ? `<span class="mesh-unread">${r.unread}</span>` : "") + "</button>").join("")
-        : `<div class="chat-rail-hint">${esc(emptyHint || "")}</div>`)).join("");
-    for (const b of el.querySelectorAll("[data-conv]")) b.onclick = () => onPick(b.dataset.conv);
+    let body = el.querySelector(":scope > .chat-rail-body");
+    if (!body) {
+      el.innerHTML = "";
+      if (o.find) {
+        const f = document.createElement("input");
+        f.className = "chat-rail-find wl-url";
+        f.type = "search";
+        f.autocomplete = "off";
+        f.spellcheck = false;
+        f.placeholder = o.find.placeholder || "Find";
+        f.setAttribute("aria-label", f.placeholder);
+        el.append(f);
+      }
+      body = document.createElement("div");
+      body.className = "chat-rail-body";
+      el.append(body);
+    }
+    const find = el.querySelector(":scope > .chat-rail-find");
+    if (find && o.find) find.oninput = () => o.find.onInput(find.value);
+    const row = (r) => `<div class="chat-conv-row">` +
+      `<button type="button" class="chat-conv${r.on ? " on" : ""}${r.unread ? " unread" : ""}${r.muted ? " muted" : ""}" data-conv="${esc(String(r.id))}" title="${esc(r.hint || r.title)}">` +
+      `${avatar(r.title, r.seed, r.glyph)}<span class="chat-conv-main"><span class="chat-conv-top"><b>${esc(r.title)}</b>` +
+      `${r.pinned ? `<span class="chat-conv-flag" title="Pinned">📌</span>` : ""}${r.muted ? `<span class="chat-conv-flag" title="Muted">🔕</span>` : ""}` +
+      `<time>${r.last ? esc(agoShort(r.last.t)) : ""}</time></span>` +
+      `<span class="chat-conv-last">${r.last ? esc((r.last.who ? `${r.last.who}: ` : "") + preview(r.last.text, 48)) : `<i>${esc(r.empty || "No messages")}</i>`}</span></span>` +
+      (r.unread ? `<span class="mesh-unread">${r.unread}</span>` : "") + "</button>" +
+      (r.menu?.length ? `<button type="button" class="chat-conv-more" data-menu="${esc(String(r.id))}" title="Archive, mute, pin, delete…" aria-label="Conversation actions">⋯</button>` : "") +
+      "</div>";
+    body.innerHTML = sections.map(([head, rows, emptyHint, sec]) => {
+      if (sec?.onToggle) {
+        const h = `<button type="button" class="chat-rail-head chat-rail-fold" data-fold="${esc(head)}" aria-expanded="${!sec.collapsed}">` +
+          `<span>${sec.collapsed ? "▸" : "▾"}</span>${esc(head)}</button>`;
+        return h + (sec.collapsed ? "" : rows.map(row).join(""));
+      }
+      return `<div class="chat-rail-head">${esc(head)}</div>` + (rows.length ? rows.map(row).join("")
+        : `<div class="chat-rail-hint">${esc(emptyHint || "")}</div>`);
+    }).join("");
+    const menus = new Map(sections.flatMap(([, rows]) => rows.map((r) => [String(r.id), r.menu])));
+    for (const b of body.querySelectorAll("[data-conv]")) b.onclick = () => onPick(b.dataset.conv);
+    for (const b of body.querySelectorAll("[data-menu]")) b.onclick = (e) => {
+      e.stopPropagation();
+      menu(b, menus.get(b.dataset.menu), (act) => o.onMenu?.(b.dataset.menu, act));
+    };
+    for (const b of body.querySelectorAll("[data-fold]")) b.onclick = () => sections.find(([h]) => h === b.dataset.fold)?.[3]?.onToggle();
+  }
+
+  // ---------- a small menu (a conversation's actions)
+
+  let menuEl = null;
+  function closeMenu() { menuEl?.remove(); menuEl = null; }
+  document.addEventListener("click", (e) => { if (menuEl && !menuEl.contains(e.target)) closeMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && menuEl) { e.stopPropagation(); closeMenu(); } }, true);
+
+  // items: [[act, label, cls]] (cls "danger" draws it red; act null is a
+  // note, not a button); onPick(act). Clicking the anchor again closes it.
+  function menu(anchor, items, onPick) {
+    if (menuEl && menuEl._anchor === anchor) { closeMenu(); return; }
+    closeMenu();
+    const el = document.createElement("div");
+    el.className = "chat-menu";
+    el._anchor = anchor;
+    el.setAttribute("role", "menu");
+    el.innerHTML = (items || []).map(([act, label, cls]) => act
+      ? `<button type="button" role="menuitem" data-act="${esc(act)}" class="${esc(cls || "")}">${esc(label)}</button>`
+      : `<div class="chat-menu-note">${esc(label)}</div>`).join("");
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const b = e.target.closest("button[data-act]");
+      if (b) { closeMenu(); onPick(b.dataset.act); }
+    };
+    document.body.append(el);
+    const r = anchor.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))}px`;
+    el.style.top = `${r.bottom + 4 + h < window.innerHeight - 8 ? r.bottom + 4 : Math.max(8, r.top - h - 4)}px`;
+    menuEl = el;
+    el.querySelector("button")?.focus();
+  }
+
+  function copyText(text) {
+    const done = () => (typeof toast === "function" ? toast("Copied", "info") : null);
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => fallback());
+    else fallback();
+    function fallback() {
+      const t = document.createElement("textarea");
+      t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+      document.body.append(t); t.select();
+      try { document.execCommand("copy"); done(); } catch { /* nothing more to try */ }
+      t.remove();
+    }
   }
   function agoShort(t) {
     const s = Math.max(0, Date.now() / 1000 - t);
@@ -371,5 +457,5 @@ const chat = (() => {
     return new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
   }
 
-  return { render, composer, rail, picker, avatar, nameColor, emojiOnly, preview, QUICK };
+  return { render, composer, rail, menu, picker, copyText, avatar, nameColor, emojiOnly, preview, QUICK };
 })();

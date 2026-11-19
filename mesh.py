@@ -57,6 +57,7 @@ import re
 import time
 from collections import deque
 
+import mesh_convs
 from mesh_stats import MeshStats
 
 log = logging.getLogger("mesh")
@@ -279,6 +280,9 @@ class MeshEngine:
         self.links_path = (os.path.splitext(self.log_path)[0] + "-links.json") if self.log_path else None
         self.names_path = (os.path.splitext(self.log_path)[0] + "-names.json") if self.log_path else None
         self.names = {}               # node id -> {"short", "long", "hw", "t"}: remember_names()
+        base = os.path.splitext(self.log_path)[0] if self.log_path else None
+        self.convs = mesh_convs.ConvStore(base and base + "-convs.json")   # archived, muted, pinned, read
+        self.trash = mesh_convs.Trash(base and base + "-trash.jsonl")      # deleted, for Undo
         self.proc = None
         self.connected = False
         self.error = None
@@ -649,7 +653,80 @@ class MeshEngine:
     def _add(self, rec):
         self.messages.append(rec)
         self._write(rec)
+        if self.convs.heard(rec):
+            self._send({"convs": self.convs.view()})
         self._send({"msg": rec})
+
+    # --- conversations: archive, mute, pin, read, delete (mesh_convs.py)
+
+    async def conv(self, ws, m):
+        """A page's mesh_conv: {"action", "conv", "msg_t"} for a conversation's
+        state; "delete" with "conv" (all of it) or "ts" (those messages);
+        "undo" with the "ref" a delete gave. Never anything on the air."""
+        action = m.get("action")
+        try:
+            if action == "delete":
+                return self._delete(ws, m)
+            if action == "undo":
+                return self._undo(ws, m.get("ref"))
+            if self.convs.act(m.get("conv"), action, m.get("msg_t")):
+                self._send({"convs": self.convs.view()})
+        except ValueError as e:
+            self.station.notice(f"Mesh: {e}.", "warn", ws)
+
+    def _delete(self, ws, m):
+        conv, ts = m.get("conv"), m.get("ts")
+        if conv is not None and not mesh_convs.CONV.match(str(conv)):
+            raise ValueError("not a conversation")
+        if ts is not None and (not isinstance(ts, list) or len(ts) > MESSAGES_KEEP
+                               or not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in ts)):
+            raise ValueError("not a list of message times")
+        if conv is None and not ts:
+            raise ValueError("nothing to delete")
+        gone, kept = mesh_convs.pick(self.messages, conv, ts, self._resends)
+        if not gone:
+            self.station.notice("Mesh: nothing deleted" + (": those are still being sent." if kept else "."), "warn", ws)
+            return
+        what = "conversation" if conv else "message" if len(gone) == 1 else "messages"
+        ref = self.trash.put(gone, what)
+        drop = {id(x) for x in gone}
+        kept_all = [x for x in self.messages if id(x) not in drop]
+        self.messages.clear()
+        self.messages.extend(kept_all)
+        self._rewrite_log()
+        if conv and not kept:
+            self.convs.forget(conv)
+        log.info("mesh: deleted %d message(s) from the station's history%s", len(gone),
+                 f" ({len(kept)} still being sent kept)" if kept else "")
+        self._send({"history": list(self.messages), "convs": self.convs.view()})
+        self._send({"deleted": {"ref": ref, "n": len(gone), "what": what, "kept": len(kept)}}, ws)
+
+    def _undo(self, ws, ref):
+        msgs = self.trash.take(ref) if isinstance(ref, str) else None
+        if msgs is None:
+            raise ValueError("that delete can no longer be undone")
+        have = {x.get("t") for x in self.messages}
+        merged = sorted([*self.messages, *(x for x in msgs if x.get("t") not in have)], key=lambda x: x.get("t") or 0)
+        self.messages.clear()
+        self.messages.extend(merged[-MESSAGES_KEEP:])
+        self._rewrite_log()
+        log.info("mesh: %d deleted message(s) brought back", len(msgs))
+        self._send({"history": list(self.messages), "convs": self.convs.view()})
+        self.station.notice(f"Mesh: {len(msgs)} message{'' if len(msgs) == 1 else 's'} brought back.", "info", ws)
+
+    def _rewrite_log(self):
+        """The history file as the kept messages, ACKs folded in (also the compaction)."""
+        if not self.log_path:
+            return
+        tmp = self.log_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.writelines(json.dumps(m) + "\n" for m in self.messages)
+            os.replace(tmp, self.log_path)
+        except OSError as e:
+            log.warning("mesh log %s not rewritten: %s", self.log_path, e)
 
     def _send(self, d, ws=None):
         payload = json.dumps({"t": "mesh", **d})
@@ -665,7 +742,8 @@ class MeshEngine:
                 "requests": self.requests, "neighbors": self.neighbors,
                 "hears": self.hears(), "text_max": TEXT_MAX_BYTES, "parts_max": PARTS_MAX,
                 "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend,
-                "health": self.health(), "packets": list(self.stats.log), "names": self.names}
+                "health": self.health(), "packets": list(self.stats.log), "names": self.names,
+                "convs": self.convs.view()}
 
     def health(self):
         return self.stats.summary(self.nodes)
@@ -1095,15 +1173,7 @@ class MeshEngine:
             self.messages.append(m)
         log.info("mesh: %d messages from %s", len(self.messages), self.log_path)
         if len(recs) > COMPACT_AT:
-            # Keep the file to what is shown: the kept messages, ACKs folded in.
-            tmp = self.log_path + ".tmp"
-            try:
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "w") as f:
-                    f.writelines(json.dumps(m) + "\n" for m in self.messages)
-                os.replace(tmp, self.log_path)
-            except OSError as e:
-                log.warning("mesh log %s not compacted: %s", self.log_path, e)
+            self._rewrite_log()             # keep the file to what is shown
 
     def _write(self, rec):
         if not self.log_path:

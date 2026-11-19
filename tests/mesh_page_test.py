@@ -13,7 +13,9 @@ conversations, the header's counters, a card's distance / environment / Ask
 for (position) / Ignore, who a node hears and who hears it (by name, a node gone from the list by
 the name it had, and why one isn't on the map), NeighborInfo links on the map (lines that show, which way a selected node's go,
 nodes sharing a position fanned apart), Reboot node, who
-hears us ("heard by N" and its list).
+hears us ("heard by N" and its list). Conversations: the ⋯ menu (archive, kept
+across a reload; out of Archived from the chat head), rail search by name and text,
+deleting a message with Undo, deleting a DM conversation (it asks first).
 
     python3 tests/mesh_page_test.py [screenshot.png]
 """
@@ -562,6 +564,42 @@ try:
         check("  switching on doesn't ask", b.js("window.asked"), None)
         check("  the messages are back", bool(b.wait("document.querySelectorAll('#mesh-list .mesh-text').length > 0")), True)
         check("  still on the channel it was on", b.js(f"{tab('HomeNet')}.classList.contains('on')"), True)
+        # Conversations: the ⋯ menu, Archived, search, delete and Undo
+        HEADS = "[...document.querySelectorAll('#mesh-tabs .chat-rail-head')].map((e) => e.textContent)"
+        MENU = "[...document.querySelectorAll('.chat-menu [data-act]')].map((e) => e.dataset.act)"
+        NAMES = f"{TABS}.map((t) => t.querySelector('b').textContent)"
+        FIND = "(() => {{ const f = document.querySelector('#mesh-tabs .chat-rail-find'); f.value = {}; f.dispatchEvent(new Event('input')); }})()"
+        b.js("document.querySelector('#mesh-tabs [data-menu=c1]').click()")
+        check("conv menu: read state, pin, mute, archive, clear", b.js(MENU)[1:], ["pin", "mute", "archive", "clear"])
+        check("  it says delete is local only", "cannot unsend" in b.js("document.querySelector('.chat-menu-note').textContent"), True)
+        b.js("document.querySelector('.chat-menu [data-act=archive]').click()")
+        check("archive: HomeNet goes under a folded Archived", bool(b.wait(
+            f"{HEADS}.some((h) => h.includes('Archived 1')) && !{NAMES}.includes('HomeNet')")), True)
+        b.goto(f"http://127.0.0.1:{WEB}/?v=mesh#/mesh")
+        check("  still archived after a reload (the station keeps it)", bool(b.wait(f"{HEADS}.some((h) => h.includes('Archived 1'))")), True)
+        b.js("document.querySelector('#mesh-tabs [data-fold]').click()")
+        check("  the fold opens", b.js(NAMES)[-1], "HomeNet")
+        b.js(FIND.format(json.dumps("longf")))
+        check("search: only what matches", b.js(NAMES), ["LongFast"])
+        b.js(FIND.format(json.dumps("opening the gate")))
+        check("  matches a message's text too", b.js(NAMES), ["HomeNet"])
+        b.js(FIND.format(json.dumps("")))
+        b.js(f"{tab('HomeNet')}.click()")
+        b.js("document.querySelector('#mesh-chat-head [data-head=menu]').click()")
+        b.js("document.querySelector('.chat-menu [data-act=unarchive]').click()")
+        check("the chat head's ⋯: out of Archived", bool(b.wait(f"!{HEADS}.some((h) => h.startsWith('Archived'))")), True)
+        GATE = "[...document.querySelectorAll('#mesh-list .mesh-msg')].find((r) => r.textContent.includes('opening the gate'))"
+        b.wait(GATE)
+        b.js(f"{GATE}.querySelector('[data-act=delete]').click()")
+        check("delete a message: gone from the list", bool(b.wait(f"!{GATE}")), True)
+        check("  a toast offers Undo", bool(b.wait("document.querySelector('.toast .toast-act')?.textContent === 'Undo'")), True)
+        b.js("document.querySelector('.toast .toast-act').click()")
+        check("  Undo brings it back", bool(b.wait(f"!!{GATE}")), True)
+        b.js("window.confirm = (q) => { window.asked = q; return true; }")
+        b.js("document.querySelector('#mesh-tabs [data-menu=\"d!0000beef\"]').click()")
+        b.js("document.querySelector('.chat-menu [data-act=delete]').click()")
+        check("delete a DM conversation: it asks, saying the mesh keeps it", "cannot unsend" in (b.js("window.asked") or ""), True)
+        check("  the conversation is gone from the rail", bool(b.wait(f"!{conv('!0000beef')}")), True)
         if SHOT:
             b.js("document.querySelector('#mesh').scrollIntoView()")
             b.screenshot(SHOT)

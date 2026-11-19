@@ -20,6 +20,10 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - who hears us (hears_us): a node whose NeighborInfo lists us, a
     traceroute's first hop, a node that ACKed our DM; NeighborInfo and
     traceroutes kept across a bridge restart and a server restart, mode 600
+  - conversations (mesh_conv): archive and read reach the page and survive a
+    restart; a bad action or a non-string message type is refused; a delete
+    hands back a ref, Undo brings it back once, a delete survives a restart;
+    the state and trash files are mode 600
   - every name the node has given is kept (names) after the node drops it,
     and across a server restart, mode 600
   - a node list longer than asyncio's default 64 KiB line still arrives
@@ -448,6 +452,39 @@ try:
     late = Page()
     check("  but its name is kept (names)", (late.hello["mesh"]["names"].get("!0000dead") or {}).get("short"), "TRK")
     late.close()
+    # Conversations: state kept by the station, deletes local with Undo
+    page.events.clear()
+    page.send({"t": "mesh_conv", "action": "mute", "conv": "c1"})        # muted: new messages leave it archived
+    page.send({"t": "mesh_conv", "action": "archive", "conv": "c1"})
+    e = page.wait(lambda e: (e.get("convs") or {}).get("convs", {}).get("c1", {}).get("archived"))
+    check("conv: archive reaches every page", bool(e), True)
+    page.send({"t": "mesh_conv", "action": "read", "conv": "c1", "msg_t": 4102444800.0})
+    check("conv: read moves read_t", bool(page.wait(lambda e: (e.get("convs") or {}).get("convs", {}).get("c1", {}).get("read_t") == 4102444800.0)), True)
+    n = len(page.events)
+    page.send({"t": "mesh_conv", "action": "explode", "conv": "c1"})
+    check("conv: an unknown action is refused with a warning", page.warned(n), True)
+    n = len(page.events)
+    page.send({"t": 12.5, "action": "read"})
+    check("a message whose type is not a string is refused", page.warned(n), True)
+    page.send({"t": "mesh_send", "text": "delete me", "ch": 1})
+    e = page.wait(ack_of("delete me", "delivered"))
+    doomed = e and e["update"]["t"]
+    page.events.clear()
+    page.send({"t": "mesh_conv", "action": "delete", "ts": [doomed]})
+    e = page.wait(lambda e: "deleted" in e)
+    check("delete: the page gets a ref to undo", bool(e and e["deleted"].get("ref")), True)
+    ref = e and e["deleted"]["ref"]
+    h = page.wait(lambda e: "history" in e) or {}
+    check("  the history no longer has it", any(x.get("text") == "delete me" for x in h.get("history", [])), False)
+    page.events.clear()
+    page.send({"t": "mesh_conv", "action": "undo", "ref": ref})
+    h = page.wait(lambda e: "history" in e) or {}
+    check("undo: it is back", any(x.get("text") == "delete me" for x in h.get("history", [])), True)
+    n = len(page.events)
+    page.send({"t": "mesh_conv", "action": "undo", "ref": ref})
+    check("  undo twice: refused", page.warned(n), True)
+    page.send({"t": "mesh_conv", "action": "delete", "ts": [doomed]})
+    page.wait(lambda e: "deleted" in e)
     page.events.clear()
     page.send({"t": "mesh_reboot"})
     check("reboot: sent, and a notice", bool(page.wait(lambda e: e.get("t") == "notice" and "reboot saved" in e["msg"])), True)
@@ -486,6 +523,10 @@ check("links file is mode 600", oct(mode) if mode is not None else None, "0o600"
 NAMES = os.path.splitext(MESH_LOG)[0] + "-names.json"
 mode = stat.S_IMODE(os.stat(NAMES).st_mode) if os.path.exists(NAMES) else None
 check("names file is mode 600", oct(mode) if mode is not None else None, "0o600")
+for suffix in ("-convs.json", "-trash.jsonl"):
+    f = os.path.splitext(MESH_LOG)[0] + suffix
+    mode = stat.S_IMODE(os.stat(f).st_mode) if os.path.exists(f) else None
+    check(f"{suffix[1:]} is mode 600", oct(mode) if mode is not None else None, "0o600")
 check("the channel key is not in the server log", FAKE_KEY in out, False)
 
 server = start(key=BAD_KEY)
@@ -505,6 +546,8 @@ try:
     check("restart: RDG still hears us (from the links file)", h.get(("!0000cafe", "neighbor")), 7.25)
     check("restart: the traceroute's first hop kept", h.get(("!0000cafe", "trace")), 6.0)
     check("restart: BASE's NeighborInfo kept", [x["id"] for x in page.hello["mesh"]["neighbors"].get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])
+    check("restart: a deleted message stays deleted", "delete me" in hist, False)
+    check("restart: a muted conversation stays archived", {k: v for k, v in page.hello["mesh"]["convs"]["convs"].get("c1", {}).items() if k != "read_t"}, {"archived": True, "muted": True})
     check("restart: a removed node's name kept (from the names file)",
           (page.hello["mesh"]["names"].get("!0000dead") or {}).get("long"), "Old Truck")
     check("restart: a reaction keeps emoji", (hist.get("👍", {}).get("emoji"), hist.get("👍", {}).get("reply_id")), (True, 1001))

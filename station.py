@@ -722,6 +722,8 @@ class Station:
 
     async def _command(self, ws, m):
         t = m["t"]
+        if not isinstance(t, str):     # a non-string type closed the page's socket (2026-11-19)
+            raise TypeError("the message type must be a string")
         if t in ("winlink_connect", "winlink_stop", "winlink_prompt"):
             if self.addons and self.addons.route(t):
                 await self.addons.command(ws, m)          # the Winlink add-on (on, or says it's off)

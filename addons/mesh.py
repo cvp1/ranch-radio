@@ -3,7 +3,7 @@
 The first add-on with its own tab rather than an add-on panel: its page is
 the Mesh tab (static/mesh.js), so it keeps that tab's wire protocol. The page
 sends {"t": "mesh_send" | "mesh_config" | "mesh_trace" | "mesh_favorite" |
-"mesh_request" | "mesh_node" | "mesh_reboot" | "mesh_cancel"}
+"mesh_request" | "mesh_node" | "mesh_reboot" | "mesh_cancel" | "mesh_conv"}
 (this add-on's ROUTES) and gets {"t": "mesh", ...} back. What the add-on
 system adds is the on/off switch: off stops the bridge and frees the node's
 serial port (the meshtastic CLI needs it to itself), and the choice is kept
@@ -40,7 +40,7 @@ class MeshAddon(Addon):
     title = "Meshtastic node"
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel
     routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite",
-              "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel")
+              "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel", "mesh_conv")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -114,6 +114,8 @@ class MeshAddon(Addon):
                 self.host.notice("Not a message to cancel.", "warn", ws)
                 return
             await e.cancel(ws, float(t))
+        elif verb == "mesh_conv":
+            await e.conv(ws, m)          # archive, mute, pin, read, delete, undo (mesh_convs.py)
         else:
             await super().command(ws, verb, m)
 

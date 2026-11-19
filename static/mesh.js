@@ -43,8 +43,11 @@ const mesh = (() => {
     ["neighbors", "Neighbours", "Ask it which nodes it hears directly, with SNR (answers only with its NeighborInfo module on; once every 3 minutes)"]];
   const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true), rings: true, onExpand: () => toggleBig() });
   const LIVE_S = 15 * 60;
-  const unread = {};        // channel index or "dm" -> count
-  const unreadDm = {};      // node id -> count
+  // Per conversation ("c0", "d!id"): archived, muted, pinned, read_t, kept by
+  // the station (mesh_convs.py), so unread survives a reload and every browser agrees.
+  let convState = { since: Date.now() / 1000, convs: {} };
+  let railFind = "";        // the rail's search box
+  let archivedOpen = store.get("mesh.archived", false);
   let cfg = null;           // {sections, values}: the bridge's settings schema and the node's values
   let cfgOpen = false, cfgSec = null;
   let healthOpen = false;
@@ -181,6 +184,19 @@ const mesh = (() => {
   // ---------- conversations (the rail, chat.js)
 
   const convOf = (v, peer) => (v === "dm" ? `d${peer}` : `c${v}`);
+  const convOfMsg = (m) => (m.dm ? convOf("dm", peerOf(m)) : convOf(m.ch));
+  const cs = (conv) => convState.convs[conv] || {};
+  const readT = (conv) => cs(conv).read_t ?? convState.since;
+  const incoming = (conv) => messages.filter((m) => !m.mine && !isReaction(m) && convOfMsg(m) === conv);
+  const unreadOf = (conv) => { const rt = readT(conv); return incoming(conv).filter((m) => m.t > rt).length; };
+  const inFlight = (m) => m.mine && (["sending", "sent", "queued"].includes(m.ack) || m.retry_at != null);
+  function markRead(conv) {
+    const last = incoming(conv).at(-1);
+    if (!last || last.t <= readT(conv)) return;
+    convState.convs[conv] = { ...cs(conv), read_t: last.t };      // at once here; the station's echo follows
+    send({ t: "mesh_conv", action: "read", conv, msg_t: last.t });
+  }
+  const openConv = () => (view === "dm" ? (dmTo ? convOf("dm", dmTo) : null) : convOf(view));
   let newMark = null;       // {conv, n}: how many were unread when it was opened, for the "New" line
   const onlineNow = () => nodes.filter((n) => !n.me && n.last_heard && Date.now() / 1000 - n.last_heard < LIVE_S).length;
 
@@ -196,31 +212,90 @@ const mesh = (() => {
   }
   const lastLine = (m) => (m ? { who: m.mine ? "You" : m.dm ? "" : short(m.from), text: m.text, t: m.t } : null);
 
+  function convTitle(conv) {
+    if (conv[0] === "d") return long(conv.slice(1));
+    const c = (info?.channels || []).find((x) => convOf(x.index) === conv);
+    return c?.name || `Channel ${conv.slice(1)}`;
+  }
+
+  // A conversation's ⋯ menu (the rail's rows and the chat head).
+  function convMenu(conv) {
+    const st = cs(conv), dm = conv[0] === "d";
+    const n = messages.filter((m) => convOfMsg(m) === conv && !isReaction(m)).length;
+    return [
+      ...(incoming(conv).length ? [unreadOf(conv) ? ["read", "Mark read"] : ["unread", "Mark unread"]] : []),
+      [st.pinned ? "unpin" : "pin", st.pinned ? "Unpin" : "Pin to top"],
+      [st.muted ? "unmute" : "mute", st.muted ? "Unmute" : "Mute (no pop-ups; stays archived)"],
+      [st.archived ? "unarchive" : "archive", st.archived ? "Move out of Archived" : "Archive"],
+      ...(n ? [[dm ? "delete" : "clear", dm ? "Delete conversation…" : "Clear history…", "danger"]] : []),
+      [null, "Delete and clear remove messages from this station only: the mesh cannot unsend, and other nodes keep theirs. Undo is offered."],
+    ];
+  }
+
+  function onConvMenu(conv, act) {
+    if (act === "read") return markRead(conv);
+    if (act === "unread") {
+      const last = incoming(conv).at(-1);
+      if (last) send({ t: "mesh_conv", action: "unread", conv, msg_t: last.t });
+      return;
+    }
+    if (act === "clear" || act === "delete") {
+      const n = messages.filter((m) => convOfMsg(m) === conv && !isReaction(m)).length;
+      const what = act === "delete" ? `your conversation with ${convTitle(conv)}` : `the history of ${convTitle(conv)}`;
+      if (!confirm(`Delete ${what} (${n} message${n === 1 ? "" : "s"}) from this station?\n\nThe mesh cannot unsend: everyone else keeps their copies. You can undo this for a few seconds.`)) return;
+      send({ t: "mesh_conv", action: "delete", conv });
+      return;
+    }
+    send({ t: "mesh_conv", action: act, conv });
+  }
+
   function renderTabs() {
     const chans = info?.channels || [];
     // Before the node has sent its channels (a restart, switching on), keep the
     // view: falling back to Direct then would stick once the channels arrive.
     if (view === null || (info && view !== "dm" && !chans.some((c) => c.index === view))) view = chans.length ? chans[0].index : "dm";
     const lastIn = (ch) => [...messages].reverse().find((m) => !m.dm && m.ch === ch && !isReaction(m));
+    const q = railFind.trim().toLowerCase();
+    const hit = (conv, title) => !q || title.toLowerCase().includes(q) || conv.slice(1).toLowerCase().includes(q)
+      || messages.some((m) => convOfMsg(m) === conv && String(m.text || "").toLowerCase().includes(q));
+    const flags = (conv) => { const st = cs(conv); return { pinned: !!st.pinned, muted: !!st.muted, archived: !!st.archived, menu: convMenu(conv) }; };
+    const pinFirst = (a, b) => (b.pinned - a.pinned);
     const chanRows = chans.map((c) => ({ id: convOf(c.index), title: c.name || `Channel ${c.index}`, glyph: "#", seed: `#${c.name}`,
-      last: lastLine(lastIn(c.index)), unread: unread[c.index] || 0, on: view === c.index,
-      hint: `Channel ${c.index}: everyone on ${c.name || "it"} hears what you send here` }));
+      last: lastLine(lastIn(c.index)), unread: unreadOf(convOf(c.index)), on: view === c.index,
+      hint: `Channel ${c.index}: everyone on ${c.name || "it"} hears what you send here`, ...flags(convOf(c.index)) }))
+      .filter((r) => hit(r.id, r.title)).sort(pinFirst);
     const dmRows = dmPeers().map(([p, m]) => ({ id: convOf("dm", p), title: long(p), seed: p, glyph: null,
-      last: lastLine(m), unread: unreadDm[p] || 0, on: view === "dm" && dmTo === p, empty: "New conversation",
-      hint: `${short(p)} ${p}` }));
-    chat.rail($("#mesh-tabs"), [["Channels", chanRows, "The node has sent no channels yet"],
-      ["Direct", dmRows, "Tap a sender's name, or a node on the right, to message it directly"]], pick);
+      last: lastLine(m), unread: unreadOf(convOf("dm", p)), on: view === "dm" && dmTo === p, empty: "New conversation",
+      hint: `${short(p)} ${p}`, ...flags(convOf("dm", p)) }))
+      .filter((r) => hit(r.id, r.title)).sort(pinFirst);
+    const live = (rows) => rows.filter((r) => !r.archived), arch = [...chanRows, ...dmRows].filter((r) => r.archived);
+    const sections = [["Channels", live(chanRows), q ? "No channel matches" : "The node has sent no channels yet"],
+      ["Direct", live(dmRows), q ? "No conversation matches" : "Tap a sender's name, or a node on the right, to message it directly"]];
+    if (arch.length) {
+      const n = arch.reduce((a, r) => a + r.unread, 0);
+      sections.push([`Archived ${arch.length}${n ? ` · ${n} unread` : ""}`, arch, "",
+        { collapsed: !archivedOpen && !q, onToggle: () => { archivedOpen = !archivedOpen; store.set("mesh.archived", archivedOpen); renderTabs(); } }]);
+    }
+    chat.rail($("#mesh-tabs"), sections, pick, {
+      find: { placeholder: "Find a conversation or message", onInput: (v) => { railFind = v; renderTabs(); } },
+      onMenu: onConvMenu });
   }
 
   function pick(conv) {
     if (conv[0] === "c") {
       const v = Number(conv.slice(1));
-      newMark = unread[v] ? { conv, n: unread[v] } : null;
-      view = v; unread[v] = 0;
+      newMark = unreadOf(conv) ? { conv, n: unreadOf(conv) } : null;
+      view = v; markRead(conv);
       if (replyTo && viewOf(replyTo) !== view) replyTo = null;
       renderTabs(); renderMessages(); renderCompose();
       $("#mesh-text").focus();
     } else directTo(conv.slice(1));
+  }
+
+  const headMenu = () => `<button class="chip chip-mini" data-head="menu" title="Archive, mute, pin, delete…" aria-label="Conversation actions">⋯</button>`;
+  function wireHeadMenu(el, conv) {
+    const b = el.querySelector("[data-head=menu]");
+    b.onclick = (e) => { e.stopPropagation(); chat.menu(b, convMenu(conv), (act) => onConvMenu(conv, act)); };
   }
 
   function renderChatHead() {
@@ -229,12 +304,14 @@ const mesh = (() => {
       const n = byId(dmTo);
       const bits = [short(dmTo), n ? hopsText(n) : "", n?.snr != null ? `SNR ${n.snr}` : "", n?.last_heard ? `heard ${when(n.last_heard)}` : "not heard yet"].filter(Boolean);
       el.innerHTML = chat.avatar(long(dmTo), dmTo) + `<span class="chat-head-text"><b>${esc(long(dmTo))}</b><span>${esc(bits.join(" · "))}</span></span>` +
-        `<button class="chip chip-mini" data-head="node" title="Its card: position, telemetry, traceroute">Node</button>`;
+        `<button class="chip chip-mini" data-head="node" title="Its card: position, telemetry, traceroute">Node</button>` + headMenu();
       el.querySelector("[data-head=node]").onclick = () => select(dmTo);
+      wireHeadMenu(el, convOf("dm", dmTo));
     } else if (view !== "dm") {
       const c = (info?.channels || []).find((x) => x.index === view);
       el.innerHTML = chat.avatar(c?.name || "#", `#${c?.name}`, "#") + `<span class="chat-head-text"><b>${esc(c?.name || `Channel ${view}`)}</b>` +
-        `<span>${esc(`Channel ${view}${view === 0 ? " (primary)" : ""} · ${onlineNow()} heard in the last 15 min`)}</span></span>`;
+        `<span>${esc(`Channel ${view}${view === 0 ? " (primary)" : ""} · ${onlineNow()} heard in the last 15 min`)}</span></span>` + headMenu();
+      wireHeadMenu(el, convOf(view));
     } else {
       el.innerHTML = `<span class="chat-head-text"><b>Direct messages</b><span>Pick a conversation, a sender, or a node</span></span>`;
     }
@@ -282,7 +359,8 @@ const mesh = (() => {
       quote: !m.reply_id ? null : orig ? { key: keyOf(orig), who: orig.mine ? "You" : long(orig.from), text: orig.text } : { missing: true },
       reacts: m.id != null ? reactionsTo(m.id) : [],
       ack: m.mine ? { glyph, cls: m.ack, why: why + (m.why ? `: ${m.why}` : "") } : null,
-      canReply: canAct, canReact: canAct };
+      canReply: canAct, canReact: canAct, canCopy: !!m.text, canDelete: !inFlight(m),
+      deleteHint: "Delete from this station (the mesh cannot unsend it)" };
   }
 
   const handlers = {
@@ -296,6 +374,7 @@ const mesh = (() => {
       const m = it.m;
       if (act === "retry") send({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
       else if (act === "cancel") send({ t: "mesh_cancel", msg_t: m.t });
+      else if (act === "delete") send({ t: "mesh_conv", action: "delete", ts: [m.t] });
     },
   };
 
@@ -313,8 +392,6 @@ const mesh = (() => {
       empty: `<div class="wl-empty chat-empty">No messages${view === "dm" ? ` with ${esc(long(dmTo))} yet. Say hello 👋` : " here yet"}</div>` });
   }
 
-  const unreadTotal = () => Object.values(unreadDm).reduce((a, b) => a + b, 0);
-
   function addMessage(m) {
     messages.push(m);
     if (messages.length > 300) messages.shift();
@@ -325,13 +402,9 @@ const mesh = (() => {
       if (!m.mine && byMsgId(m.reply_id)?.mine) toast(`Mesh · ${short(m.from)} reacted ${m.text}`, "info");
       return;
     }
-    if (here) renderMessages();
-    else if (!m.mine) {
-      if (v === "dm") { unreadDm[m.from] = (unreadDm[m.from] || 0) + 1; unread.dm = unreadTotal(); }
-      else unread[v] = (unread[v] || 0) + 1;
-    }
+    if (here) { renderMessages(); if (!m.mine) markRead(convOfMsg(m)); }
     renderTabs();
-    if (!m.mine && m.dm && !here) toast(`Mesh · ${short(m.from)}: ${m.text}`, "info");
+    if (!m.mine && m.dm && !here && !cs(convOfMsg(m)).muted) toast(`Mesh · ${short(m.from)}: ${m.text}`, "info");
   }
 
   function updateMessage(m) {
@@ -346,11 +419,11 @@ const mesh = (() => {
 
   function directTo(id) {
     if (dmTo !== id) replyTo = null;
-    newMark = unreadDm[id] ? { conv: convOf("dm", id), n: unreadDm[id] } : null;
+    const conv = convOf("dm", id);
+    newMark = unreadOf(conv) ? { conv, n: unreadOf(conv) } : null;
     dmTo = id;
     view = "dm";
-    unreadDm[id] = 0;
-    unread.dm = unreadTotal();
+    markRead(conv);
     renderTabs();
     renderMessages();
     renderCompose();
@@ -992,6 +1065,7 @@ const mesh = (() => {
     info = snap.info;
     nodes = snap.nodes || [];
     names = snap.names || {};
+    convState = snap.convs || { since: Date.now() / 1000, convs: {} };
     messages = snap.messages || [];
     switchedOff = !!snap.off;
     connected = !!snap.status?.connected;
@@ -1036,7 +1110,22 @@ const mesh = (() => {
       renderCompose();
     }
     if (m.config) setConfig(m.config);
-    if (m.names) Object.assign(names, m.names);       // just what changed; the {nodes} right after it redraws
+    if (m.names) Object.assign(names, m.names);
+    if (m.convs) { convState = m.convs; if (!m.history) { renderTabs(); renderChatHead(); } }
+    if (m.history) {                               // after a delete or an undo: the station's whole history
+      const inDm = (list) => list.some((x) => x.dm && peerOf(x) === dmTo);
+      const had = view === "dm" && dmTo && inDm(messages);
+      messages = m.history;
+      if (had && !inDm(messages)) dmTo = null;       // the open conversation was deleted
+      if (replyTo && !messages.includes(replyTo)) replyTo = messages.find((x) => x.t === replyTo.t) || null;
+      renderTabs(); renderMessages(); renderCompose();
+    }
+    if (m.deleted) {
+      const d = m.deleted;
+      toast(`Deleted ${d.n} message${d.n === 1 ? "" : "s"} from this station` +
+        (d.kept ? ` (${d.kept} still being sent kept)` : ""), "info",
+        { label: "Undo", ms: 12000, fn: () => send({ t: "mesh_conv", action: "undo", ref: d.ref }) });
+    }       // just what changed; the {nodes} right after it redraws
     if (m.nodes) {
       nodes = m.nodes;
       drawMap();

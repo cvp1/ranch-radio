@@ -23,7 +23,7 @@ page at 7300). Changes reach a radio only when the operator runs
 | Station | `station.py` (`Station`) | one per host, both OSes: the page, Pat (sessions arm a radio's lane over its WebSocket: `RemoteLane`), Mesh, packet tab, add-ons, Modules; Linux adds a shared rigctl port |
 | Packet | `tnc_hub.py` `ax25*.py` `aprs*.py` `digi.py` `igate*.py` `bt_rfcomm.py` `direwolf_tnc.py` | the APRS/Winlink packet hub and its TNCs |
 | Winlink | `winlink.py` `pat_config.py` `listen_plan.py` | runs Pat; the lane and codec level above are core |
-| Mesh | `mesh.py` `mesh_bridge.py` `mesh_feed.py` `meshcore_bridge.py` | Meshtastic and MeshCore bridges (own venvs) |
+| Mesh | `mesh.py` `mesh_convs.py` `mesh_bridge.py` `mesh_feed.py` `meshcore_bridge.py` | Meshtastic and MeshCore bridges (own venvs); `mesh_convs.py` keeps the Mesh tab's conversation state (archive, mute, pin, read) and its delete trash |
 | Logbook sync | `logsync.py` `logsync_config.py` `logsync_udp.py` `logsync_ledger.py` `logsync_adif.py` | the station's JTDX -> Wavelog/QRZ/LoTW uploads and pulls; the Logbook tab shows its status |
 | Wavelog CAT | `wavelog_cat.py` | the station's radio frequency/mode to Wavelog, and Wavelog's spot clicks back (`/wavelog/qsy/`, Origin-pinned); replaces WaveLogGate |
 | Add-ons | `addons/<name>.py` + `static/addons/<name>.js` | switchable modules; contract in `addons/__init__.py` |
