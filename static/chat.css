@@ -15,10 +15,32 @@
    (both are whole again in the big map, ⤢). */
 .chat-cols:not(.mesh-bigmap) .chat-side .mm-note { display: none; }
 .chat-cols:not(.mesh-bigmap) .chat-side .mm-side:not(.shut) { left: 8px; width: auto; top: auto; bottom: 8px; max-height: 52%; }
-.chat-cols.mesh-bigmap { grid-template-columns: minmax(220px, 270px) 0 minmax(0, 1fr); }
-.chat-cols.mesh-bigmap > .chat-main { visibility: hidden; }
-.chat-cols.mesh-bigmap .chat-side .mesh-map { flex: 1 1 auto; height: auto; min-height: 72%; }
-.chat-cols.mesh-bigmap .chat-side .mesh-nodes { flex: 0 1 22%; min-height: 80px; }
+.chat-cols.mesh-bigmap { grid-template-columns: 0 0 minmax(0, 1fr); }
+.chat-cols.mesh-bigmap > .chat-rail, .chat-cols.mesh-bigmap > .chat-main { visibility: hidden; overflow: hidden; border: 0; }
+/* The big map (⤢, or a click on the small one): the whole panel to drive
+   around in, with find, the card and the node list in a column on its right. */
+.chat-cols.mesh-bigmap > .chat-side { border-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-rows: auto auto minmax(0, 1fr); gap: 8px 10px; }
+.chat-cols.mesh-bigmap .chat-side > .wl-bar { grid-column: 2; grid-row: 1; }
+.chat-cols.mesh-bigmap .chat-side > .mesh-card { grid-column: 2; grid-row: 2; max-height: 45vh; overflow-y: auto; }
+.chat-cols.mesh-bigmap .chat-side > .mesh-nodes { grid-column: 2; grid-row: 3; min-height: 0; max-height: none; }
+.chat-cols.mesh-bigmap .chat-side > .mesh-map { grid-column: 1; grid-row: 1 / -1; height: auto; min-height: 0; }
+
+/* The small map says a click opens it. */
+.mm-open-hint { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 2; pointer-events: none;
+  padding: 4px 12px; border-radius: 99px; background: rgba(0, 0, 0, .65); color: #fff; font: 600 12px var(--sans);
+  opacity: 0; transition: opacity .15s; white-space: nowrap; }
+.mesh-map:not(.mm-big):hover .mm-open-hint { opacity: 1; }
+.mesh-map:not(.mm-big) { cursor: zoom-in; }
+.mesh-map:not(.mm-big).dragging { cursor: grabbing; }
+.mesh-map.mm-big .mm-open-hint { display: none; }
+/* The controls keep their size (the ✕ Close map label is wider than ⤢), and
+   the key and the link list leave the map most of the room. */
+.mesh-map .mm-ctl { z-index: 3; }
+.mesh-map .mm-ctl > * { flex: none; white-space: nowrap; }
+.mesh-map.mm-big .mm-note { max-width: calc(100% - 470px); }
+.mesh-map.mm-big .mm-side:not(.shut) { bottom: auto; max-height: min(60%, 420px); }
+.mesh-map.mm-big [data-big] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 700; }
 
 /* ---------- the rail ---------- */
 .chat-rail { overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 1px; }
@@ -190,6 +212,10 @@
   .chat-side .mesh-nodes { max-height: 360px; }
   .chat-side .mesh-map { height: 320px; }
   .chat-stack { max-width: 88%; }
+  .chat-cols.mesh-bigmap { grid-template-columns: minmax(0, 1fr); }
+  .chat-cols.mesh-bigmap > .chat-rail, .chat-cols.mesh-bigmap > .chat-main { display: none; }
+  .chat-cols.mesh-bigmap > .chat-side { display: flex; }
+  .chat-cols.mesh-bigmap .chat-side > .mesh-map { order: -1; height: 75vh; flex: none; }
   /* The tab's header: name and switches on one line, the counters under them. */
   #mesh .wl-head { flex-wrap: wrap; row-gap: 6px; }
   #mesh .wl-head .chip-mini { white-space: nowrap; }

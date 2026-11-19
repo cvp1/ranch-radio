@@ -22,7 +22,9 @@ the add-on's loop isn't started; tiles are never asked for).
              a great circle is one line across the date line
   background NASA's Blue Marble by default with its credit, city lights on
              the night side; past a background's deepest zoom its tiles are
-             drawn larger; a pick changes tiles, credit and the night's look
+             drawn larger; a pick changes tiles, credit and the night's look;
+             the wheel: a sideways swipe pans and a momentum tail does
+             nothing (they used to zoom out), a notch or a pinch is a level
   the page   two-way needs both directions on one band; the window and the
              layer switches take stations off; a first look frames them all
   sun        the subsolar point at the June and December solstices; night and
@@ -152,6 +154,7 @@ check("  pota off: none in the snapshot", M.Map(Host(s), {"pota": False}).snapsh
 
 # ================================================================ who you hear, remembered; who hears you; the parts
 import json as _json  # noqa: E402
+import time as _time  # noqa: E402
 
 s2 = Sync()
 s2.roster.status(U.parse_status(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31")))
@@ -334,6 +337,33 @@ try:
     check("  Streets picked: OpenStreetMap's tiles and credit, and the night side is shaded again",
           json.loads(b.js(BGJS)), {"host": "tile.openstreetmap.org", "attr": "© OpenStreetMap", "lights": False, "clip": True, "lit": False})
     b.js("(() => { const s = document.querySelector('#mapbox .bm-pick'); s.value = 'earth'; s.dispatchEvent(new Event('change')); })()")
+    # ---- the wheel (basemaps.wheel, 2026-11-19: the map "would not hold a zoom and kept zooming out")
+    LEVEL = "Number(document.querySelector('#mapbox [data-basemap=\"earth\"] .bm-tile').src.split('GoogleMapsCompatible_Level8/')[1].split('/')[0])"
+    VIEW = "document.querySelector('#mapbox .rm-world').getAttribute('transform')"
+    mid = json.loads(b.js("JSON.stringify((() => { const r = document.querySelector('#mapbox .rm-wrap').getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })())"))
+
+    def wheel(dx, dy, n=1, ctrl=False):
+        for _ in range(n):
+            b.call("Input.dispatchMouseEvent", type="mouseWheel", x=mid[0], y=mid[1], deltaX=dx, deltaY=dy, modifiers=2 if ctrl else 0)
+            _time.sleep(0.03)
+        _time.sleep(0.3)                               # a gesture ends: the next one starts from nothing
+
+    for _ in range(2):
+        b.js("document.querySelector('#mapbox [data-z=\"1\"]').click()")
+    z0, v0 = b.js(LEVEL), b.js(VIEW)
+    wheel(-40, 0, 5)
+    check("  five sideways trackpad swipes: the zoom holds", b.js(LEVEL), z0)
+    check("    and the map pans", b.js(VIEW) != v0, True)
+    wheel(0, 2, 6)
+    check("  a trackpad's momentum tail (six small ticks): the zoom holds", b.js(LEVEL), z0)
+    wheel(0, -100)
+    check("  one mouse-wheel notch in: one level", b.js(LEVEL), z0 + 1)
+    wheel(0, 100)
+    check("  one notch out: back", b.js(LEVEL), z0)
+    wheel(0, -8, 4, ctrl=True)
+    check("  a pinch out: in a level", b.js(LEVEL), z0 + 1)
+    for _ in range(3):
+        b.js("document.querySelector('#mapbox [data-z=\"-1\"]').click()")
     # ---- the page's own working out, from a snapshot handed to it
     now = 2_000_000
     snap_js = {"now": now, "map": {"me": "FN31pr", "band": "20m", "showing": "all", "grids": {}, "decodes": [

@@ -133,5 +133,38 @@ const basemaps = (() => {
     return { render, pick, control, id: () => id, max: () => MAPS[id].max };
   }
 
-  return { layer, MAPS, CHOICES };
+  // The wheel on a map, the same on every one (2026-11-19). Before, every
+  // wheel event was a whole zoom level, and one with no vertical part (a
+  // trackpad's sideways swipe) counted as out: the Map tab "would not hold a
+  // zoom and kept zooming out" (five sideways swipes took it from 5 to 1).
+  // Now a vertical scroll adds up to a level per mouse notch or deliberate
+  // swipe (so a trackpad's momentum tail is not ten levels), a pinch
+  // (ctrlKey) zooms in finer steps, and a mostly sideways swipe pans.
+  //   zoom(dz, x, y): a level in (1) or out (-1) about x, y in the map's pixels
+  //   pan(dx, dy):    move the view by that many pixels
+  //   skip(e):        true for a part of the map that scrolls itself (a list)
+  const STEP = 100, PINCH_STEP = 24, GESTURE_GAP_MS = 220;
+  function wheel(el, { zoom, pan, skip = () => false }) {
+    let acc = 0, last = 0;
+    el.addEventListener("wheel", (e) => {
+      if (skip(e)) return;
+      e.preventDefault();
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight || 600 : 1;
+      const dx = e.deltaX * unit, dy = e.deltaY * unit;
+      if (!dx && !dy) return;
+      const now = performance.now();
+      if (now - last > GESTURE_GAP_MS) acc = 0;   // a new gesture starts from nothing
+      last = now;
+      if (!e.ctrlKey && Math.abs(dx) > Math.abs(dy)) { pan(dx, dy); return; }
+      acc += dy;
+      const step = e.ctrlKey ? PINCH_STEP : STEP;
+      const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      while (Math.abs(acc) >= step) {
+        zoom(acc < 0 ? 1 : -1, x, y);
+        acc -= Math.sign(acc) * step;
+      }
+    }, { passive: false });
+  }
+
+  return { layer, MAPS, CHOICES, wheel };
 })();

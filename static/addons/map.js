@@ -251,10 +251,9 @@ const rrMapMath = (() => {
     // Drawn while the tab is hidden the map has no size; draw again the moment it has one.
     if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => draw()).observe(wrap);
     const at = (e) => { const r = wrap.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-    wrap.addEventListener("wheel", (e) => {
-      if (e.target.closest(".rm-list, .rm-card")) return;         // those scroll
-      e.preventDefault(); zoom(e.deltaY < 0 ? 1 : -1, ...at(e));
-    }, { passive: false });
+    basemaps.wheel(wrap, { zoom: (dz, x, y) => zoom(dz, x, y),
+      pan: (dx, dy) => { if (cx == null) return; cx += dx; cy += dy; draw(); },
+      skip: (e) => !!e.target.closest(".rm-list, .rm-card") });     // those scroll
     wrap.addEventListener("dblclick", (e) => { if (!e.target.closest(".rm-list, .rm-card, .rm-hud, .rm-ctl, .rm-s")) zoom(1, ...at(e)); });
     wrap.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".rm-s, .rm-ctl, .rm-list, .rm-card, .rm-hud, .rm-attr")) return;

@@ -107,6 +107,24 @@ const chat = (() => {
     return b;
   }
 
+  // Hidden and shown again with no frame between, the observer sees no
+  // change and never fires (seen in chat_page_test, 2026-11-19). So a list
+  // drawn while hidden also checks, a few times a second and only until it
+  // shows, then takes the pin it had.
+  function whenShown(list) {
+    if (list._showTimer) return;
+    list._showTimer = setInterval(() => {
+      if (!list.clientHeight) return;
+      clearInterval(list._showTimer);
+      list._showTimer = null;
+      if (!list._hidden) return;            // the observer got there first
+      list._hidden = false;
+      if (list._pinHidden) { list._stuck = true; list.scrollTop = list.scrollHeight; }
+      const b = list.parentElement?.querySelector(":scope > .chat-jump");
+      if (b) jumpLabel(list, b);
+    }, 200);
+  }
+
   function jumpLabel(list, b) {
     const n = Number(b.dataset.n || 0);
     b.hidden = atBottom(list);
@@ -188,7 +206,7 @@ const chat = (() => {
     // pin it had when it hid; a different conversation starts at the bottom.
     const hidden = !list.clientHeight;
     const stick = switched || (hidden ? list._pinHidden !== false : atBottom(list) || !list.childElementCount);
-    if (hidden) { list._hidden = true; list._pinHidden = stick; }
+    if (hidden) { list._hidden = true; list._pinHidden = stick; whenShown(list); }
     const prevTop = list.scrollTop;
     const before = Number(list.dataset.count || 0);
     list.innerHTML = "";
