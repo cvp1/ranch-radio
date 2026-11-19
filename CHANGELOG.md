@@ -223,6 +223,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
   Roster's checkboxes and alert menu and the Map's band and window menus share one look. On a phone or
   a narrow pane the table keeps Call, To, Distance, dB and Need and drops Entity, Grid, DF, Message
   and Age, so Need is on screen.
+- **Mission Control's cards say more.** The Logbook card shows the sync's counts per logbook
+  (sent, waiting, held), the latest QSO and then the logbook's address; before, only the address. The
+  packet card is short ("Packet · UV-PRO") with its full title on hover. The station's callsign and
+  grid sit beside its name in the top bar, taken from the logbook sync, else Winlink, else
+  PSKReporter (the host file gains no field), and follow a change in the Logbook settings without a
+  reload.
 - **A click on a Map station opens its card; Answer is a button on it.** The
   card has both directions, distance and bearing, and what the station is to
   you. Before, a click on a dot sent JTDX the Reply at once; the Roster tab

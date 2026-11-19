@@ -69,6 +69,13 @@
   }
 
   const NAMES = { wavelog: "Wavelog", qrz: "QRZ", lotw: "LoTW" };
+  // One destination's counts from the sync's status: done, waiting, held, and
+  // the reason it is stopped (the strip and the Mission Control card).
+  function tally(s, d) {
+    const c = (s.counts || {})[d] || {};
+    return { done: (c.sent || 0) + (c.accepted || 0) + (c.confirmed || 0) + (c.submitted || 0),
+             wait: (c.pending || 0) + (c.attempting || 0) + (c.unknown || 0), held: c.held || 0, hold: (s.holds || {})[d] };
+  }
   const TICK = {
     sent: ["✓", "sent"], submitted: ["↑", "uploaded, waiting for LoTW to list it"],
     accepted: ["✓", "on LoTW"], confirmed: ["✓✓", "confirmed"], pending: ["…", "waiting to send"],
@@ -88,13 +95,9 @@
       el.innerHTML = `<div class="lb-sync-bar st-empty">Logbook sync: ${esc(s.error || "not running")}</div>`;
       return;
     }
-    const counts = s.counts || {};
     const parts = (s.dests || []).map((d) => {
-      const c = counts[d] || {};
-      const done = (c.sent || 0) + (c.accepted || 0) + (c.confirmed || 0) + (c.submitted || 0);
-      const wait = (c.pending || 0) + (c.attempting || 0) + (c.unknown || 0);
-      const held = c.held || 0;
-      const hold = (s.holds || {})[d];
+      const c = (s.counts || {})[d] || {};
+      const { done, wait, held, hold } = tally(s, d);
       return `<span class="lb-dest${hold || held ? " lb-bad" : ""}" data-dest="${esc(d)}">${esc(NAMES[d] || d)} ${done}✓`
         + (wait ? ` · ${wait} waiting` : "") + (held ? ` · ${held} held` : "")
         + (c.held_backfill ? ` · ${c.held_backfill} backfill` : "")
@@ -245,9 +248,25 @@
     },
     off() { snap = {}; render(); },
     tab() { return { dot: target() ? "ok" : "off", title: target() || "Your logbook" }; },
+    // Mission Control (2026-11-19, UX plan PR 0.4): the sync's state and counts and
+    // the latest QSO, from the status it already sends; the logbook's address last.
     card() {
-      const url = target();
-      return { state: url ? "linked" : "off", lines: url ? [`<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`] : [] };
+      const url = target(), s = snap.logsync;
+      const link = url ? `<a class="mc-dim" href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>` : "";
+      if (!s) return { state: url ? "linked" : "off", lines: url ? [link] : [] };
+      if (!s.loaded || s.running === false) return { state: "not running", lines: [`Sync: ${esc(s.error || "not running")}`, link] };
+      let stopped = false;
+      const dests = (s.dests || []).map((d) => {
+        const { done, wait, held, hold } = tally(s, d);
+        stopped = stopped || !!hold || held > 0;
+        return `${esc(NAMES[d] || d)} ${done}✓` + (wait ? ` · ${wait} waiting` : "") + (held ? ` · ${held} held` : "")
+          + (hold ? ` · stopped` : "");
+      });
+      const q = (s.recent || [])[0];
+      return { state: stopped ? "held" : "syncing",              // a tag on the card (station.js)
+               lines: [dests.join(" · ") || "No destinations",
+                       q ? `Last: <b>${esc(q.call)}</b> ${esc(q.band)} ${esc(q.mode)} <span class="mc-dim">${esc(q.time)}</span>` : "No QSOs yet",
+                       link] };
     },
   });
 })();

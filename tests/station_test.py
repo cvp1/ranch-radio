@@ -281,6 +281,59 @@ cfg_path = os.path.join(TMP, "station.json")
 with open(cfg_path, "w") as f:
     json.dump(cfg, f)
 
+# --- the station's identity for the top bar (station.py identity(), in-process):
+# derived, the host file gains no field. call: the logbook sync's block, then
+# Winlink's MyCall (from Pat), then the Propagation add-on's PSKReporter call;
+# grid: the one JTDX reports to the sync.
+import types  # noqa: E402
+sys.path.insert(0, ROOT)
+import station as S  # noqa: E402
+
+ARGS = types.SimpleNamespace(token=None, rigctl_port=0)
+
+
+def ident(logsync_call=None, pat_call=None, psk_call=None, de_grid=None):
+    st = S.Station({"radios": [], **({"logsync": {"call": logsync_call}} if logsync_call else {})}, ARGS)
+    on = {"winlink": types.SimpleNamespace(mycall=pat_call), "propagation": types.SimpleNamespace(psk_call=psk_call)}
+    st.addons = types.SimpleNamespace(engine=lambda n: on.get(n), get=lambda n: on.get(n), describe=lambda: [])
+    if de_grid is not None:
+        st.logsync = types.SimpleNamespace(roster=types.SimpleNamespace(st={"de_grid": de_grid}))
+    c = st.config()
+    return (c["call"], c["grid"])
+
+
+check("identity: the logbook sync's call first", ident("n0call", "N9ABC", "N8ABC", "FN31pr"), ("N0CALL", "FN31pr"))
+check("  then Winlink's MyCall", ident(None, "n9abc", "N8ABC"), ("N9ABC", None))
+check("  then PSKReporter's", ident(None, None, "N8ABC"), ("N8ABC", None))
+check("  none known: none (no grid until JTDX reports one)", ident(), (None, None))
+bare = S.Station({"radios": []}, ARGS).config()
+check("  no add-ons, no sync: still none", (bare["call"], bare["grid"]), (None, None))
+
+
+async def _restart():
+    st = S.Station({"radios": [], "logsync": {"call": "N0CALL"}}, ARGS)
+    sent = []
+    class Page:                       # a page's socket, as _broadcast sees one
+        closed = False
+    ws = Page()
+    st.clients = {ws}
+
+    async def _send(w, msg):
+        sent.append(json.loads(msg))
+    st._send = _send
+
+    async def nothing():
+        return None
+    st.make_logsync = lambda block: None
+    st.start_logsync = nothing
+    await st.restart_logsync({"call": "N9ABC"})
+    await asyncio.sleep(0)
+    return [m for m in sent if m.get("t") == "identity"]
+
+
+check("  the sync's settings change: the pages get the new identity",
+      asyncio.run(_restart()), [{"t": "identity", "call": "N9ABC", "grid": None}])
+
 fake_hub()
 g90 = radio("g90", G90)
 qmx = radio("qmx", QMX, "--winlink-mode", "USB")   # ARDOP: USB, never DiGi

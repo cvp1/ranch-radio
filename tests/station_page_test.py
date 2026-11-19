@@ -6,6 +6,8 @@ Checks:
   - the navigation: Mission Control, one tab per connected radio with its rigctl
     ports (one carries the shared port), Winlink, Mesh, and
     Packet off the tab bar while the hub is down (its card stays)
+  - the brand: the station's name and its callsign (Winlink's MyCall here);
+    the packet card's short name, its full title on hover
   - Mission Control: a card per radio and service in lanes named like the
     tab bar's groups, names the shared port; a radio's card live (frequency,
     S-meter, signal trace, its mini spectrum from scope frames; on the air:
@@ -143,7 +145,9 @@ try:
     check("  the Mission Control tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
     check("mission control: a card per radio and service, in the bar's group order",
           b.js("[...document.querySelectorAll('.st-card b')].map((e) => e.textContent)"),
-          ["G90", "QMX", "Winlink", "Packet (UV-PRO)", "Mesh"])
+          ["G90", "QMX", "Winlink", "Packet · UV-PRO", "Mesh"])
+    check("  the packet card's short name; its full title on hover",
+          b.js("[...document.querySelectorAll('.st-card b')].find((x) => x.textContent.startsWith('Packet')).title"), "Packet (UV-PRO)")
     check("  names the shared port", str(SHARED) in b.js(f"({TEXT})('#st-help')"), True)
     b.js(f"{TABS}[1].click()")
     b.wait("location.hash === '#/g90'")
@@ -195,6 +199,10 @@ try:
           [["g90/", False], ["qmx/", True]])
     b.goto(f"http://127.0.0.1:{WEB}/#/qmx")
     check("reload at #/qmx comes back to the QMX", bool(b.wait(f"{FRAME}?.src.includes('/r/qmx/')")), True)
+    # The station's callsign beside its name (station.py identity()): no logbook
+    # sync here, so Winlink's MyCall, which the fake Pat gives as N9ABC.
+    check("brand: the station's name and its callsign",
+          b.wait(f"({TEXT})('#st-call') === 'N9ABC' && [({TEXT})('#st-name'), ({TEXT})('#st-call')]"), ["Test Station", "N9ABC"])
 
     b.js("location.hash = '#/winlink'")
     b.wait(f"({VISIBLE})('#winlink')")
