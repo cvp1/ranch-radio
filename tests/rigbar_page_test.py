@@ -15,6 +15,25 @@ Checks:
   4. a radio whose server stops shows offline; restarted, it comes back
   5. a notice from a radio's server (its transmit time limit, 2 s on the
      QMX here) shows as a toast on the station page, named for the radio
+STOP TX in the bar (UX plan PR 1b, 2026-11-19); the latch is read from a fresh
+socket to each radio, never from the page:
+  S1. a press latches both; the frame's PTT is disabled; TX STOPPED, and
+      again after a reload
+  S8. latched while the radio still transmits (keyed at its front panel):
+      LATCHED BUT STILL KEYED
+  S5. Resume on one radio from a second page: it shows resumed, not re-latched
+  S7. the bar's STOP TX never reaches one radio; that radio's own page's STOP
+      TX does, and the bar shows it
+  S2. one radio down at the press: the other latches, the bar names the one
+      not reached; back up, it latches without another press
+  S4. the same with a reload while the intent is pending
+  S9. a latched radio's server is replaced: the bar leaves TX STOPPED, says
+      so, and sends nothing
+  S6. past the TTL (shortened by rr-stop-ttl-s) a pending press shows as not
+      delivered and is never sent
+  S3. the socket drops after the send, before the reply: unknown, then the
+      new hello settles it
+  S10. no press, a radio down at page load: it comes up, nothing is sent
 
     python3 tests/rigbar_page_test.py [screenshot-dir]
 """
@@ -95,6 +114,32 @@ def stop(proc):
         proc.kill()
 
 
+def ws_call(port, send=None):
+    """A fresh socket to a radio's own server (a second page): its hello's
+    tx_stopped, after sending `send` if given."""
+    async def go():
+        async with aiohttp.ClientSession() as s, s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+            while True:
+                m = await ws.receive(timeout=5)
+                if m.type == aiohttp.WSMsgType.TEXT and json.loads(m.data).get("t") == "hello":
+                    hello = json.loads(m.data)
+                    break
+            if send:
+                await ws.send_str(json.dumps(send))
+                await asyncio.sleep(0.3)
+            return hello["config"].get("tx_stopped")
+    return asyncio.run(go())
+
+
+def latched(p):
+    return ws_call(p["web"]) is not None
+
+
+def resume(p):
+    ws_call(p["web"], {"t": "tx_resume"})
+    assert testkit.wait_for(lambda: not latched(p), 5), "resume did not take"
+
+
 def panel(port, d):
     """The simulator's front panel (server.py's sim_panel hook): a change made
     at the radio, past every app path."""
@@ -150,6 +195,10 @@ def bar_on(view, width):
                 f"/^S\\d/.test({TEXT}(document.querySelector('#rig-bar .rb-rig.focus'), '.rb-lvl'))")
     check(f"1. {width} px, #/{view}: the bar, both radios, focus in full, on screen",
           (ok, r, full), ("ok", [True, True, True], True))
+    # PR 1b: the bar's STOP TX on every view, inside the screen.
+    check(f"  {width} px, #/{view}: the bar's STOP TX is shown, on screen",
+          b.js(f"(() => {{ const e = document.querySelector('#rig-bar .rb-stop-btn'); "
+               f"return {SHOWN}(e) && e.getBoundingClientRect().right <= innerWidth + 0.5; }})()"), True)
 
 
 g90 = radio("g90", G90)
@@ -240,6 +289,183 @@ try:
     check("  restarted, it comes back", bool(b.wait(f"{Q} && !{Q}.classList.contains('off') && "
                                                      f"{FREQ_RE}.test({TEXT}({Q}, '.rb-f'))", 20)), True)
 
+    # ---------- STOP TX in the bar (UX plan PR 1b, 2026-11-19)
+    STATE = "document.querySelector('#rig-bar .rb-stop-state')"
+    ST_TEXT = f"({STATE}.hidden ? '' : {STATE}.textContent)"
+    PRESS = "document.querySelector('#rig-bar .rb-stop-btn').click()"
+    INTENTS = "JSON.parse(localStorage.getItem('rr-stop-intent') || '{}')"
+    # Counts the tx_stop messages this page sends, per radio (the station's
+    # document only; the frames have their own WebSocket).
+    COUNT = ("(() => { if (window.__stops) return; window.__stops = {}; const o = WebSocket.prototype.send; "
+             "WebSocket.prototype.send = function (d) { const id = (this.url.match(/\\/r\\/([^/]+)\\/ws/) || [])[1]; "
+             "if (String(d).includes('tx_stop')) { window.__stops[id] = (window.__stops[id] || 0) + 1; "
+             "if (window.__drop?.[id]) return; } const r = o.call(this, d); "
+             "if (window.__dropAfter?.[id] && String(d).includes('tx_stop')) { window.__dropAfter[id] = false; this.close(); } "
+             "return r; }; })()")
+
+    def chip(rid):
+        return b.js(f"{RIG.format(rid)}?.dataset.stop || ''")
+
+    def reload_home():
+        # A real reload: goto to the same URL with another hash would be a
+        # same-document navigation, and the page would keep its memory.
+        b.js("window.__reloaded = 1; location.hash = '#/home'; location.reload()")
+        b.wait("!window.__reloaded && document.readyState === 'complete'", 20)
+        b.wait(f"{FREQ_RE}.test({TEXT}({G}, '.rb-f'))", 20)
+        b.js(COUNT)
+
+    def qmx_down():
+        global qmx
+        stop(qmx)
+        b.wait(f"{Q}?.classList.contains('off')", 15)
+
+    def qmx_up():
+        global qmx
+        qmx = radio("qmx", QMX, "--tx-timeout", "2")
+        b.wait(f"{Q} && !{Q}.classList.contains('off') && {FREQ_RE}.test({TEXT}({Q}, '.rb-f'))", 20)
+
+    def quiet_then_nothing_sent(name, rid, p):
+        time.sleep(3)                    # a quiet window: past a reconnect (2 s), nothing may be sent
+        check(name, (b.js(f"window.__stops['{rid}'] || 0"), latched(p)), (0, False))
+
+    b.js("localStorage.removeItem('rr-stop-intent')")
+    b.js(COUNT)
+    check("S. before a press: neither radio latched, the bar says nothing",
+          (latched(G90), latched(QMX), b.js(ST_TEXT)), (False, False, ""))
+    check("  the button is labelled for all HF radios",
+          b.js("document.querySelector('#rig-bar .rb-stop-btn').textContent"), "STOP TX all HF")
+
+    # S1. A press: both latch; the frame's PTT is disabled; TX STOPPED, after a reload too.
+    b.js(PRESS)
+    check("S1. press: both radios latched (fresh sockets)",
+          testkit.wait_for(lambda: latched(G90) and latched(QMX), 10), True)
+    check("  the bar reads TX STOPPED", b.wait(f"{ST_TEXT} === 'TX STOPPED' && {STATE}.dataset.state", 10), "all")
+    check("  each radio's chip reads STOPPED and opens its tab",
+          b.js(f"[{G}, {Q}].map((e) => e.querySelector('.rb-tag').textContent + ' ' + e.querySelector('.rb-tag').getAttribute('href'))"),
+          ["STOPPED #/g90", "STOPPED #/qmx"])
+    check("  the intents are done", b.js(f"Object.keys({INTENTS}).length"), 0)
+    shot("stop-1500")
+    b.js("location.hash = '#/g90'")
+    FRAME = "document.querySelector('#view-radio iframe[src*=\"r/g90/\"]')?.contentDocument"
+    check("  the G90's frame: PTT disabled, its own STOP TX still there",
+          b.wait(f"{FRAME}?.querySelector('#ptt')?.disabled && {FRAME}.querySelector('#tx-stop')?.offsetParent !== null "
+                 f"&& {FRAME}.querySelector('#tx-stop').textContent", 20), "TX STOPPED")
+    shot("stop-radio-tab-1500")
+    reload_home()
+    check("  a reload: TX STOPPED", b.wait(f"{ST_TEXT} === 'TX STOPPED'", 10), True)
+
+    # S8. Latched, and the radio still reports transmitting (keyed at its front panel).
+    panel(G90["web"], {"tx": True})
+    check("S8. latched and still keyed: its own red state, ON AIR stays",
+          b.wait(f"{STATE}.dataset.state === 'keyed' && {G}.classList.contains('tx') && "
+                 f"[{ST_TEXT}.includes('G90: LATCHED BUT STILL KEYED: check the radio'), {ST_TEXT}.includes('TX STOPPED'), "
+                 f"{SHOWN}({G}.querySelector('.rb-air'))]", 10), [True, False, True])
+    check("  its chip says so", (chip("g90"), b.js(f"{TEXT}({G}, '.rb-tag')")), ("keyed", "STILL KEYED"))
+    shot("stop-keyed-1500")
+    panel(G90["web"], {"tx": False})
+    b.wait(f"{ST_TEXT} === 'TX STOPPED'", 10)
+
+    # S5. Resume on the G90 from a second page: shown as resumed, not re-latched.
+    b.js("window.__stops = {}")
+    resume(G90)
+    check("S5. resumed elsewhere: the bar shows it, not TX STOPPED",
+          b.wait(f"{ST_TEXT}.includes('G90 resumed') && !{ST_TEXT}.includes('TX STOPPED') && 'ok'", 10), "ok")
+    quiet_then_nothing_sent("  and this page does not re-latch it", "g90", G90)
+    resume(QMX)
+    b.wait(f"{ST_TEXT} === ''", 10)
+
+    # S7. The bar's STOP TX never reaches the G90; its own page's STOP TX does.
+    b.js("location.hash = '#/g90'")
+    b.wait(f"{FRAME}?.querySelector('#conn b')?.textContent === 'Connected' && !{FRAME}.querySelector('#tx-stop-banner').offsetParent", 20)
+    b.js("window.__drop = {g90: true}")
+    b.js(PRESS)
+    check("S7. the bar's message to the G90 is lost: QMX latched, G90 not reached",
+          (testkit.wait_for(lambda: latched(QMX), 10), latched(G90),
+           bool(b.wait(f"{ST_TEXT}.includes('G90 not reached') && {ST_TEXT}.includes('QMX stopped')", 10))), (True, False, True))
+    b.js(f"{FRAME}.querySelector('#tx-stop').click()")
+    check("  the frame's own STOP TX latches it", testkit.wait_for(lambda: latched(G90), 10), True)
+    check("  and the bar then shows it", b.wait(f"{ST_TEXT} === 'TX STOPPED' && {STATE}.dataset.state", 10), "all")
+    b.js("window.__drop = {}; location.hash = '#/home'")
+    resume(G90)
+    resume(QMX)
+
+    # S2. The QMX is down at the press.
+    qmx_down()
+    b.js(PRESS)
+    check("S2. one radio down at the press: the other latches",
+          (testkit.wait_for(lambda: latched(G90), 10), bool(b.wait(f"{ST_TEXT}.includes('QMX not reached (offline)')", 10))),
+          (True, True))
+    check("  the bar names the one not reached, not TX STOPPED",
+          (b.js(f"{STATE}.dataset.state"), b.js(f"{ST_TEXT}.includes('TX STOPPED')"), b.js(f"{ST_TEXT}.includes('G90 stopped')")),
+          ("partial", False, True))
+    check("  a Cancel is offered for the pending press", b.js(f"{SHOWN}(document.querySelector('#rig-bar .rb-stop-cancel'))"), True)
+    qmx_up()
+    check("  back up, the QMX latches without another press", testkit.wait_for(lambda: latched(QMX), 15), True)
+    check("  the bar reads TX STOPPED", b.wait(f"{ST_TEXT} === 'TX STOPPED'", 10), True)
+    resume(G90)
+    resume(QMX)
+
+    # S4. The same, with a reload while the QMX's intent is pending.
+    qmx_down()
+    b.js(PRESS)
+    b.wait(f"{ST_TEXT}.includes('QMX not reached (offline)')", 10)
+    reload_home()
+    check("S4. reload while pending: the intent survives",
+          (b.js(f"'qmx' in {INTENTS}"), bool(b.wait(f"{ST_TEXT}.includes('QMX not reached (offline)')", 10))), (True, True))
+    qmx_up()
+    check("  and completes when the radio is back", testkit.wait_for(lambda: latched(QMX), 15), True)
+    check("  TX STOPPED, intents done",
+          (bool(b.wait(f"{ST_TEXT} === 'TX STOPPED'", 10)), b.js(f"Object.keys({INTENTS}).length")), (True, 0))
+
+    # S9. The latched QMX's server is replaced: its latch is gone with it.
+    b.js("window.__stops = {}")
+    stop(qmx)
+    check("  (a latched radio that drops reads unknown or offline, not stopped)",
+          bool(b.wait(f"/QMX (unknown|offline)/.test({ST_TEXT}) && !{ST_TEXT}.includes('TX STOPPED')", 10)), True)
+    qmx_up()
+    check("S9. replaced: the bar leaves TX STOPPED and says the QMX is no longer stopped",
+          bool(b.wait(f"{ST_TEXT}.includes('QMX no longer stopped') && !{ST_TEXT}.includes('TX STOPPED')", 10)), True)
+    quiet_then_nothing_sent("  and the page sends it nothing", "qmx", QMX)
+    b.js("document.querySelector('#rig-bar .rb-stop-cancel').click()")
+    check("  Dismiss clears the note", b.wait(f"{ST_TEXT}.includes('G90 stopped') && !{ST_TEXT}.includes('QMX no longer')", 5), True)
+    resume(G90)
+    b.wait(f"{ST_TEXT} === ''", 10)
+
+    # S6. Past the TTL (4 s here), a pending press is not delivered and never sent.
+    b.js("localStorage.setItem('rr-stop-ttl-s', '4')")
+    qmx_down()
+    b.js(PRESS)
+    check("S6. past the TTL: the QMX's press shows as not delivered, loudly",
+          b.wait(f"{ST_TEXT}.includes('QMX not delivered') && document.querySelector('#rig-bar .rb-stop').classList.contains('bad') "
+                 f"&& {Q}.dataset.stop", 15), "expired")
+    b.js("window.__stops = {}")
+    qmx_up()
+    quiet_then_nothing_sent("  the radio comes back: nothing is sent, it stays unlatched", "qmx", QMX)
+    check("  still shown as not delivered", b.js(f"{ST_TEXT}.includes('QMX not delivered')"), True)
+    b.js("document.querySelector('#rig-bar .rb-stop-cancel').click(); localStorage.removeItem('rr-stop-ttl-s')")
+    check("  Dismiss clears it", b.wait(f"!{ST_TEXT}.includes('not delivered') && Object.keys({INTENTS}).length === 0", 5), True)
+    resume(G90)
+
+    # S3. The G90's socket drops after the send and before the reply.
+    b.wait(f"{ST_TEXT} === ''", 10)
+    b.js("window.__dropAfter = {g90: true}")
+    b.js(PRESS)
+    check("S3. dropped before the reply: the G90 reads unknown",
+          bool(b.wait(f"{ST_TEXT}.includes('G90 not reached (unknown)')", 5)), True)
+    check("  the new socket's hello settles it: TX STOPPED", b.wait(f"{ST_TEXT} === 'TX STOPPED'", 15), True)
+    check("  both latched (fresh sockets)", (latched(G90), latched(QMX)), (True, True))
+    resume(G90)
+    resume(QMX)
+
+    # S10. No press, the QMX down at page load: it comes up and nothing is sent.
+    b.wait(f"{ST_TEXT} === ''", 10)
+    b.js("localStorage.removeItem('rr-stop-intent')")
+    qmx_down()
+    reload_home()
+    qmx_up()
+    quiet_then_nothing_sent("S10. no press, a radio down at load: nothing sent when it connects", "qmx", QMX)
+    check("  the bar does not read TX STOPPED", b.js(ST_TEXT), "")
+
     # 1, again on a phone.
     b.call("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
     b.wait("innerWidth === 390")
@@ -248,6 +474,16 @@ try:
     b.js("location.hash = '#/home'")
     b.wait(f"{FREQ_RE}.test({TEXT}({G}, '.rb-f'))")
     shot("home-390")
+    # The bar's STOP TX on a phone: pressed, it fits and reads TX STOPPED.
+    b.js(PRESS)
+    check("S. 390 px: a press reads TX STOPPED, the bar inside the screen",
+          (bool(b.wait(f"{ST_TEXT} === 'TX STOPPED'", 10)),
+           b.js("(() => { const e = document.querySelector('#rig-bar'); return e.scrollWidth <= e.clientWidth + 1 && "
+                "document.querySelector('#rig-bar .rb-stop').getBoundingClientRect().right <= innerWidth + 0.5; })()")),
+          (True, True))
+    shot("stop-390")
+    resume(G90)
+    resume(QMX)
 finally:
     b.close()
     stop(front)
