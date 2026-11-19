@@ -14,7 +14,8 @@
     the map, Find path draws the route; a saved login enables the console,
     a command's reply shows in it; a favourite star sticks
   - "+" adds the pending node; Message opens the Direct view with a To bar,
-    and a sent message shows delivered; a #channel is joined from the page
+    and a sent message shows delivered, in that node's own conversation on
+    the rail; a #channel is joined from the page
 
     python3 tests/meshcore_page_test.py      (SHOT=/path.png saves a screenshot)
 """
@@ -166,11 +167,12 @@ try:
     check("Message opens the Direct view with a To bar", b.wait(f"!{P}.querySelector('.mc-to').hidden && ({P}.querySelector('.mc-to').textContent || '').includes('Alpha') && 'yes'"), "yes")
     b.js(f"""(() => {{ const i = {P}.querySelector('.mc-text'); i.value = 'page dm';
              i.dispatchEvent(new Event('input')); {P}.querySelector('.mc-form').requestSubmit(); }})()""")
-    check("  a sent message shows delivered", b.wait(f"[...{P}.querySelectorAll('.mc-msg.mine')].some(x => x.textContent.includes('page dm') && x.querySelector('.mesh-ack.delivered')) && 'yes'"), "yes")
+    check("  a sent message shows delivered", b.wait(f"[...{P}.querySelectorAll('.mc-list .chat-msg.mine')].some(x => x.textContent.includes('page dm') && x.querySelector('.mesh-ack.delivered')) && 'yes'"), "yes")
+    check("  the rail has its conversation, open", b.js(f"{P}.querySelector('.mc-tabs .chat-conv.on[data-conv^=d] b')?.textContent"), "Alpha")
 
     b.js("window.prompt = () => '#ranchnet'")
     b.js(f"{P}.querySelector('[data-join]').click()")
-    check("a #channel is joined from the page", b.wait(f"[...{P}.querySelectorAll('.mc-tabs [data-view]')].some(x => x.textContent.includes('#ranchnet')) && 'yes'"), "yes")
+    check("a #channel is joined from the page", b.wait(f"[...{P}.querySelectorAll('.mc-tabs [data-conv]')].some(x => x.textContent.includes('#ranchnet')) && 'yes'"), "yes")
     if os.environ.get("SHOT"):
         b.js(f"{G}.click()")
         time.sleep(1.5)

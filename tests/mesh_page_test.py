@@ -95,11 +95,16 @@ if not CHROME:
 
 TEXT = "(s) => (document.querySelector(s)?.textContent || '')"
 VISIBLE = "(s) => { const e = document.querySelector(s); return !!e && !e.closest('[hidden]') && e.offsetParent !== null; }"
-TABS = "[...document.querySelectorAll('#mesh-tabs .chip')]"
+TABS = "[...document.querySelectorAll('#mesh-tabs .chat-conv')]"   # the rail of conversations (chat.js)
 
 
 def tab(name):
-    return f"{TABS}.find((b) => b.textContent.startsWith({json.dumps(name)}))"
+    return f"{TABS}.find((b) => b.querySelector('b').textContent === {json.dumps(name)})"
+
+
+def conv(node):
+    """A DM conversation on the rail, by node id."""
+    return f"document.querySelector('#mesh-tabs [data-conv={json.dumps('d' + node)}]')"
 
 
 def type_text(s):
@@ -124,15 +129,19 @@ try:
         check("panel shown", bool(b.wait(f"({VISIBLE})('#mesh')")), True)
         check("node name", b.wait(f"({TEXT})('#mesh-me')"), "Test Node (TEST)")
         check("state: Connected", b.wait(f"({TEXT})('#mesh-state') === 'Connected' && 'Connected'"), "Connected")
-        check("tabs", b.js(f"{TABS}.map((b) => b.textContent.trim())"), ["LongFast", "HomeNet", "Direct"])
+        check("the rail: one line per channel", b.js(f"{TABS}.map((b) => b.querySelector('b').textContent)"), ["LongFast", "HomeNet"])
+        check("  then Direct", b.js("[...document.querySelectorAll('#mesh-tabs .chat-rail-head')].map((e) => e.textContent)"), ["Channels", "Direct"])
         check("key check shown", b.js(f"({TEXT})('#mesh-key')"), "HomeNet key ✓")
         check("the key itself is not in the page", FAKE_KEY in b.js("document.documentElement.outerHTML"), False)
 
         b.js(f"{tab('HomeNet')}.click()")
         check("HomeNet shows the incoming message",
               bool(b.wait("[...document.querySelectorAll('#mesh-list .mesh-text')].some((e) => e.textContent === 'gate is closed')")), True)
-        check("  sender shown by short name",
-              b.js("document.querySelector('#mesh-list .mesh-who')?.textContent"), "BASE")
+        check("  sender shown by name, short name beside it",
+              b.js("[document.querySelector('#mesh-list .mesh-who')?.textContent, document.querySelector('#mesh-list .chat-tag')?.textContent]"),
+              ["Ranch Base", "BASE"])
+        check("  in a bubble, the name in its own colour", b.js("!!document.querySelector('#mesh-list .chat-group .chat-bubble') && "
+              "!!document.querySelector('#mesh-list .chat-group').style.getPropertyValue('--who')"), True)
 
         type_text("x" * 201)
         check("past 200 bytes: Send stays enabled, it goes in parts",
@@ -154,7 +163,8 @@ try:
         b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
         check("clicking a node opens its card", b.js(f"({VISIBLE})('#mesh-card') && ({TEXT})('#mesh-card .mesh-card-head b')"), "BASE")
         b.js("document.querySelector('#mesh-card [data-act=dm]').click()")
-        check("  Message opens Direct", b.js(f"{tab('Direct')}.classList.contains('on')"), True)
+        check("  Message opens its conversation", b.js(f"{conv('!0000beef')}?.classList.contains('on')"), True)
+        check("  the conversation's head names it", b.js(f"({TEXT})('#mesh-chat-head b')"), "Ranch Base")
         check("  addressed to it", "To BASE" in b.js(f"({TEXT})('#mesh-to')"), True)
         type_text("are you there")
         b.js("document.querySelector('#mesh-send').click()")
@@ -244,11 +254,11 @@ try:
         h0 = b.js("document.querySelector('#mesh-map').clientHeight")
         b.js("document.querySelector('#mesh-map [data-big]').click()")
         check("⤢: the map takes the room; the conversation is put away",
-              (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-list')).display"),
-               b.js("document.querySelector('#mesh-map').clientHeight") > h0), (True, "none", True))
+              (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-main .chat-main')).visibility"),
+               b.js("document.querySelector('#mesh-map').clientHeight") > h0), (True, "hidden", True))
         b.js("document.querySelector('#mesh-card [data-act=dm]').click()")
         check("  Message on a node's card brings the conversation back",
-              (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-list')).display") != "none"),
+              (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-main .chat-main')).visibility") == "visible"),
               (False, True))
         b.js(f"{tab('HomeNet')}.click(); document.querySelector('#mesh-nodes .mesh-node.on')?.click()")
         b.wait("!document.querySelector('#mesh-nodes .mesh-node.on')", 5)
@@ -292,7 +302,7 @@ try:
         ROW = "[...document.querySelectorAll('#mesh-list .mesh-msg')].find((r) => r.querySelector('.mesh-body')?.textContent === {})"
         check("a reply shows what it answers",
               b.js(f"({ROW.format(json.dumps('thanks, I saw it'))})?.querySelector('.mesh-quote')?.textContent"),
-              "↪ BASE gate is closed")
+              "Ranch Basegate is closed")
         b.js(f"({ROW.format(json.dumps('gate is closed'))}).querySelector('[data-act=reply]').click()")
         check("Reply: the compose bar says so", "Replying to BASE" in b.js(f"({TEXT})('#mesh-to')"), True)
         type_text("on it")
@@ -328,16 +338,14 @@ try:
               bool(b.wait(f"!!({ROW.format(json.dumps('silent'))})?.querySelector('.mesh-ack.unknown') && "
                           f"!!({ROW.format(json.dumps('silent'))})?.querySelector('[data-act=retry]')")), True)
 
-        # Direct: the conversations
-        b.js(f"{tab('Direct')}.click()")
-        b.js(f"{tab('Direct')}.click()")
-        check("Direct again: the list of conversations",
-              b.js("[...document.querySelectorAll('#mesh-list .mesh-conv b')].map((e) => e.textContent)"), ["BASE"])
+        # Direct: the conversations, on the rail under Direct
+        check("Direct: one line per conversation",
+              b.js("[...document.querySelectorAll('#mesh-tabs .chat-conv[data-conv^=d] b')].map((e) => e.textContent)"), ["Ranch Base"])
         b.js("mesh.event({ t: 'mesh', msg: { k: 'msg', id: 88, t: Date.now() / 1000, from: '!0000cafe', "
              "to: '!b2a6fd78', ch: 0, dm: true, text: 'you up?', snr: 3, hops: 0 } })")
-        check("  a new DM: its conversation, unread", b.js("document.querySelector('#mesh-list .mesh-conv')?.textContent"),
-              "RDGyou up?now1")
-        b.js("document.querySelector('#mesh-list .mesh-conv').click()")
+        check("  a new DM: its conversation on top, unread", b.js("document.querySelector('#mesh-tabs .chat-conv[data-conv^=d]')?.textContent"),
+              "RRRidge Relaynowyou up?1")
+        b.js(f"{conv('!0000cafe')}.click()")
         check("  open it: only that node's messages",
               b.js("[...document.querySelectorAll('#mesh-list .mesh-body')].map((e) => e.textContent)"), ["you up?"])
         check("  addressed to it", "To RDG" in b.js(f"({TEXT})('#mesh-to')"), True)

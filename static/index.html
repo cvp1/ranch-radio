@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="static/app.css">
 <link rel="stylesheet" href="static/station.css">
 <link rel="stylesheet" href="static/modules.css">
+<link rel="stylesheet" href="static/chat.css">
 <link rel="stylesheet" href="static/themes.css">
 <script src="static/theme.js"></script>
 </head>
@@ -377,19 +378,23 @@
         <button class="chip" id="mesh-reboot" title="Restart the node (the link comes back on its own)">Reboot node</button>
       </div>
     </div>
-    <div class="wl-cols mesh-cols" id="mesh-main">
-      <div class="wl-mail">
-        <div class="wl-bar"><div class="seg" id="mesh-tabs"></div></div>
-        <div class="mesh-list" id="mesh-list"></div>
-        <div class="mesh-to" id="mesh-to" hidden></div>
-        <form class="wl-row mesh-form" id="mesh-form">
-          <input id="mesh-text" class="wl-url" placeholder="Message" autocomplete="off" maxlength="1800">
-          <span class="stat" id="mesh-count"></span>
-          <button type="submit" class="chip on" id="mesh-send" disabled>Send</button>
-        </form>
-        <div class="mesh-map" id="mesh-map"></div>
+    <!-- Messaging (chat.js, 2026-11-19): conversations | the conversation | nodes and map -->
+    <div class="chat-cols mesh-cols" id="mesh-main">
+      <nav class="chat-rail" id="mesh-tabs" aria-label="Conversations"></nav>
+      <div class="chat-main">
+        <div class="chat-head" id="mesh-chat-head"></div>
+        <div class="chat-pane"><div class="mesh-list" id="mesh-list" role="log" aria-live="polite" aria-label="Messages"></div></div>
+        <div class="chat-compose">
+          <div class="mesh-to" id="mesh-to" hidden></div>
+          <form class="chat-form mesh-form" id="mesh-form">
+            <button type="button" class="chat-emoji-btn" id="mesh-emoji" title="Emoji" aria-label="Emoji">😊</button>
+            <textarea id="mesh-text" rows="1" placeholder="Message" autocomplete="off" maxlength="1800" aria-label="Message"></textarea>
+            <span class="stat" id="mesh-count"></span>
+            <button type="submit" class="chat-send" id="mesh-send" disabled>Send</button>
+          </form>
+        </div>
       </div>
-      <div class="wl-session">
+      <div class="chat-side wl-session">
         <div class="wl-bar">
           <input id="mesh-find" class="wl-url" placeholder="Find a node" autocomplete="off" spellcheck="false">
           <button class="chip chip-mini" id="mesh-all" title="Only nodes heard in the last day">Recent</button>
@@ -397,6 +402,7 @@
         </div>
         <div class="mesh-card" id="mesh-card" hidden></div>
         <div class="wl-gateways mesh-nodes" id="mesh-nodes"></div>
+        <div class="mesh-map" id="mesh-map"></div>
       </div>
     </div>
   </section>
@@ -418,6 +424,7 @@
 <script src="static/winlink.js"></script>
 <script src="static/basemaps.js"></script>
 <script src="static/meshmap.js"></script>
+<script src="static/chat.js"></script>
 <script src="static/mesh.js"></script>
 <script src="static/nav.js"></script>
 <script src="static/addons.js"></script>

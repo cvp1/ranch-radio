@@ -12,7 +12,6 @@
 .addon-meshcore .mc-form .mc-text { flex: 1; min-width: 0; }
 .addon-meshcore .mc-find { flex: 1; min-width: 0; padding: 4px 8px; }
 .addon-meshcore .mc-over { color: #ff8a8a; }
-.addon-meshcore .mesh-cols .wl-session .mesh-nodes { max-height: none; flex: 1 1 0; min-height: 260px; }
 .addon-meshcore .mc-admin .mc-pwd { width: 9em; flex: none; padding: 2px 6px; height: 24px; }
 .addon-meshcore .mc-res { display: flex; flex-direction: column; gap: 2px; }
 .addon-meshcore .mc-console { display: flex; flex-direction: column; gap: 4px; }

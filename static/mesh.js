@@ -35,7 +35,6 @@ const mesh = (() => {
   const HOW = { neighbor: ["says it hears us", "Its NeighborInfo lists this node, with the SNR it hears us at"],
     trace: ["first hop of a traceroute", "A traceroute's first hop: it heard us at this SNR"],
     dm: ["got our DM", "It ACKed a direct message of ours: it got it, maybe through relays"] };
-  const REACTIONS = ["👍", "❤️", "😂", "‼️", "❓", "🎉"];
   const REQUESTS = [["position", "Position", "Ask it for its position"],
     ["telemetry", "Telemetry", "Ask it for its battery, voltage and channel use"],
     ["env", "Environment", "Ask it for its sensor readings (temperature, humidity, pressure)"],
@@ -178,31 +177,71 @@ const mesh = (() => {
   }
   $("#mesh-hears-btn").onclick = () => { hearsOpen = !hearsOpen; renderHears(); };
 
+  // ---------- conversations (the rail, chat.js)
+
+  const convOf = (v, peer) => (v === "dm" ? `d${peer}` : `c${v}`);
+  let newMark = null;       // {conv, n}: how many were unread when it was opened, for the "New" line
+  const onlineNow = () => nodes.filter((n) => !n.me && n.last_heard && Date.now() / 1000 - n.last_heard < LIVE_S).length;
+
+  function dmPeers() {
+    const last = new Map();
+    for (const m of messages) {
+      if (!m.dm || isReaction(m)) continue;
+      const p = peerOf(m);
+      if (p && p !== myId()) last.set(p, m);
+    }
+    if (dmTo && !last.has(dmTo)) last.set(dmTo, null);
+    return [...last].sort((a, b) => (b[1]?.t ?? Infinity) - (a[1]?.t ?? Infinity));
+  }
+  const lastLine = (m) => (m ? { who: m.mine ? "You" : m.dm ? "" : short(m.from), text: m.text, t: m.t } : null);
+
   function renderTabs() {
-    const seg = $("#mesh-tabs");
-    seg.innerHTML = "";
-    const tabs = (info?.channels || []).map((c) => [c.index, c.name]);
-    tabs.push(["dm", "Direct"]);
+    const chans = info?.channels || [];
     // Before the node has sent its channels (a restart, switching on), keep the
     // view: falling back to Direct then would stick once the channels arrive.
-    if (view === null || (info && !tabs.some(([v]) => v === view))) view = tabs.length > 1 ? tabs[0][0] : "dm";
-    for (const [v, label] of tabs) {
-      const b = document.createElement("button");
-      b.className = "chip" + (v === view ? " on" : "");
-      b.innerHTML = esc(label) + (unread[v] ? ` <span class="mesh-unread">${unread[v]}</span>` : "");
-      b.onclick = () => {
-        if (v === "dm" && view === "dm") dmTo = null;        // Direct again: back to the conversations
-        view = v;
-        if (v !== "dm") unread[v] = 0;
-        renderTabs(); renderMessages(); renderCompose();
-      };
-      seg.append(b);
+    if (view === null || (info && view !== "dm" && !chans.some((c) => c.index === view))) view = chans.length ? chans[0].index : "dm";
+    const lastIn = (ch) => [...messages].reverse().find((m) => !m.dm && m.ch === ch && !isReaction(m));
+    const chanRows = chans.map((c) => ({ id: convOf(c.index), title: c.name || `Channel ${c.index}`, glyph: "#", seed: `#${c.name}`,
+      last: lastLine(lastIn(c.index)), unread: unread[c.index] || 0, on: view === c.index,
+      hint: `Channel ${c.index}: everyone on ${c.name || "it"} hears what you send here` }));
+    const dmRows = dmPeers().map(([p, m]) => ({ id: convOf("dm", p), title: long(p), seed: p, glyph: null,
+      last: lastLine(m), unread: unreadDm[p] || 0, on: view === "dm" && dmTo === p, empty: "New conversation",
+      hint: `${short(p)} ${p}` }));
+    chat.rail($("#mesh-tabs"), [["Channels", chanRows, "The node has sent no channels yet"],
+      ["Direct", dmRows, "Tap a sender's name, or a node on the right, to message it directly"]], pick);
+  }
+
+  function pick(conv) {
+    if (conv[0] === "c") {
+      const v = Number(conv.slice(1));
+      newMark = unread[v] ? { conv, n: unread[v] } : null;
+      view = v; unread[v] = 0;
+      if (replyTo && viewOf(replyTo) !== view) replyTo = null;
+      renderTabs(); renderMessages(); renderCompose();
+      $("#mesh-text").focus();
+    } else directTo(conv.slice(1));
+  }
+
+  function renderChatHead() {
+    const el = $("#mesh-chat-head");
+    if (view === "dm" && dmTo) {
+      const n = byId(dmTo);
+      const bits = [short(dmTo), n ? hopsText(n) : "", n?.snr != null ? `SNR ${n.snr}` : "", n?.last_heard ? `heard ${when(n.last_heard)}` : "not heard yet"].filter(Boolean);
+      el.innerHTML = chat.avatar(long(dmTo), dmTo) + `<span class="chat-head-text"><b>${esc(long(dmTo))}</b><span>${esc(bits.join(" · "))}</span></span>` +
+        `<button class="chip chip-mini" data-head="node" title="Its card: position, telemetry, traceroute">Node</button>`;
+      el.querySelector("[data-head=node]").onclick = () => select(dmTo);
+    } else if (view !== "dm") {
+      const c = (info?.channels || []).find((x) => x.index === view);
+      el.innerHTML = chat.avatar(c?.name || "#", `#${c?.name}`, "#") + `<span class="chat-head-text"><b>${esc(c?.name || `Channel ${view}`)}</b>` +
+        `<span>${esc(`Channel ${view}${view === 0 ? " (primary)" : ""} · ${onlineNow()} heard in the last 15 min`)}</span></span>`;
+    } else {
+      el.innerHTML = `<span class="chat-head-text"><b>Direct messages</b><span>Pick a conversation, a sender, or a node</span></span>`;
     }
   }
 
   // ---------- messages
 
-  // Reactions to message id, folded into "👍 2" chips (who in the tooltip).
+  // Reactions to message id, folded by emoji (who reacted, "me" for us).
   function reactionsTo(id) {
     const by = new Map();
     for (const r of messages) {
@@ -210,7 +249,7 @@ const mesh = (() => {
       if (!by.has(r.text)) by.set(r.text, []);
       by.get(r.text).push(r.mine ? "me" : short(r.from));
     }
-    return [...by].map(([e, who]) => `<span class="mesh-react" title="${esc(who.join(", "))}">${esc(e)}${who.length > 1 ? ` ${who.length}` : ""}</span>`).join("");
+    return [...by].map(([emoji, who]) => ({ emoji, who }));
   }
 
   function againIn(at) {
@@ -221,84 +260,56 @@ const mesh = (() => {
     for (const el of document.querySelectorAll("#mesh-list .mesh-retry-in")) el.textContent = againIn(Number(el.dataset.at));
   }, 1000);
 
-  function row(m) {
-    const div = document.createElement("div");
-    div.className = "mesh-msg" + (m.mine ? " mine" : "");
-    div.dataset.key = m.mine ? `t${m.t}` : `i${m.id}`;
-    const who = m.mine ? (m.dm ? `→ ${short(m.to)}` : "me")
-      : (m.dm ? `${short(m.from)} → me` : short(m.from));
+  const keyOf = (m) => (m.mine ? `t${m.t}` : `i${m.id}`);
+
+  // One message as a chat.js item.
+  function item(m) {
     const [glyph, why] = m.mine ? (ACK[m.ack] || ["", ""]) : ["", ""];
-    const meta = m.mine ? "" : [m.hops != null ? `${m.hops} hop${m.hops === 1 ? "" : "s"}` : "",
+    const sub = m.mine ? "" : [m.hops == null ? "" : m.hops === 0 ? "direct" : `${m.hops} hop${m.hops === 1 ? "" : "s"}`,
       m.snr != null ? `SNR ${m.snr}` : ""].filter(Boolean).join(" · ");
     const orig = m.reply_id ? byMsgId(m.reply_id) : null;
-    const quote = m.reply_id ? `<span class="mesh-quote" title="In reply to">↪ ${orig
-      ? `<b>${esc(orig.mine ? "me" : short(orig.from))}</b> ${esc(orig.text.length > 60 ? `${orig.text.slice(0, 60)}…` : orig.text)}`
-      : "a message no longer here"}</span>` : "";
     const canAct = connected && m.id != null && m.ack !== "failed";
-    const acts = canAct ? `<span class="mesh-acts"><button data-act="reply" title="Reply">↩</button>` +
-      REACTIONS.map((e) => `<button data-react="${esc(e)}" title="React ${esc(e)}">${esc(e)}</button>`).join("") + "</span>" : "";
-    const retry = !m.mine ? ""
+    const extra = !m.mine ? ""
       : m.retry_at ? `<span class="mesh-retry-in wl-dim" data-at="${m.retry_at}" title="The mesh did not take it; the station sends it again by itself">${esc(againIn(m.retry_at))}</span>` +
         `<button class="chip chip-mini mesh-retry" data-act="cancel" title="Don't send it again">Cancel</button>`
       : m.ack === "queued" ? `<button class="chip chip-mini mesh-retry" data-act="cancel" title="Don't send this part or the ones after it">Cancel</button>`
       : (m.ack === "failed" || m.ack === "unknown") && connected ? `<button class="chip chip-mini mesh-retry" data-act="retry" title="Send it again">Retry</button>` : "";
-    div.innerHTML = `<span class="mesh-time">${hhmm(m.t)}</span>` +
-      `<button class="mesh-who" title="${esc(m.mine ? "" : `${long(m.from)} ${m.from || ""}`)}">${esc(who)}</button>` +
-      `<span class="mesh-text">${quote}<span class="mesh-body">${esc(m.text)}</span>` +
-      `<span class="mesh-reacts">${m.id != null ? reactionsTo(m.id) : ""}</span></span>` +
-      `<span class="mesh-meta">${acts}${retry}${esc(meta)}${m.mine ? `<span class="mesh-ack ${esc(m.ack)}" title="${esc(why + (m.why ? `: ${m.why}` : ""))}">${glyph}</span>` : ""}</span>`;
     const peer = peerOf(m);
-    if (peer && peer !== myId()) div.querySelector(".mesh-who").onclick = () => directTo(peer);
-    div.querySelector(".mesh-meta").onclick = (e) => {
-      const btn = e.target.closest("button");
-      if (!btn) return;
-      const dest = m.dm ? peer : null;
-      if (btn.dataset.react) {
-        send({ t: "mesh_send", text: btn.dataset.react, ch: m.dm ? 0 : m.ch, to: dest, reply_to: m.id, emoji: true });
-      } else if (btn.dataset.act === "reply") {
-        replyTo = m;
-        renderCompose();
-        $("#mesh-text").focus();
-      } else if (btn.dataset.act === "retry") {
-        send({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
-      } else if (btn.dataset.act === "cancel") {
-        send({ t: "mesh_cancel", msg_t: m.t });
-      }
-    };
-    return div;
+    return { m, key: keyOf(m), mine: !!m.mine, t: m.t, text: m.text, sub, extra,
+      who: m.mine ? "me" : long(m.from), tag: m.mine ? "" : short(m.from), whoTitle: m.mine ? "" : `${short(m.from)} · ${m.from || ""} · message it directly`,
+      seed: m.mine ? myId() : m.from, peer: !m.mine && peer && peer !== myId() && !(m.dm && dmTo === peer) ? peer : null,
+      quote: !m.reply_id ? null : orig ? { key: keyOf(orig), who: orig.mine ? "You" : long(orig.from), text: orig.text } : { missing: true },
+      reacts: m.id != null ? reactionsTo(m.id) : [],
+      ack: m.mine ? { glyph, cls: m.ack, why: why + (m.why ? `: ${m.why}` : "") } : null,
+      canReply: canAct, canReact: canAct };
   }
 
-  // Direct with no node picked: one line per conversation, newest first.
-  function renderConversations(list) {
-    const last = new Map();
-    for (const m of messages) {
-      if (!m.dm) continue;
-      const p = peerOf(m);
-      if (p && p !== myId()) last.set(p, m);
-    }
-    const convs = [...last].sort((a, b) => b[1].t - a[1].t);
-    list.innerHTML = convs.length ? "" : `<div class="wl-empty">No direct messages (pick a node to message it)</div>`;
-    for (const [p, m] of convs) {
-      const b = document.createElement("button");
-      b.className = "mesh-conv";
-      b.dataset.peer = p;
-      const n = unreadDm[p] || 0;
-      b.innerHTML = `<b>${esc(short(p))}</b><span class="mesh-conv-last">${esc(m.mine ? "me: " : "")}${esc(isReaction(m) ? `reacted ${m.text}` : m.text)}</span>` +
-        `<span class="wl-dim">${esc(ago(m.t))}</span>${n ? `<span class="mesh-unread">${n}</span>` : "<span></span>"}`;
-      b.title = `${long(p)} ${p}`;
-      b.onclick = () => directTo(p);
-      list.append(b);
-    }
-  }
+  const handlers = {
+    onWho: (it) => directTo(it.peer),
+    onReply: (it) => { replyTo = it.m; renderCompose(); $("#mesh-text").focus(); },
+    onReact: (it, emoji) => {
+      const m = it.m;
+      send({ t: "mesh_send", text: emoji, ch: m.dm ? 0 : m.ch, to: m.dm ? peerOf(m) : null, reply_to: m.id, emoji: true });
+    },
+    onAct: (it, act) => {
+      const m = it.m;
+      if (act === "retry") send({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
+      else if (act === "cancel") send({ t: "mesh_cancel", msg_t: m.t });
+    },
+  };
 
   function renderMessages() {
+    renderChatHead();
     const list = $("#mesh-list");
-    if (view === "dm" && !dmTo) { renderConversations(list); return; }
+    const conv = view === "dm" ? convOf("dm", dmTo) : convOf(view);
+    if (view === "dm" && !dmTo) {
+      chat.render(list, [], { conv, empty: `<div class="wl-empty chat-empty">Pick a conversation on the left, a sender's name, or a node on the right to message it</div>` });
+      return;
+    }
     const shown = messages.filter((m) => viewOf(m) === view && !isReaction(m) && (view !== "dm" || peerOf(m) === dmTo));
-    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-    list.innerHTML = shown.length ? "" : `<div class="wl-empty">No messages${view === "dm" ? ` with ${esc(short(dmTo))} yet` : ""}</div>`;
-    for (const m of shown) list.append(row(m));
-    if (atBottom || shown.length < 2) list.scrollTop = list.scrollHeight;
+    const n = newMark?.conv === conv ? newMark.n : 0;
+    chat.render(list, shown.map(item), { conv, unread: n, ...handlers,
+      empty: `<div class="wl-empty chat-empty">No messages${view === "dm" ? ` with ${esc(long(dmTo))} yet. Say hello 👋` : " here yet"}</div>` });
   }
 
   const unreadTotal = () => Object.values(unreadDm).reduce((a, b) => a + b, 0);
@@ -309,37 +320,32 @@ const mesh = (() => {
     const v = viewOf(m);
     const here = v === view && (v !== "dm" || (dmTo && peerOf(m) === dmTo));
     if (isReaction(m)) {
-      const el = $(`#mesh-list [data-key="${byMsgId(m.reply_id)?.mine ? `t${byMsgId(m.reply_id).t}` : `i${m.reply_id}`}"]`);
-      if (el) el.replaceWith(row(byMsgId(m.reply_id)));
+      if (byMsgId(m.reply_id) && viewOf(byMsgId(m.reply_id)) === view) renderMessages();
       if (!m.mine && byMsgId(m.reply_id)?.mine) toast(`Mesh · ${short(m.from)} reacted ${m.text}`, "info");
-      if (view === "dm" && !dmTo) renderMessages();
       return;
     }
-    if (here) {
-      renderMessages();
-      $("#mesh-list").scrollTop = $("#mesh-list").scrollHeight;
-    } else if (!m.mine) {
+    if (here) renderMessages();
+    else if (!m.mine) {
       if (v === "dm") { unreadDm[m.from] = (unreadDm[m.from] || 0) + 1; unread.dm = unreadTotal(); }
       else unread[v] = (unread[v] || 0) + 1;
-      renderTabs();
-      if (view === "dm" && !dmTo) renderMessages();
     }
-    if (!m.mine && m.dm) toast(`Mesh · ${short(m.from)}: ${m.text}`, "info");
+    renderTabs();
+    if (!m.mine && m.dm && !here) toast(`Mesh · ${short(m.from)}: ${m.text}`, "info");
   }
 
   function updateMessage(m) {
     const i = messages.findIndex((x) => x.mine && x.t === m.t);
     if (i < 0) return;
     messages[i] = m;
-    if (isReaction(m)) return;
-    const el = $(`#mesh-list [data-key="t${m.t}"]`);
-    if (el) el.replaceWith(row(m));
+    if (isReaction(m)) { renderMessages(); return; }
+    if (viewOf(m) === view) renderMessages();
   }
 
   // ---------- compose
 
   function directTo(id) {
     if (dmTo !== id) replyTo = null;
+    newMark = unreadDm[id] ? { conv: convOf("dm", id), n: unreadDm[id] } : null;
     dmTo = id;
     view = "dm";
     unreadDm[id] = 0;
@@ -356,22 +362,19 @@ const mesh = (() => {
     // A reply belongs to the conversation it was started in.
     if (replyTo && (viewOf(replyTo) !== view || (view === "dm" && peerOf(replyTo) !== dmTo))) replyTo = null;
     let html = "";
-    if (view === "dm") {
-      html = dmTo
-        ? `To <b>${esc(short(dmTo))}</b> <span class="wl-dim">${esc(long(dmTo))}</span> <button class="chip chip-mini" id="mesh-to-x" title="Back to the conversations">✕</button>`
-        : `<span class="wl-dim">Pick a conversation, a node on the right, or a sender to message it</span>`;
-    }
+    if (view === "dm" && dmTo) html = `<span class="wl-dim">To</span> <b>${esc(short(dmTo))}</b> <span class="wl-dim">${esc(long(dmTo))}, direct</span>`;
     if (replyTo) {
-      html += `<span class="mesh-replying">↪ Replying to <b>${esc(replyTo.mine ? "me" : short(replyTo.from))}</b> ` +
-        `<span class="wl-dim">${esc(replyTo.text.length > 50 ? `${replyTo.text.slice(0, 50)}…` : replyTo.text)}</span> ` +
-        `<button class="chip chip-mini" id="mesh-reply-x" title="Not a reply">✕</button></span>`;
+      html = `<span class="mesh-replying">↪ Replying to <b>${esc(replyTo.mine ? "me" : short(replyTo.from))}</b> ` +
+        `<span class="wl-dim">${esc(replyTo.text.length > 50 ? `${replyTo.text.slice(0, 50)}…` : replyTo.text)}</span></span>` +
+        `<button class="chip chip-mini" id="mesh-reply-x" title="Not a reply (Esc)">✕</button>`;
     }
     to.hidden = !html;
     to.innerHTML = html;
-    const x = $("#mesh-to-x");
-    if (x) x.onclick = () => { dmTo = null; replyTo = null; renderMessages(); renderCompose(); };
     const rx = $("#mesh-reply-x");
-    if (rx) rx.onclick = () => { replyTo = null; renderCompose(); };
+    if (rx) rx.onclick = () => { replyTo = null; renderCompose(); $("#mesh-text").focus(); };
+    const c = (info?.channels || []).find((x) => x.index === view);
+    $("#mesh-text").placeholder = view === "dm" ? (dmTo ? `Message ${short(dmTo)}` : "Pick a conversation first")
+      : `Message #${c?.name || view}`;
     count();
   }
 
@@ -383,11 +386,14 @@ const mesh = (() => {
     const parts = n <= textMax ? 1 : Math.ceil(n / partBytes);
     const tooLong = replyTo ? n > textMax : parts > partsMax;
     c.textContent = n > textMax ? (replyTo ? `${n}/${textMax}` : `${n} B · ${parts} parts`)
-      : n > textMax * 0.75 ? `${n}/${textMax}` : "";
-    c.title = n > textMax && !replyTo ? `Sent as ${parts} or more messages, "[1/${parts}] …", one after another (at most ${partsMax})` : "";
+      : n > textMax * 0.75 ? `${textMax - n} left` : "";
+    c.title = n > textMax && !replyTo ? `Sent as ${parts} or more messages, "[1/${parts}] …", one after another (at most ${partsMax})` : `${n} of ${textMax} bytes in one packet`;
     c.classList.toggle("warn", tooLong);
     $("#mesh-send").disabled = !connected || !n || tooLong || (view === "dm" && !dmTo);
   }
+
+  const compose = chat.composer({ form: $("#mesh-form"), text: $("#mesh-text"), emoji: $("#mesh-emoji"), onInput: count,
+    onEscape: () => { if (replyTo) { replyTo = null; renderCompose(); } } });
 
   function submit(e) {
     e.preventDefault();
@@ -395,10 +401,9 @@ const mesh = (() => {
     if (!text || $("#mesh-send").disabled) return;
     const dm = view === "dm";
     send({ t: "mesh_send", text, ch: dm ? 0 : view, to: dm ? dmTo : null, reply_to: replyTo?.id ?? null });
-    $("#mesh-text").value = "";
     replyTo = null;
+    compose.clear();
     renderCompose();
-    count();
   }
 
   // ---------- nodes
@@ -1045,7 +1050,6 @@ const mesh = (() => {
   }
 
   $("#mesh-form").onsubmit = submit;
-  $("#mesh-text").oninput = count;
   $("#mesh-find").oninput = renderNodes;
   $("#mesh-all").onclick = () => { recentOnly = !recentOnly; on($("#mesh-all"), recentOnly); renderNodes(); };
   setInterval(() => { renderNodes(); renderHears(); drawMap(); renderReach(); }, 60000);  // keep "heard 5m ago" and the map's colours current

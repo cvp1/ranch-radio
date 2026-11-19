@@ -7,6 +7,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- Mesh and MeshCore messaging redesigned (`static/chat.js`, `static/chat.css`): a rail of conversations (each channel and each DM, with its last message and unread count), a full-height chat with bubbles, names in their own colour, day and "New" lines and a jump-to-latest button, a hover (or tap) bar to react or reply, an emoji picker for the box and for reactions, quotes that jump to the message they answer, and a box that grows and sends on Enter (Shift+Enter for a new line, Escape to drop a reply). The node list, card and map sit on the right; ⤢ still gives the map the room.
 - Themes: a picker in the top bar (the palette button) sets the page's look: Midnight blue (the new default), Mint (classic), Amber, Sandstone, Aurora and High contrast. The choice is kept in the browser and reaches the station's radio and packet tabs at once. Status green and the on-air red stay as they were in every theme.
 - **Winlink strip: the modem's own state.** Beside the session state, the
   strip shows what the modem the next session uses is doing, read from the
