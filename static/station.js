@@ -481,7 +481,7 @@ const station = (() => {
   function setConn(ok) {
     const c = $("#conn");
     c.className = `pill ${ok ? "pill-ok" : "pill-wait"}`;
-    c.querySelector("b").textContent = ok ? "Connected" : "Reconnecting";
+    c.querySelector("b").textContent = c.title = ok ? "Connected" : "Reconnecting";   // title: a phone shows only the dot
   }
 
   function connect() {

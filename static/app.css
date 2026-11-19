@@ -729,6 +729,12 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 
 /* Inside the station page, which names the radio in its navigation. */
 .embedded .topbar .brand, .embedded .topbar .clock { display: none; }
+/* The station's own bar already has a Connected pill and the theme picker
+   (one pick reaches every frame), so the frame drops its copies (2026-11-19,
+   UX plan PR 0.1). The pill hides only while it says Connected: "Offline" and
+   "Radio not responding" are this radio's alone and the station's pill does
+   not show them. STOP TX, the latency and power stay. */
+.embedded .topbar #conn.pill-ok, .embedded .topbar .theme-pick { display: none; }
 
 /* Single-radio page tabs (tabs.js): one view at a time, as on the station page. */
 body[data-view="radio"] #winlink, body[data-view="radio"] #mesh { display: none; }

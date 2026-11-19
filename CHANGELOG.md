@@ -208,6 +208,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **A radio's tab no longer repeats the station's header.** Inside the station page the radio
+  page drops its Connected pill and theme picker (the station's bar has both); its STOP TX,
+  latency and power button stay, and its pill comes back when the radio is offline or not
+  responding. On a phone the station's pill shrinks to its dot (the words are in its tooltip),
+  so the name, dot, clock and theme picker fit one row above the tabs.
 - **A click on a Map station opens its card; Answer is a button on it.** The
   card has both directions, distance and bearing, and what the station is to
   you. Before, a click on a dot sent JTDX the Reply at once; the Roster tab
