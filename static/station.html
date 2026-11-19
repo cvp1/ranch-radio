@@ -56,6 +56,13 @@
     <p class="st-help mc-keys">Keys: <kbd>1</kbd>–<kbd>9</kbd> open a card's tab · <kbd>0</kbd> back here</p>
   </section>
 
+  <!-- Operate (UX plan PR 2b): the band strip over the layout's panes. The
+       panes are the radio, Roster and Map views themselves, placed by
+       station.css (.st-main.lay); this view holds only the strip. -->
+  <section class="st-view" id="view-operate" hidden>
+    <div class="mc-bands op-bands" id="op-bands" hidden></div>
+  </section>
+
   <!-- One frame per connected HF radio: its own Radio Remote page -->
   <section class="st-view st-frames" id="view-radio" hidden></section>
 

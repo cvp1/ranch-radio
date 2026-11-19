@@ -125,6 +125,11 @@ const rrMapMath = (() => {
   let layers = { hear: true, heard: true, paths: true, grids: true, pota: true, night: true, ...keep.get("map.layers", {}) };
   let windowMin = WINDOWS.includes(keep.get("map.window", 60)) ? keep.get("map.window", 60) : 60;
   let listOpen = keep.get("map.list", window.innerWidth > 700);   // on a phone the map comes first
+  // In the station's Operate pane (UX plan PR 2b, 2026-11-19) the list is shut
+  // for the visit: a 300 px list would cover half a narrow map. paneList holds
+  // the list's state from before the visit and is put back after it; nothing
+  // here or in a click during the visit writes map.list.
+  let paneList = null;
   // The list's tab (2026-11-19, UX plan PR 0.2): it opened on Two-way even when
   // that was empty and "You hear" was full. Two values now: the operator's
   // preference, set only by a click on a tab and kept, and the tab shown. With
@@ -286,7 +291,7 @@ const rrMapMath = (() => {
     $$(".rm-st").addEventListener("click", (e) => { const g = e.target.closest(".rm-s"); if (g) select(g.dataset.call); });
     $$(".rm-list").addEventListener("click", (e) => {
       const t = e.target.closest("[data-tab]"), r = e.target.closest("[data-call]");
-      if (e.target.closest("[data-toggle]")) { listOpen = !listOpen; keep.set("map.list", listOpen); list(); }
+      if (e.target.closest("[data-toggle]")) { listOpen = !listOpen; if (paneList === null) keep.set("map.list", listOpen); list(); }
       else if (t) { listTab = tabPref = t.dataset.tab; tabHeld = null; keep.set("map.tab", tabPref); list(); }
       else if (r) { select(r.dataset.call, true); }
     });
@@ -579,7 +584,7 @@ const rrMapMath = (() => {
   window.rrMapMath = rrMapMath;               // the tests check the gray line and the paths against reference points
   window.rrMap = { stations: () => stations, onAir };       // and what the page worked out
   addons.register("map", {
-    mount(b) { body = b; built = false; centred = false; fitted = false; cx = null; render(); },
+    mount(b) { body = b; body.classList.toggle("rm-pane", paneList !== null); built = false; centred = false; fitted = false; cx = null; render(); },
     hello(s) { snap = { chosen: snap.chosen }; take(s || {}); for (const d of (snap.map && snap.map.decodes) || []) seen.add(d.key); render(); },
     event(m) {
       if (m.callcard) { window.callcard?.answer(m.callcard); return; }     // the station card's call card (static/callcard.js)
@@ -595,6 +600,14 @@ const rrMapMath = (() => {
     },
     off() { snap = {}; stations = []; sel = null; if (timer) { clearInterval(timer); timer = null; } if (body) body.innerHTML = ""; built = false; },
     data() { return snap; },     // UX plan 5.3 (PR 3a, 2026-11-19): the merged state, for other views
+    // UX plan 5.3 (PR 2b): in a narrow pane, or back at full width. The map
+    // fills the pane's height (map.css .rm-pane); the ResizeObserver redraws it.
+    layout({ pane } = {}) {
+      if (!!pane === (paneList !== null)) return;
+      if (pane) { paneList = listOpen; listOpen = false; }
+      else { listOpen = paneList; paneList = null; }
+      if (body) { body.classList.toggle("rm-pane", !!pane); list(); }
+    },
     tab() {
       if (!snap.map) return { dot: "off", title: "Map" };
       const a = onAir(), c = counts();

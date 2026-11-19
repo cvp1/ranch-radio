@@ -15,13 +15,18 @@
 // Display only: a cell does not retune. Tuning from a cell is PR 4c, through
 // station.tuneFocus. Reads addons.data("propagation") and
 // addons.data("roster") (UX plan 5.3). station.js calls render(el, {range})
-// whenever Mission Control redraws; the strip also redraws itself when the
+// whenever Mission Control redraws, and for Operate's strip (PR 2b); each
+// strip also redraws itself when the
 // UTC hour turns, with or without an event, since a window "now to 05Z"
 // ends on the hour and the next one starts. Uses common.js (BANDS, esc,
 // regionName) and addons.js.
 
 const bandStrip = (() => {
-  let el = null, ctx = {}, lastHtml = "", lastHour = null;
+  // Each element it draws into: its context and the HTML last written. Two
+  // now (UX plan PR 2b, 2026-11-19): Mission Control's and Operate's; one
+  // shared "last HTML" would leave the second blank when both say the same.
+  const drawn = new Map();
+  let ctx = {}, lastHour = null;
   const FORECAST_STALE_S = 36 * 3600;          // skywatch issues one a day (propagation.js)
 
   const key = (b) => b.label || `${b.n}m`;
@@ -157,24 +162,29 @@ const bandStrip = (() => {
       (ns.length ? `<div class="bs-notes">${ns.map((n) => `<span>${esc(n)}</span>`).join("")}</div>` : "");
   }
 
-  // el: the strip's element; c: {range: the focus radio's caps.freq or null}.
+  // target: the strip's element; c: {range: the focus radio's caps.freq or null}.
   function render(target, c = {}) {
-    el = target;
+    if (!target) return;
+    const d = drawn.get(target) || { html: "" };
+    d.ctx = c;
+    drawn.set(target, d);
     ctx = c;
-    if (!el) return;
     lastHour = Math.floor(api.now() / 3600);
     // Nothing to say without the add-ons that feed it.
-    const here = addons.list().some((d) => d.name === "propagation" || d.name === "roster");
-    el.hidden = !here;
-    if (!here) { lastHtml = ""; el.innerHTML = ""; return; }
+    const here = addons.list().some((x) => x.name === "propagation" || x.name === "roster");
+    target.hidden = !here;
+    if (!here) { d.html = ""; target.innerHTML = ""; return; }
     const h = html();
-    if (h === lastHtml) return;            // Mission Control redraws often (S-meters)
-    lastHtml = h;
-    el.innerHTML = h;
+    if (h === d.html) return;              // Mission Control redraws often (S-meters)
+    d.html = h;
+    target.innerHTML = h;
   }
 
-  // The hour turned: redraw without waiting for an event.
-  setInterval(() => { if (el && Math.floor(api.now() / 3600) !== lastHour) render(el, ctx); }, 5000);
+  // The hour turned: redraw every strip without waiting for an event.
+  setInterval(() => {
+    if (!drawn.size || Math.floor(api.now() / 3600) === lastHour) return;
+    for (const [t, d] of drawn) render(t, d.ctx);
+  }, 5000);
 
   // now(): epoch seconds; the tests replace it to cross an hour.
   const api = { now: () => Date.now() / 1000, render };

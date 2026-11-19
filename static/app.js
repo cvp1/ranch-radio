@@ -1761,18 +1761,47 @@ if (document.documentElement.classList.contains("embedded")) {
     return mine;
   }
 
+  // The Operate pane (UX plan PR 2b, 2026-11-19): this page in a narrow
+  // column beside the Roster and the Map. Layout only (app.css html.pane):
+  // the top row keeps STOP TX and the connection state; Levels, the TX panel
+  // and Filter/AGC wait behind "Controls", closed on each visit. Every
+  // control is still here, one click away; nothing that stops TX is behind
+  // it, and nothing is sent to the radio server.
+  function setPane(want) {
+    const root = document.documentElement;
+    if (want === root.classList.contains("pane")) return;
+    let b = $("#pane-controls");
+    if (!b) {
+      b = document.createElement("button");
+      b.id = "pane-controls";
+      b.type = "button";
+      b.className = "chip chip-mini pane-controls";
+      b.textContent = "Controls";
+      b.title = "Levels, the TX panel, Filter and AGC";
+      b.onclick = () => paneOpen(!root.classList.contains("pane-open"));
+      $(".topbar").insertBefore(b, $("#rtt"));
+    }
+    paneOpen(false);
+    root.classList.toggle("pane", want);
+  }
+  function paneOpen(open) {
+    document.documentElement.classList.toggle("pane-open", open);
+    const b = $("#pane-controls");
+    if (b) { b.setAttribute("aria-expanded", String(open)); on(b, open); }
+  }
+
   window.rrFrame = {
     v: 1,
     // shown:false (a hidden frame): no audio-spectrum socket unless listening,
-    // and the scope and meter loops stop. pane: html.pane, for a narrow
-    // pane (PR 2b); nothing uses it yet.
+    // and the scope and meter loops stop. pane: html.pane, the station's
+    // Operate pane (PR 2b): app.css's .pane rules and the Controls disclosure.
     setHost({ shown, pane } = {}) {
       if (typeof shown === "boolean") {
         audio.hostHidden = !shown;
         audio.syncSocket();
         pauseLoops(!shown);
       }
-      if (typeof pane === "boolean") document.documentElement.classList.toggle("pane", pane);
+      if (typeof pane === "boolean") setPane(pane);
     },
     listen,
     listening: running,

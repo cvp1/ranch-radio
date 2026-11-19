@@ -38,6 +38,39 @@ body.station { overflow: hidden; height: 100vh; display: flex; flex-direction: c
 .st-grid > .panel.addon { grid-column: 1 / -1; }   /* an add-on's view: the full width, not one of 12 columns */
 .st-empty { padding: 40px; color: var(--dim); text-align: center; }
 
+/* Layouts (UX plan PR 2b, 2026-11-19; station.js LAYOUTS): several views at
+   once, placed by a grid, never moved: re-parenting a radio's iframe reloads
+   it. Each member view carries data-pane; a view without one stays hidden.
+   position: relative, not static: #view-radio stays the containing block of
+   its absolutely positioned frames, so the frame's box is the pane's. */
+.st-main.lay { display: grid; gap: 10px; padding: 8px 12px 12px; grid-template-rows: auto minmax(0, 1fr); }
+.st-main.lay > .st-view { position: relative; inset: auto; min-width: 0; min-height: 0; }
+.st-main.lay > [data-pane="strip"] { grid-area: strip; overflow: visible; }
+.st-main.lay > [data-pane="radio"] { grid-area: radio; overflow: hidden; border-radius: var(--radius); }
+.st-main.lay > [data-pane="roster"] { grid-area: roster; }
+.st-main.lay > [data-pane="map"] { grid-area: map; }
+.op-bands { margin: 0; }
+.op-bands .bs-cells { grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); }   /* one row from 1100 px */
+/* An add-on's view in a pane: its panel fills the track (the Map's own height
+   follows it, map.css .rm-pane); a taller Roster scrolls in its pane. */
+.st-main.lay > .st-view > .st-grid { display: flex; flex-direction: column; height: 100%; max-width: none; margin: 0; padding: 0; }
+.st-main.lay > .st-view > .st-grid > .panel.addon { flex: 1 0 auto; display: flex; flex-direction: column; padding: 12px 14px; }
+.st-main.lay > .st-view > .st-grid > .panel.addon > .addon-body { flex: 1 0 auto; }
+/* Operate: 1500 px and wider, radio 36%, Roster 26%, Map 38%; narrower, the
+   radio on the left and the Roster over the Map. A member that is missing
+   (no-roster, no-map) gives its track to the others. Under 1100 px there is
+   no Operate (station.js sends the route home). */
+.st-main.lay-operate { grid-template-columns: minmax(0, 36fr) minmax(0, 26fr) minmax(0, 38fr);
+  grid-template-areas: "strip strip strip" "radio roster map"; }
+.st-main.lay-operate.no-map { grid-template-columns: minmax(0, 36fr) minmax(0, 26fr); grid-template-areas: "strip strip" "radio roster"; }
+.st-main.lay-operate.no-roster { grid-template-columns: minmax(0, 36fr) minmax(0, 38fr); grid-template-areas: "strip strip" "radio map"; }
+@media (max-width: 1499px) {
+  .st-main.lay-operate { grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "strip strip" "radio roster" "radio map"; }
+  .st-main.lay-operate.no-map { grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "strip strip" "radio roster"; }
+  .st-main.lay-operate.no-roster { grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "strip strip" "radio map"; }
+}
+
 .st-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; padding: 18px 20px 6px; }
 .st-card { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 14px; text-decoration: none;
   border: 1px solid var(--line); background: var(--panel, rgba(255,255,255,.02)); color: var(--muted); font-size: 13px; }

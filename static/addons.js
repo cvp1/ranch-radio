@@ -15,11 +15,17 @@
 //   data()             its current merged state, for other views (UX plan
 //                      5.3, PR 3a, 2026-11-19: this file keeps only the hello
 //                      snapshot); read through addons.data(name)
+//   layout({pane})     pane: true, it is shown in a narrow pane (the station's
+//                      Operate view, UX plan 5.3, PR 2b, 2026-11-19); false,
+//                      back at full width. Reversible, and it persists nothing.
+//                      Through addons.layout(name, opts); a script that
+//                      registers later gets the last one at register().
 // The page (tabs.js / station.js) sets a host: {place(name, panel), changed()}.
 // Uses common.js ($, esc, toast) and the page's send().
 
 const addons = (() => {
   const desc = {}, impl = {}, snaps = {}, panels = {}, loaded = {};
+  const lays = {};                 // name -> the last layout({pane}) asked for (PR 2b)
   // Messages for an add-on whose script hasn't registered yet: they are
   // newer than its hello snapshot, so register() replays them after it.
   // Dropping them left a panel on the snapshot (UV-PRO connected while its
@@ -124,8 +130,14 @@ const addons = (() => {
     const q = early[name] || [];
     delete early[name];
     if (desc[name]?.on) for (const m of q) i.event?.(m);
+    if (lays[name]?.pane) callLayout(name);   // registered while shown in a pane
     renderHead(name);
     host.changed();
+  }
+
+  // A broken layout() must not take the page's layout down with it.
+  function callLayout(name) {
+    try { impl[name]?.layout?.(lays[name]); } catch (e) { console.warn(`${name}: layout() failed`, e); }
   }
 
   return {
@@ -152,6 +164,14 @@ const addons = (() => {
       const d = desc[name];
       if (!d || d.error || !d.on) return null;
       return impl[name]?.data?.() ?? null;
+    },
+    // {pane: bool} for an add-on's view in a layout (the station's Operate,
+    // PR 2b). Only a change reaches the add-on.
+    layout(name, opts) {
+      const pane = !!opts?.pane;
+      if (!!lays[name]?.pane === pane) return;
+      lays[name] = { pane };
+      callLayout(name);
     },
   };
 })();

@@ -116,3 +116,8 @@
   .rm-list:not(.shut) { top: auto; bottom: 26px; left: 8px; right: 8px; width: auto; height: 42%; }
   .rm-card { bottom: calc(42% + 34px); }
 }
+
+/* In the station's Operate pane (UX plan PR 2b, 2026-11-19; map.js layout()):
+   the map fills the pane's height instead of the window's. */
+.addon-body.rm-pane { display: flex; flex-direction: column; }
+.rm-pane .rm-wrap { flex: 1 1 0; height: auto; min-height: 160px; }
