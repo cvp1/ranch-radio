@@ -118,6 +118,8 @@ try:
         # radio's server follows them, reach this page through the station.
         # #wl-modem is display: contents (no box of its own): look at a pill in it.
         check("modem strip: ARDOP shown for the HF via", bool(b.wait(f"({VISIBLE})('#wl-pill-snr')")), True)
+        check("modem strip: log followed, nothing read yet: waiting (not 'not tracked')",
+              bool(b.wait(f"({TEXT})('#wl-m-state') === 'ARDOP · waiting'", 10)), True)
         def ardop_lines(*lines):
             now = time.time()
             day = time.strftime("%Y%m%d", time.gmtime(now))
@@ -275,6 +277,8 @@ try:
     server, flog = start()
     try:
         open_panel("mail")
+        check("P0 no --winlink-ardop-log: the modem strip says not tracked",
+              bool(b.wait(f"({TEXT})('#wl-m-state') === 'ARDOP · not tracked'", 10)), True)
         check("P1 open ABC123", open_msg("ABC123"), True)
         got = wait_for(lambda: recs(flog, "read", mid="ABC123"), 5)
         check("P1   Pat got {read: true} for ABC123", [r["read"] for r in got or []], [True])
