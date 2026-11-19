@@ -97,8 +97,8 @@
 .gd-form .changed { color: var(--warm); }
 .gd-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
 .gd-actions .note { font: 11px var(--mono); color: var(--dim); }
-.chip.go { color: #07090d; background: var(--accent); border-color: var(--accent); }
-.chip.go:hover:not(:disabled) { color: #07090d; background: #5ff0d8; }
+.chip.go { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.chip.go:hover:not(:disabled) { color: var(--on-accent); background: var(--accent-hi); }
 .chip.warn { color: var(--warm); border-color: rgba(var(--warm-rgb), .45); }
 .chip.danger { color: #ff8a8a; border-color: rgba(var(--tx-rgb), .45); }
 .gd-note { font: 11.5px var(--mono); color: var(--dim); line-height: 1.55; }

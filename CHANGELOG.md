@@ -7,6 +7,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- Themes: a picker in the top bar (the palette button) sets the page's look: Midnight blue (the new default), Mint (classic), Amber, Sandstone, Aurora and High contrast. The choice is kept in the browser and reaches the station's radio and packet tabs at once. Status green and the on-air red stay as they were in every theme.
 - **Winlink strip: the modem's own state.** Beside the session state, the
   strip shows what the modem the next session uses is doing, read from the
   logs the radio's server already follows for station ID (ardopcf's

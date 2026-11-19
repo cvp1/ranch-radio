@@ -19,7 +19,7 @@
 .prop-badge {
   position: absolute; top: -7px; right: -6px; min-width: 16px; height: 15px; padding: 0 4px;
   border-radius: 8px; font: 700 9.5px/15px var(--mono); font-style: normal; text-align: center;
-  color: #07090d; background: rgba(var(--accent-rgb), .35); pointer-events: none;
+  color: var(--on-accent); background: rgba(var(--accent-rgb), .35); pointer-events: none;
 }
 .prop-badge.l2 { background: rgba(var(--accent-rgb), .55); }
 .prop-badge.l3 { background: rgba(var(--accent-rgb), .8); }

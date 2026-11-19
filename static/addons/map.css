@@ -36,7 +36,7 @@
 .rm-s.sel .rm-lab { font-weight: 700; font-size: 11px; }
 
 /* you */
-.rm-mep { fill: #fff; stroke: #39e1c6; stroke-width: 3; }
+.rm-mep { fill: #fff; stroke: var(--accent); stroke-width: 3; }
 .rm-meg.tx .rm-mep { fill: var(--rm-tx); stroke: #fff; }
 .rm-txring { fill: none; stroke: var(--rm-tx); stroke-width: 2.5; transform-box: fill-box; transform-origin: center;
   animation: rm-tx 1.8s ease-out infinite; pointer-events: none; }

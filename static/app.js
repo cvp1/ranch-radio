@@ -22,7 +22,10 @@ const SPANS = [[2500, "±2.5k"], [5000, "±5k"], [10000, "±10k"], [25000, "±25
 const FILTER_BW = { SSB: [3000, 2400, 1800], CW: [1200, 500, 250], RTTY: [2400, 500, 250],
   AM: [9000, 6000, 3000], FM: [15000, 10000, 7000] };
 const METER_KEYS = new Set(["smeter", "po", "swr", "alc"]);
-const ACCENT = [57, 225, 198], TXRED = [255, 77, 94], VIOLET = [167, 139, 250];
+const TXRED = [255, 77, 94], VIOLET = [167, 139, 250];
+// The accent follows the theme (theme.js); the canvases redraw with it.
+let ACCENT = theme.rgb("--accent-rgb", [57, 225, 198]);
+window.addEventListener("rr-theme", () => { ACCENT = theme.rgb("--accent-rgb", ACCENT); });
 
 // ============================================================ helpers
 
