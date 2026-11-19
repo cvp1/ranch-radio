@@ -14,7 +14,10 @@ A run is picked when a changed file is
     "tests/fake_civ.py": the servers, bridges and fakes a test spawns); a path
     in a source file's text (the catalog's prose) is documentation, not an edge;
   - the module the test is named after (foo.py -> foo_test, foo_*_test;
-    static/addons/foo.js -> the same);
+    static/addons/foo.js -> the same): the module with the LONGEST stem the
+    test's name starts with, so station_id_test is station_id.py's alone and
+    a change to station.py or static/station.css does not pick it by name
+    (station_page_test, with no station_page module, is still station's);
   - under static/ (a page asset): every *_page_test, plus the above.
 A change to the harness itself (tests/run_all.sh, tests/ci/, requirements.txt,
 install.sh, .github/) picks every run. Deleted files count as changed.
@@ -164,6 +167,21 @@ def _stem(path):
     return None
 
 
+def _module_stems():
+    """Every stem a module file gives (_stem): top-level *.py, addons/, ranch_radio/, static/."""
+    paths = list(ROOT.glob("*.py")) + [p for pkg in PACKAGES for p in (ROOT / pkg).glob("*.py")]
+    paths += [p for p in (ROOT / "static").rglob("*") if p.is_file()]
+    return {p.stem for p in paths}
+
+
+def _owner(name, stems):
+    """The module a run is named after: the LONGEST stem its name starts with.
+    station_id_test is station_id.py's, not station.py's (2026-11-19: the
+    shorter stem also claimed it, so a station.css change ran station_id_test)."""
+    hits = [s for s in stems if name == f"{s}_test" or name.startswith(f"{s}_")]
+    return max(hits, key=len, default=None)
+
+
 def select(changed):
     """{run name: the changed file that picked it} ("*" when the harness changed)."""
     changed = [rel(c) for c in changed]
@@ -175,6 +193,9 @@ def select(changed):
     memo = {}
     picked = {}
     page_tests = [name for name, _ in all_runs if name.endswith("_page_test")]
+    # A changed module that is gone (or new) still names its tests.
+    stems = _module_stems() | {s for s in map(_stem, changed) if s}
+    owner = {name: _owner(name, stems) for name, _ in all_runs}
     for c in changed:
         stem = _stem(c)
         for name, test in all_runs:
@@ -182,7 +203,7 @@ def select(changed):
                 continue
             if c in deps(test, idx, memo):
                 picked[name] = c
-            elif stem and (name == f"{stem}_test" or name.startswith(f"{stem}_")):
+            elif stem and owner[name] == stem:
                 picked[name] = c
             elif c.startswith("static/") and name in page_tests:
                 picked[name] = c

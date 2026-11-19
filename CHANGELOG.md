@@ -217,6 +217,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **`tests/affected.py` names a test after its longest module stem.** `station_id_test` belongs to
+  `station_id.py`, so a change to `station.py` or `static/station.css` no longer selects it by name
+  (19 tests had a shorter-stem owner too, e.g. `mesh_convs_test` under `mesh.*`). Imports and path
+  mentions still select as before.
 - A page message whose type is not a string no longer closes that page's connection; it is refused with a warning.
 - Every map (the Map tab, Mesh, MeshCore, APRS): the wheel no longer runs away. A sideways trackpad swipe zoomed out a whole level each time (five swipes went from zoom 5 to 1) and a momentum tail did too; now a sideways swipe pans, a vertical scroll adds up to a level per mouse notch or deliberate swipe, and a pinch zooms in finer steps.
 - Chat: a conversation hidden and shown again with no frame between (a quick tab switch) could still open on an old message.
