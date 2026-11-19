@@ -345,6 +345,14 @@ try:
           b.js(f"[{G}, {Q}].map((e) => e.querySelector('.rb-tag').textContent + ' ' + e.querySelector('.rb-tag').getAttribute('href'))"),
           ["STOPPED #/g90", "STOPPED #/qmx"])
     check("  the intents are done", b.js(f"Object.keys({INTENTS}).length"), 0)
+    # Each radio's info "STOP TX: transmitter released..." notice only repeats
+    # the bar's stop state, so it no longer toasts (2026-11-19). Give the
+    # notices time to land, then count. The QMX time-limit toast check above
+    # shows other notices still toast; warns (a real on-air release, a failed
+    # step) are not filtered.
+    time.sleep(1.5)
+    check("  the info STOP TX confirmations do not toast",
+          b.js("[...document.querySelectorAll('#toasts .toast.info')].filter((t) => /STOP TX:/.test(t.textContent)).length"), 0)
     shot("stop-1500")
     b.js("location.hash = '#/g90'")
     FRAME = "document.querySelector('#view-radio iframe[src*=\"r/g90/\"]')?.contentDocument"
