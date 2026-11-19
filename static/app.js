@@ -397,6 +397,23 @@ function bindFreq() {
 
 // ============================================================ spectrum + waterfall
 
+// Spot labels on the scope (UX plan PR 4a, 2026-11-19). The station feeds
+// them (rrFrame.spots); this page only draws them. Rank as the Roster sorts
+// (logsync_roster.NEED_RANK); colours are theme variables (themes.css).
+const SPOT_MAX = 200;             // a busy band, not a DoS: the rest are dropped, least needed first
+const SPOT_MERGE_PX = 40;         // labels closer than this collapse to one ("FT8 ×23 · 4 new")
+const SPOT_ROWS = 3;
+const SPOT_RANK = { dxcc: 0, dxcc_band: 1, dxcc_mode: 2, grid: 3, grid_band: 4, dxcc_unconfirmed: 5, call_band_mode: 6 };
+const SPOT_VAR = { dxcc: "dxcc", dxcc_band: "band", dxcc_mode: "mode", grid: "grid", grid_band: "grid",
+  dxcc_unconfirmed: "unconf", call_band_mode: "call" };
+const spotRank = (s) => SPOT_RANK[s.need] ?? 7;
+const spotOrder = (a, b) => spotRank(a) - spotRank(b) || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.f - b.f;
+function spotColours() {
+  const c = { pota: theme.rgb("--spot-pota-rgb", [70, 167, 88]), none: theme.rgb("--need-none-rgb", [160, 172, 184]) };
+  for (const v of new Set(Object.values(SPOT_VAR))) c[v] = theme.rgb(`--need-${v}-rgb`, c.none);
+  return c;
+}
+
 class Scope {
   constructor() {
     this.spec = $("#spectrum"); this.wf = $("#waterfall"); this.body = $("#scope-body");
@@ -406,6 +423,8 @@ class Scope {
     this.start = 0; this.end = 0; this.n = 0;
     this.avg = null; this.peak = null; this.floor = 30;
     this.dirty = false; this.hoverX = null;
+    this.spots = []; this.spotBoxes = []; this.spotHidden = 0; this.spotRgb = spotColours();
+    window.addEventListener("rr-theme", () => { this.spotRgb = spotColours(); this.dirty = true; });
     this.lut = this.makeLut();
     new ResizeObserver(() => this.resize()).observe(this.body);
     this.resize();
@@ -488,6 +507,82 @@ class Scope {
     this.dirty = true;
   }
 
+  // Spots: [{f (Hz), label, kind, need, tip}]. Display only (PR 4a): a label
+  // never tunes and a click on one sends nothing; tuning from it is PR 4c.
+  setSpots(list) {
+    const ok = [];
+    for (const s of Array.isArray(list) ? list : []) {
+      const f = Number(s?.f);
+      if (!Number.isFinite(f) || f <= 0 || typeof s.label !== "string" || !s.label.trim()) continue;
+      ok.push({ f: Math.round(f), label: s.label.trim().slice(0, 16), kind: String(s.kind || "").slice(0, 8),
+        need: s.need in SPOT_RANK ? s.need : null, tip: String(s.tip || "").slice(0, 300) });
+    }
+    this.spots = ok.sort(spotOrder).slice(0, SPOT_MAX);
+    this.dirty = true;
+  }
+
+  // Lay the spots out in CSS px (this.spotBoxes, which the pointer and the
+  // tests read): cull outside the span, collapse neighbours within
+  // SPOT_MERGE_PX, then place by need rank, then kind, in the first of
+  // SPOT_ROWS rows with room. A label with no room in any row is not drawn.
+  layoutSpots(c) {
+    const span = this.end - this.start, W = this.spec.clientWidth, dpr = this.dpr;
+    this.spotBoxes = []; this.spotHidden = 0;
+    if (!this.spots.length || span <= 0 || !W) return;
+    const at = (f) => ((f - this.start) / span) * W;
+    const vis = this.spots.filter((s) => s.f >= this.start && s.f <= this.end)
+      .map((s) => ({ s, x: at(s.f) })).sort((a, b) => a.x - b.x);
+    const groups = [];
+    for (const v of vis) {
+      const g = groups[groups.length - 1];
+      if (g && v.x - g.x < SPOT_MERGE_PX) g.push(v.s); else groups.push(Object.assign([v.s], { x: v.x }));
+    }
+    const labels = groups.map((g) => {
+      const m = [...g].sort(spotOrder), best = m[0];
+      if (m.length === 1) return { ...best, n: 1 };
+      const kinds = [...new Set(m.map((s) => s.kind || "?"))].join("/");
+      const fresh = m.filter((s) => s.need).length;
+      const tip = m.slice(0, 12).map((s) => s.tip || s.label).join("\n") + (m.length > 12 ? `\n… and ${m.length - 12} more` : "");
+      // The tick points at the most needed signal in the cluster.
+      return { ...best, n: m.length, label: `${kinds} ×${m.length}${fresh ? ` · ${fresh} new` : ""}`, tip };
+    }).sort(spotOrder);
+    c.font = `600 ${10 * dpr}px ${getComputedStyle(document.body).getPropertyValue("--mono")}`;
+    const rows = Array.from({ length: SPOT_ROWS }, () => []), H = 14, GAP = 3, TOP = 8;
+    for (const l of labels) {
+      const w = c.measureText(l.label).width / dpr + 8, x = at(l.f);
+      const left = clamp(x - w / 2, 0, Math.max(0, W - w));
+      const r = rows.findIndex((row) => row.every((b) => left + w + GAP <= b.left || left >= b.left + b.w + GAP));
+      if (r < 0) { this.spotHidden += l.n; continue; }
+      const box = { x, f: l.f, left, top: TOP + r * (H + 2), w, h: H, row: r, label: l.label, tip: l.tip, n: l.n,
+        need: l.need, kind: l.kind };
+      rows[r].push(box);
+      this.spotBoxes.push(box);
+    }
+  }
+
+  drawSpots(c, yv) {
+    const dpr = this.dpr, n = this.n;
+    for (const b of this.spotBoxes) {
+      const col = this.spotRgb[b.need ? SPOT_VAR[b.need] : b.kind === "POTA" ? "pota" : "none"] || this.spotRgb.none;
+      const x = Math.round(b.x * dpr) + 0.5, y0 = (b.top + b.h) * dpr;
+      const i = clamp(Math.round(((b.f - this.start) / (this.end - this.start)) * (n - 1)), 0, n - 1);
+      const y1 = yv(this.avg[i]);
+      c.strokeStyle = rgba(col, 0.75); c.lineWidth = dpr;
+      if (y1 > y0) { c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke(); }
+      c.fillStyle = "rgba(4,6,10,0.82)";
+      c.beginPath(); c.roundRect(b.left * dpr, b.top * dpr, b.w * dpr, b.h * dpr, 3 * dpr); c.fill();
+      c.strokeStyle = rgba(col, 0.95); c.stroke();
+      c.fillStyle = rgba(col, 1); c.textAlign = "center"; c.textBaseline = "middle";
+      c.fillText(b.label, (b.left + b.w / 2) * dpr, (b.top + b.h / 2 + 0.5) * dpr);
+    }
+  }
+
+  // The label under a pointer event, or null.
+  spotAt(e) {
+    const r = this.spec.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    return this.spotBoxes.find((b) => x >= b.left && x <= b.left + b.w && y >= b.top && y <= b.top + b.h) || null;
+  }
+
   fx(f) { return ((f - this.start) / (this.end - this.start)) * this.spec.width; }
   xf(xCss) { return this.start + (xCss / this.spec.clientWidth) * (this.end - this.start); }
 
@@ -499,7 +594,7 @@ class Scope {
     const bg = c.createLinearGradient(0, 0, 0, H);
     bg.addColorStop(0, "#081018"); bg.addColorStop(1, "#04060a");
     c.fillStyle = bg; c.fillRect(0, 0, W, H);
-    if (!this.n) return;
+    if (!this.n) { this.spotBoxes = []; return; }
 
     const top = this.floor + 105, bottom = this.floor - 18;
     const yv = (v) => H - ((v - bottom) / (top - bottom)) * (H - 22 * dpr) - 18 * dpr;
@@ -549,6 +644,10 @@ class Scope {
     c.strokeStyle = rgba(accent, 0.95); c.lineWidth = 1.4 * dpr;
     c.shadowColor = rgba(accent, 0.8); c.shadowBlur = 8 * dpr; c.stroke(); c.shadowBlur = 0;
 
+    // spot labels (PR 4a), under the split and dial markers
+    this.layoutSpots(c);
+    this.drawSpots(c, yv);
+
     // split TX marker
     if (S.split && S.freq_b > this.start && S.freq_b < this.end) {
       const xb = Math.round(this.fx(S.freq_b)) + 0.5;
@@ -572,7 +671,7 @@ class Scope {
 
   bindPointer() {
     const b = this.body, cur = $("#scope-cursor");
-    let drag = null, wheelAcc = { v: 0 };
+    let drag = null, wheelAcc = { v: 0 }, onSpot = false;
     const showCursor = (x) => {
       if (!this.n) return;
       const f = snap(this.xf(x), Math.max(step, 10));
@@ -581,6 +680,10 @@ class Scope {
       cur.firstElementChild.textContent = fmtFreq(f);
     };
     b.addEventListener("pointerdown", (e) => {
+      // A spot label is display only (PR 4a, 2026-11-19): pressing one starts
+      // no drag and its release tunes nothing, locked or not.
+      onSpot = !!this.spotAt(e);
+      if (onSpot) { drag = null; return; }
       if (!this.n || locked) return;
       b.setPointerCapture(e.pointerId);
       drag = { x: e.offsetX, f: S.freq, moved: false };
@@ -596,8 +699,10 @@ class Scope {
         }
       }
       if (e.pointerType === "mouse") showCursor(x);
+      if (!drag) { const s = this.spotAt(e); if (s) b.title = s.tip || s.label; else b.removeAttribute("title"); }
     });
     b.addEventListener("pointerup", (e) => {
+      if (onSpot) { onSpot = false; drag = null; return; }
       if (locked && this.n) { nudgeLock(); return; }
       if (drag && !drag.moved) tune(snap(this.xf(e.offsetX), Math.max(step, 10)));
       drag = null;
@@ -1671,6 +1776,9 @@ if (document.documentElement.classList.contains("embedded")) {
     },
     listen,
     listening: running,
+    // PR 4a (2026-11-19): the station's spots for this radio, drawn as labels
+    // on the scope. Display only: nothing goes to the radio server.
+    spots(list) { scope.setSpots(list); },
     onchange: null,
   };
 }

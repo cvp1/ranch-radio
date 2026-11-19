@@ -109,7 +109,7 @@ class Roster:
     def __init__(self, needs=None, clock=time.monotonic):
         self.needs, self.clock = needs, clock
         self.st = {}                       # the last Status: dial, mode, de_call, de_grid, band
-        self.rows = {}                     # call -> {"dec", "at", "parsed", "band", "mode", "cq": {"dec", "at"} | None}
+        self.rows = {}                     # call -> {"dec", "at", "parsed", "band", "mode", "dial", "cq": {"dec", "at"} | None}
 
     def status(self, d):
         from logsync_adif import band_of
@@ -127,8 +127,11 @@ class Roster:
         cq = {"dec": dec, "at": now} if p["cq"] else (old or {}).get("cq")
         if not p["grid"] and old and old["parsed"]["grid"]:
             p = dict(p, grid=old["parsed"]["grid"])         # "N0CALL K1ABC -10" keeps the grid its CQ gave
+        # The dial is stamped at arrival, like the band (2026-11-19, UX plan
+        # PR 4a): a row kept across a QSY must place its signal where it was
+        # heard (dial + df), never at the snapshot's newer dial.
         self.rows[p["call"]] = {"dec": dec, "at": now, "parsed": p, "band": self.st.get("band", ""),
-                                "mode": self.st.get("mode", ""), "cq": cq}
+                                "mode": self.st.get("mode", ""), "dial": self.st.get("dial"), "cq": cq}
         return p["call"]
 
     def prune(self):
@@ -167,7 +170,7 @@ class Roster:
                         "df": d["df"], "message": d["message"].strip(), "age": round(now - r["at"]),
                         "need": level, "reasons": reasons, "entity": e.name if e else "", "cont": e.cont if e else "",
                         "lotw": bool(self.needs and self.needs.lotw_user(call)), "km": km, "bearing": brg,
-                        "band": r["band"], "mode": r["mode"]})
+                        "band": r["band"], "mode": r["mode"], "dial": r.get("dial")})
         out.sort(key=lambda x: (not x["to_me"], NEED_RANK.get(x["need"], 7), -x["snr"]))
         return {"band": self.st.get("band", ""), "mode": self.st.get("mode", ""), "dial": self.st.get("dial"),
                 "rows": out[:MAX_ROWS], "needs": self.needs.summary() if self.needs else None}

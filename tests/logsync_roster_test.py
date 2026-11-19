@@ -11,6 +11,8 @@ calls), the layout it fixed is.
              null strings; Reply (4) carries the decode's fields unchanged
   roster     calls to us first, then by need, then signal; old rows age out;
              a stale decode can't be answered
+  dial       each row keeps the dial it arrived on (and exports it) across
+             a QSY; none before JTDX's first Status
   rig        JTDX's Status as what it is doing (transmitting, calling whom):
              told on a change only; silence or its Close reads as gone
   engine     a fake JTDX's decodes through the relay intake fill the roster
@@ -159,6 +161,24 @@ now[0] += 20
 check("  nothing fresh: nothing to answer", {r["call"]: r for r in ro.view()["rows"]}["JA1XYZ"]["answer"], None)
 ro.add(U.parse_decode(J.decode(msg="CQ JA1XYZ PM95", t_ms=91000, df=900)))
 check("  a new CQ: answerable again", {r["call"]: r for r in ro.view()["rows"]}["JA1XYZ"]["answer"], "cq")
+
+# ================================================================ each row's own dial (UX plan PR 4a, 2026-11-19)
+# The scope places a decode at the dial it was heard on plus its df; a row
+# kept across a QSY must not take the snapshot's newer dial.
+now = [9000.0]
+ro = R.Roster(clock=lambda: now[0])
+ro.status(U.parse_status(J.status(dial=14_074_000, de="N0CALL", de_grid="FN31")))
+ro.add(U.parse_decode(J.decode(msg="CQ N9ABC EN52", df=1200)))
+ro.status(U.parse_status(J.status(dial=7_074_000, de="N0CALL", de_grid="FN31")))      # JTDX QSYs; the row stays
+ro.add(U.parse_decode(J.decode(msg="CQ K6ABC CM87", df=900)))
+v = ro.view()
+check("dial: each row keeps the dial and band it arrived on, and the view exports them",
+      {r["call"]: (r["band"], r["dial"], r["df"]) for r in v["rows"]},
+      {"N9ABC": ("20m", 14_074_000, 1200), "K6ABC": ("40m", 7_074_000, 900)})
+check("  the snapshot's dial is JTDX's now, not the kept row's", v["dial"], 7_074_000)
+ro2 = R.Roster(clock=lambda: now[0])
+ro2.add(U.parse_decode(J.decode(msg="CQ N9ABD EN52", df=1200)))
+check("  a decode before any Status: no dial (the scope will not place it)", ro2.view()["rows"][0]["dial"], None)
 
 # ================================================================ the engine, end to end through the relay
 

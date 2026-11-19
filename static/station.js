@@ -165,6 +165,66 @@ const station = (() => {
       }
       a.setHost({ shown: shownView && view === id });
     }
+    pushSpots();
+  }
+
+  // ---------- spots on each radio's scope (UX plan PR 4a, 2026-11-19)
+  //
+  // Display only, and no new feed: the Roster's decodes and the Map's POTA
+  // spots, which this page already gets, go to each radio page's scope as
+  // labels (rrFrame.spots). Nothing here sends a radio anything; tuning from
+  // a label is PR 4c.
+  const spotSrc = { roster: [], pota: [] };
+  const spotBand = {};            // radio id -> the band its spots were last made for
+  // A POTA frequency is the whole field as a decimal in kHz, or nothing:
+  // parseFloat would take "14074abc" as 14074 and "1e4" as 10000.
+  const POTA_KHZ = /^\d{1,7}(?:\.\d{1,3})?$/;
+  const NEED_WORDS = { dxcc: "new DXCC", dxcc_band: "new DXCC on this band", dxcc_mode: "new DXCC in this mode",
+    grid: "new grid", grid_band: "new grid on this band", dxcc_unconfirmed: "DXCC not confirmed", call_band_mode: "new call" };
+  const bandName = (f) => { const b = bandOf(f || 0); return b ? b.label || `${b.n}m` : ""; };
+
+  function spotsFor(id) {
+    const l = live[id], band = bandName(l?.S?.freq), range = l?.cfg?.caps?.freq, out = [];
+    if (!band) return out;
+    for (const r of spotSrc.roster) {
+      // JTDX's dial when the row arrived plus the decode's audio offset: the
+      // signal's RF on USB. Only on a radio on the band the row was heard on.
+      if (r?.band !== band || !Number.isFinite(r.dial) || !Number.isFinite(r.df)) continue;
+      out.push({ f: r.dial + r.df, label: String(r.call || ""), kind: String(r.mode || "JTDX"), need: r.need || null,
+        tip: [`${r.call}${r.grid ? ` ${r.grid}` : ""} · ${r.snr} dB${r.entity ? ` · ${r.entity}` : ""}`,
+          NEED_WORDS[r.need] || "", r.message || ""].filter(Boolean).join("\n") });
+    }
+    for (const p of spotSrc.pota) {
+      const khz = String(p?.khz ?? "").trim();
+      if (!POTA_KHZ.test(khz)) continue;
+      const f = Math.round(Number(khz) * 1000);
+      if (!Number.isFinite(f) || f <= 0 || (Array.isArray(range) && (f < range[0] || f > range[1]))) continue;
+      out.push({ f, label: String(p.call || ""), kind: "POTA", need: null,
+        tip: [`${p.call} · POTA ${p.ref || ""}${p.name ? ` ${p.name}` : ""}`, `${p.mode || ""} ${khz} kHz`.trim()].join("\n") });
+    }
+    return out;
+  }
+  function pushSpots(only = null) {
+    for (const id of Object.keys(frames)) {
+      if (only && id !== only) continue;
+      const a = api(id);
+      if (!a || typeof a.spots !== "function") continue;    // a radio page from before PR 4a
+      spotBand[id] = bandName(live[id]?.S?.freq);
+      try { a.spots(spotsFor(id)); } catch { /* the frame's problem, not the station's */ }
+    }
+  }
+  // A radio changed band: its spots change with it.
+  function spotsRadio(id) { if (bandName(live[id]?.S?.freq) !== spotBand[id]) pushSpots(id); }
+  // The Roster's and the Map's messages: a hello snapshot (it says "on" too),
+  // a part, or switched on (with a snapshot) or off (its spots go).
+  function spotsTake(name, d) {
+    if ((name !== "roster" && name !== "map") || !d) return;
+    if (d.on === false) spotSrc[name === "roster" ? "roster" : "pota"] = [];
+    else if (d.snapshot) { spotsTake(name, d.snapshot); return; }
+    else if (name === "roster" && Array.isArray(d.roster?.rows)) spotSrc.roster = d.roster.rows;
+    else if (name === "map" && "pota" in d) spotSrc.pota = Array.isArray(d.pota) ? d.pota : [];
+    else return;
+    pushSpots();
   }
 
   // Called synchronously from the click: no await before rrFrame.listen().
@@ -253,6 +313,7 @@ const station = (() => {
             return;
           } else return;
           instruments(r.id, l.S);
+          spotsRadio(r.id);
           homeChanged();
           renderBar();
         };
@@ -1128,6 +1189,7 @@ const station = (() => {
         winlink.hello(m.winlink, cfg);
         mesh.hello(m.mesh, cfg);
         addons.hello(cfg.addons, m.addons);
+        for (const n of ["roster", "map"]) spotsTake(n, m.addons?.[n]);
         modules.hello(cfg);
         applyRadios(m);
       } else if (m.t === "radios") {
@@ -1152,6 +1214,7 @@ const station = (() => {
         if ("on" in m) modules.addonChanged();
       } else if (m.t === "addon") {
         addons.event(m);
+        spotsTake(m.addon, m);
         if ("on" in m) modules.addonChanged();
       } else if (m.t === "logsync_settings") {
         addons.event({ ...m, t: "addon", addon: "logbook", settings: true });   // the Logbook tab's Settings
