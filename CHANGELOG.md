@@ -214,6 +214,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **One STOP TX press no longer stacks a toast per radio saying it worked.** Each radio's "STOP
+  TX: transmitter released, Winlink stopped..." confirmation repeated what the rig bar's stop
+  state already shows, and on a phone the stack covered half the screen. Those stay in the bar.
+  A failed step and a release of a radio that really was on the air still toast.
 - **A radio's tab no longer repeats the station's header.** Inside the station page the radio
   page drops its Connected pill and theme picker (the station's bar has both); its STOP TX,
   latency and power button stay, and its pill comes back when the radio is offline or not
