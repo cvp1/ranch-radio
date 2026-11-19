@@ -59,6 +59,10 @@ a.st-card:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text)
      390 px). The words stay in its title. */
   #conn { width: 26px; padding: 0; justify-content: center; }
   #conn b { display: none; }
+  /* With a callsign in the bar (2026-11-19) the name and callsign together
+     pushed the theme picker onto a second row at 390 px: a phone shows the
+     callsign, and the station's name only when there is none. */
+  .station .brand:has(#st-call:not(:empty)) #st-name { display: none; }
 }
 
 /* The radio strip: one line per connected HF radio, on non-radio views. */

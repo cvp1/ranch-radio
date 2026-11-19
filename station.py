@@ -691,7 +691,26 @@ class Station:
                 "winlink": bool(self.addons and self.addons.get("winlink")),
                 "mesh": bool(self.addons and self.addons.get("mesh")), "station": True,
                 "addons": self.addons.describe() if self.addons else [],
-                "modules": self.modules is not None}
+                "modules": self.modules is not None, **self.identity()}
+
+    def identity(self):
+        """{"call", "grid"} for the page's top bar (2026-11-19, UX plan PR 0.4),
+        derived from what the station already has; the host file gains no field.
+        call: the logbook sync's block, else the callsign Pat reads from its own
+        config (Winlink), else the Propagation add-on's PSKReporter call. grid:
+        the one JTDX reports to the logbook sync, once it has. None when unknown.
+        Read-only: nothing here changes what any module does."""
+        def norm(v):
+            v = str(v or "").strip()
+            return v or None
+        call = norm((self.cfg.get("logsync") or {}).get("call"))
+        if not call:
+            call = norm(getattr(self.winlink, "mycall", None))
+        if not call and self.addons:
+            call = norm(getattr(self.addons.get("propagation"), "psk_call", None))
+        roster = getattr(self.logsync, "roster", None)
+        grid = norm((getattr(roster, "st", None) or {}).get("de_grid"))
+        return {"call": call.upper() if call else None, "grid": grid}
 
     async def handle(self, ws):
         self.clients.add(ws)
@@ -848,6 +867,8 @@ class Station:
         self.make_logsync(block)
         await self.start_logsync()
         self.logsync_changed(self.logsync_status())
+        # The block may carry a new callsign: the top bar follows without a reload.
+        self._broadcast(json.dumps({"t": "identity", **self.identity()}))
 
     # --- the Logbook tab's settings (logsync_settings.py, loaded by name like logsync)
 

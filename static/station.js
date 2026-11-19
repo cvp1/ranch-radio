@@ -234,7 +234,7 @@ const station = (() => {
     if (sc.freq !== S.freq) { sc.freq = S.freq || 0; sc.dirty = true; }
   }
 
-  // {title, icon, wide, state ok|off|tx|warn, tag, big, sub, meter: {pct, text, tx, scale},
+  // {title, full (the long title, on hover), icon, wide, state ok|off|tx|warn, tag, big, sub, meter: {pct, text, tx, scale},
   //  scope: radio id, lines: [html], href}
   function card(c) {
     const el = document.createElement("div");
@@ -243,12 +243,12 @@ const station = (() => {
       el.dataset.href = c.href;
       el.tabIndex = 0;
       el.setAttribute("role", "link");
-      el.title = `Open ${c.title}`;
+      el.title = `Open ${c.full || c.title}`;
       keyed.push(c.href);
       if (keyed.length <= 9) el.dataset.key = keyed.length;
     }
     const dot = { ok: "ok", tx: "tx", warn: "warn" }[c.state] || "off";
-    el.innerHTML = `<div class="st-card-head">${mission.icon(c.icon)}<i class="st-dot ${dot}"></i><b>${esc(c.title)}</b>` +
+    el.innerHTML = `<div class="st-card-head">${mission.icon(c.icon)}<i class="st-dot ${dot}"></i><b${c.full ? ` title="${esc(c.full)}"` : ""}>${esc(c.title)}</b>` +
       (c.tag ? `<span class="mc-tag ${c.state}">${esc(c.tag)}</span>` : "") +
       (el.dataset.key ? `<kbd class="mc-key">${el.dataset.key}</kbd>` : "") + `</div>` +
       (c.big ? `<div class="mc-big">${c.big}${c.sub ? ` <small>${c.sub}</small>` : ""}</div>` : "") +
@@ -379,9 +379,10 @@ const station = (() => {
       if (!r.present) offline.push([r.name, "#/home"]);
     }
     if (wlOn) put("messaging", winlinkCard());
+    // A short name on the card; the host file's full title on hover (2026-11-19).
     const packetTitle = packet.title || `Packet (${packetName()})`;
     if (packet.configured) {
-      put("messaging", { title: packetTitle, icon: "packet", state: packet.present ? "ok" : "off", tag: packet.present ? "" : "not running",
+      put("messaging", { title: `Packet · ${packetName()}`, full: packetTitle, icon: "packet", state: packet.present ? "ok" : "off", tag: packet.present ? "" : "not running",
         lines: [packet.present ? "APRS and the Winlink packet link" : "The packet hub is not running"],
         href: packet.present ? "#/packet" : null });
       if (!packet.present) offline.push([packetName(), "#/home"]);
@@ -478,6 +479,12 @@ const station = (() => {
     show();
   }
 
+  // The station's callsign and grid beside its name (station.py identity():
+  // derived from the logbook sync, Winlink or PSKReporter; 2026-11-19).
+  function showIdentity(c) {
+    $("#st-call").textContent = [c.call, c.grid].filter(Boolean).join(" · ");
+  }
+
   function setConn(ok) {
     const c = $("#conn");
     c.className = `pill ${ok ? "pill-ok" : "pill-wait"}`;
@@ -492,6 +499,7 @@ const station = (() => {
       if (m.t === "hello") {
         cfg = m.config || {};
         $("#st-name").textContent = cfg.name || "Station";
+        showIdentity(cfg);
         wlOn = !!cfg.winlink;
         meshOn = !!cfg.mesh;
         meshConnected = !!m.mesh?.status?.connected;
@@ -530,6 +538,9 @@ const station = (() => {
         modules.event(m);
       } else if (m.t === "notice") {
         toast(m.msg, m.level);
+      } else if (m.t === "identity") {      // the Logbook settings changed the callsign
+        cfg.call = m.call; cfg.grid = m.grid;
+        showIdentity(cfg);
       }
     };
     ws.onclose = () => {
