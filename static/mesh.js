@@ -20,6 +20,7 @@ const mesh = (() => {
     failed: ["✗", "Not delivered"], unknown: ["?", "No ACK came back; it may not have gone out"],
     queued: ["⋯", "Waiting for the part before it"] };
   let info = null, nodes = [], messages = [], connected = false, linkError = null, textMax = 200;
+  let names = {};           // node id -> {short, long, hw}: every name the station has seen (mesh.py remember_names)
   let partsMax = 9, partBytes = 194; // a long text goes as up to partsMax parts of partBytes (mesh.py split_text)
   let switchedOff = false;  // the Mesh add-on is off: the bridge is stopped and the node's port free
   let view = null;          // channel index, or "dm"
@@ -52,8 +53,9 @@ const mesh = (() => {
   const edits = {};         // section -> {field: value} not yet saved
 
   const byId = (id) => nodes.find((n) => n.id === id);
-  const short = (id) => byId(id)?.shortName || id || "?";
-  const long = (id) => byId(id)?.longName || id || "?";
+  // A node that has left the radio's list keeps the name it last had (names).
+  const short = (id) => byId(id)?.shortName || names[id]?.short || id || "?";
+  const long = (id) => byId(id)?.longName || names[id]?.long || id || "?";
   const hhmm = (t) => new Date(t * 1000).toTimeString().slice(0, 5);
   const myId = () => info?.me?.id;
   const bytes = (s) => new TextEncoder().encode(s).length;
@@ -157,11 +159,10 @@ const mesh = (() => {
       return [...by.values()].sort((a, b) => b.t - a.t);
     };
     const rows = (list) => group(list).map((g) => {
-      const n = byId(g.id);
       const how = g.how.map((k) => (HOW[k] || [k])[0]).join(" · ");
       const why = g.how.map((k) => (HOW[k] || [k, ""])[1]).filter(Boolean).join("; ");
       return `<button class="mesh-hear" data-id="${esc(g.id)}" title="${esc(`${long(g.id)} ${g.id}: ${why}`)}">` +
-        `<b>${esc(short(g.id))}</b><span class="mesh-long">${esc(n?.longName || g.id)}</span>` +
+        `<b>${esc(short(g.id))}</b><span class="mesh-long">${esc(long(g.id))}</span>` +
         `<span class="wl-dim">${esc(how)}</span><span class="wl-dim">${g.snr != null ? `${g.snr} dB` : ""}</span>` +
         `<span class="wl-dim">${esc(ago(g.t))}</span></button>`;
     }).join("");
@@ -555,7 +556,7 @@ const mesh = (() => {
     const rows = of[reachTab].sort((a, b) => (b.w?.km ?? -1) - (a.w?.km ?? -1)).map((r) =>
       `<button class="mm-row${r.id === selected ? " sel" : ""}" data-id="${esc(r.id)}" title="${esc(`${long(r.id)} ${r.id}` +
         `${r.inn ? `; hears you at ${db(r.x.inn)} dB` : ""}${r.out ? `; you hear it at ${db(r.x.out)} dB` : ""}`)}">` +
-      `<b>${esc(short(r.id))}</b><span class="mm-long">${esc(r.n?.longName || r.id)}</span>` +
+      `<b>${esc(short(r.id))}</b><span class="mm-long">${esc(long(r.id))}</span>` +
       `<span class="mm-num">${esc(r.w ? kmText(r.w) : "")}</span>` +
       `<span class="mm-num mm-out" title="You hear it at">${r.out ? `▼${db(r.x.out)}` : ""}</span>` +
       `<span class="mm-num mm-in" title="It hears you at">${r.inn ? `▲${db(r.x.inn)}` : ""}</span></button>`).join("");
@@ -941,6 +942,16 @@ const mesh = (() => {
     renderPackets();
   }
 
+  // The relay byte is the last byte of the node that passed a packet on: a name
+  // when exactly one node we know ends in it, the byte when none or several do.
+  function relayCell(b) {
+    const hex = Number(b).toString(16).padStart(2, "0");
+    const ids = new Set([...nodes.map((n) => n.id), ...Object.keys(names)].filter((id) => id?.endsWith(hex)));
+    const [only] = ids;
+    return ids.size === 1 ? `<span title="${esc(`${long(only)} ${only} (the only node we know ending in ${hex})`)}">${esc(short(only))}</span>`
+      : `<span title="${esc(ids.size ? `${ids.size} nodes we know end in ${hex}` : "The last byte of the node that passed it to us")}">…${hex}</span>`;
+  }
+
   function renderPackets() {
     const el = $("#mesh-packets");
     if (!el) return;
@@ -948,7 +959,7 @@ const mesh = (() => {
       `<td title="${esc(`${long(p.from)} ${p.from}`)}">${esc(short(p.from))}</td><td>${esc(portName(p.port))}</td>` +
       `<td>${p.mqtt ? "MQTT" : p.hops == null ? "" : p.hops === 0 ? "direct" : `${p.hops} hop${p.hops > 1 ? "s" : ""}`}</td>` +
       `<td>${p.hop_start ?? ""}</td><td>${p.snr != null ? `${p.snr} dB` : ""}</td><td>${p.rssi != null ? `${p.rssi} dBm` : ""}</td>` +
-      `<td title="The last byte of the node that passed it to us">${p.relay != null && p.hops ? `…${Number(p.relay).toString(16).padStart(2, "0")}` : ""}</td>` +
+      `<td>${p.relay != null && p.hops ? relayCell(p.relay) : ""}</td>` +
       `<td>${p.size != null ? `${p.size} B` : ""}</td></tr>`).join("");
     el.innerHTML = rows ? `<table class="mesh-talkers"><thead><tr><th>Time</th><th>From</th><th>Port</th><th>Path</th><th>Hop limit</th>` +
       `<th>SNR</th><th>RSSI</th><th>Relay</th><th>Size</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="wl-empty">None yet</div>`;
@@ -980,6 +991,7 @@ const mesh = (() => {
     if (!cfg?.mesh || !snap) return;
     info = snap.info;
     nodes = snap.nodes || [];
+    names = snap.names || {};
     messages = snap.messages || [];
     switchedOff = !!snap.off;
     connected = !!snap.status?.connected;
@@ -1024,6 +1036,7 @@ const mesh = (() => {
       renderCompose();
     }
     if (m.config) setConfig(m.config);
+    if (m.names) Object.assign(names, m.names);       // just what changed; the {nodes} right after it redraws
     if (m.nodes) {
       nodes = m.nodes;
       drawMap();

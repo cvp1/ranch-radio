@@ -113,6 +113,38 @@ HEALTH_EVERY_S = float(os.environ.get("MESH_HEALTH_EVERY_S", "10"))   # the Heal
 RX_FIELDS = ("port", "hops", "hop_start", "snr", "rssi", "mqtt", "relay", "ch", "to_me", "size")
 LINKS_KEEP_S = 7 * 86400      # NeighborInfo and traceroutes older than this are dropped
 NEIGHBORS_KEEP = 300          # nodes' NeighborInfo kept, newest first
+# Every name the node has ever told us, kept after the node drops it from its
+# NodeDB: messages, NeighborInfo and traceroutes name nodes long after that, and
+# showed bare "!id"s for ~60 of them (a live station, 2026-11-19). Newest first, capped.
+NAMES_KEEP = int(os.environ.get("MESH_NAMES_KEEP", "3000"))
+
+
+def remember_names(book, nodes, now=None, keep=NAMES_KEEP):
+    """Fold the node list's names into book {id: {"short", "long", "hw", "t"}}
+    in place. -> {id: rec} of the entries that changed (empty: nothing to save
+    or send). A name only changes what is kept when it does; t is when we last
+    saw the node with that name (its last_heard if it has one). The oldest go
+    first past keep."""
+    now = time.time() if now is None else now
+    changed = {}
+    for n in nodes or []:
+        nid = n.get("id")
+        short, long_ = n.get("shortName"), n.get("longName")
+        if not nid or not NODE_ID.match(str(nid)) or not (short or long_):
+            continue
+        rec = {"short": short or "", "long": long_ or "", "hw": n.get("hwModel") or "",
+               "t": n.get("last_heard") or now}
+        old = book.get(nid)
+        if old and all(old.get(k) == rec[k] for k in ("short", "long", "hw")):
+            continue
+        if old and rec["t"] < (old.get("t") or 0):
+            rec["t"] = old["t"]
+        book[nid] = changed[nid] = rec
+    if len(book) > keep:
+        for nid, _ in sorted(book.items(), key=lambda x: x[1].get("t") or 0)[:len(book) - keep]:
+            del book[nid]
+            changed.pop(nid, None)
+    return changed
 
 
 def hears_us(me, neighbors, traces, messages, now=None):
@@ -245,6 +277,8 @@ class MeshEngine:
                 self.cmd += ["--feed-tx"]
         self.log_path = os.path.expanduser(args.mesh_log) if args.mesh_log else None
         self.links_path = (os.path.splitext(self.log_path)[0] + "-links.json") if self.log_path else None
+        self.names_path = (os.path.splitext(self.log_path)[0] + "-names.json") if self.log_path else None
+        self.names = {}               # node id -> {"short", "long", "hw", "t"}: remember_names()
         self.proc = None
         self.connected = False
         self.error = None
@@ -413,6 +447,10 @@ class MeshEngine:
             self._auto_kick()
         elif ev == "nodes":
             self.nodes = m["nodes"]
+            changed = remember_names(self.names, self.nodes)
+            if changed:
+                self._save_names()
+                self._send({"names": changed})
             self.stats.sample(self.nodes)
             self._send({"nodes": self.nodes})
             self._health_soon()
@@ -627,7 +665,7 @@ class MeshEngine:
                 "requests": self.requests, "neighbors": self.neighbors,
                 "hears": self.hears(), "text_max": TEXT_MAX_BYTES, "parts_max": PARTS_MAX,
                 "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend,
-                "health": self.health(), "packets": list(self.stats.log)}
+                "health": self.health(), "packets": list(self.stats.log), "names": self.names}
 
     def health(self):
         return self.stats.summary(self.nodes)
@@ -991,10 +1029,39 @@ class MeshEngine:
         except OSError as e:
             log.warning("mesh links %s not written: %s", self.links_path, e)
 
+    def _load_names(self):
+        if not self.names_path:
+            return
+        try:
+            with open(self.names_path) as f:
+                d = json.load(f)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as e:
+            log.warning("mesh names %s not read: %s", self.names_path, e)
+            return
+        if isinstance(d, dict):
+            self.names = {k: v for k, v in d.items() if NODE_ID.match(str(k)) and isinstance(v, dict)}
+        log.info("mesh: names of %d nodes from %s", len(self.names), self.names_path)
+
+    def _save_names(self):
+        if not self.names_path:
+            return
+        tmp = self.names_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.names_path), exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(self.names, f)
+            os.replace(tmp, self.names_path)
+        except OSError as e:
+            log.warning("mesh names %s not written: %s", self.names_path, e)
+
     def _load(self):
         if not self.log_path:
             return
         self._load_links()
+        self._load_names()
         recs = []
         try:
             with open(self.log_path) as f:

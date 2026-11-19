@@ -20,6 +20,8 @@ Runs server.py --sim with the fake bridge as the Meshtastic node and checks:
   - who hears us (hears_us): a node whose NeighborInfo lists us, a
     traceroute's first hop, a node that ACKed our DM; NeighborInfo and
     traceroutes kept across a bridge restart and a server restart, mode 600
+  - every name the node has given is kept (names) after the node drops it,
+    and across a server restart, mode 600
   - a node list longer than asyncio's default 64 KiB line still arrives
   - the station asks its own node for its neighbours by itself (only that
     kind may go to this node)
@@ -443,6 +445,9 @@ try:
     page.send({"t": "mesh_node", "to": "!0000dead", "action": "remove"})
     check("remove: gone from the node list", bool(page.wait(
         lambda e: "nodes" in e and not any(x["id"] == "!0000dead" for x in e["nodes"]))), True)
+    late = Page()
+    check("  but its name is kept (names)", (late.hello["mesh"]["names"].get("!0000dead") or {}).get("short"), "TRK")
+    late.close()
     page.events.clear()
     page.send({"t": "mesh_reboot"})
     check("reboot: sent, and a notice", bool(page.wait(lambda e: e.get("t") == "notice" and "reboot saved" in e["msg"])), True)
@@ -478,6 +483,9 @@ with open(MESH_LOG) as f:
 LINKS = os.path.splitext(MESH_LOG)[0] + "-links.json"
 mode = stat.S_IMODE(os.stat(LINKS).st_mode) if os.path.exists(LINKS) else None
 check("links file is mode 600", oct(mode) if mode is not None else None, "0o600")
+NAMES = os.path.splitext(MESH_LOG)[0] + "-names.json"
+mode = stat.S_IMODE(os.stat(NAMES).st_mode) if os.path.exists(NAMES) else None
+check("names file is mode 600", oct(mode) if mode is not None else None, "0o600")
 check("the channel key is not in the server log", FAKE_KEY in out, False)
 
 server = start(key=BAD_KEY)
@@ -497,6 +505,8 @@ try:
     check("restart: RDG still hears us (from the links file)", h.get(("!0000cafe", "neighbor")), 7.25)
     check("restart: the traceroute's first hop kept", h.get(("!0000cafe", "trace")), 6.0)
     check("restart: BASE's NeighborInfo kept", [x["id"] for x in page.hello["mesh"]["neighbors"].get("!0000beef", {}).get("neighbors", [])], ["!0000cafe"])
+    check("restart: a removed node's name kept (from the names file)",
+          (page.hello["mesh"]["names"].get("!0000dead") or {}).get("long"), "Old Truck")
     check("restart: a reaction keeps emoji", (hist.get("👍", {}).get("emoji"), hist.get("👍", {}).get("reply_id")), (True, 1001))
     chans = {c["name"]: c for c in (page.latest("info", 3) or {}).get("channels", [])}
     check("wrong key: key_ok false", chans.get("HomeNet", {}).get("key_ok"), False)
