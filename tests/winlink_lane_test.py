@@ -10,6 +10,8 @@ never the apps' port. On that lane:
     but is still unkeyed once WINLINK_KEEPALIVE_S passes
   - disarming while keyed unkeys at once
   - the page that armed the session closing disarms it (operator gone)
+  - armed, a browser retune (set freq to another band, swap) is refused and
+    never brings an ATU tune; the session's own frequency still passes (S1)
 The apps' port keeps its old behaviour (keys without any arming).
 
     .venv/bin/python tests/winlink_lane_test.py [rig]
@@ -28,6 +30,7 @@ import aiohttp
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from rigctl_server import RIGCTL_KEEPALIVE_S, WINLINK_KEEPALIVE_S  # noqa: E402
+import rigs  # noqa: E402
 import testkit  # noqa: E402
 TX_OFF_CONFIRM = 1.0     # server.TX_OFF_CONFIRM_S: "not transmitting" must hold this long
 
@@ -345,6 +348,92 @@ finally:
     out = stop(server)
 check("tx cap: one forced release", released(out), ["forced"])
 check("tx cap: it was the time limit", any("3s transmit time limit" in ln for ln in out.splitlines()), True)
+
+# --- S1: while armed, the browser may not retune the radio under the session ---
+# (2026-11-19: a browser band change between Pat's transmissions moved the dial
+# and the band watch then fired an ATU tune carrier; the rigctl lane already
+# refused that. Only the session's own frequency, within LANE_QSY_SLOP_HZ, passes.)
+class StatePage(Page):
+    """A Page that also keeps every state message the server sent it."""
+
+    async def _open(self):
+        self.states = []
+        await super()._open()
+
+    async def _read(self):
+        async for msg in self.ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                m = json.loads(msg.data)
+                if m.get("t") in ("notice", "winlink"):
+                    self.notices.append(m)
+                elif m.get("t") == "state":
+                    self.states.append(m)
+
+    def seen(self, key):
+        return [m["d"][key] for m in list(self.states) if key in m.get("d", {})]
+
+    def warned(self, text):
+        return any(n.get("t") == "notice" and n.get("level") == "warn" and text in n.get("msg", "")
+                   for n in list(self.notices))
+
+    def armed(self):
+        flags = [n["armed"] for n in list(self.notices) if n.get("t") == "winlink" and "armed" in n]
+        return flags[-1] if flags else None
+
+
+SESSION_HZ, OTHER_BAND_HZ, B_HZ = 3588500, 7074000, 10136000
+HAS_B = "vfo_b" in rigs.PROFILES[RIG]["features"]     # the G90 has no VFO B over CAT
+server = start("--auto-tune")
+try:
+    time.sleep(4)                                  # past the auto-tune arming window
+    page = StatePage()
+    if HAS_B:
+        page.send({"t": "set", "k": "freq_b", "v": B_HZ})
+    page.send({"t": "set", "k": "freq", "v": 14074000})
+    check("S1 disarmed: browser set freq retunes", freq(), 14074000)
+    # the 20 m tune that change brings is over before arming
+    testkit.wait_for(lambda: 2 in page.seen("tuner") and page.seen("tuner")[-1] != 2, timeout=20)
+
+    page.send({"t": "winlink_arm", "v": True, "freq": SESSION_HZ, "qsy": SESSION_HZ})
+    check("S1 armed with a session frequency",
+          testkit.wait_for(lambda: page.armed() is True, timeout=40), True)
+    check("S1 armed: radio on the session frequency", freq(), SESSION_HZ)
+    check("S1 armed: radio in receive", ptt(), "0")
+    page.notices.clear()
+    page.states.clear()
+
+    page.send({"t": "set", "k": "freq", "v": OTHER_BAND_HZ})
+    check("S1 armed: other-band set freq refused with a notice",
+          testkit.wait_for(lambda: page.warned("freq unchanged")), True)
+    check("S1 armed: the page gets the real dial back",
+          any(m.get("confirmed") and m["d"].get("freq") == SESSION_HZ for m in list(page.states)), True)
+    time.sleep(4)                                  # past AUTO_TUNE_SETTLE_S: a tune would show by now
+    check("S1 armed: dial unchanged", freq(), SESSION_HZ)
+    check("S1 armed: tuner never 2", 2 in page.seen("tuner"), False)
+    check("S1 armed: no ATU tune notice",
+          [n["msg"] for n in list(page.notices) if "ATU tuning" in n.get("msg", "")], [])
+
+    page.send({"t": "set", "k": "freq", "v": SESSION_HZ + 5})
+    check("S1 armed: in-slop set freq accepted", freq(), SESSION_HZ + 5)
+
+    page.notices.clear()
+    page.send({"t": "swap"})
+    check("S1 armed: swap refused with a notice",
+          testkit.wait_for(lambda: page.warned("VFOs not swapped")), True)
+    check("S1 armed: swap left the dial", freq(), SESSION_HZ + 5)
+
+    page.send({"t": "winlink_arm", "v": False})
+    check("S1 disarmed", testkit.wait_for(lambda: page.armed() is False, timeout=10), True)
+    page.send({"t": "set", "k": "freq", "v": OTHER_BAND_HZ})
+    check("S1 disarmed: set freq retunes as before", freq(), OTHER_BAND_HZ)
+    if HAS_B:
+        page.send({"t": "swap"})
+        check("S1 disarmed: swap works as before", testkit.wait_for(lambda: freq() == B_HZ), True)
+    page.close()
+finally:
+    out = stop(server)
+check("S1: both refusals logged",
+      sum("refused browser" in ln and "Winlink session armed" in ln for ln in out.splitlines()), 2)
 
 server = start("--no-tx")
 try:
