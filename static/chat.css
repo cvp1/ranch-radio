@@ -180,6 +180,9 @@
   .chat-cols { grid-template-columns: minmax(0, 1fr); height: auto; }
   .chat-cols > .chat-rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); gap: 4px; }
   .chat-rail-head, .chat-rail-hint { display: none; }
+  /* ...but a heading's button (MeshCore's + #channel) stays, as a chip in the strip. */
+  .chat-rail-head:has(.chat-rail-add) { display: flex; flex: none; font-size: 0; padding: 0 4px; }
+  .chat-rail-head .chat-rail-add { font-size: 11px; }
   .chat-conv { width: auto; flex: none; grid-template-columns: auto auto auto; }
   .chat-conv-last, .chat-conv-top time { display: none; }
   .chat-main { height: 70vh; }
