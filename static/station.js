@@ -125,12 +125,13 @@ const station = (() => {
   // is PR 1d); the frequency opens the radio's tab. The one thing it sends is
   // the Release TX the strip always had: {t: "set", k: "tx", v: false}.
 
-  // Each radio's own socket, read only: its state, config (tx_stopped, caps),
-  // Winlink arm state and STOP TX latch (kept for PR 1b), and its notices.
+  // Each radio's own socket: its state, config (tx_stopped, caps), Winlink arm
+  // state, STOP TX latch and notices. It sends only Release TX and the bar's
+  // STOP TX (PR 1b), both messages the radio's own page sends.
   function syncLive() {
     for (const r of present()) {
       if (live[r.id]) continue;
-      const l = live[r.id] = { S: {}, ws: null, cfg: {}, armed: false, txStopped: null };
+      const l = live[r.id] = { S: {}, ws: null, cfg: {}, armed: false };
       const open = () => {
         if (live[r.id] !== l) return;
         const w = new WebSocket(withToken(`r/${encodeURIComponent(r.id)}/ws`));
@@ -143,13 +144,25 @@ const station = (() => {
           if (m.t === "hello") {
             Object.assign(l.S, m.state);
             l.cfg = m.config || {};
-            l.txStopped = l.cfg.tx_stopped || null;
             l.armed = !!m.winlink?.armed;
+            stopHeard(r.id, w, l.cfg.tx_stopped || null, true);
           } else if (m.t === "state") Object.assign(l.S, m.d);
-          else if (m.t === "config") { l.cfg = m.config || l.cfg; l.txStopped = l.cfg.tx_stopped || null; renderBar(); return; }
+          else if (m.t === "config") {
+            l.cfg = m.config || l.cfg;
+            if (latch[r.id]?.ws === w) stopHeard(r.id, w, l.cfg.tx_stopped || null, false);
+            renderBar();
+            return;
+          }
           else if (m.t === "winlink") { if ("armed" in m) { l.armed = !!m.armed; renderBar(); } return; }
-          else if (m.t === "tx_stop") { l.txStopped = m.stopped || null; renderBar(); return; }
+          else if (m.t === "tx_stop") { stopHeard(r.id, w, m.stopped || null, false); renderBar(); return; }
           else if (m.t === "notice") {
+            // tx_stop() reports a step it could not finish as a warn notice
+            // starting "STOP TX:" (server.py); the bar keeps it beside the
+            // stop state (UX plan PR 1b, 2026-11-19): it is the only signal.
+            if (/^STOP TX:/.test(m.msg || "") && latch[r.id]?.ws === w) {
+              latch[r.id].fail = m.level === "warn" ? m.msg : "";
+              renderBar();
+            }
             // A refusal or warning from the radio's server. Its own page shows
             // it when that page is the open view; elsewhere the station does.
             if (route() !== r.id) toast(`${r.name}: ${m.msg}`, m.level);
@@ -159,7 +172,12 @@ const station = (() => {
           homeChanged();
           renderBar();
         };
-        w.onclose = () => { if (live[r.id] === l) setTimeout(open, 2000); };
+        w.onclose = () => {
+          // What this socket said about the latch ends with it: the radio is
+          // unknown until the next socket's hello (UX plan PR 1b, 2026-11-19).
+          if (latch[r.id]?.ws === w) { delete latch[r.id]; renderBar(); }
+          if (live[r.id] === l) setTimeout(open, 2000);
+        };
       };
       open();
     }
@@ -216,11 +234,13 @@ const station = (() => {
       barSig = sig;
       el.innerHTML = "";
       for (const r of radios) el.append(rigEl(r, r.id === fid));
+      el.append(stopEl());
     }
     for (const r of radios) {
       const d = [...el.children].find((c) => c.dataset.id === r.id);
       if (d) fillRig(d, r);
     }
+    fillStop(el.querySelector(".rb-stop"));
   }
 
   function rigEl(r, focus) {
@@ -234,7 +254,7 @@ const station = (() => {
       (focus && r.present ? `<a class="rb-f" href="${href}"></a>` : `<span class="rb-f"></span>`) +
       `<span class="rb-mode"></span><span class="rb-band"></span>` +
       `<span class="rb-meter" aria-hidden="true"><i></i></span><span class="rb-lvl"></span>` +
-      `<span class="rb-tag" hidden></span><span class="rb-air" hidden>ON AIR</span>` +
+      `<a class="rb-tag" hidden></a><span class="rb-air" hidden>ON AIR</span>` +
       `<button type="button" class="rb-release" hidden title="Unkey the ${esc(r.name)} (anyone may unkey)">Release TX</button>`;
     d.querySelector(".rb-release").onclick = () => release(r.id);
     if (!focus) {
@@ -280,15 +300,204 @@ const station = (() => {
     }
     d.querySelector(".rb-meter i").style.width = `${clamp(pct, 0, 100).toFixed(0)}%`;
     put(".rb-lvl", lvl);
-    // Read-only lane state: STOP TX latched, or a Winlink session armed here.
+    // Lane state: STOP TX latched (on this socket; PR 1b), or a Winlink session
+    // armed here. The tag opens the radio's tab, where Resume and its confirm are.
     const tag = d.querySelector(".rb-tag");
-    const t = r.present && l?.txStopped ? "TX STOPPED" : r.present && l?.armed ? "WINLINK" : "";
+    const st = stopWord(r);
+    d.dataset.stop = st.k;
+    const t = st.k === "keyed" ? "STILL KEYED" : st.k === "stopped" ? "STOPPED" : r.present && l?.armed ? "WINLINK" : "";
     put(".rb-tag", t);
     tag.hidden = !t;
-    tag.title = t === "TX STOPPED" ? "STOP TX is latched on this radio: nothing keys it until it is resumed on its page"
+    tag.classList.toggle("stop", st.k === "stopped" || st.k === "keyed");
+    if (r.present) tag.href = `#/${encodeURIComponent(r.id)}`; else tag.removeAttribute("href");
+    tag.title = st.k === "keyed" ? "STOP TX is latched but the radio still reports transmitting: check the radio"
+      : st.k === "stopped" ? "STOP TX is latched on this radio: nothing keys it until it is resumed on its page (open it)"
       : t ? "A Winlink session has this radio's transmitter" : "";
     d.querySelector(".rb-air").hidden = !tx;
     d.querySelector(".rb-release").hidden = !tx;
+  }
+
+  // ---------- STOP TX for every HF radio (UX plan PR 1b, 2026-11-19)
+  //
+  // One button sends the radio page's own {t: "tx_stop"} on each radio's
+  // socket (the station proxies it; server.py handles it as from that page).
+  // Targets are the configured HF radios only, present or not; the packet
+  // hub's Off means something else (plan D1). Sending proves nothing: the
+  // station accepts the socket before the radio does, so a radio counts as
+  // stopped only when its *current* socket said so (a hello, config or
+  // tx_stop with a non-null tx_stopped). A closed socket makes it unknown.
+  //
+  // A press is also an intent per radio, kept in localStorage so a reload or
+  // a radio that was down still gets it (plan D2): on each fresh hello a live
+  // intent re-sends until the radio confirms. It ends on that confirmation,
+  // on a Resume, on Cancel here, or after STOP_INTENT_TTL_S; an expired one
+  // shows as not delivered and never re-sends, so an old press cannot undo
+  // a later deliberate Resume. A radio whose latch vanishes (its server
+  // restarted: the latch is process memory) is reported, never re-stopped.
+  const STOP_INTENT_KEY = "rr-stop-intent";
+  const STOP_INTENT_TTL_S = 600;
+  const latch = {};               // radio id -> {ws, stopped, sent, fail}: what its current socket said
+  const wasStopped = {};          // radio id -> true: this page has seen it latched
+  const unstopped = {};           // radio id -> "resumed" | "restarted": was stopped, is not now
+  let stopMem = {};               // the intents when localStorage is off
+  let stopTimer = 0;
+
+  // A test hook may shorten the TTL (never lengthen it): rr-stop-ttl-s.
+  function stopTtlMs() {
+    let t = NaN;
+    try { t = Number(localStorage.getItem("rr-stop-ttl-s")); } catch { /* storage off */ }
+    return (t > 0 && t < STOP_INTENT_TTL_S ? t : STOP_INTENT_TTL_S) * 1000;
+  }
+  function intents() {
+    try {
+      const v = JSON.parse(localStorage.getItem(STOP_INTENT_KEY) || "{}");
+      return v && typeof v === "object" ? v : {};
+    } catch { return { ...stopMem }; }
+  }
+  function saveIntents(v) {
+    stopMem = v;
+    try {
+      if (Object.keys(v).length) localStorage.setItem(STOP_INTENT_KEY, JSON.stringify(v));
+      else localStorage.removeItem(STOP_INTENT_KEY);
+    } catch { /* storage off: this page only */ }
+  }
+  const intentLive = (it) => !!it && Date.now() - it.at < stopTtlMs();
+  function endIntent(id) {
+    const v = intents();
+    if (id in v) { delete v[id]; saveIntents(v); }
+  }
+
+  // Send this radio a live intent's STOP TX if its current socket has said
+  // it is not latched.
+  function deliverStop(id) {
+    const k = latch[id];
+    if (intentLive(intents()[id]) && k && !k.stopped) sendStop(id);
+  }
+  // One radio's STOP TX on its current socket, once that socket's hello is in.
+  // A throw here must not keep the message from the radios after it.
+  function sendStop(id) {
+    const k = latch[id];
+    if (!k || live[id]?.ws !== k.ws || k.ws.readyState !== 1) return;
+    try {
+      k.ws.send(JSON.stringify({ t: "tx_stop" }));
+      k.sent = true;
+    } catch { /* this socket is going; its next hello re-sends a live intent */ }
+  }
+
+  // What socket `w` says about radio `id`'s latch. fresh: its hello (a new
+  // socket, so a new chance to deliver a live intent). Nothing a socket says
+  // before its hello counts.
+  function stopHeard(id, w, stopped, fresh) {
+    const prev = latch[id];
+    if (!fresh && prev?.ws !== w) return;
+    latch[id] = { ws: w, stopped, sent: !fresh && !!prev.sent, fail: (!fresh && prev.fail) || "" };
+    if (stopped) {
+      wasStopped[id] = true;
+      delete unstopped[id];
+      endIntent(id);                               // confirmed: the intent is done
+    } else if (wasStopped[id]) {
+      // Stopped before and not now: a Resume on this socket, or a hello from a
+      // radio server that restarted. Reported; never re-stopped by the page.
+      wasStopped[id] = false;
+      unstopped[id] = fresh ? "restarted" : "resumed";
+      if (!fresh) endIntent(id);                   // a Resume ends any intent
+      else deliverStop(id);                        // only a press made since then re-sends
+    } else if (fresh) deliverStop(id);
+    renderBar();
+  }
+
+  function stopAll() {
+    const now = Date.now(), v = intents();
+    for (const r of radios) { v[r.id] = { at: now }; delete unstopped[r.id]; }
+    saveIntents(v);
+    // Every reachable radio gets it, latched or not: a second STOP TX unkeys
+    // again (server.py tx_stop "again"). The rest get it on their next hello.
+    for (const r of radios) sendStop(r.id);
+    renderBar();
+  }
+
+  function cancelStop() {
+    saveIntents({});
+    for (const id of Object.keys(unstopped)) delete unstopped[id];
+    renderBar();
+  }
+
+  // One radio's stop state: {k, text}. k: keyed | stopped | expired |
+  // pending | offline | unknown | resumed | restarted | none.
+  function stopWord(r) {
+    const it = intents()[r.id], k = latch[r.id], S = live[r.id]?.S || {};
+    const known = r.present && k && live[r.id]?.ws === k.ws;
+    if (known && k.stopped) {
+      return S.tx ? { k: "keyed", text: "LATCHED BUT STILL KEYED: check the radio" } : { k: "stopped", text: "stopped" };
+    }
+    const where = !r.present ? "offline" : !known ? "unknown" : "";
+    if (it && !intentLive(it)) return { k: "expired", text: "not delivered (expired)" };
+    if (it) return { k: "pending", text: `not reached${where ? ` (${where})` : k?.sent ? " yet" : ""}` };
+    if (where) return { k: where, text: where };
+    if (unstopped[r.id] === "restarted") return { k: "restarted", text: "no longer stopped (its server restarted)" };
+    if (unstopped[r.id] === "resumed") return { k: "resumed", text: "resumed" };
+    return { k: "none", text: "not stopped" };
+  }
+
+  function stopEl() {
+    const d = document.createElement("div");
+    d.className = "rb-stop";
+    d.innerHTML = `<span class="rb-stop-state" role="status" aria-live="polite" hidden></span>` +
+      `<button type="button" class="rb-stop-cancel" hidden>Cancel</button>` +
+      `<button type="button" class="rb-stop-btn" title="STOP TX on every HF radio: unkey, stop and disarm Winlink, ` +
+      `and refuse every new transmission until each is resumed on its own page. Not the packet hub.">` +
+      `STOP TX <small>all HF</small></button>`;
+    d.querySelector(".rb-stop-btn").onclick = stopAll;
+    d.querySelector(".rb-stop-cancel").onclick = cancelStop;
+    return d;
+  }
+
+  function fillStop(d) {
+    if (!d) return;
+    const v = intents(), ws = radios.map((r) => ({ r, ...stopWord(r) }));
+    const latched = ws.filter((x) => x.k === "stopped" || x.k === "keyed");
+    const keyed = ws.filter((x) => x.k === "keyed");
+    const anyIntent = radios.some((r) => v[r.id]);
+    const restarted = ws.some((x) => x.k === "restarted");
+    // A radio seen latched whose socket is gone stays in view as unknown.
+    const lost = ws.some((x) => wasStopped[x.r.id] && (x.k === "unknown" || x.k === "offline"));
+    let state = "", text = "";
+    if (keyed.length) {
+      state = "keyed";
+      text = keyed.map((x) => `${x.r.name}: LATCHED BUT STILL KEYED: check the radio`).join(" · ");
+      const rest = ws.filter((x) => x.k !== "keyed" && x.k !== "stopped");
+      if (rest.length) text += " · " + rest.map((x) => `${x.r.name} ${x.text}`).join(" · ");
+    } else if (ws.length && latched.length === ws.length) {
+      state = "all";
+      text = "TX STOPPED";
+    } else if (latched.length || anyIntent || restarted || lost) {
+      state = latched.length ? "partial" : "none";
+      text = (latched.length || !anyIntent ? "" : "STOP TX reached no radio: ") +
+        ws.filter((x) => latched.length || x.k !== "none").map((x) => `${x.r.name} ${x.text}`).join(" · ");
+    }
+    const fails = ws.filter((x) => latch[x.r.id]?.fail && (x.k === "stopped" || x.k === "keyed"))
+      .map((x) => `${x.r.name}: ${latch[x.r.id].fail}`);
+    if (fails.length) text += (text ? " · " : "") + fails.join(" · ");
+    const el = d.querySelector(".rb-stop-state");
+    if (el.textContent !== text) el.textContent = text;
+    el.hidden = !text;
+    el.dataset.state = state;
+    el.title = state === "all" ? "Every HF radio reports STOP TX latched. Resume each on its own page." : text;
+    d.classList.toggle("bad", state === "keyed" || !!fails.length || ws.some((x) => x.k === "expired" || x.k === "restarted"));
+    d.classList.toggle("all", state === "all");
+    // Cancel ends pending intents; with only expired ones (or a lost latch
+    // to acknowledge) it dismisses them.
+    const c = d.querySelector(".rb-stop-cancel");
+    const pending = ws.some((x) => x.k === "pending");
+    c.hidden = !(anyIntent || restarted);
+    c.textContent = pending ? "Cancel" : "Dismiss";
+    c.title = pending ? "Stop re-sending STOP TX to the radios not reached yet (nothing is resumed)"
+      : "Clear the notes on STOP TX here (nothing is sent)";
+    // Re-draw when the next live intent expires.
+    clearTimeout(stopTimer);
+    const ttl = stopTtlMs();
+    const next = Math.min(...radios.map((r) => v[r.id]).filter(intentLive).map((it) => it.at + ttl - Date.now()));
+    if (Number.isFinite(next)) stopTimer = setTimeout(renderBar, Math.max(0, next) + 50);
   }
 
   // ---------- Mission Control (the home view)
