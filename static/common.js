@@ -23,6 +23,14 @@ const BANDS = [
 
 function bandOf(f) { return BANDS.find((b) => f >= b.lo && f <= b.hi); }
 
+// A frequency in Hz as MHz.kHz.Hz (14.074.000). Shared since the station's rig
+// bar shows it too (UX plan PR 1a, 2026-11-19; was app.js fmtFreq and a copy,
+// station.js fmtF). A missing frequency reads 0.000.000, never NaN.
+function fmtFreq(f) {
+  const s = String(Math.round(f || 0)).padStart(7, "0");
+  return `${s.slice(0, -6) || "0"}.${s.slice(-6, -3)}.${s.slice(-3)}`;
+}
+
 // Radio meter units -> human units (IC-7300 CI-V reference scales).
 function sUnits(raw) {
   if (raw <= 120) {

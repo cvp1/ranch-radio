@@ -238,18 +238,20 @@ try:
     check("  on again: Connected", b.wait(f"({TEXT})('#mesh-state') === 'Connected' && 'on'"), "on")
     check("  the dot comes back", b.wait(f"!{MESH_TAB}.classList.contains('off') && 'ok'"), "ok")
 
-    # The radio strip: every HF radio's frequency and TX on views that hide its page.
+    # The rig bar (UX plan PR 1a, 2026-11-19; was the radio strip, hidden on
+    # radio tabs and Mission Control): every HF radio on every view.
+    # tests/rigbar_page_test.py covers it in depth.
+    BAR = "[...document.querySelectorAll('#rig-bar .rb-rig')]"
     b.js("location.hash = '#/winlink'")
-    b.wait("document.querySelectorAll('#st-strip .sr').length === 2")
-    check("strip: both radios on Winlink",
-          b.js("[...document.querySelectorAll('#st-strip .sr b')].map((x) => x.textContent)"), ["G90", "QMX"])
-    check("  with a frequency", b.js("/\\d+\\.\\d{3}\\.\\d{3}/.test(document.querySelector('#st-strip .sr .f').textContent)"), True)
-    b.js("location.hash = '#/g90'")
-    b.wait("document.querySelector('#st-strip').hidden")
-    check("  hidden on a radio's own page", b.js("document.querySelector('#st-strip').hidden"), True)
-    b.js("location.hash = '#/home'")
-    b.wait("document.querySelector('#st-strip').hidden")
-    check("  hidden on Mission Control (its own on-air line says it)", b.js("document.querySelector('#st-strip').hidden"), True)
+    b.wait(f"{BAR}.length === 2 && {BAR}.every((r) => /\\d+\\.\\d{{3}}\\.\\d{{3}}/.test(r.querySelector('.rb-f').textContent))")
+    check("rig bar: both radios on Winlink",
+          b.js(f"{BAR}.map((r) => r.querySelector('.rb-name b').textContent)"), ["G90", "QMX"])
+    check("  with a frequency", b.js(f"/\\d+\\.\\d{{3}}\\.\\d{{3}}/.test({BAR}[0].querySelector('.rb-f').textContent)"), True)
+    for view in ("g90", "home"):
+        b.js(f"location.hash = '#/{view}'")
+        check(f"  visible on #/{view} too",
+              bool(b.wait(f"location.hash === '#/{view}' && !document.querySelector('#rig-bar').hidden && "
+                          "document.querySelector('#rig-bar').offsetParent !== null")), True)
 
     # Mission Control: live cards, what is on the air, what needs you, keys.
     CARD = "[...document.querySelectorAll('#st-cards .mc-card')].find((c) => c.querySelector('b').textContent === '{}')"
