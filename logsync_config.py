@@ -76,6 +76,10 @@ class Config:
             raise ValueError(f"logsync.call = {call!r}: a callsign")
         self.call = call.upper() if call else None
         self.ledger = os.path.expanduser(str(b.get("ledger", DEFAULT_LEDGER)))
+        adopt = b.get("adopt_wavelog", True)
+        if not isinstance(adopt, bool):
+            raise ValueError(f"logsync.adopt_wavelog = {adopt!r}: true or false")
+        self.adopt_wavelog = adopt       # false: a QSO only this ledger logged is ever sent from here
         self.wavelog = self._dest(b, "wavelog", ("url", "station_profile_id", "key_file"))
         if self.wavelog:
             url = self.wavelog["url"]

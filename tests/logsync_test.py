@@ -597,6 +597,42 @@ check("  A (accepted, unconfirmed) never queued for LoTW, nothing re-sent to QRZ
 h.close()
 
 
+# ================================================================ several hosts: adopt_wavelog
+
+# Each host sends only what its own JTDX logged. A host with adopt_wavelog
+# false takes nothing in from Wavelog: neither the first-start backfill nor a
+# QSO another host (or a hand) put there later. Control: the default adopts.
+for adopt, want_other in ((True, ["held_backfill"]), (False, [])):
+    h = H(start=False)
+    h.block["adopt_wavelog"] = adopt
+    h.wl.add(rec("N9OTH", qa))                        # another host's QSO, already in Wavelog
+    h.start()
+    label = "default" if adopt else "adopt_wavelog false"
+    check(f"{label}: another host's QSO in Wavelog at first start -> QRZ/LoTW {want_other}",
+          (h.state("N9OTH", "qrz"), h.state("N9OTH", "lotw")), (want_other, want_other))
+    h.send(J.logged_adif(T0))
+    check(f"  {label}: its own JTDX QSO goes to all three", testkit.wait_for(lambda: done(h, "N9ABC"), 15), True)
+    h.wl.add(rec("N9HND", qb))                        # later: hand-typed / another host
+    BG.run(h.eng.pull_wavelog())
+    if adopt:
+        check("  default: a QSO added to Wavelog later is adopted and sent to QRZ",
+              testkit.wait_for(lambda: h.state("N9HND", "qrz") == ["sent"], 10), True)
+    else:
+        check("  adopt_wavelog false: a QSO added to Wavelog later is not taken in", h.state("N9HND", "qrz"), [])
+    if not adopt:
+        time.sleep(0.5)
+        check("  adopt_wavelog false: nothing but its own QSO reached QRZ or TQSL",
+              (sorted(q["f"].get("CALL") for q in h.qrz.log),
+               [r["adif"].count("<EOR>") for r in h.tqsl_runs()]), (["N9ABC"], [1]))
+        check("  and its own QSO is still confirmed sent by the pull", h.state("N9ABC", "wavelog"), ["sent"])
+    h.close()
+try:
+    logsync.Config({"udp": {"bind": "127.0.0.1", "port": 2237}, "adopt_wavelog": "no"})
+    check("adopt_wavelog must be true or false", "accepted", "refused")
+except ValueError as e:
+    check("adopt_wavelog must be true or false (the refusal names it)", "adopt_wavelog" in str(e), True)
+
+
 # ================================================================ LoTW pull failures
 
 h = H(dests=("lotw",), tqsl={"mode": "exit", "exit": 0})
