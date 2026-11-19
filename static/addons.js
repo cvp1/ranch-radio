@@ -12,6 +12,9 @@
 //   off()              it was switched off: forget the device's state
 //   tab()              {dot: "ok"|"off"|"tx", off: bool, badge, title} for the nav
 //   card()             {state, lines: [html]} for the station's Mission Control
+//   data()             its current merged state, for other views (UX plan
+//                      5.3, PR 3a, 2026-11-19: this file keeps only the hello
+//                      snapshot); read through addons.data(name)
 // The page (tabs.js / station.js) sets a host: {place(name, panel), changed()}.
 // Uses common.js ($, esc, toast) and the page's send().
 
@@ -142,6 +145,13 @@ const addons = (() => {
       if (d.error) return { state: "off", lines: [esc(d.error)] };
       if (!d.on) return { state: "off", lines: ["Switched off", "Open →"] };
       return impl[name]?.card?.() || { state: "ok", lines: ["Open →"] };
+    },
+    // null when the add-on is not here, not loaded, switched off, or has no
+    // data(): a reader shows that as unknown, never as an empty state.
+    data(name) {
+      const d = desc[name];
+      if (!d || d.error || !d.on) return null;
+      return impl[name]?.data?.() ?? null;
     },
   };
 })();

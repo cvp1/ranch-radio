@@ -65,6 +65,16 @@ function bandChangeNote(autoTune) {
     : "On a station with auto-tune, a band change transmits a tune carrier (off here).";
 }
 
+// skywatch's propagation regions and their names. Shared since Mission
+// Control's band strip names a forecast's region too (UX plan PR 3a,
+// 2026-11-19; was propagation.js's own list): one name for a region on every
+// page. The order is propagation.js's colour slots.
+const REGION_NAMES = [
+  ["JA", "Japan"], ["NA_EAST", "NA east"], ["EU", "Europe"], ["SA", "S America"],
+  ["VK_ZL", "VK/ZL"], ["NA_WEST", "NA west"], ["OCEANIA_DEEP", "Pacific"],
+];
+const regionName = (r) => (REGION_NAMES.find(([k]) => k === r) || [r, String(r ?? "").replace(/_/g, " ")])[1];
+
 // Radio meter units -> human units (IC-7300 CI-V reference scales).
 function sUnits(raw) {
   if (raw <= 120) {
