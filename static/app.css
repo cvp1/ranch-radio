@@ -741,6 +741,58 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
    not show them. STOP TX, the latency and power stay. */
 .embedded .topbar #conn.pill-ok, .embedded .topbar .theme-pick { display: none; }
 
+/* The station's Operate pane (UX plan PR 2b, 2026-11-19; rrFrame.setHost
+   ({pane}) sets html.pane): this page in a column a third of the window wide.
+   Layout only. The slim top row keeps STOP TX, power and the connection state
+   (Connected included: here the pill is this radio's, beside the Roster and
+   Map); the stopped banner and its Resume stay. A compact VFO, the meters in
+   one row, the scope filling what is left, band and mode chips one row each.
+   Levels, the TX panel and Filter/AGC wait behind "Controls" (html.pane-open),
+   closed on each visit: still here, one click away, and none of them stops TX. */
+.pane-controls { display: none; }
+html.pane .pane-controls { display: inline-flex; align-items: center; }
+html.pane body { height: 100vh; overflow: hidden; display: flex; flex-direction: column; padding-bottom: 0; }
+html.pane .topbar { flex: none; flex-wrap: nowrap; max-width: none; width: 100%; padding: 5px 8px; gap: 6px; }
+html.pane .topbar #conn, html.pane .topbar #conn.pill-ok { display: inline-flex; width: auto; height: 22px; padding: 0 8px; font-size: 11px; }
+html.pane .topbar #conn b { display: inline; }   /* station.css's phone rule makes it a dot under 860 px */
+html.pane .tx-stop { height: 28px; padding: 0 12px; }
+html.pane .topbar .icon-btn { width: 28px; height: 28px; border-radius: 8px; }
+html.pane .tx-stop-banner { flex: none; margin: 0 8px 6px; padding: 6px 10px; }
+html.pane .grid { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px;
+  max-width: none; margin: 0; padding: 0 8px 8px; overflow-y: auto; }
+html.pane .grid > .panel { flex: none; padding: 8px 10px; box-shadow: none; }
+html.pane .vfo { gap: 2px; }
+html.pane .vfo-head .label { display: none; }
+html.pane .freq, html.pane .freq.long { font-size: 40px; padding: 2px 0; }
+html.pane .freq .unit { font-size: 11px; margin-left: 8px; padding-bottom: .5em; }
+html.pane .freq-entry { padding: 4px 0; }
+html.pane .freq-entry input { font-size: 26px; padding: 4px 10px; }
+html.pane .vfo-foot { gap: 6px 10px; }
+html.pane .vfo-foot .label { display: none; }
+html.pane .sub-freq { font-size: 14px; }
+html.pane .meters { flex-direction: row; align-items: center; gap: 10px; }
+html.pane .meter-top { flex: none; }
+html.pane .meter-top .label { display: none; }
+html.pane .s-read b { font-size: 18px; }
+html.pane .smeter { flex: 1 1 0; min-width: 0; height: 34px; }
+html.pane .tx-meters { flex: 1.4 1 0; min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+html.pane .tm { grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px; }
+html.pane .grid > .scope { flex: 1 0 220px; display: flex; flex-direction: column; padding: 8px; }
+html.pane .scope-head { margin-bottom: 6px; gap: 6px; }
+html.pane .scope-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+html.pane #spectrum { flex: 2 1 0; height: auto; min-height: 0; }
+html.pane #waterfall { flex: 3 1 0; height: auto; min-height: 0; }
+html.pane .bandmode > .label { display: none; }
+html.pane .bandmode .chips { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 6px; overflow-x: auto; scrollbar-width: none; }
+html.pane .bandmode #modes { margin-bottom: 0; }
+html.pane .bandmode .chips .chip { flex: none; min-width: 0; height: 28px; padding: 0 8px; }
+/* Never tucked away while this page could be transmitting: keyed, armed or
+   tuning, the TX panel (PTT, the arm switch) and Levels (TUNE) stay shown,
+   Controls closed or not, so what ends it is where it was started. */
+html.pane:not(.pane-open) body:not(.tx):not(:has(#btn-arm[aria-checked="true"], #t-tune.on))
+  :is(.bandmode .row-2, .levels, .txpanel) { display: none; }
+html.pane.pane-open .bandmode .row-2 { margin-top: 6px; }
+
 /* Single-radio page tabs (tabs.js): one view at a time, as on the station page. */
 body[data-view="radio"] #winlink, body[data-view="radio"] #mesh { display: none; }
 body[data-view="winlink"] .grid > .panel:not(#winlink),

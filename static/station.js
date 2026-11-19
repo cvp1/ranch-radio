@@ -48,7 +48,12 @@ const station = (() => {
     const nav = $("#st-nav");
     // Off or disconnected members leave the bar (nav.js tucks them); Mission Control
     // and, when there is one, the Modules tab name them.
-    const tucked = navGroups.render(nav, { view, first: [{ id: "home", label: "Mission Control", title: "Mission Control: what is on the air, what needs you, every radio and service (key 0)" }], items, end });
+    const first = [{ id: "home", label: "Mission Control", title: "Mission Control: what is on the air, what needs you, every radio and service (key 0)" }];
+    // Operate (PR 2b): only where it can be shown (a radio, the Roster or the
+    // Map on, a window 1100 px or wider).
+    navOperate = !!layoutPlan("operate");
+    if (navOperate) first.push({ id: "operate", label: LAYOUTS.operate.label, title: LAYOUTS.operate.title });
+    const tucked = navGroups.render(nav, { view, first, items, end });
     if (tucked.length) {
       nav.firstChild.title += `\nOff or not connected: ${tucked.join(", ")} (their cards are here)`;
       const mods = nav.querySelector('a[href="#/modules"]');
@@ -62,12 +67,23 @@ const station = (() => {
     let r = route();
     const radio = radios.find((x) => x.id === r);
     if (radio && !radio.present) { location.hash = "#/home"; return; }
+    // A layout that can't be shown now (too narrow, no radio, its add-ons
+    // off) sends the route home, as a radio that is gone does.
+    const plan = LAYOUTS[r] ? layoutPlan(r) : null;
+    if (LAYOUTS[r] && !plan) { location.hash = "#/home"; return; }
     const addon = addons.list().find((d) => d.name === r);
     if ((r === "winlink" && !wlOn) || (r === "mesh" && !meshOn) || (r === "packet" && !packet.configured)
         || (r === "modules" && !modules.enabled())) r = "home";
-    if (!radio && !addon && !["home", "winlink", "mesh", "packet", "modules"].includes(r)) r = "home";
+    if (!radio && !addon && !plan && !["home", "winlink", "mesh", "packet", "modules"].includes(r)) r = "home";
     for (const v of document.querySelectorAll(".st-view")) v.hidden = true;
-    if (radio) {
+    applyLayout(plan);
+    if (plan) {
+      for (const [, v] of plan.views) v.hidden = false;
+      frame(plan.radio);
+      for (const [id, f] of Object.entries(frames)) f.hidden = id !== plan.radio.id;
+      operateStrip();
+      document.title = `${LAYOUTS[r].label} · ${cfg.name || "Station"}`;
+    } else if (radio) {
       $("#view-radio").hidden = false;
       frame(radio);
       for (const [id, f] of Object.entries(frames)) f.hidden = id !== radio.id;
@@ -121,6 +137,73 @@ const station = (() => {
     }
   }
 
+  // ---------- layouts: several views at once (UX plan PR 2b, 2026-11-19)
+  //
+  // A layout route shows several views side by side without moving any of
+  // them: re-parenting an iframe reloads it (moveBefore() is not assumed),
+  // dropping the radio page's audio and state. show() un-hides each member's
+  // .st-view and marks it data-pane; station.css places them (.st-main.lay).
+  // Leaving takes both off and tells each add-on member layout({pane: false}).
+  // The radio pane is the focus radio's frame, told setHost({pane: true}).
+  // A member that is missing (an add-on off or broken) gives its track to
+  // the others; the layout is resolved again on a resize, an add-on going on
+  // or off, a radio lost and a focus change. Without a radio and one of its
+  // add-ons, or under minWidth, there is no layout and its route goes home.
+  //
+  // One visible view is still assumed in two places whose views are not
+  // members here: Mesh's unread count (show() clears it on route() ===
+  // "mesh"; the mesh event counts while route() !== "mesh") and Modules'
+  // visible() / shown(). Make both layout-aware before either view joins one.
+  const LAYOUTS = {
+    operate: { label: "Operate", minWidth: 1100, addons: ["roster", "map"],
+      title: "Operate: the focus radio, the Roster and the Map side by side" },
+  };
+  let laid = null;                // the layout on screen: {name, sig, radio (its id), addons}
+  let navOperate = false;         // the bar has the Operate tab
+
+  // What layout `name` would show now, or null when it can't be shown.
+  function layoutPlan(name) {
+    const L = LAYOUTS[name];
+    if (!L || window.innerWidth < L.minWidth) return null;
+    const radio = present().find((x) => x.id === focusId());
+    if (!radio) return null;
+    const on = L.addons.filter((n) => addons.list().some((d) => d.name === n && d.on && !d.error)
+      && document.getElementById(`view-addon-${n}`));
+    if (!on.length) return null;
+    return { name, radio, addons: on, missing: L.addons.filter((n) => !on.includes(n)),
+      views: [["strip", $(`#view-${name}`)], ["radio", $("#view-radio")],
+        ...on.map((n) => [n, document.getElementById(`view-addon-${n}`)])],
+      sig: `${name}|${radio.id}|${on.join(",")}` };
+  }
+
+  function applyLayout(plan) {
+    const main = $(".st-main"), was = laid;
+    for (const v of main.querySelectorAll(":scope > .st-view[data-pane]")) delete v.dataset.pane;
+    for (const c of [...main.classList]) if (c === "lay" || c.startsWith("lay-") || c.startsWith("no-")) main.classList.remove(c);
+    laid = plan ? { name: plan.name, sig: plan.sig, radio: plan.radio.id, addons: plan.addons } : null;
+    for (const n of was?.addons || []) if (!laid?.addons.includes(n)) addons.layout(n, { pane: false });
+    if (!plan) return;
+    main.classList.add("lay", `lay-${plan.name}`, ...plan.missing.map((n) => `no-${n}`));
+    for (const [pane, v] of plan.views) v.dataset.pane = pane;
+    for (const n of plan.addons) addons.layout(n, { pane: true });
+  }
+
+  // On a layout route: show() again when what it would show has changed.
+  function relayout() {
+    const r = route();
+    if (!LAYOUTS[r]) return;
+    const plan = layoutPlan(r);
+    if (!plan || plan.sig !== laid?.sig) show();
+  }
+
+  // Operate's band strip (PR 3a's, display only): the focus radio's bands.
+  function operateStrip() {
+    if (!laid) return;
+    const el = $("#op-bands");
+    bandStrip.render(el, { range: live[laid.radio]?.cfg?.caps?.freq || null });
+    $("#view-operate").hidden = el.hidden;
+  }
+
   // ---------- Listen in the rig bar (UX plan PR 1c, 2026-11-19)
   //
   // The focus radio's page is loaded early, hidden (other radios' on first
@@ -155,6 +238,7 @@ const station = (() => {
   }
   function hostFrames() {
     const view = route(), shownView = !$("#view-radio").hidden;
+    const paneId = laid?.radio || null;       // in a layout: the radio pane's frame (PR 2b)
     for (const id of Object.keys(frames)) {
       const a = api(id);
       if (!a) continue;
@@ -163,7 +247,7 @@ const station = (() => {
         a.onchange = onFrame[id];
         listening[id] = a.listening();
       }
-      a.setHost({ shown: shownView && view === id });
+      a.setHost({ shown: paneId ? id === paneId : shownView && view === id, pane: id === paneId });
     }
     pushSpots();
   }
@@ -290,6 +374,7 @@ const station = (() => {
             l.cfg = m.config || {};
             l.armed = !!m.winlink?.armed;
             stopHeard(r.id, w, l.cfg.tx_stopped || null, true);
+            if (laid?.radio === r.id) operateStrip();    // its bands (caps.freq) are in now
           } else if (m.t === "state") { /* taken above */ }
           else if (m.t === "config") {
             l.cfg = m.config || l.cfg;
@@ -308,7 +393,8 @@ const station = (() => {
               renderBar();
             }
             // A refusal or warning from the radio's server. Its own page shows
-            // it when that page is the open view; elsewhere the station does.
+            // it when that page is the open view (or Operate's radio pane,
+            // PR 2b); elsewhere the station does.
             // A STOP TX that worked raises an info notice per radio ("STOP TX:
             // transmitter released, Winlink stopped..."), which only repeats
             // the bar's stop state; it stays out of the toasts. Warns still
@@ -316,7 +402,7 @@ const station = (() => {
             // (server.py sends that only when the radio really was on the air)
             // (2026-11-19).
             const stopInfo = m.level !== "warn" && /^STOP TX:/.test(m.msg || "");
-            if (route() !== r.id && !claimed && !stopInfo) toast(`${r.name}: ${m.msg}`, m.level);
+            if (route() !== r.id && laid?.radio !== r.id && !claimed && !stopInfo) toast(`${r.name}: ${m.msg}`, m.level);
             return;
           } else return;
           instruments(r.id, l.S);
@@ -369,6 +455,7 @@ const station = (() => {
     prepareFocus();
     renderBar();
     homeChanged();                // the band strip follows the focus radio's bands (PR 3a)
+    relayout();                   // Operate's radio pane is the focus radio's frame (PR 2b)
   }
 
   // ---------- tuneFocus: the one way the station page retunes a radio
@@ -510,7 +597,7 @@ const station = (() => {
   }
   window.addEventListener("storage", (e) => {
     if (e.key === null || e.key === "ic7300.locked") lockChanged();
-    if (e.key === null || e.key === FOCUS_KEY) { barSig = ""; entryFor = null; renderBar(); }
+    if (e.key === null || e.key === FOCUS_KEY) { barSig = ""; entryFor = null; renderBar(); relayout(); }
   });
 
   // The bar's frequency entry. entryFor: the radio id it was opened for.
@@ -1272,8 +1359,24 @@ const station = (() => {
       changed() {
         if (queued) return;
         queued = true;
-        requestAnimationFrame(() => { queued = false; renderNav(); renderCards(); });
+        requestAnimationFrame(() => {
+          queued = false;
+          renderNav(); renderCards();
+          if (LAYOUTS[route()]) { relayout(); operateStrip(); }   // an add-on on or off; the strip's data (PR 2b)
+        });
       },
+    });
+    // A resize can cross Operate's 1100 px (the tab comes or goes, the route
+    // goes home) or its 1500 px (station.css re-places the panes by itself).
+    let resizeQueued = false;
+    window.addEventListener("resize", () => {
+      if (resizeQueued) return;
+      resizeQueued = true;
+      requestAnimationFrame(() => {
+        resizeQueued = false;
+        if (!!layoutPlan("operate") !== navOperate) renderNav();
+        relayout();
+      });
     });
     modules.mount($("#modules"), { changed: renderNav, visible: () => route() === "modules" });
     window.addEventListener("hashchange", show);
