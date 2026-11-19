@@ -95,6 +95,16 @@ a.rb-f:hover, a.rb-name:hover { text-decoration: underline; }
 .rb-air { font-weight: 700; letter-spacing: .04em; }
 .rb-release { height: 22px; padding: 0 8px; border-radius: 7px; border: 1px solid #ff4d5e;
   background: rgba(255,77,94,.12); color: #ff4d5e; font: 600 11px var(--mono); cursor: pointer; }
+/* Listen (UX plan PR 1c, 2026-11-19): the focus radio's receive audio, a
+   speaker beside its name; lit while the frame reports audio running. */
+.rb-listen { display: inline-grid; place-items: center; width: 26px; height: 24px; padding: 0; border-radius: 7px;
+  border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.rb-listen svg { width: 15px; height: 15px; fill: currentColor; stroke: none; }
+.rb-listen .rb-waves { fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; opacity: .35; }
+.rb-listen:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text); }
+.rb-listen.on { color: var(--accent); border-color: rgba(var(--accent-rgb), .6); background: rgba(var(--accent-rgb), .14); }
+.rb-listen.on .rb-waves { opacity: 1; }
+.rb-listen.busy { opacity: .6; }
 a.rb-tag { text-decoration: none; }
 .rb-tag.stop { color: #ff4d5e; background: rgba(255,77,94,.14); }
 /* STOP TX for every HF radio (UX plan PR 1b, 2026-11-19): at the right of the

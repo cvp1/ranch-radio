@@ -33,6 +33,28 @@ const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 
 // fmtFreq is in common.js (shared with the station's rig bar, 2026-11-19).
 
+// Animation loops the station can stop while this page is a hidden frame (UX
+// plan PR 1c, 2026-11-19). A display:none frame in a visible tab counts as
+// visible, so the browser may keep running its rAF callbacks; the host says
+// when it is hidden (rrFrame.setHost) instead. Display only: nothing here
+// keys, unkeys or times a transmission (the server does).
+const loops = { paused: false, list: [] };
+function rafLoop(fn) {
+  const l = { on: false };
+  const tick = () => {
+    if (loops.paused) { l.on = false; return; }
+    fn();
+    requestAnimationFrame(tick);
+  };
+  l.start = () => { if (!l.on) { l.on = true; requestAnimationFrame(tick); } };
+  loops.list.push(l);
+  l.start();
+}
+function pauseLoops(p) {
+  loops.paused = p;
+  if (!p) for (const l of loops.list) l.start();
+}
+
 function modeFamily(m) { return m === "LSB" || m === "USB" ? "SSB" : m.startsWith("CW") ? "CW" : m.startsWith("RTTY") ? "RTTY" : m; }
 
 // Receive passband relative to the dial frequency, in Hz.
@@ -292,6 +314,7 @@ function setLocked(v) {
   b.querySelector("span").textContent = v ? "LOCKED" : "UNLOCKED";
   freqEl.title = v ? "Locked · press LOCK (or L) to tune"
     : "Scroll a digit to tune · click to type a frequency";
+  frameChanged();
 }
 
 // A deliberate click on a locked control: point at the lock, don't act.
@@ -380,8 +403,7 @@ class Scope {
     new ResizeObserver(() => this.resize()).observe(this.body);
     this.resize();
     this.bindPointer();
-    const loop = () => { if (this.dirty) this.draw(); requestAnimationFrame(loop); };
-    requestAnimationFrame(loop);
+    rafLoop(() => { if (this.dirty) this.draw(); });
   }
 
   makeLut() {
@@ -746,6 +768,7 @@ const audio = {
 
   async start() {
     this.ctx = new AudioContext({ latencyHint: "interactive" });
+    this.ctx.onstatechange = frameChanged;   // a browser may suspend it: the station's bar follows
     this.gain = this.ctx.createGain();
     this.setVolume($("#vol").value);
     if (this.ctx.audioWorklet) {
@@ -764,10 +787,13 @@ const audio = {
     this.syncSocket();
   },
 
-  // The audio socket is open while listening, or while the audio spectrum needs it.
-  wantSpectrum: false,
+  // The audio socket is open while listening, or while the audio spectrum
+  // needs it and is on screen. hostHidden: the station holds this page as a
+  // hidden frame (UX plan PR 1c, 2026-11-19); a spectrum nobody sees is not
+  // worth a socket's 32 kB/s.
+  wantSpectrum: false, hostHidden: false,
   syncSocket() {
-    const want = !!this.ctx || this.wantSpectrum;
+    const want = !!this.ctx || (this.wantSpectrum && !this.hostHidden);
     if (want && !this.ws) this.openSocket();
     else if (!want && this.ws) { const w = this.ws; this.ws = null; w.close(); this.level = 0; }
   },
@@ -779,7 +805,7 @@ const audio = {
       const s = new Int16Array(e.data);
       let sum = 0; for (let i = 0; i < s.length; i += 4) sum += s[i] * s[i];
       this.level = Math.sqrt(sum / (s.length / 4)) / 32768;
-      if (this.wantSpectrum) audioSpectrum.push(s);   // before feed(): that transfers the buffer
+      if (this.wantSpectrum && !this.hostHidden) audioSpectrum.push(s);   // before feed(): that transfers the buffer
       if (this.ctx && this.feed) this.feed(e.data);   // player may still be loading
     };
     sock.onclose = () => {
@@ -1168,7 +1194,11 @@ function makeRing(outRate) {
   };
 }
 
-function setListen(onState) { on($("#btn-listen"), onState); $("#btn-listen span").textContent = onState ? "Listening" : "Listen"; }
+function setListen(onState) {
+  on($("#btn-listen"), onState);
+  $("#btn-listen span").textContent = onState ? "Listening" : "Listen";
+  frameChanged();
+}
 
 // ============================================================ transmit
 
@@ -1533,11 +1563,100 @@ setInterval(() => {
   $("#utc").textContent = `${d.toISOString().slice(11, 19)} UTC`;
 }, 1000);
 
-(function frame() {
+rafLoop(() => {
   drawSmeter();
   renderMeters();
   tickTx();
   $("#audio-level").style.width = `${clamp(audio.level * 400, 0, 100)}%`;
   micLevel.draw();
-  requestAnimationFrame(frame);
-})();
+});
+
+// ============================================================ the station's handle on this page
+
+// window.rrFrame (UX plan 5.2, PR 1c, 2026-11-19): when this page is a frame
+// of the station page, the station calls it directly (same origin, /r/<id>/).
+// A direct call, not postMessage: the bar's click activates this same-origin
+// frame too, and a synchronous call keeps the AudioContext inside that click
+// on stricter browsers. Receive only: nothing here sends the radio server a
+// message, so it never keys, retunes, or claims PTT or a Winlink session.
+function frameChanged() {
+  const f = window.rrFrame;
+  if (!f || typeof f.onchange !== "function") return;
+  try { f.onchange({ listening: f.listening(), locked }); } catch { /* the host's problem, not ours */ }
+}
+
+if (document.documentElement.classList.contains("embedded")) {
+  // A running context within this long, or Listen gives up (audio.start does
+  // not check: a context made outside a gesture stays suspended and silent).
+  const RUNNING_MS = 1500;
+  const running = () => !!audio.ctx && audio.ctx.state === "running";
+  const untilRunning = (ctx) => new Promise((done) => {
+    if (ctx.state === "running") { done(true); return; }
+    const t = setTimeout(() => { ctx.removeEventListener("statechange", seen); done(ctx.state === "running"); }, RUNNING_MS);
+    const seen = () => { if (ctx.state === "running") { clearTimeout(t); ctx.removeEventListener("statechange", seen); done(true); } };
+    ctx.addEventListener("statechange", seen);
+  });
+
+  async function listenOn(started) {
+    if (!started) {
+      if (audio.ctx) return running();
+      return false;
+    }
+    try {
+      await started;
+      if (await untilRunning(audio.ctx)) { setListen(true); return true; }
+    } catch (e) { console.warn("listen from the station failed", e); }
+    await audio.stop();
+    setListen(false);
+    on($("#btn-mic"), false);
+    return false;
+  }
+
+  async function listenOff() {
+    if (audio.ctx) { await audio.stop(); on($("#btn-mic"), false); }
+    setListen(false);
+    return false;
+  }
+
+  // Serialized: each call runs after the one before it settles, so rapid
+  // toggles end in the last state asked for. When nothing is running, the
+  // AudioContext is made and resumed synchronously, inside the caller's click.
+  let queue = null;
+  function listen(want) {
+    want = !!want;
+    const begin = () => {
+      if (!want) return listenOff();
+      if (!CFG.audio) return listenOn(null);
+      // resume() directly, not audio.resume(): its failure path logs to the
+      // radio server, and this path sends the server nothing.
+      const wake = () => { const c = audio.ctx; if (c && c.state !== "running") c.resume().catch(() => {}); };
+      if (audio.ctx) { wake(); return listenOn(Promise.resolve()); }
+      const started = audio.start();     // makes the context before its first await
+      wake();
+      return listenOn(started);
+    };
+    const p = queue ? queue.then(begin, begin) : begin();
+    const mine = p.then((v) => v, () => false);
+    queue = mine;
+    mine.then(() => { if (queue === mine) queue = null; });
+    return mine;
+  }
+
+  window.rrFrame = {
+    v: 1,
+    // shown:false (a hidden frame): no audio-spectrum socket unless listening,
+    // and the scope and meter loops stop. pane: html.pane, for a narrow
+    // pane (PR 2b); nothing uses it yet.
+    setHost({ shown, pane } = {}) {
+      if (typeof shown === "boolean") {
+        audio.hostHidden = !shown;
+        audio.syncSocket();
+        pauseLoops(!shown);
+      }
+      if (typeof pane === "boolean") document.documentElement.classList.toggle("pane", pane);
+    },
+    listen,
+    listening: running,
+    onchange: null,
+  };
+}

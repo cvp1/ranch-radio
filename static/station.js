@@ -94,6 +94,7 @@ const station = (() => {
       if (r === "modules") modules.shown();
       document.title = `${r === "home" ? "Mission Control" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
     }
+    hostFrames();
     renderNav();
     renderBar();
     if (r === "home") { renderCards(); refreshWlCounts(); }
@@ -105,6 +106,8 @@ const station = (() => {
     f.src = `r/${encodeURIComponent(r.id)}/${token ? `?token=${encodeURIComponent(token)}` : ""}`;
     f.title = `${r.name}: Ranch Radio`;
     f.allow = "microphone; autoplay";
+    f.hidden = route() !== r.id;          // a prepared frame (PR 1c) waits hidden
+    f.addEventListener("load", () => { delete listenWant[r.id]; hostFrames(); renderBar(); });
     $("#view-radio").append(f);
     frames[r.id] = f;
     return f;
@@ -112,8 +115,79 @@ const station = (() => {
 
   function dropGoneFrames() {
     for (const [id, f] of Object.entries(frames)) {
-      if (!radios.some((r) => r.id === id && r.present)) { f.remove(); delete frames[id]; }
+      if (!radios.some((r) => r.id === id && r.present)) {
+        f.remove(); delete frames[id]; delete listening[id]; delete listenWant[id];
+      }
     }
+  }
+
+  // ---------- Listen in the rig bar (UX plan PR 1c, 2026-11-19)
+  //
+  // The focus radio's page is loaded early, hidden (other radios' on first
+  // view), so the bar's speaker can start its receive audio from any view.
+  // The bar calls the frame's window.rrFrame (static/app.js) directly and
+  // synchronously inside the click: a parent click activates a same-origin
+  // frame, and a direct call keeps the AudioContext inside that gesture.
+  // Receive only: rrFrame.listen sends the radio server nothing, so it never
+  // keys, retunes, or takes PTT or a Winlink session (server.py compares
+  // socket identity, and the frame's socket asks for neither).
+  const listening = {};           // radio id -> the frame's last report (onchange)
+  const listenWant = {};          // radio id -> the state last asked for, while a call is out
+  const onFrame = {};             // radio id -> the onchange this page gave its rrFrame
+
+  function api(id) {
+    try {
+      const a = frames[id]?.contentWindow?.rrFrame;
+      return a && a.v === 1 ? a : null;
+    } catch { return null; }      // not same-origin (never, behind the station): no Listen
+  }
+  // Loaded, with no rrFrame: a radio page from before PR 1c. No Listen for it.
+  function oldPage(id) {
+    const f = frames[id];
+    try { return !!f && f.contentDocument?.readyState === "complete" && !api(id); } catch { return true; }
+  }
+
+  // The focus radio's frame, made early and hidden; tell every frame whether
+  // it is on screen (a hidden one drops its spectrum socket and loops).
+  function prepareFocus() {
+    const r = present().find((x) => x.id === focusId());
+    if (r) frame(r);
+  }
+  function hostFrames() {
+    const view = route(), shownView = !$("#view-radio").hidden;
+    for (const id of Object.keys(frames)) {
+      const a = api(id);
+      if (!a) continue;
+      if (a.onchange !== onFrame[id]) {
+        onFrame[id] = (st) => { listening[id] = !!st?.listening; renderBar(); };
+        a.onchange = onFrame[id];
+        listening[id] = a.listening();
+      }
+      a.setHost({ shown: shownView && view === id });
+    }
+  }
+
+  // Called synchronously from the click: no await before rrFrame.listen().
+  function toggleListen(r) {
+    const a = api(r.id);
+    if (!a) { cannotListen(r); return; }
+    const now = r.id in listenWant ? listenWant[r.id] : a.listening();
+    const want = !now;
+    listenWant[r.id] = want;
+    renderBar();
+    a.listen(want).then((ok) => {
+      if (listenWant[r.id] !== want) return;    // a later click owns the outcome
+      delete listenWant[r.id];
+      listening[r.id] = ok;
+      if (want && !ok) cannotListen(r);
+      renderBar();
+    }, () => { if (listenWant[r.id] === want) delete listenWant[r.id]; renderBar(); });
+  }
+  // The browser would not start audio from here (not ready yet, or it wants
+  // a gesture on the radio's own page): say how, and go there.
+  function cannotListen(r) {
+    toast("Open the radio tab and press Listen once", "warn");
+    location.hash = `#/${encodeURIComponent(r.id)}`;
   }
 
   // ---------- the rig bar (UX plan PR 1a, 2026-11-19; replaces the radio
@@ -211,6 +285,7 @@ const station = (() => {
   function setFocus(id) {
     try { localStorage.setItem(FOCUS_KEY, id); } catch { /* storage off: this page only */ }
     barSig = "";
+    prepareFocus();
     renderBar();
   }
 
@@ -251,12 +326,17 @@ const station = (() => {
     const name = `<i class="st-dot"></i><b>${esc(r.name)}</b>`;
     d.innerHTML = (r.present ? `<a class="rb-name" href="${href}" title="Open the ${esc(r.name)}'s page">${name}</a>`
         : `<span class="rb-name">${name}</span>`) +
+      (focus && r.present ? `<button type="button" class="rb-listen" aria-pressed="false" hidden>` +
+        `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2z"/>` +
+        `<path class="rb-waves" d="M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6 6 0 0 1 0 9"/></svg></button>` : "") +
       (focus && r.present ? `<a class="rb-f" href="${href}"></a>` : `<span class="rb-f"></span>`) +
       `<span class="rb-mode"></span><span class="rb-band"></span>` +
       `<span class="rb-meter" aria-hidden="true"><i></i></span><span class="rb-lvl"></span>` +
       `<a class="rb-tag" hidden></a><span class="rb-air" hidden>ON AIR</span>` +
       `<button type="button" class="rb-release" hidden title="Unkey the ${esc(r.name)} (anyone may unkey)">Release TX</button>`;
     d.querySelector(".rb-release").onclick = () => release(r.id);
+    const ls = d.querySelector(".rb-listen");
+    if (ls) ls.onclick = () => toggleListen(r);
     if (!focus) {
       // A compact radio: a click (not on its name, which opens its tab) focuses it.
       d.tabIndex = 0;
@@ -315,6 +395,19 @@ const station = (() => {
       : t ? "A Winlink session has this radio's transmitter" : "";
     d.querySelector(".rb-air").hidden = !tx;
     d.querySelector(".rb-release").hidden = !tx;
+    // Listen (PR 1c): the focus radio, when its server has audio and its page
+    // is not one from before rrFrame. Pressed while a start is out, too.
+    const ls = d.querySelector(".rb-listen");
+    if (ls) {
+      ls.hidden = !(r.present && l?.cfg?.audio && !oldPage(r.id));
+      const want = r.id in listenWant ? listenWant[r.id] : !!listening[r.id];
+      const p = String(want);
+      if (ls.getAttribute("aria-pressed") !== p) ls.setAttribute("aria-pressed", p);
+      ls.classList.toggle("busy", r.id in listenWant);
+      ls.classList.toggle("on", !!listening[r.id]);
+      const t = listening[r.id] ? `Stop listening to the ${r.name}` : `Listen to the ${r.name} (receive audio; volume on its page)`;
+      if (ls.title !== t) { ls.title = t; ls.setAttribute("aria-label", t); }
+    }
   }
 
   // ---------- STOP TX for every HF radio (UX plan PR 1b, 2026-11-19)
@@ -779,6 +872,7 @@ const station = (() => {
     packet = m.packet || packet;
     dropGoneFrames();
     syncLive();
+    prepareFocus();
     viaOptions();
     renderCards();
     // A station of one radio opens on that radio (a Mac with one rig: the page
