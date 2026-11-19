@@ -312,10 +312,25 @@ function setLocked(v) {
   on(b, v);
   b.setAttribute("aria-checked", String(v));
   b.querySelector("span").textContent = v ? "LOCKED" : "UNLOCKED";
-  freqEl.title = v ? "Locked · press LOCK (or L) to tune"
-    : "Scroll a digit to tune · click to type a frequency";
+  freqTitle();
   frameChanged();
 }
+
+function freqTitle() {
+  freqEl.title = (locked ? "Locked · press LOCK (or L) to tune"
+    : "Scroll a digit to tune · click to type a frequency") + `. ${bandChangeNote(CFG.auto_tune)}`;
+  $("#freq-input").title = `A frequency in MHz, kHz or Hz. ${bandChangeNote(CFG.auto_tune)}`;
+}
+
+// The lock is one key ("ic7300.locked") for every radio page and the
+// station's rig bar (UX plan PR 1d, 2026-11-19). A change made in another
+// document arrives here as a storage event (never in the writer's own);
+// take it, so a page never acts on a lock that was changed elsewhere.
+window.addEventListener("storage", (e) => {
+  if (e.key !== null && e.key !== "ic7300.locked") return;
+  const v = store.get("locked", true) !== false;
+  if (v !== locked) setLocked(v);
+});
 
 // A deliberate click on a locked control: point at the lock, don't act.
 let nudgeT = 0;
@@ -378,14 +393,6 @@ function bindFreq() {
   });
   input.addEventListener("blur", closeEntry);
   input.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEntry(); });
-}
-
-function parseFreq(txt) {
-  const v = parseFloat(txt.replace(",", "."));
-  if (!isFinite(v) || v <= 0) return null;
-  if (v < 100) return v * 1e6;          // MHz
-  if (v < 100_000) return v * 1e3;      // kHz
-  return v;                              // Hz
 }
 
 // ============================================================ spectrum + waterfall
@@ -1376,14 +1383,12 @@ const txLevel = {
 // ============================================================ build controls
 
 
+// The stack itself is common.js's bandStackTarget (one stored stack for this
+// page and the station's rig bar; UX plan PR 1d, 2026-11-19).
 function bandStack(target) {
   if (locked) { nudgeLock(); return; }
-  const stack = store.get("bandstack", {});
-  const cur = bandOf(S.freq);
-  if (cur) stack[cur.n] = { f: S.freq, m: S.mode };
-  store.set("bandstack", stack);
-  const b = BANDS.find((x) => x.n === target);
-  const mem = stack[target] || { f: b.f, m: b.m };
+  const mem = bandStackTarget(target, S);
+  if (!mem) return;
   tune(mem.f);
   if (mem.m !== S.mode) setRadio("mode", mem.m);
 }
@@ -1395,8 +1400,17 @@ function applyCaps() {
   buildFreq();
 
   const bands = $("#bands");
+  // Every control that can change band says what that does (UX plan PR 1d, 2026-11-19).
+  const note = bandChangeNote(CFG.auto_tune);
   bands.replaceChildren(...BANDS.filter((b) => b.hi > CAPS.freq[0] && b.lo < CAPS.freq[1])
-    .map((b) => chip(b.label || b.n + "m", b.n, bandStack)));
+    .map((b) => {
+      const c = chip(b.label || b.n + "m", b.n, bandStack);
+      c.title = `${b.label || b.n + " m"}: where this band was last left. ${note}`;
+      return c;
+    }));
+  $("#btn-ab").title = `Select VFO A / B. ${note}`;
+  $("#btn-swap").title = `Swap VFO A and B. ${note}`;
+  freqTitle();
   const modes = $("#modes");
   modes.replaceChildren(...MODE_ORDER.filter((m) => CAPS.modes.includes(m))
     .map((m) => chip(m, m, (v) => setRadio("mode", v))));
