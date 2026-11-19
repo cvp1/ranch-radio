@@ -241,17 +241,17 @@ class RemoteLane:
 class RadioWatch:
     """A standing, read-only WebSocket to one radio's server while it is
     present: its hello and every {"t": "winlink"} it sends (armed, codec_db,
-    the station-ID ledger) are kept as the radio's lane state, and changes
+    the station-ID ledger, the modems' status) are kept as the radio's lane state, and changes
     to the ledger and codec level are relayed to the station's pages when
     this is the radio the Winlink panel shows. A session has its own socket
     (RemoteLane); this one never arms or ends anything."""
 
-    KEYS = ("armed", "codec_db", "id")
+    KEYS = ("armed", "codec_db", "id", "modem")
     RIG = ("connected", "tx", "freq", "mode", "data")    # the radio's own word on what it is doing, for the Map tab
 
     def __init__(self, station, radio):
         self.station, self.radio = station, radio
-        self.state = {"armed": False, "codec_db": None, "id": None}
+        self.state = {"armed": False, "codec_db": None, "id": None, "modem": None}
         self.rig = {}                  # RIG keys from the radio's hello and state changes; {} until a hello
         self.seen = False              # a hello has been read since the radio appeared
         self._task = None
@@ -309,7 +309,7 @@ class RadioWatch:
         self.seen = True
         eng = self.station.winlink
         if changed and not first and eng is not None and self.station.panel_radio() is self.radio:
-            relay = {k: v for k, v in changed.items() if k in ("id", "codec_db")}
+            relay = {k: v for k, v in changed.items() if k in ("id", "codec_db", "modem")}
             if relay:
                 eng._send(relay)
 

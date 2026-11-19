@@ -37,6 +37,7 @@ import time
 from aiohttp import WSCloseCode, WSMsgType, web
 
 import codec_level
+import modem_status
 import rigctl_server
 import rigs
 import station_id
@@ -183,6 +184,11 @@ class Station(TxAudio):
         tracked = ({"ardop"} if getattr(args, "winlink_ardop_log", None) else set()) | (
             {"varahf"} if vara else set())
         self.id_ledger = station_id.IdLedger(tracked, on_change=self._id_changed)
+        # What each modem is doing, from the logs the ID ledger already reads
+        # (modem_status): the Winlink panel's strip. Coalesced: during a
+        # session ardopcf changes PTT and S/N on every frame.
+        self.modem = modem_status.ModemStatus(on_change=self._modem_changed)
+        self._modem_flush = None
         radio.on_state(self._on_state)
         radio.on_scope(self._on_scope)
         if hasattr(radio, "on_caps"):   # Hamlib learns capabilities after connecting
@@ -499,6 +505,19 @@ class Station(TxAudio):
 
     def _id_changed(self, snap):
         self._broadcast(json.dumps({"t": "winlink", "id": snap}))
+
+    MODEM_EVERY_S = 0.5              # at most two modem updates a second to the pages
+
+    def _modem_changed(self, _snap):
+        if self._modem_flush is not None:
+            return
+        def flush():
+            self._modem_flush = None
+            self._broadcast(json.dumps({"t": "winlink", "modem": self.modem.snapshot()}))
+        try:
+            self._modem_flush = asyncio.get_running_loop().call_later(self.MODEM_EVERY_S, flush)
+        except RuntimeError:         # no loop (a unit test feeding lines): nobody to tell
+            self._modem_flush = None
 
     LANE_WARN_EVERY_S = 10.0             # Hamlib retries a refused PTT; one WARNING per burst
 
@@ -1007,6 +1026,7 @@ class Station(TxAudio):
                                       "winlink": {"armed": self.winlink_armed,
                                                   "codec_db": self.codec and self.codec.current,
                                                   "id": self.id_ledger.snapshot(),
+                                                  "modem": self.modem.snapshot(),
                                                   "modems": list(self.hf_modems)},
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {}}))
@@ -1245,7 +1265,8 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
             await station.addons.start()
         app["ardop_log"] = None
         if getattr(args, "winlink_ardop_log", None):
-            app["ardop_log"] = station_id.ArdopLogTail(args.winlink_ardop_log, station.id_ledger)
+            app["ardop_log"] = station_id.ArdopLogTail(args.winlink_ardop_log, station.id_ledger,
+                                                         modem=station.modem)
             app["ardop_log"].start()
             log.info("station ID: following ardopcf's log in %s", args.winlink_ardop_log)
         app["winlink_rigctl"] = None
@@ -1260,7 +1281,8 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
             # does not listen, so a leftover xara can't key at all.
             app["winlink_vara_rigctl"] = await rigctl_server.serve(
                 station, "127.0.0.1", args.winlink_vara_rigctl_port, lane="winlink", modem="varahf")
-            app["vara_log"] = station.vara_tail = station_id.VaraLogTail(args.winlink_vara_log, station.id_ledger)
+            app["vara_log"] = station.vara_tail = station_id.VaraLogTail(args.winlink_vara_log, station.id_ledger,
+                                                                                 modem=station.modem)
             station.vara_tail.start()
             log.info("station ID: following xara's log %s", args.winlink_vara_log)
             if args.winlink_vara_label:

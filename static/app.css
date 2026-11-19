@@ -474,6 +474,12 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .wl-pill-state:has(.wl-state.warn) { border-color: rgba(255,226,176,.5); }
 .wl-pill.wl-pill-hot { border-color: rgba(var(--accent-rgb), .55); color: var(--accent); }
 .wl-strip .wl-state { font-size: 12px; }
+.wl-modem { display: contents; }
+.wl-modem[hidden] { display: none; }
+.wl-pill.wl-pill-stale > span:last-child { color: var(--dim); }
+.wl-pill.wl-pill-warm { border-color: rgba(var(--warm-rgb), .6); color: var(--warm); }
+.wl-pill.wl-pill-tx { border-color: rgba(255,90,94,.7); color: #ff9da1; background: rgba(255,77,94,.12); }
+.wl-pill.wl-pill-off > span:last-child { color: var(--dim); }
 .wl-cols.wl-cols3 { grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(280px, 380px); gap: 14px; }
 .wl-cols3 > div { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .wl-cols3 .wl-session { padding-right: 14px; border-right: 1px solid var(--line); }

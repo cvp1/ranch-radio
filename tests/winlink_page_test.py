@@ -114,6 +114,37 @@ try:
         check("my call shown", bool(b.wait(f"({TEXT})('#wl-mycall').includes('N9ABC')")), True)
         check("codec level shown (idle 0 dB)", bool(b.wait(f"({TEXT})('#wl-codec').includes('0 dB')")), True)
 
+        # The modem strip (modem_status.py): ardopcf's own log lines, as the
+        # radio's server follows them, reach this page through the station.
+        # #wl-modem is display: contents (no box of its own): look at a pill in it.
+        check("modem strip: ARDOP shown for the HF via", bool(b.wait(f"({VISIBLE})('#wl-pill-snr')")), True)
+        def ardop_lines(*lines):
+            now = time.time()
+            day = time.strftime("%Y%m%d", time.gmtime(now))
+            stamp = time.strftime("%H:%M:%S", time.gmtime(now)) + f".{int(now * 1000) % 1000:03d}"
+            with open(os.path.join(idlog, f"ARDOPDebug8515_{day}.log"), "a") as f:
+                for line in lines:
+                    f.write(f"{stamp} D {line}\n")
+        ardop_lines(" Command Trace TO Host CONNECTED N0DAJ 2000",
+                    " Command Trace TO Host NEWSTATE IRS ",
+                    "[Frame Type Decode OK  ] Ldr; S:N(3KHz) Early= 1.83 dB, Full -1.33 dB, Offset= -34.37 Hz:  "
+                    "MD Decode;9 ID=HFC, Type=H51: 4PSK.500.100.O, D1= 0.00, D2= 0.01",
+                    "Qual = 89", " Command Trace TO Host BUSY TRUE", "[Main.KeyPTT]  PTT-TRUE")
+        check("modem strip: the link state", bool(b.wait(f"({TEXT})('#wl-m-state') === 'ARDOP · receiving (IRS)'", 10)), True)
+        check("modem strip: partner and session bandwidth", b.js(f"({TEXT})('#wl-m-link')"), "N0DAJ · 2000 Hz")
+        check("modem strip: S/N of the last decoded frame", b.js(f"({TEXT})('#wl-m-snr')"), "-1.3 dB")
+        check("modem strip: the data frame's modulation and quality", b.js(f"({TEXT})('#wl-m-speed')"), "4PSK 500 Hz · Q 89")
+        check("modem strip: busy and PTT", (b.js(f"({TEXT})('#wl-m-busy')"), b.js(f"({TEXT})('#wl-m-ptt')")), ("YES", "TX"))
+        check("modem strip: PTT pill marked transmitting", b.js("document.querySelector('#wl-pill-ptt').classList.contains('wl-pill-tx')"), True)
+        ardop_lines(" Command Trace TO Host NEWSTATE DISC ", " Command Trace TO Host BUSY FALSE", "[Main.KeyPTT]  PTT-FALSE")
+        check("modem strip: link down keeps the last partner",
+              bool(b.wait(f"({TEXT})('#wl-m-link') === 'last N0DAJ'", 10)), True)
+        check("modem strip: idle again", (b.js(f"({TEXT})('#wl-m-state')"), b.js(f"({TEXT})('#wl-m-busy')"),
+                                          b.js(f"({TEXT})('#wl-m-ptt')")), ("ARDOP · not linked", "no", "RX"))
+        b.goto(f"http://127.0.0.1:{WEB}/#/winlink")
+        check("modem strip: a fresh page has it from the hello",
+              bool(b.wait(f"({TEXT})('#wl-m-link') === 'last N0DAJ'", 10)), True)
+
         got = b.wait(f"({TEXT})('#wl-list').includes('Test message')")
         check("inbox lists Pat's message", bool(got), True)
         b.js("document.querySelector('#wl-list .wl-msg[data-mid=\"ABC123\"]').click()")
@@ -598,6 +629,9 @@ try:
         check("VARA: the ID line says sent, by xara",
               (bool(b.wait(f"({TEXT})('#wl-id').startsWith('ID sent')", 5)),
                b.js("document.querySelector('#wl-id').title")), (True, "xara: CW ID (Closing)"))
+        check("VARA: the modem strip shows xara's speed level from its log",
+              bool(b.wait(f"({TEXT})('#wl-m-speed') === 'L3 · 300 bps TX'", 10)), True)
+        check("VARA: the strip names VARA HF for the VARA via", b.js(f"({TEXT})('#wl-m-state')").startswith("VARA HF · "), True)
         b.js("document.querySelector('#wl-mode [data-v=peer]').click()")
         set_via("ic7300:varahf")
         type_in("#wl-peer-call", "n0xyz")

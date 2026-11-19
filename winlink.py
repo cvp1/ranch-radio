@@ -791,8 +791,13 @@ class PatEngine:
         lane = self.lane or self.idle_lane
         return lane.state() if lane else {"armed": False, "codec_db": None, "id": None}
 
+    def modem_state(self):
+        """The panel radio's modems (modem_status, relayed by its RadioWatch),
+        during a session too: the session's own lane state does not carry it."""
+        return self.idle_lane.state().get("modem") if self.idle_lane else None
+
     def snapshot(self):
-        return {**self.lane_state(), "session": self.session_url, "peer": self.session_peer,
+        return {**self.lane_state(), "modem": self.modem_state(), "session": self.session_url, "peer": self.session_peer,
                 "via": self.lane.name if self.lane else None,
                 "modems": list(self.hf_modems), "blocked": self.blocked,
                 "inbound": self.inbound, "pat_busy": self.pat_busy, "listen": self.listen_state(),
