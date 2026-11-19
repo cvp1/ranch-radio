@@ -31,6 +31,40 @@ function fmtFreq(f) {
   return `${s.slice(0, -6) || "0"}.${s.slice(-6, -3)}.${s.slice(-3)}`;
 }
 
+// Typed text -> Hz, or null. Under 100 is MHz, under 100000 kHz, else Hz.
+// Shared since the station's rig bar takes a typed frequency too (UX plan
+// PR 1d, 2026-11-19; was app.js): one rule on both pages.
+function parseFreq(txt) {
+  const v = parseFloat(String(txt ?? "").replace(",", "."));
+  if (!isFinite(v) || v <= 0) return null;
+  if (v < 100) return v * 1e6;          // MHz
+  if (v < 100_000) return v * 1e3;      // kHz
+  return v;                              // Hz
+}
+
+// The band stack: where band `target` was last left, else its default.
+// Records `cur` ({freq, mode}: where the radio is now) for its own band
+// first. One stored stack (store "bandstack") for the radio page and the
+// station page (UX plan PR 1d, 2026-11-19; was the core of app.js
+// bandStack()). null: no such band.
+function bandStackTarget(target, cur) {
+  const b = BANDS.find((x) => x.n === target);
+  if (!b) return null;
+  const stack = store.get("bandstack", {}) || {};
+  const here = cur && cur.freq ? bandOf(cur.freq) : null;
+  if (here) stack[here.n] = { f: cur.freq, m: cur.mode };
+  try { store.set("bandstack", stack); } catch { /* storage off: the defaults */ }
+  return stack[target] || { f: b.f, m: b.m };
+}
+
+// Said in the title of every control that can change band (UX plan PR 1d,
+// 2026-11-19): with auto-tune on, the radio server tunes the ATU on a band
+// it has not tuned this run, and a tune is a carrier on the air.
+function bandChangeNote(autoTune) {
+  return autoTune ? "Auto-tune is on here: a band change transmits a tune carrier."
+    : "On a station with auto-tune, a band change transmits a tune carrier (off here).";
+}
+
 // Radio meter units -> human units (IC-7300 CI-V reference scales).
 function sUnits(raw) {
   if (raw <= 120) {

@@ -230,8 +230,9 @@ try:
     check("  the compact radio: name and frequency, no meter",
           (b.js(f"{SHOWN}({Q}.querySelector('.rb-f'))"), b.js(f"{SHOWN}({Q}.querySelector('.rb-meter'))")), (True, False))
     check("  a radio's name opens its tab", b.js(f"{G}.querySelector('a.rb-name').getAttribute('href')"), "#/g90")
-    check("  the focus frequency is display: it opens the tab",
-          b.js(f"{G}.querySelector('.rb-f').tagName + ' ' + {G}.querySelector('.rb-f').getAttribute('href')"), "A #/g90")
+    # PR 1d (2026-11-19): the focus frequency is a typed entry (tune_path_page_test).
+    check("  the focus frequency is the typed entry's button, beside the padlock",
+          b.js(f"{G}.querySelector('.rb-f').tagName + ' ' + !!{G}.querySelector('.rb-lock')"), "BUTTON true")
     b.goto(f"http://127.0.0.1:{WEB}/#/home")
     check("  the focus survives a reload", bool(b.wait(f"{G}?.classList.contains('focus') && "
           f"{FREQ_RE}.test({TEXT}({G}, '.rb-f'))", 20)), True)

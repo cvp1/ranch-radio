@@ -84,6 +84,22 @@ a.st-card:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text)
 .rb-f { color: var(--accent); text-decoration: none; font-variant-numeric: tabular-nums; }
 .rb-rig.focus .rb-f { font-size: 15px; font-weight: 600; }
 a.rb-f:hover, a.rb-name:hover { text-decoration: underline; }
+/* The focus frequency is typed in place (UX plan PR 1d, 2026-11-19); the
+   padlock is the radio pages' lock. Locked, a click flashes the padlock. */
+button.rb-f { padding: 0; border: 0; background: none; font: inherit; color: var(--accent); cursor: text; }
+.rb-rig.focus button.rb-f { font-size: 15px; font-weight: 600; }
+button.rb-f:hover { text-decoration: underline dotted; }
+.rb-entry { display: inline-flex; }
+.rb-in { width: 9.5em; height: 24px; padding: 0 6px; border-radius: 6px; border: 1px solid rgba(var(--accent-rgb), .6);
+  background: rgba(0,0,0,.3); color: var(--text); font: 600 14px var(--mono); }
+.rb-lock { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border-radius: 7px;
+  border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.rb-lock svg { width: 14px; height: 14px; fill: currentColor; }
+.rb-lock .rb-shackle { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.rb-lock:not(.on) .rb-shackle { transform: translate(3px, -1px); }
+.rb-lock:not(.on) { color: var(--accent); border-color: rgba(var(--accent-rgb), .6); }
+.rb-lock.flash { animation: rb-lock-flash .5s 2; }
+@keyframes rb-lock-flash { 50% { color: #fff; border-color: var(--accent); box-shadow: 0 0 14px rgba(var(--accent-rgb), .8); } }
 .rb-rig.off .rb-f { color: var(--dim); }
 .rb-rig.tx .rb-f, .rb-rig.tx .rb-lvl, .rb-air { color: #ff4d5e; }
 .rb-meter { width: 64px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.08); overflow: hidden; }

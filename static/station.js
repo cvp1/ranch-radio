@@ -195,9 +195,10 @@ const station = (() => {
   // whether an HF radio was transmitting). Every configured HF radio, on every
   // view, Mission Control and the radios' own tabs included: name and state
   // dot, frequency, mode, band, S-meter (on the air: watts, red), ON AIR with
-  // Release TX. Status only: nothing here retunes a radio (typing a frequency
-  // is PR 1d); the frequency opens the radio's tab. The one thing it sends is
-  // the Release TX the strip always had: {t: "set", k: "tx", v: false}.
+  // Release TX. It sends the Release TX the strip always had ({t: "set", k:
+  // "tx", v: false}), STOP TX (PR 1b) and, from PR 1d (2026-11-19), a typed
+  // frequency for the focus radio, through tuneFocus: the one way this page
+  // retunes a radio. The radio's name opens its tab.
 
   // Each radio's own socket: its state, config (tx_stopped, caps), Winlink arm
   // state, STOP TX latch and notices. It sends only Release TX and the bar's
@@ -205,7 +206,9 @@ const station = (() => {
   function syncLive() {
     for (const r of present()) {
       if (live[r.id]) continue;
-      const l = live[r.id] = { S: {}, ws: null, cfg: {}, armed: false };
+      // helloWs: the socket whose hello is in (tuneFocus sends only on that
+      // one). waiters: tuneFocus's answers in flight (PR 1d, 2026-11-19).
+      const l = live[r.id] = { S: {}, ws: null, cfg: {}, armed: false, helloWs: null, waiters: new Set() };
       const open = () => {
         if (live[r.id] !== l) return;
         const w = new WebSocket(withToken(`r/${encodeURIComponent(r.id)}/ws`));
@@ -215,12 +218,19 @@ const station = (() => {
           // A scope frame: Mission Control's mini spectrum (drawn only while shown).
           if (typeof e.data !== "string") { mission.scopeOf(r.id).push(e.data); return; }
           const m = JSON.parse(e.data);
+          if (m.t === "state") Object.assign(l.S, m.d);
+          // tuneFocus's waiters see each message on their socket after the state
+          // has taken it; one that claims a notice keeps it out of the toasts
+          // (its own report says it).
+          let claimed = false;
+          for (const fn of [...l.waiters]) claimed = fn(w, m) || claimed;
           if (m.t === "hello") {
+            l.helloWs = w;
             Object.assign(l.S, m.state);
             l.cfg = m.config || {};
             l.armed = !!m.winlink?.armed;
             stopHeard(r.id, w, l.cfg.tx_stopped || null, true);
-          } else if (m.t === "state") Object.assign(l.S, m.d);
+          } else if (m.t === "state") { /* taken above */ }
           else if (m.t === "config") {
             l.cfg = m.config || l.cfg;
             if (latch[r.id]?.ws === w) stopHeard(r.id, w, l.cfg.tx_stopped || null, false);
@@ -239,7 +249,7 @@ const station = (() => {
             }
             // A refusal or warning from the radio's server. Its own page shows
             // it when that page is the open view; elsewhere the station does.
-            if (route() !== r.id) toast(`${r.name}: ${m.msg}`, m.level);
+            if (route() !== r.id && !claimed) toast(`${r.name}: ${m.msg}`, m.level);
             return;
           } else return;
           instruments(r.id, l.S);
@@ -250,6 +260,8 @@ const station = (() => {
           // What this socket said about the latch ends with it: the radio is
           // unknown until the next socket's hello (UX plan PR 1b, 2026-11-19).
           if (latch[r.id]?.ws === w) { delete latch[r.id]; renderBar(); }
+          if (l.helloWs === w) l.helloWs = null;
+          for (const fn of [...l.waiters]) fn(w, { t: "closed" });
           if (live[r.id] === l) setTimeout(open, 2000);
         };
       };
@@ -285,8 +297,186 @@ const station = (() => {
   function setFocus(id) {
     try { localStorage.setItem(FOCUS_KEY, id); } catch { /* storage off: this page only */ }
     barSig = "";
+    entryFor = null;              // an open entry was for the old focus: the rebuild drops it
     prepareFocus();
     renderBar();
+  }
+
+  // ---------- tuneFocus: the one way the station page retunes a radio
+  // (UX plan PR 1d, 2026-11-19). In this PR only the bar's typed frequency
+  // calls it; band cells, openings and spots will (PR 4c).
+  //
+  // Everything that could make a retune wrong is read again at the moment of
+  // sending, never from what the page showed when the entry opened: the lock
+  // (the radio pages' key, "ic7300.locked"; a storage event reaches the other
+  // documents, not the writer, so it is read from storage here), which radio
+  // has focus, its socket and hello, and whether it is transmitting, tuning
+  // or has a Winlink session armed. Any of those, and nothing is sent. The
+  // radio server keeps its own refusals (transmitting, PTT held, tuner, and
+  // S1's armed lane); this only refuses earlier. Only the radio page's own
+  // messages go out: set freq, then set mode if it differs.
+  //
+  // A band change can bring an ATU tune on a station with auto-tune: that is
+  // a carrier, said in every band-changing control's title (bandChangeNote).
+  const TUNE_ANSWER_MS = 5000;
+  const TUNE_SLOP_HZ = 50;        // a radio may round the dial (10 Hz steps)
+  const tuneLocked = () => store.get("locked", true) !== false;   // unreadable: locked
+
+  // Why tuning the focus radio must not happen now, or "". expect: the radio
+  // id the action was aimed at (the focus when the entry opened).
+  function tuneBlocked(expect) {
+    if (tuneLocked()) return "locked";
+    const id = focusId(), r = present().find((x) => x.id === id), l = live[id];
+    if (expect && id !== expect) return "The focus radio changed: nothing sent.";
+    if (!r || !l) return "No radio has focus: nothing sent.";
+    if (!l.ws || l.ws.readyState !== 1 || l.helloWs !== l.ws) return `${r.name}: not connected yet: nothing sent.`;
+    const S = l.S;
+    if (S.connected === false) return `${r.name}: the radio isn't answering: nothing sent.`;
+    if (S.tx) return `${r.name} is transmitting: not retuned.`;
+    if (S.tuner === 2) return `${r.name} is tuning its ATU: not retuned.`;
+    if (l.armed) return `${r.name}: a Winlink session is armed and owns the dial: not retuned.`;
+    return "";
+  }
+
+  // The radio's answer to one set on socket `w`: {ok, why}. Accepted when its
+  // state reaches `want`; refused on a confirmed state (server.py _confirm
+  // sends the real value after a refusal) or a warn notice to this socket
+  // (a refusal, or "Rejected: ..."); unknown after TUNE_ANSWER_MS or if the
+  // socket closes.
+  function answer(l, w, key, want) {
+    return new Promise((done) => {
+      let note = "";
+      const hit = (v) => key === "freq" ? Math.abs(Number(v) - want) <= TUNE_SLOP_HZ : v === want;
+      const end = (res) => { l.waiters.delete(fn); clearTimeout(t); done(res); };
+      const fn = (sock, m) => {
+        if (sock !== w) return false;
+        if (m.t === "closed") { end({ ok: false, why: "the connection dropped before the radio answered" }); return false; }
+        if (m.t === "notice" && m.level === "warn") {
+          note = m.msg || "";
+          if (/^Rejected/.test(note)) end({ ok: false, why: note });
+          return true;
+        }
+        if (m.t === "state" && m.d && key in m.d) {
+          if (hit(m.d[key])) end({ ok: true });
+          else if (m.confirmed) end({ ok: false, why: note || `the radio kept ${key} unchanged` });
+        }
+        return false;
+      };
+      const t = setTimeout(() => end({ ok: false, why: note || "no answer from the radio" }), TUNE_ANSWER_MS);
+      l.waiters.add(fn);
+    });
+  }
+
+  function setOn(w, k, v) {
+    w.send(JSON.stringify({ t: "set", k, v }));
+  }
+
+  // tuneFocus({freq, mode, band}, expect): retune the focus radio. freq in
+  // Hz; band ("40", ...) picks from the shared band stack when no freq is
+  // given; mode only when it differs. Resolves {ok, why, freq, mode}: what
+  // happened, also said in a toast when it is not plain success.
+  async function tuneFocus({ freq = null, mode = null, band = null } = {}, expect = null) {
+    const why = tuneBlocked(expect);
+    if (why === "locked") { nudgeBarLock(); return { ok: false, why }; }
+    if (why) { toast(why, "warn"); return { ok: false, why }; }
+    const id = focusId(), r = present().find((x) => x.id === id), l = live[id], w = l.ws;
+    if (freq == null && band) {
+      const mem = bandStackTarget(String(band), { freq: l.S.freq, mode: l.S.mode });
+      if (!mem) { toast(`No ${band} m band here`, "warn"); return { ok: false, why: "no such band" }; }
+      freq = mem.f;
+      mode = mode || mem.m;
+    }
+    const out = { ok: true, why: "", freq: false, mode: false };
+    if (freq != null) {
+      freq = Math.round(Number(freq));
+      const range = l.cfg?.caps?.freq;
+      if (!Number.isFinite(freq) || freq <= 0 || (Array.isArray(range) && (freq < range[0] || freq > range[1]))) {
+        toast(`${r.name} can't tune ${Number.isFinite(freq) ? fmtFreq(freq) : "that"}`, "warn");
+        return { ...out, ok: false, why: "out of range" };
+      }
+      if (Math.abs(freq - (l.S.freq || 0)) > 0) {
+        setOn(w, "freq", freq);
+        const a = await answer(l, w, "freq", freq);
+        if (!a.ok) {
+          toast(`${r.name}: not retuned (${a.why})`, "warn");
+          return { ...out, ok: false, why: a.why };
+        }
+        out.freq = true;
+      }
+    }
+    if (mode && mode !== l.S.mode) {
+      // Read it all again: the freq step took time, and the radio may have
+      // keyed, armed or lost focus meanwhile.
+      const again = tuneBlocked(id);
+      const a = again ? { ok: false, why: again === "locked" ? "tuning was locked" : again }
+        : (setOn(w, "mode", mode), await answer(l, w, "mode", mode));
+      if (!a.ok) {
+        toast(`${r.name}: ${out.freq ? `on ${fmtFreq(l.S.freq)}, but ` : ""}mode stayed ${l.S.mode || "?"} (${a.why})`, "warn");
+        return { ...out, ok: false, why: a.why };
+      }
+      out.mode = true;
+    }
+    return out;
+  }
+
+  // Locked: flash the bar's padlock (the radio page's nudge, here), once a
+  // toast every few seconds.
+  let nudgeT = -Infinity;         // not 0: performance.now() starts at 0 with each page
+  function nudgeBarLock() {
+    const b = document.querySelector("#rig-bar .rb-lock");
+    if (b) { b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); }
+    const now = performance.now();
+    if (now - nudgeT > 3000) { nudgeT = now; toast("Tuning is locked · unlock the padlock to change it"); }
+  }
+
+  function setTuneLocked(v) {
+    try { store.set("locked", !!v); } catch { /* storage off: it reads as locked */ }
+    lockChanged();
+  }
+  // The lock changed (here, or in a radio page: a storage event): an open
+  // entry closes, so nothing typed under one lock commits under another.
+  function lockChanged() {
+    if (entryFor && tuneLocked()) closeEntry();
+    renderBar();
+  }
+  window.addEventListener("storage", (e) => {
+    if (e.key === null || e.key === "ic7300.locked") lockChanged();
+    if (e.key === null || e.key === FOCUS_KEY) { barSig = ""; entryFor = null; renderBar(); }
+  });
+
+  // The bar's frequency entry. entryFor: the radio id it was opened for.
+  let entryFor = null;
+  function closeEntry() {
+    entryFor = null;
+    const d = document.querySelector("#rig-bar .rb-rig.focus");
+    if (!d) return;
+    const form = d.querySelector(".rb-entry"), f = d.querySelector(".rb-f");
+    if (form) form.hidden = true;
+    if (f) f.hidden = false;
+  }
+  function bindEntry(d, r) {
+    const f = d.querySelector(".rb-f"), form = d.querySelector(".rb-entry"), input = d.querySelector(".rb-in");
+    d.querySelector(".rb-lock").onclick = () => setTuneLocked(!tuneLocked());
+    f.onclick = () => {
+      if (tuneLocked()) { nudgeBarLock(); return; }
+      const S = live[r.id]?.S || {};
+      if (!S.freq) return;
+      entryFor = r.id;
+      f.hidden = true; form.hidden = false;
+      input.value = (S.freq / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+      input.focus(); input.select();
+    };
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const want = entryFor, txt = input.value;
+      closeEntry();
+      if (!want) return;
+      const hz = parseFreq(txt);
+      if (hz) tuneFocus({ freq: hz }, want);
+      else if (txt.trim()) toast("Couldn't read that frequency", "warn");
+    });
+    input.addEventListener("blur", () => { if (entryFor === r.id) closeEntry(); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEntry(); });
   }
 
   // Redraws are batched to one per frame (an S-meter moves several times a
@@ -307,6 +497,7 @@ const station = (() => {
     const sig = radios.map((r) => `${r.id}:${r.present ? 1 : 0}`).join(",") + `|${fid}`;
     if (sig !== barSig) {
       barSig = sig;
+      entryFor = null;            // a rebuild drops an open entry (PR 1d)
       el.innerHTML = "";
       for (const r of radios) el.append(rigEl(r, r.id === fid));
       el.append(stopEl());
@@ -329,7 +520,15 @@ const station = (() => {
       (focus && r.present ? `<button type="button" class="rb-listen" aria-pressed="false" hidden>` +
         `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2z"/>` +
         `<path class="rb-waves" d="M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6 6 0 0 1 0 9"/></svg></button>` : "") +
-      (focus && r.present ? `<a class="rb-f" href="${href}"></a>` : `<span class="rb-f"></span>`) +
+      // PR 1d: the focus radio's frequency is a button that opens a typed
+      // entry (unlocked), beside the lock both pages share.
+      (focus && r.present ? `<button type="button" class="rb-f"></button>` +
+        `<form class="rb-entry" hidden><input class="rb-in" inputmode="decimal" autocomplete="off" ` +
+        `spellcheck="false" placeholder="14.074 or 7074" aria-label="Frequency for the ${esc(r.name)}"></form>` +
+        `<button type="button" class="rb-lock" role="switch" aria-checked="true">` +
+        `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/>` +
+        `<path class="rb-shackle" d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></button>`
+        : `<span class="rb-f"></span>`) +
       `<span class="rb-mode"></span><span class="rb-band"></span>` +
       `<span class="rb-meter" aria-hidden="true"><i></i></span><span class="rb-lvl"></span>` +
       `<a class="rb-tag" hidden></a><span class="rb-air" hidden>ON AIR</span>` +
@@ -337,6 +536,7 @@ const station = (() => {
     d.querySelector(".rb-release").onclick = () => release(r.id);
     const ls = d.querySelector(".rb-listen");
     if (ls) ls.onclick = () => toggleListen(r);
+    if (focus && r.present) bindEntry(d, r);
     if (!focus) {
       // A compact radio: a click (not on its name, which opens its tab) focuses it.
       d.tabIndex = 0;
@@ -364,8 +564,22 @@ const station = (() => {
     d.querySelector(".st-dot").className = `st-dot ${tx ? "tx" : off || dead ? "off" : "ok"}`;
     put(".rb-f", off ? "offline" : dead ? "no answer" : S.freq ? fmtFreq(S.freq) : "…");
     const f = d.querySelector(".rb-f");
+    const lk = d.querySelector(".rb-lock");
+    const note = bandChangeNote(!!l?.cfg?.auto_tune);
     f.title = off ? `${r.name}: not connected` : dead ? `${r.name}: its server is up, the radio isn't answering`
-      : f.tagName === "A" ? `Open the ${r.name}'s page (tune it there)` : "";
+      : f.tagName !== "BUTTON" ? ""
+      : tuneLocked() ? `Tuning is locked: unlock (the padlock) to type a frequency for the ${r.name}. ${note}`
+      : `Type a frequency for the ${r.name}. ${note}`;
+    if (lk) {
+      const v = tuneLocked();
+      lk.setAttribute("aria-checked", String(v));
+      lk.classList.toggle("on", v);
+      const t = v ? "Tuning locked here and on every radio page: click to unlock"
+        : "Tuning unlocked: click to lock it here and on every radio page";
+      if (lk.title !== t) { lk.title = t; lk.setAttribute("aria-label", t); }
+      const inp = d.querySelector(".rb-in");
+      inp.title = `A frequency for the ${r.name} in MHz, kHz or Hz. ${note}`;
+    }
     const up = r.present && !dead && S.freq;
     const band = up ? bandOf(S.freq) : null;
     put(".rb-mode", up && S.mode ? `${S.mode}${S.data ? "-D" : ""}` : "");
@@ -999,5 +1213,6 @@ const station = (() => {
     connect();
   }
 
-  return { start };
+  // tuneFocus: for PR 4c's band cells, openings and spots, and the tests.
+  return { start, tuneFocus };
 })();
