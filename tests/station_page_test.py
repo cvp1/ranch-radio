@@ -13,7 +13,11 @@ Checks:
     you (unread mail, offline gear), keys 1-9 and 0, a click opens a tab, a
     key typed into a field is not a jump
   - a radio's tab shows that radio's own page in a frame, connected, without
-    its own brand (the tab names it); the other radio's frame stays hidden
+    its own brand (the tab names it), Connected pill or theme picker (the
+    station's bar has them) but with STOP TX, latency and power; the other
+    radio's frame stays hidden
+  - on a phone (390 px) the station's pill is its dot: brand, dot, clock and
+    theme picker share one row, the tabs the row below
   - the address follows the view (#/qmx) and a reload comes back to it
   - Winlink's Via lists each HF radio and telnet (no packet: hub down);
     telnet fills the URL and hides the gateway list
@@ -165,6 +169,23 @@ try:
     check("  connected", b.wait(f"{FRAME}.contentDocument?.querySelector('#conn b')?.textContent === 'Connected' && 'yes'"), "yes")
     check("  the radio page's own brand is hidden",
           b.js(f"getComputedStyle({FRAME}.contentDocument.querySelector('.topbar .brand')).display"), "none")
+    # The frame drops what the station's bar already shows (UX plan PR 0.1),
+    # and keeps STOP TX, the latency and power.
+    SHOWN = (f"((s) => {{ const e = {FRAME}.contentDocument.querySelector(s); "
+             "return !!e && getComputedStyle(e).display !== 'none'; })")
+    check("  the frame hides its Connected pill and theme picker",
+          [b.js(f"{SHOWN}('#conn')"), b.js(f"{SHOWN}('.topbar .theme-pick')")], [False, False])
+    # Power hides itself on a rig with no power-on (neither simulated rig has
+    # one); what matters here is that the frame's CSS does not hide it.
+    POWER = (f"(() => {{ const p = {FRAME}.contentDocument.querySelector('#power-btn'), h = p.hidden; "
+             "p.hidden = false; const d = getComputedStyle(p).display; p.hidden = h; return d !== 'none'; })()")
+    check("  and keeps STOP TX, latency and power",
+          [b.js(f"{SHOWN}('#tx-stop')"), b.js(f"{SHOWN}('#rtt')"), b.js(POWER)], [True, True, True])
+    check("  STOP TX is on screen", b.js(f"{FRAME}.contentDocument.querySelector('#tx-stop').offsetWidth > 0"), True)
+    # Only Connected repeats the station's pill; a radio not responding is the frame's own news.
+    b.js(f"{FRAME}.contentDocument.querySelector('#conn').className = 'pill pill-wait'")
+    check("  its pill comes back when it is not Connected", b.js(f"{SHOWN}('#conn')"), True)
+    b.js(f"{FRAME}.contentDocument.querySelector('#conn').className = 'pill pill-ok'")
     check("  the tab is marked", b.js(f"{TABS}.find((t) => t.classList.contains('on')).textContent.startsWith('QMX')"), True)
     shot("qmx")
     b.js(f"{TABS}.find((t) => t.textContent.startsWith('G90')).click()")
@@ -278,6 +299,24 @@ try:
     b.js("(() => { const i = document.createElement('input'); document.body.append(i); i.focus(); "
          "i.dispatchEvent(new KeyboardEvent('keydown', { key: '0', bubbles: true })); i.remove(); })()")
     check("  a key typed into a field is not a jump", b.js("location.hash"), "#/winlink")
+
+    # A phone (UX plan PR 0.1): the station's pill is its dot, so brand, dot,
+    # clock and theme picker share the first row; the tabs wrap below by design.
+    b.call("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
+    b.js("location.hash = '#/home'")
+    b.wait(f"({TEXT})('#conn b') === 'Connected' && innerWidth === 390")
+    RECT = ("((s) => { const r = document.querySelector(s).getBoundingClientRect(); "
+            "return [r.top, r.bottom, r.left, r.right]; })")
+    row = {s: b.js(f"{RECT}('{s}')") for s in (".topbar .brand", "#conn", "#utc", ".topbar .theme-pick", "#st-nav")}
+    head = [row[s] for s in (".topbar .brand", "#conn", "#utc", ".topbar .theme-pick")]
+    mid = [(r[0] + r[1]) / 2 for r in head]
+    check("phone: brand, dot, clock and theme picker on one row", max(mid) - min(mid) < 8, True)
+    check("  all inside the screen", all(r[2] >= 0 and r[3] <= 390 and r[3] > r[2] for r in head), True)
+    check("  the tabs are the row below", row["#st-nav"][0] >= max(r[1] for r in head), True)
+    check("  the pill is its dot, its words in the title",
+          [b.js("document.querySelector('#conn').offsetWidth <= 30"), b.js("document.querySelector('#conn').title")],
+          [True, "Connected"])
+    shot("phone")
 finally:
     b.close()
     stop(front)

@@ -54,6 +54,11 @@ a.st-card:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--text)
 @media (max-width: 860px) {
   .station .topbar { flex-wrap: wrap; }
   .st-nav { order: 5; width: 100%; }
+  /* On a phone the pill is its dot, so brand, dot, clock and theme picker
+     share one row above the tabs (2026-11-19: the header took three rows at
+     390 px). The words stay in its title. */
+  #conn { width: 26px; padding: 0; justify-content: center; }
+  #conn b { display: none; }
 }
 
 /* The radio strip: one line per connected HF radio, on non-radio views. */
