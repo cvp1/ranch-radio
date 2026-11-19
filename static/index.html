@@ -14,6 +14,8 @@
 <link rel="stylesheet" href="static/app.css">
 <link rel="stylesheet" href="static/station.css">
 <link rel="stylesheet" href="static/modules.css">
+<link rel="stylesheet" href="static/themes.css">
+<script src="static/theme.js"></script>
 </head>
 <body>
 <div class="tx-bar" aria-hidden="true"></div>
@@ -30,6 +32,7 @@
   <div class="spacer"></div>
   <span id="rtt" class="stat" title="Round-trip latency to the station"></span>
   <span id="utc" class="stat clock"></span>
+  <span class="theme-pick"></span>
   <!-- STOP TX (2026-11-07): always here, in every view. Latches on the server. -->
   <button id="tx-stop" class="tx-stop" type="button" title="Stop every transmission and ATU tune now; nothing keys until Resume">STOP TX</button>
   <button id="power-btn" class="icon-btn" title="Radio power" aria-label="Radio power">

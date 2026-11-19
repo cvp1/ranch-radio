@@ -2,7 +2,7 @@
 .uv-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .uv-items { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .uv-act { font: 700 11px var(--mono); padding: 2px 8px; border-radius: 6px; color: var(--dim); border: 1px solid var(--line); }
-.uv-act.rx { color: #4ade80; border-color: rgba(74,222,128,.45); }
+.uv-act.rx { color: var(--ok); border-color: rgba(var(--ok-rgb),.45); }
 .uv-act.sq { color: var(--warm); border-color: rgba(var(--warm-rgb), .45); }
 .uv-selfkey { color: #fff; background: #b91c1c; border-color: #b91c1c; font-weight: 700; }
 .uv-act.tx { color: #fff; background: #ff4d5e; border-color: #ff4d5e; }

@@ -1,0 +1,129 @@
+/* Themes (2026-11-19): the page's look, picked in the top bar (theme.js).
+   Each theme overrides the :root variables in app.css; nothing else should
+   name a colour a theme would change. `classic` is app.css itself (the mint
+   the page has always had), so it needs no block here. `body.tx` still wins
+   for the accent while a radio is on the air: that red is a safety cue, not
+   a look. Keep --ok green-ish in every theme: it means "working". */
+
+:root[data-theme="midnight"] {
+  --bg: #060a18;
+  --panel: rgba(130, 160, 255, 0.04);
+  --panel-hi: rgba(130, 160, 255, 0.075);
+  --line: rgba(140, 170, 255, 0.1);
+  --line-hi: rgba(140, 170, 255, 0.2);
+  --text: #e8edff;
+  --muted: #93a0c4;
+  --dim: #505b7d;
+  --ghost: rgba(130, 160, 255, 0.055);
+  --accent: #6ea8ff;
+  --accent-rgb: 110, 168, 255;
+  --accent-hi: #9cc4ff;
+  --ok: #34d399;
+  --ok-rgb: 52, 211, 153;
+  --deep: #030614;
+  --well: #091026;
+  --on-accent: #060a18;
+}
+
+:root[data-theme="amber"] {
+  --bg: #0c0905;
+  --panel: rgba(255, 200, 120, 0.032);
+  --panel-hi: rgba(255, 200, 120, 0.06);
+  --line: rgba(255, 200, 120, 0.09);
+  --line-hi: rgba(255, 200, 120, 0.18);
+  --text: #f4ecdc;
+  --muted: #a8977e;
+  --dim: #5e5343;
+  --ghost: rgba(255, 200, 120, 0.05);
+  --accent: #ffb547;
+  --accent-rgb: 255, 181, 71;
+  --accent-hi: #ffcd80;
+  --warm: #ff7a45;
+  --warm-rgb: 255, 122, 69;
+  --ok: #a3e635;
+  --ok-rgb: 163, 230, 53;
+  --deep: #070502;
+  --well: #130e07;
+  --on-accent: #0c0905;
+}
+
+:root[data-theme="sandstone"] {
+  --bg: #120b09;
+  --panel: rgba(255, 190, 160, 0.035);
+  --panel-hi: rgba(255, 190, 160, 0.065);
+  --line: rgba(255, 190, 160, 0.095);
+  --line-hi: rgba(255, 190, 160, 0.19);
+  --text: #f3e8e1;
+  --muted: #ad998d;
+  --dim: #634f46;
+  --ghost: rgba(255, 190, 160, 0.05);
+  --accent: #e8875b;
+  --accent-rgb: 232, 135, 91;
+  --accent-hi: #f2a985;
+  --warm: #f2c14e;
+  --warm-rgb: 242, 193, 78;
+  --ok: #86c06c;
+  --ok-rgb: 134, 192, 108;
+  --deep: #0a0605;
+  --well: #1a110d;
+  --on-accent: #120b09;
+}
+
+:root[data-theme="aurora"] {
+  --bg: #0b0816;
+  --panel: rgba(190, 160, 255, 0.04);
+  --panel-hi: rgba(190, 160, 255, 0.07);
+  --line: rgba(190, 160, 255, 0.1);
+  --line-hi: rgba(190, 160, 255, 0.2);
+  --text: #eeeaff;
+  --muted: #9d95bd;
+  --dim: #574f73;
+  --ghost: rgba(190, 160, 255, 0.055);
+  --accent: #b18cff;
+  --accent-rgb: 177, 140, 255;
+  --accent-hi: #ccb3ff;
+  --ok: #4ade80;
+  --ok-rgb: 74, 222, 128;
+  --deep: #06040d;
+  --well: #120d22;
+  --on-accent: #0b0816;
+}
+
+/* For the bright room and tired eyes: black, white, bold lines, yellow. */
+:root[data-theme="contrast"] {
+  --bg: #000;
+  --panel: rgba(255, 255, 255, 0.05);
+  --panel-hi: rgba(255, 255, 255, 0.1);
+  --line: rgba(255, 255, 255, 0.24);
+  --line-hi: rgba(255, 255, 255, 0.45);
+  --text: #fff;
+  --muted: #d0d5dc;
+  --dim: #8f98a3;
+  --ghost: rgba(255, 255, 255, 0.08);
+  --accent: #ffd60a;
+  --accent-rgb: 255, 214, 10;
+  --accent-hi: #ffe566;
+  --warm: #ff9f0a;
+  --warm-rgb: 255, 159, 10;
+  --ok: #30d158;
+  --ok-rgb: 48, 209, 88;
+  --deep: #000;
+  --well: #000;
+  --on-accent: #000;
+}
+
+/* ---------- the picker (theme.js) ---------- */
+.theme-pick { position: relative; }
+.theme-pick > button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+  border-radius: 9px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+.theme-pick > button:hover, .theme-pick.open > button { color: var(--text); border-color: var(--line-hi); }
+.theme-pick > button svg { width: 16px; height: 16px; }
+.theme-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 210px; padding: 6px;
+  border-radius: 12px; border: 1px solid var(--line-hi); background: var(--bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55); display: flex; flex-direction: column; gap: 2px; }
+.theme-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 9px; text-align: left;
+  border: 0; border-radius: 8px; background: none; color: var(--text); font: 500 13px var(--sans); }
+.theme-menu button:hover { background: var(--panel-hi); }
+.theme-menu button.on { background: rgba(var(--accent-rgb), 0.14); }
+.theme-menu button.on::after { content: "✓"; margin-left: auto; color: var(--accent); }
+.theme-sw { width: 26px; height: 16px; border-radius: 5px; flex: none; border: 1px solid rgba(255, 255, 255, 0.18); }

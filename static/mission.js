@@ -80,7 +80,7 @@ const mission = (() => {
       c.imageSmoothingEnabled = true;
       c.drawImage(this.off, 0, 0, this.n, ROWS, 0, sh, W, H - sh);
       // The spectrum: a filled line over the waterfall.
-      const tx = this.tx, col = tx ? "255,77,94" : "57,225,198";
+      const tx = this.tx, col = tx ? "255,77,94" : theme.rgb("--accent-rgb", [57, 225, 198]).join(",");
       const y = (v) => sh - clamp((v - this.floor + 6) / 80, 0, 1) * (sh - 2);
       const g = c.createLinearGradient(0, 0, 0, sh);
       g.addColorStop(0, `rgba(${col},.45)`); g.addColorStop(1, `rgba(${col},0)`);
@@ -126,11 +126,12 @@ const mission = (() => {
       const c = this.ctx, W = this.el.width, H = this.el.height, n = this.pts.length;
       c.clearRect(0, 0, W, H);
       if (n < 2) return;
+      const accent = theme.rgb("--accent-rgb", [57, 225, 198]).join(",");
       const x = (i) => W - ((n - 1 - i) / 119) * W, y = (v) => H - 1 - v * (H - 3);
       for (let i = 1; i < n; i++) {
         c.beginPath();
         c.moveTo(x(i - 1), y(this.pts[i - 1].v)); c.lineTo(x(i), y(this.pts[i].v));
-        c.strokeStyle = this.pts[i].tx ? "rgba(255,77,94,.95)" : "rgba(57,225,198,.8)";
+        c.strokeStyle = this.pts[i].tx ? "rgba(255,77,94,.95)" : `rgba(${accent},.8)`;
         c.lineWidth = 1.4 * dpr; c.stroke();
       }
     }
