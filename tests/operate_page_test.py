@@ -11,7 +11,8 @@ https URL (the map's tiles) is blocked. Nothing transmits. Checks:
      at least 320 px wide; the radio frame's box is its pane's; the band
      strip is over them; the bar's STOP TX and the frame's own STOP TX are
      both visible, the frame's with its connection state; Controls (Levels,
-     the TX panel, Filter/AGC) is closed and opens and closes
+     the TX panel, Filter/AGC) is closed and opens and closes, and while the
+     page is armed those stay shown with Controls closed
   2. the frame is not reloaded: a marker on its window survives entering and
      leaving; the audio started from the bar's Listen keeps running; the
      frame sends its radio nothing but its ping meanwhile
@@ -263,6 +264,12 @@ try:
     shot("1600-controls")
     click_at(*frame_point("ic7300", "#pane-controls"))
     check("  and a second closes them", frame_wait("ic7300", f"!document.documentElement.classList.contains('pane-open') && {hid}.every(Boolean)", 5), True)
+    # Armed (the page's own switch state, set here in the DOM only: nothing is
+    # sent), the TX panel and Levels stay shown with Controls closed.
+    frame_js("ic7300", "document.querySelector('#btn-arm').setAttribute('aria-checked', 'true')")
+    check("  armed: Levels and the TX panel shown though Controls is closed", frame_js("ic7300", hid), [False, False, False])
+    frame_js("ic7300", "document.querySelector('#btn-arm').setAttribute('aria-checked', 'false')")
+    check("  disarmed: out of the way again", frame_js("ic7300", hid), [True, True, True])
 
     # 3. A Roster row click in the pane.
     click("#view-addon-roster .rs-row[data-call='VK2ABC'] td")

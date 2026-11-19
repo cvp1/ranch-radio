@@ -786,7 +786,11 @@ html.pane .bandmode > .label { display: none; }
 html.pane .bandmode .chips { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 6px; overflow-x: auto; scrollbar-width: none; }
 html.pane .bandmode #modes { margin-bottom: 0; }
 html.pane .bandmode .chips .chip { flex: none; min-width: 0; height: 28px; padding: 0 8px; }
-html.pane:not(.pane-open) :is(.bandmode .row-2, .levels, .txpanel) { display: none; }
+/* Never tucked away while this page could be transmitting: keyed, armed or
+   tuning, the TX panel (PTT, the arm switch) and Levels (TUNE) stay shown,
+   Controls closed or not, so what ends it is where it was started. */
+html.pane:not(.pane-open) body:not(.tx):not(:has(#btn-arm[aria-checked="true"], #t-tune.on))
+  :is(.bandmode .row-2, .levels, .txpanel) { display: none; }
 html.pane.pane-open .bandmode .row-2 { margin-top: 6px; }
 
 /* Single-radio page tabs (tabs.js): one view at a time, as on the station page. */
