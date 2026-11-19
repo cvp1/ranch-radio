@@ -763,6 +763,8 @@ class Station:
                             "warn", ws)
             else:
                 self.modules.handle(ws, m)
+        elif t == "logsync" and m.get("do") == "lookup":
+            await self._send(ws, json.dumps(self.call_lookup(m)))      # the asking page only
         elif t == "logsync":
             if self.logsync is None:
                 self.notice("Logbook sync is not running on this station.", "warn", ws)
@@ -920,6 +922,55 @@ class Station:
             log.error("logsync settings: %s failed: %s", do, type(e).__name__)
             reply["error"] = f"{do} failed ({type(e).__name__})"
         await ws.send_str(json.dumps(reply))
+
+    CARD_ADDONS = ("roster", "map")     # the pages that show a call card
+
+    def call_lookup(self, m):
+        """{"t": "logsync", "do": "lookup", "id", "call", "addon", [grid, band,
+        mode]} -> the call card's answer for the asking page (2026-11-19, UX
+        plan PR 4b). Read-only: the ledger's latest QSOs with that exact call
+        (Ledger.history: indexed, capped at 20, date/band/mode/confirmed only)
+        and, when the page sends the decode's grid, band and mode, the need
+        from the sync's in-memory index (never one built per request:
+        Needs.from_ledger reads every QSO). Nothing is written, sent to a
+        destination, or put on the air.
+
+        The answer rides {"t": "addon", "addon": <the asking tab>} because
+        that is the route both pages already deliver to the Roster and the
+        Map; a new message type would need a branch in station.js."""
+        rid, addon = m.get("id"), m.get("addon")
+        if isinstance(rid, bool) or not isinstance(rid, (int, str)) or len(str(rid)) > 40:
+            raise ValueError("a lookup needs a request id")
+        if addon not in self.CARD_ADDONS:
+            raise ValueError("a lookup names the Roster or the Map")
+        out = {"id": rid}
+        reply = {"t": "addon", "addon": addon, "callcard": out}
+        import importlib
+        R = importlib.import_module("logsync_roster")       # loaded by name, like logsync itself
+        call = R.lookup_call(m.get("call"))
+        if call is None:
+            out["error"] = "not a callsign"
+            return reply
+        out["call"] = call
+        ledger = getattr(self.logsync, "ledger", None)
+        if ledger is None:
+            out["error"] = "the logbook sync isn't running on this station"
+            return reply
+        try:
+            out["qsos"] = ledger.history(call)
+        except Exception as e:                        # a locked or broken ledger: say so, the station runs on
+            log.error("call card: ledger lookup failed: %s", type(e).__name__)
+            out["error"] = f"the logbook couldn't be read ({type(e).__name__})"
+            return reply
+        out["more"] = len(out["qsos"]) >= ledger.HISTORY_MAX
+        grid, band, mode = (m.get(k) for k in ("grid", "band", "mode"))
+        needs = getattr(self.logsync, "needs", None)
+        out["need"] = None                            # None: unavailable (no decode to judge, or no index yet)
+        if (needs is not None and isinstance(grid, str) and R.is_grid(grid.upper())
+                and isinstance(band, str) and 0 < len(band) <= 8 and isinstance(mode, str) and 0 < len(mode) <= 12):
+            level, reasons = needs.need(call, grid.upper(), band, mode)
+            out["need"] = {"level": level, "reasons": list(reasons)}
+        return reply
 
     def logsync_status(self):
         """For the pages (and the Logbook tab): an allowlist, see LogSync.status."""

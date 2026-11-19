@@ -44,6 +44,18 @@ def _call(t):
     return t if _CALL.match(t) and t != "RR73" else None
 
 
+def lookup_call(t):
+    """The call a call card may look up, or None (2026-11-19, UX plan PR 4b):
+    a string, upper-cased, the roster's own pattern (a letter and a digit),
+    and no empty part around a slash ("W1AW/", "/P", "W1AW//P" are not calls)."""
+    if not isinstance(t, str):
+        return None
+    c = t.strip().upper()
+    if not _CALL.match(c) or c == "RR73" or not all(c.split("/")):
+        return None
+    return c
+
+
 def parse_message(msg):
     """{"call", "grid", "cq", "cq_word", "to"} for the station sending msg, or None."""
     t = (msg or "").upper().split()

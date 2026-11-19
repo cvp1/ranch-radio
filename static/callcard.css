@@ -1,0 +1,27 @@
+/* The call card (static/callcard.js, 2026-11-19, UX plan PR 4b): the Roster's
+   popover and the block inside the Map's station card. */
+.cc-info { margin-left: 6px; width: 1.35em; height: 1.35em; padding: 0; border-radius: 50%; cursor: pointer;
+  font: italic 700 0.78em/1 Georgia, serif; vertical-align: middle;
+  color: var(--accent, #6ea8ff); background: transparent; border: 1px solid var(--line-hi, rgba(255, 255, 255, 0.2)); }
+.cc-info:hover, .cc-info:focus-visible { background: rgba(var(--accent-rgb, 110, 168, 255), 0.18); }
+.cc-pop { position: fixed; z-index: 50; width: min(320px, calc(100vw - 16px)); padding: 8px 10px 10px;
+  background: var(--bg, #0b0e14); border: 1px solid var(--line-hi, rgba(255, 255, 255, 0.2)); border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); font-size: 0.88em; }
+.cc-pop[hidden] { display: none; }
+.cc-x { position: absolute; top: 6px; right: 6px; background: none; border: 0; color: inherit; cursor: pointer; opacity: 0.7; }
+.cc-pop .cc-h { padding-right: 22px; }
+.cc-block { margin-top: 6px; }
+.rm-card .cc-block { border-top: 1px solid var(--line, rgba(255, 255, 255, 0.1)); padding-top: 6px; }
+.cc-h { display: flex; align-items: center; gap: 8px; }
+.cc-call { font-family: ui-monospace, monospace; }
+.cc-sp { flex: 1; }
+.cc-qrz { font-size: 0.85em; color: var(--accent, #6ea8ff); }
+.cc-sum { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; margin: 4px 0; }
+.cc-need { font-weight: 600; }
+.cc-dim { color: var(--dim, #8a93a8); }
+.cc-err { color: #e5484d; }
+.cc-rows { max-height: 11em; overflow-y: auto; }
+.cc-t { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.cc-t th { text-align: left; font-weight: 500; color: var(--dim, #8a93a8); }
+.cc-t th, .cc-t td { padding: 1px 6px 1px 0; white-space: nowrap; }
+.cc-conf { color: #3c9a5f; text-align: center; }
