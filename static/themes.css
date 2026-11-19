@@ -3,7 +3,9 @@
    name a colour a theme would change. `classic` is app.css itself (the mint
    the page has always had), so it needs no block here. `body.tx` still wins
    for the accent while a radio is on the air: that red is a safety cue, not
-   a look. Keep --ok green-ish in every theme: it means "working". */
+   a look. Keep --ok green-ish in every theme: it means "working".
+   The need colours (below the themes) are the exception: new in PR 4a, all
+   six themes set them here, classic included. */
 
 :root[data-theme="midnight"] {
   --bg: #060a18;
@@ -110,6 +112,73 @@
   --deep: #000;
   --well: #000;
   --on-accent: #000;
+}
+
+/* ---------- need colours: the scope's spot labels (UX plan PR 4a, 2026-11-19)
+   "r, g, b" triples, because the scope is a canvas (theme.rgb). One per need
+   tier the roster ranks (logsync_roster.NEED_RANK), plus POTA and no need.
+   Classic's set is the plain :root one (the Roster's own colours); every
+   other theme sets all eight, tuned to stay apart on its background. */
+:root {
+  --need-dxcc-rgb: 229, 72, 77;
+  --need-band-rgb: 247, 107, 21;
+  --need-mode-rgb: 255, 197, 61;
+  --need-grid-rgb: 91, 127, 255;
+  --need-unconf-rgb: 169, 112, 224;
+  --need-call-rgb: 0, 216, 255;
+  --need-none-rgb: 160, 172, 184;
+  --spot-pota-rgb: 70, 190, 110;
+}
+:root[data-theme="midnight"] {
+  --need-dxcc-rgb: 255, 92, 108;
+  --need-band-rgb: 255, 140, 66;
+  --need-mode-rgb: 255, 214, 92;
+  --need-grid-rgb: 140, 170, 255;
+  --need-unconf-rgb: 196, 140, 255;
+  --need-call-rgb: 94, 234, 255;
+  --need-none-rgb: 147, 160, 196;
+  --spot-pota-rgb: 52, 211, 153;
+}
+:root[data-theme="amber"] {
+  --need-dxcc-rgb: 255, 84, 84;
+  --need-band-rgb: 255, 122, 69;
+  --need-mode-rgb: 255, 214, 120;
+  --need-grid-rgb: 120, 160, 255;
+  --need-unconf-rgb: 200, 140, 230;
+  --need-call-rgb: 110, 220, 230;
+  --need-none-rgb: 168, 151, 126;
+  --spot-pota-rgb: 163, 230, 53;
+}
+:root[data-theme="sandstone"] {
+  --need-dxcc-rgb: 240, 80, 90;
+  --need-band-rgb: 242, 150, 70;
+  --need-mode-rgb: 242, 193, 78;
+  --need-grid-rgb: 120, 150, 240;
+  --need-unconf-rgb: 190, 130, 220;
+  --need-call-rgb: 100, 210, 220;
+  --need-none-rgb: 173, 153, 141;
+  --spot-pota-rgb: 134, 192, 108;
+}
+:root[data-theme="aurora"] {
+  --need-dxcc-rgb: 255, 99, 132;
+  --need-band-rgb: 255, 150, 80;
+  --need-mode-rgb: 255, 220, 100;
+  --need-grid-rgb: 120, 160, 255;
+  --need-unconf-rgb: 220, 160, 255;
+  --need-call-rgb: 100, 230, 255;
+  --need-none-rgb: 157, 149, 189;
+  --spot-pota-rgb: 74, 222, 128;
+}
+/* Contrast: the brightest of each, for the bright room. */
+:root[data-theme="contrast"] {
+  --need-dxcc-rgb: 255, 69, 58;
+  --need-band-rgb: 255, 159, 10;
+  --need-mode-rgb: 255, 214, 10;
+  --need-grid-rgb: 100, 150, 255;
+  --need-unconf-rgb: 220, 130, 255;
+  --need-call-rgb: 100, 230, 255;
+  --need-none-rgb: 208, 213, 220;
+  --spot-pota-rgb: 48, 209, 88;
 }
 
 /* ---------- the picker (theme.js) ---------- */
