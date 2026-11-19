@@ -4,6 +4,8 @@
     the ic7300 rerun; addons/logbook.py -> its addon and page tests)
   - a fake a test spawns by path (tests/fake_civ.py) reaches that test
   - a page asset reaches every page test, and an add-on's script its own tests
+  - a test belongs by name to the longest module stem it starts with:
+    station_id_test is station_id.py's, not station.py's or station.css's
   - a file nothing tests (README.md) picks nothing; the harness picks everything
   - prose is not an edge: the catalog names every add-on file, and a test's
     docstring names its sibling test; neither may pull in the suite
@@ -135,6 +137,30 @@ probe = (
 r = subprocess.run([sys.executable, "-c", probe], cwd=affected.ROOT, capture_output=True, text=True)
 check("render.validate over every example host loads none of aiohttp, sqlite3, winlink, p2p_directory",
       (r.returncode, r.stdout.strip(), r.stderr.strip()[-300:]), (0, "[]", ""))
+
+# A test is named after the LONGEST module stem its name starts with
+# (2026-11-19): station_id_test is station_id.py's, so a station page change
+# no longer runs it by name. The import graph and path mentions are untouched.
+css = affected.select(["static/station.css"])
+check("static/station.css: not station_id_test (station_id.py's), still station_page_test",
+      ("station_id_test" in css, "station_page_test" in css), (False, True))
+stems = affected._module_stems()
+check("station_id.py owns station_id_test",
+      (affected._owner("station_id_test", stems), "station_id_test" in affected.select(["station_id.py"])),
+      ("station_id", True))
+# mesh_convs_test neither imports nor names mesh.py (--trace), so only the old
+# name rule ever tied the two.
+check("mesh_convs.py picks mesh_convs_test; mesh.py does not",
+      ("mesh_convs_test" in affected.select(["mesh_convs.py"]), "mesh_convs_test" in affected.select(["mesh.py"])),
+      (True, False))
+# uvpro_test and uvpro_page_test have no longer owner (there is no uvpro_page
+# module beside uvpro_bridge), and addons/uvpro.py reaches both by name alone:
+# the short stem still picks them, the prefix one included.
+uv_py = affected.select(["addons/uvpro.py"])
+check("a test with no longer owner keeps its short stem (addons/uvpro.py -> uvpro_test, uvpro_page_test)",
+      (affected._owner("uvpro_page_test", stems), "uvpro_test" in uv_py, "uvpro_page_test" in uv_py,
+       "uvpro_bridge_test" in uv_py),
+      ("uvpro", True, True, False))
 
 check("README.md picks nothing", affected.select(["README.md"]), {})
 check("the harness picks everything", len(affected.select(["tests/run_all.sh"])), len(names))
