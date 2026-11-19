@@ -121,10 +121,19 @@ const rrMapMath = (() => {
   const keep = typeof store !== "undefined" ? store : { get: (k, d) => d, set() {} };
 
   let body = null, snap = {}, z = 3, cx = null, cy = null, w = 0, h = 0, built = false, drag = null, centred = false;
-  let sel = null, skew = 0, stations = [], me = null, timer = null, listTab = "both", fitted = false;
+  let sel = null, skew = 0, stations = [], me = null, timer = null, fitted = false;
   let layers = { hear: true, heard: true, paths: true, grids: true, pota: true, night: true, ...keep.get("map.layers", {}) };
   let windowMin = WINDOWS.includes(keep.get("map.window", 60)) ? keep.get("map.window", 60) : 60;
   let listOpen = keep.get("map.list", window.innerWidth > 700);   // on a phone the map comes first
+  // The list's tab (2026-11-19, UX plan PR 0.2): it opened on Two-way even when
+  // that was empty and "You hear" was full. Two values now: the operator's
+  // preference, set only by a click on a tab and kept, and the tab shown. With
+  // no preference the shown tab is the first of Two-way, Hear you, You hear
+  // that has rows, worked out again each time the stations are. A click on the
+  // map moves only the shown tab, and only while that station stays selected.
+  const TABS = ["both", "tx", "rx"];
+  let tabPref = TABS.includes(keep.get("map.tab")) ? keep.get("map.tab") : null;
+  let listTab = tabPref || "both", tabHeld = null;
   const seen = new Set();
   let base = null, lights = null, nightPts = [];   // the background (basemaps.js), its night side, the terminator
   const px = (lon, zz = z) => ((lon + 180) / 360) * TILE * 2 ** zz;
@@ -204,6 +213,11 @@ const rrMapMath = (() => {
       stations.push(r);
     }
     if (sel && !by.has(sel)) sel = null;
+    if (!(tabHeld && tabHeld === sel)) {
+      tabHeld = null;
+      const c = counts();
+      listTab = tabPref || TABS.find((k) => c[k]) || "both";
+    }
   }
   const shown = (r) => (r.rx && layers.hear) || (r.tx && layers.heard);
   const counts = () => ({ rx: stations.filter((r) => r.rx).length, tx: stations.filter((r) => r.tx).length,
@@ -273,7 +287,7 @@ const rrMapMath = (() => {
     $$(".rm-list").addEventListener("click", (e) => {
       const t = e.target.closest("[data-tab]"), r = e.target.closest("[data-call]");
       if (e.target.closest("[data-toggle]")) { listOpen = !listOpen; keep.set("map.list", listOpen); list(); }
-      else if (t) { listTab = t.dataset.tab; list(); }
+      else if (t) { listTab = tabPref = t.dataset.tab; tabHeld = null; keep.set("map.tab", tabPref); list(); }
       else if (r) { select(r.dataset.call, true); }
     });
     $$(".rm-card").addEventListener("click", (e) => {
@@ -542,7 +556,7 @@ const rrMapMath = (() => {
       const x = px(r.lon) - cx + w / 2, y = py(r.lat) - cy + h / 2;
       if (x < 40 || x > w - (listOpen ? 340 : 40) || y < 40 || y > h - 40) { cx = px(r.lon) + (listOpen && w > 700 ? 150 : 0); cy = py(r.lat); }
     }
-    if (r && !show && !(listTab === "both" ? r.both : r[listTab])) listTab = r.kind;    // from the map: the list follows to its tab
+    if (r && !show && !(listTab === "both" ? r.both : r[listTab])) { listTab = r.kind; tabHeld = r.call; }    // from the map: the list follows to its tab
     card(); list(); draw();
     if (r && !show) $$(".rm-row.sel")?.scrollIntoView({ block: "nearest" });
   }

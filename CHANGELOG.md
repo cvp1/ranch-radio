@@ -213,6 +213,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
   latency and power button stay, and its pill comes back when the radio is offline or not
   responding. On a phone the station's pill shrinks to its dot (the words are in its tooltip),
   so the name, dot, clock and theme picker fit one row above the tabs.
+- **The Map's station list opens on a tab that has stations.** With nobody reporting you it
+  showed an empty Two-way list; it now opens on the first of Two-way, Hear you, You hear that has
+  rows, and follows as they fill. A click on a tab is remembered and wins from then on; a click on
+  the map still moves the list to that station's tab while it is selected.
 - **A click on a Map station opens its card; Answer is a button on it.** The
   card has both directions, distance and bearing, and what the station is to
   you. Before, a click on a dot sent JTDX the Reply at once; the Roster tab
