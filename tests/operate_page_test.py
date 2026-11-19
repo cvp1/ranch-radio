@@ -230,9 +230,14 @@ try:
           b.js(f"(() => {{ const s = document.querySelector('#op-bands'); return {SHOWN}(s) && "
                "s.querySelectorAll('.bs-cell').length > 0 && s.getBoundingClientRect().bottom <= "
                "document.querySelector('#view-radio').getBoundingClientRect().top; })()"), True)
+    # The G90's frame may exist: the station builds the focus radio's frame
+    # early (PR 1c), and on a slow runner the G90 can be the focus for a moment
+    # while the radios connect (CI, 2026-11-19). What matters is that it is
+    # not in pane mode, so check that, not whether it exists.
     check("  the frame is in pane mode; the other frames are not",
           (frame_js("ic7300", "document.documentElement.classList.contains('pane')"),
-           b.js("!!document.querySelector('#view-radio iframe[src*=\"r/g90/\"]')")), (True, False))
+           b.js("[...document.querySelectorAll('#view-radio iframe')].filter((f) => !/r\\/ic7300\\//.test(f.src))"
+                ".some((f) => f.contentDocument?.documentElement.classList.contains('pane'))")), (True, False))
     vis = ("(() => { const e = document.querySelector('%s'); if (!e) return null; const r = e.getBoundingClientRect(); "
            "return !e.closest('[hidden]') && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden' "
            "&& r.width > 0 && r.left >= 0 && r.right <= innerWidth + 0.5 && r.top >= 0 && r.bottom <= innerHeight + 0.5; })()")
