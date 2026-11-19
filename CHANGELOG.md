@@ -7,6 +7,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- Mesh conversations can be managed: each one in the rail (and the chat head) has a ⋯ menu to mark read or unread, pin to top, mute (no pop-ups), archive (a folded Archived section; a new message brings it back unless muted), and clear a channel's history or delete a DM conversation. Each message's bar adds Copy and Delete. Deletes take messages off this station only (the mesh cannot unsend; the page says so) and offer Undo; a message still being sent can't be deleted. A search box on the rail finds conversations by name or message text. The station keeps all of it (`mesh-convs.json`, `mesh-trash.jsonl`, mode 600), so unread counts and archives survive a reload and agree across browsers.
 - Mesh: nodes show by name everywhere, even after they drop out of the radio's node list. The station keeps every name the node has given (`mesh-names.json` beside the history, newest 3000), so messages, NeighborInfo, traceroutes and who-hears-us name a node rather than showing its `!id`. The Health view's Relay column names the relay when only one known node ends in that byte.
 - Mesh and MeshCore maps: a click on the small map opens it big, to pan and zoom around; the big map fills the panel with the node list beside it. ✕ Close map or Esc gives the room back. MeshCore gets the big map too.
 - Logbook sync on several hosts: `"adopt_wavelog": false` in a host's `logsync` block makes that host send only the QSOs its own JTDX logged. It still pulls Wavelog to confirm its own sends, but takes in nothing else (no first-start backfill, no hand-typed or other hosts' QSOs), so two hosts never upload the same QSO. One host keeps the default and adopts hand-typed QSOs.
@@ -216,6 +217,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- A page message whose type is not a string no longer closes that page's connection; it is refused with a warning.
 - Every map (the Map tab, Mesh, MeshCore, APRS): the wheel no longer runs away. A sideways trackpad swipe zoomed out a whole level each time (five swipes went from zoom 5 to 1) and a momentum tail did too; now a sideways swipe pans, a vertical scroll adds up to a level per mouse notch or deliberate swipe, and a pinch zooms in finer steps.
 - Chat: a conversation hidden and shown again with no frame between (a quick tab switch) could still open on an old message.
 - Mesh / MeshCore chat: a conversation drawn while its tab was hidden opened on its oldest message; it now opens on the newest.

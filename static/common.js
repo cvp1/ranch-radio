@@ -42,12 +42,20 @@ const store = {
   set(k, v) { localStorage.setItem("ic7300." + k, JSON.stringify(v)); },
 };
 
-function toast(msg, level = "info") {
+// action: {label, fn, ms} adds a button (Undo) and keeps the toast up ms.
+function toast(msg, level = "info", action = null) {
   const t = document.createElement("div");
   t.className = `toast ${level}`;
   t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "chip chip-mini toast-act";
+    b.textContent = action.label;
+    b.onclick = () => { t.remove(); action.fn(); };
+    t.append(" ", b);
+  }
   $("#toasts").append(t);
-  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 300); }, 4200);
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 300); }, action?.ms || 4200);
 }
 
 

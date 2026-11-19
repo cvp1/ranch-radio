@@ -1078,6 +1078,8 @@ class Station(TxAudio):
 
     async def _command(self, ws, m):
         t = m["t"]
+        if not isinstance(t, str):     # a non-string type closed the page's socket (2026-11-19)
+            raise TypeError("the message type must be a string")
         if t == "set":
             k = m["k"]
             v = self.radio.validate(k, m["v"])     # every check below sees the real value
