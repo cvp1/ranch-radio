@@ -483,8 +483,8 @@ const rrMapMath = (() => {
       .map((b) => `<option${(b === "current" ? !snap.chosen : snap.chosen === b) ? " selected" : ""}>${b}</option>`).join("");
     const far = (k) => stations.filter((r) => r[k] && r.km != null).sort((x, y) => y.km - x.km)[0];
     const fr = far("rx"), ft = far("tx");
-    el2.innerHTML = `<span>band <select class="rm-band">${sel2}</select> (${esc(M.showing || "")})</span>
-      <span>last <select class="rm-win">${WINDOWS.map((m) => `<option value="${m}"${m === windowMin ? " selected" : ""}>${m} min</option>`).join("")}</select></span>
+    el2.innerHTML = `<span>band <select class="rm-band rr-select">${sel2}</select> (${esc(M.showing || "")})</span>
+      <span>last <select class="rm-win rr-select">${WINDOWS.map((m) => `<option value="${m}"${m === windowMin ? " selected" : ""}>${m} min</option>`).join("")}</select></span>
       <span class="rm-sum"><b class="rm-n-rx">${c.rx}</b> you hear${fr ? ` <small>(farthest ${esc(fr.call)} ${km(fr.km)})</small>` : ""}</span>
       <span class="rm-sum"><b class="rm-n-tx">${snap.hears_me ? c.tx : "–"}</b> hear you${ft ? ` <small>(farthest ${esc(ft.call)} ${km(ft.km)})</small>` : ""}</span>
       <span class="rm-sum"><b class="rm-n-both">${snap.hears_me ? c.both : "–"}</b> two-way</span>

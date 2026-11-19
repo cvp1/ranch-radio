@@ -13,7 +13,15 @@
 .rs-mode { border-left-color: #ffc53d; } .rs-mode .rs-need { color: #d4a017; }
 .rs-grid, .rs-gridband { border-left-color: #3e63dd; } .rs-grid .rs-need, .rs-gridband .rs-need { color: #5b7fff; }
 .rs-unconf { border-left-color: #8e4ec6; } .rs-unconf .rs-need { color: #a970e0; }
-.rs-newcall { border-left-color: #00d8ff; } .rs-newcall .rs-need { color: #00b8e6; font-weight: 700; }
+/* "New call" is the lowest tier and most rows have it: its word stays quiet so the
+   higher needs stand out (2026-11-19, UX plan PR 0.3). The edge keeps its colour. */
+.rs-newcall { border-left-color: #00d8ff; } .rs-newcall .rs-need { color: var(--dim); font-weight: 400; }
 .rs-none { opacity: 0.6; }
 .rs-me { background: rgba(229,72,77,0.12); }
 .rs-nocq .rs-call { opacity: 0.55; }
+.rs-hint { margin: 0 0 6px; color: var(--dim); font-size: 0.85em; }
+/* Narrow (a phone, or a pane): keep Call, To, Distance, dB and Need on screen. */
+.addon-roster { container-type: inline-size; }
+@container (max-width: 720px) {
+  .rs-c-entity, .rs-c-grid, .rs-c-df, .rs-c-msg, .rs-c-age { display: none; }
+}
