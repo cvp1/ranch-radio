@@ -222,6 +222,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- **A browser can no longer retune a radio whose Winlink lane is armed.** Between the session's
+  transmissions, a band button or VFO swap on the radio page moved the dial under Pat, and the
+  band change then started an ATU tune (a carrier). While armed, the radio server now refuses a
+  page's frequency, mode, filter, VFO, split or tuner change and VFO swap with a notice and puts
+  the page back on the real setting, as it does while transmitting. The one change it lets
+  through is the session's own frequency (within 10 Hz), as the rigctl Winlink lane already did.
 - **`tests/affected.py` names a test after its longest module stem.** `station_id_test` belongs to
   `station_id.py`, so a change to `station.py` or `static/station.css` no longer selects it by name
   (19 tests had a shorter-stem owner too, e.g. `mesh_convs_test` under `mesh.*`). Imports and path

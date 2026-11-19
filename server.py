@@ -785,6 +785,21 @@ class Station(TxAudio):
         s = self.radio.state
         return bool(s.get("tx") or self.ptt_owner is not None or s.get("tuner") == 2)
 
+    def winlink_retune_refused(self, k, v=None):
+        """True when a browser change of `k` (a RETUNE_KEYS key, or "swap")
+        must be refused because a Winlink lane is armed. The session owns the
+        dial between its transmissions: a browser band change there moved the
+        radio under Pat, and the band watch then fired an ATU tune carrier
+        (2026-11-19). Mirrors the rigctl lane's rule (rigctl_server.py,
+        LANE_QSY_SLOP_HZ): the only change allowed is "freq" within the slop
+        of the session's own frequency. It only ever refuses."""
+        if not self.winlink_armed:
+            return False
+        want = self.winlink_qsy_hz
+        if k == "freq" and want is not None and v is not None:
+            return abs(int(v) - want) > rigctl_server.LANE_QSY_SLOP_HZ
+        return True
+
     @staticmethod
     def split_hop_ok(rx, tx):
         """F9: an emulated split may only hop within the RX frequency's ham band."""
@@ -1090,6 +1105,13 @@ class Station(TxAudio):
                 log.warning("refused browser %s=%r: transmitting", k, v)
                 self.notice(f"Not while transmitting: {k} unchanged.", "warn", ws)
                 await self._confirm(ws, k)
+            elif k in RETUNE_KEYS and self.winlink_retune_refused(k, v):
+                # Refused before app_set/radio.set: the dial never moves, so
+                # neither _tune_on_app_freq nor the band watch can start an
+                # ATU tune from it (2026-11-19).
+                log.warning("refused browser %s=%r: Winlink session armed", k, v)
+                self.notice(f"Not while a Winlink session is armed: {k} unchanged.", "warn", ws)
+                await self._confirm(ws, k)
             elif k == "tuner" and v == 2 and self.args.no_tx:
                 self.notice("Tuning transmits; disabled by --no-tx.", "warn", ws)
                 await self._confirm(ws, k)
@@ -1163,6 +1185,11 @@ class Station(TxAudio):
                 # F18: exchanging A and B moves the transmitter to B's frequency.
                 log.warning("refused browser VFO swap: transmitting")
                 self.notice("Not while transmitting: VFOs not swapped.", "warn", ws)
+                await self._confirm(ws, "freq", "freq_b")
+            elif self.winlink_retune_refused("swap"):
+                # A swap moves the dial to B's frequency under the session (2026-11-19).
+                log.warning("refused browser VFO swap: Winlink session armed")
+                self.notice("Not while a Winlink session is armed: VFOs not swapped.", "warn", ws)
                 await self._confirm(ws, "freq", "freq_b")
             else:
                 await self.radio.swap_vfo()
