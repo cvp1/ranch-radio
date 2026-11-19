@@ -31,6 +31,7 @@
   let selected = null;             // full key of the node whose card is open
   let recentOnly = false;
   const unread = {}, waiting = {}; // waiting: key -> {kind: t} for requests on the air
+  const unreadDm = {};             // DM peer (key prefix) -> unread count; unread.dm is their sum
   let cfgOpen = false, cfgSec = null, draft = {};
   let consoleOpen = false;
 
@@ -90,21 +91,22 @@
       <div class="mc-sub stat"></div>
       <div class="mc-stats stat"></div>
       <div class="mc-cfg-wrap" hidden></div>
-      <div class="wl-cols mesh-cols mc-main">
-        <div class="wl-mail">
-          <div class="wl-bar"><div class="seg mc-tabs"></div>
-            <button class="chip chip-mini" data-join title="Join a #hashtag channel: its key is the name's hash, so anyone using the same name hears it">+ #channel</button>
-            <button class="chip chip-mini" data-leave hidden title="Leave this channel (frees the slot on the node)">Leave</button></div>
-          <div class="mesh-list mc-list"></div>
-          <div class="mesh-to mc-to" hidden></div>
-          <form class="wl-row mesh-form mc-form">
-            <input class="wl-url mc-text" placeholder="Message" autocomplete="off" maxlength="400">
-            <span class="stat mc-count"></span>
-            <button type="submit" class="chip on mc-send" disabled>Send</button>
-          </form>
-          <div class="mesh-map mc-map"></div>
+      <div class="chat-cols mesh-cols mc-main">
+        <nav class="chat-rail mc-tabs" aria-label="Conversations"></nav>
+        <div class="chat-main">
+          <div class="chat-head mc-chat-head"></div>
+          <div class="chat-pane"><div class="mesh-list mc-list" role="log" aria-live="polite" aria-label="Messages"></div></div>
+          <div class="chat-compose">
+            <div class="mesh-to mc-to" hidden></div>
+            <form class="chat-form mesh-form mc-form">
+              <button type="button" class="chat-emoji-btn mc-emoji" title="Emoji" aria-label="Emoji">😊</button>
+              <textarea class="mc-text" rows="1" placeholder="Message" autocomplete="off" maxlength="400" aria-label="Message"></textarea>
+              <span class="stat mc-count"></span>
+              <button type="submit" class="chat-send mc-send" disabled>Send</button>
+            </form>
+          </div>
         </div>
-        <div class="wl-session">
+        <div class="chat-side wl-session">
           <div class="wl-bar">
             <input class="wl-url mc-find" placeholder="Find a node" autocomplete="off" spellcheck="false">
             <button class="chip chip-mini mc-recent" title="Only nodes heard in the last day">Recent</button>
@@ -112,21 +114,14 @@
           </div>
           <div class="mesh-card mc-card" hidden></div>
           <div class="wl-gateways mesh-nodes mc-nodes"></div>
+          <div class="mesh-map mc-map"></div>
         </div>
       </div>`;
     map = typeof meshMap !== "undefined" ? meshMap.create($b(".mc-map"), { onSelect: (k) => select(k, true) }) : null;
     $b(".mc-form").onsubmit = submit;
-    $b(".mc-text").oninput = count;
+    compose = chat.composer({ form: $b(".mc-form"), text: $b(".mc-text"), emoji: $b(".mc-emoji"), onInput: count });
     $b(".mc-find").oninput = renderNodes;
     $b(".mc-recent").onclick = () => { recentOnly = !recentOnly; $b(".mc-recent").classList.toggle("on", recentOnly); renderNodes(); };
-    $b("[data-join]").onclick = () => {
-      const n = prompt("Join a hashtag channel (anyone on the same #name hears it):", "#");
-      if (n && n.trim() && n.trim() !== "#") api.send("channel_join", { name: n.trim() });
-    };
-    $b("[data-leave]").onclick = () => {
-      const ch = (snap.channels || []).find((c) => c.index === view);
-      if (ch && confirm(`Leave ${ch.name}? The node stops hearing it; join again to come back.`)) api.send("channel_leave", { index: ch.index });
-    };
     setInterval(() => { if (body) { renderNodes(); renderStats(); map?.render(); } }, 60000);
   }
 
@@ -292,85 +287,134 @@
 
   const viewOf = (m) => (m.dm ? "dm" : m.ch);
 
-  function renderTabs() {
-    const tabs = (snap.channels || []).map((c) => [c.index, c.name]);
-    tabs.push(["dm", "Direct"]);
-    if (!tabs.some(([v]) => v === view)) view = tabs.length > 1 ? tabs[0][0] : "dm";
-    $b(".mc-tabs").innerHTML = tabs.map(([v, label]) =>
-      `<button class="chip${v === view ? " on" : ""}" data-view="${esc(String(v))}">${esc(label)}${
-        unread[v] ? ` <span class="mesh-unread mc-unread">${unread[v]}</span>` : ""}</button>`).join("");
-    for (const b of body.querySelectorAll("[data-view]")) b.onclick = () => {
-      const v = b.dataset.view;
-      view = v === "dm" ? "dm" : Number(v);
-      delete unread[view];
-      renderTabs(); renderMessages(); renderCompose();
-      api.changed();
-    };
-    $b("[data-leave]").hidden = view === "dm";
+  // The rail (chat.js): the node's channels, then one line per DM peer.
+  const peerOf = (x) => p12(x.mine ? x.to : x.from);
+  let compose = null;
+  let newMark = null;              // {conv, n}: unread when it was opened, for the "New" line
+  const lastLine = (x) => (x ? { who: x.mine ? "You" : x.dm ? "" : x.name || "?", text: x.text, t: x.t } : null);
+
+  function dmPeers() {
+    const last = new Map();
+    for (const x of snap.messages || []) if (x.dm && peerOf(x)) last.set(peerOf(x), x);
+    if (dmTo && !last.has(dmTo)) last.set(dmTo, null);
+    return [...last].sort((a, b) => (b[1]?.t ?? Infinity) - (a[1]?.t ?? Infinity));
   }
 
-  function row(x) {
-    const div = document.createElement("div");
-    div.className = "mesh-msg mc-msg" + (x.mine ? " mine" : "");
-    const peer = x.mine ? x.to : x.from;
+  function renderTabs() {
+    const chans = snap.channels || [];
+    if (view !== "dm" && !chans.some((c) => c.index === view)) view = chans.length ? chans[0].index : "dm";
+    const msgs = snap.messages || [];
+    const lastIn = (ch) => [...msgs].reverse().find((x) => !x.dm && x.ch === ch);
+    const chanRows = chans.map((c) => ({ id: `c${c.index}`, title: c.name || `Channel ${c.index}`, glyph: "#", seed: `#${c.name}`,
+      last: lastLine(lastIn(c.index)), unread: unread[c.index] || 0, on: view === c.index }));
+    const dmRows = dmPeers().map(([k, x]) => ({ id: `d${k}`, title: name(k), seed: k, last: lastLine(x),
+      unread: unreadDm[k] || 0, on: view === "dm" && dmTo === k, empty: "New conversation", hint: `${name(k)} ${k}` }));
+    chat.rail($b(".mc-tabs"), [["Channels", chanRows, "No channels on the node"],
+      ["Direct", dmRows, "Tap a sender's name, or a node on the right, to message it directly"]], (conv) => {
+      if (conv[0] === "c") {
+        const v = Number(conv.slice(1));
+        newMark = unread[v] ? { conv, n: unread[v] } : null;
+        view = v; delete unread[v];
+        renderTabs(); renderMessages(); renderCompose();
+        api.changed();
+        $b(".mc-text").focus();
+      } else directTo(conv.slice(1));
+    });
+    // Join a #hashtag channel: beside the Channels heading, whatever is open.
+    const head = $b(".mc-tabs .chat-rail-head");
+    head.insertAdjacentHTML("beforeend", `<button type="button" class="chip chip-mini chat-rail-add" data-join title="Join a #hashtag channel: its key is the name's hash, so anyone using the same name hears it">+ #channel</button>`);
+    head.querySelector("[data-join]").onclick = () => {
+      const n = prompt("Join a hashtag channel (anyone on the same #name hears it):", "#");
+      if (n && n.trim() && n.trim() !== "#") api.send("channel_join", { name: n.trim() });
+    };
+  }
+
+  function renderChatHead() {
+    const el = $b(".mc-chat-head");
+    if (view === "dm" && dmTo) {
+      const c = byKey(dmTo);
+      const bits = [c ? TYPE[c.type] || c.type : "", c ? hopsText(c) : "", c && heardAt(c) ? `heard ${when(heardAt(c))}` : "", dmTo].filter(Boolean);
+      el.innerHTML = chat.avatar(name(dmTo), dmTo) + `<span class="chat-head-text"><b>${esc(name(dmTo))}</b><span>${esc(bits.join(" · "))}</span></span>` +
+        (c ? `<button class="chip chip-mini" data-head="node" title="Its card: route, trace, status">Node</button>` : "");
+      const nb = el.querySelector("[data-head=node]");
+      if (nb) nb.onclick = () => select(c.key);
+    } else if (view !== "dm") {
+      const ch = (snap.channels || []).find((c) => c.index === view);
+      el.innerHTML = chat.avatar(ch?.name || "#", `#${ch?.name}`, "#") + `<span class="chat-head-text"><b>${esc(ch?.name || `Channel ${view}`)}</b>` +
+        `<span>Channel ${esc(String(view))} · a channel has no delivery ACK</span></span>` +
+        `<button class="chip chip-mini" data-leave title="Leave this channel (frees the slot on the node)">Leave</button>`;
+      el.querySelector("[data-leave]").onclick = () => {
+        if (ch && confirm(`Leave ${ch.name}? The node stops hearing it; join again to come back.`)) api.send("channel_leave", { index: ch.index });
+      };
+    } else {
+      el.innerHTML = `<span class="chat-head-text"><b>Direct messages</b><span>Pick a conversation, a sender, or a node</span></span>`;
+    }
+  }
+
+  // One message as a chat.js item. MeshCore has no replies or reactions.
+  function item(x) {
     const sender = !x.mine && !x.dm && x.name ? contacts().find((c) => c.name === x.name) : null;
-    const who = x.mine ? (x.dm ? `→ ${name(x.to)}` : "me") : (x.dm ? `${x.name || name(x.from)} → me` : x.name || "?");
-    let glyph = "", why = "";
+    let ack = null;
     if (x.mine) {
-      if (!x.dm && x.ack === "sent") [glyph, why] = ["✓", "Sent to the channel (a channel has no ACK)"];
-      else [glyph, why] = ACK[x.ack] || ["", ""];
+      let [glyph, why] = !x.dm && x.ack === "sent" ? ["✓", "Sent to the channel (a channel has no ACK)"] : ACK[x.ack] || ["", ""];
       if (x.ack === "delivered") why += [x.tries > 1 ? ` after ${x.tries} tries` : "", x.flood ? " (flooded)" : "",
         x.trip_ms ? `, round trip ${(x.trip_ms / 1000).toFixed(1)} s` : ""].join("");
       if (x.why) why += `: ${x.why}`;
+      ack = { glyph, why, cls: x.ack || "" };
     }
-    const meta = x.mine ? "" : [x.hops == null ? "" : x.hops === 0 ? "direct" : `${x.hops} hop${x.hops === 1 ? "" : "s"}`,
+    const sub = x.mine ? "" : [x.hops == null ? "" : x.hops === 0 ? "direct" : `${x.hops} hop${x.hops === 1 ? "" : "s"}`,
       x.snr != null ? `SNR ${x.snr}` : ""].filter(Boolean).join(" · ");
-    div.innerHTML = `<span class="mesh-time">${hhmm(x.t)}</span>` +
-      `<button class="mesh-who" title="${esc(x.mine ? "" : peer || sender?.key || "")}">${esc(who)}</button>` +
-      `<span class="mesh-text">${esc(x.text)}</span>` +
-      `<span class="mesh-meta">${esc(meta)}${x.mine ? `<span class="mesh-ack ${esc(x.ack || "")}" title="${esc(why)}">${glyph}</span>` : ""}</span>`;
-    const target = x.dm ? peer : sender?.key;
-    if (target) div.querySelector(".mesh-who").onclick = () => directTo(target);
-    return div;
+    const who = x.mine ? "me" : x.dm ? x.name || name(x.from) : x.name || "?";
+    const target = x.mine ? null : x.dm ? null : sender?.key || null;
+    return { key: x.mine ? `t${x.t}` : `r${x.t}${x.from || x.name || ""}`, mine: !!x.mine, t: x.t, text: x.text, sub, ack,
+      who, whoTitle: x.mine ? "" : `${x.from || sender?.key || ""}${target ? " · message it directly" : ""}`,
+      seed: x.mine ? me().key : x.from || x.name, peer: target, canReply: false, canReact: false };
   }
 
   function renderMessages() {
+    renderChatHead();
     const list = $b(".mc-list");
-    const shown = (snap.messages || []).filter((x) => viewOf(x) === view).slice(-300);
-    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-    list.innerHTML = shown.length ? "" : `<div class="wl-empty mc-empty">No messages${view === "dm" ? " (pick a node to message it)" : " here yet"}</div>`;
-    for (const x of shown) list.append(row(x));
-    if (atBottom || shown.length < 2) list.scrollTop = list.scrollHeight;
+    const conv = view === "dm" ? `d${dmTo}` : `c${view}`;
+    if (view === "dm" && !dmTo) {
+      chat.render(list, [], { conv, empty: `<div class="wl-empty chat-empty mc-empty">Pick a conversation on the left, a sender, or a node on the right to message it</div>` });
+      return;
+    }
+    const shown = (snap.messages || []).filter((x) => viewOf(x) === view && (view !== "dm" || peerOf(x) === dmTo)).slice(-300);
+    chat.render(list, shown.map(item), { conv, unread: newMark?.conv === conv ? newMark.n : 0, onWho: (it) => directTo(it.peer),
+      empty: `<div class="wl-empty chat-empty mc-empty">No messages${view === "dm" ? ` with ${esc(name(dmTo))} yet. Say hello 👋` : " here yet"}</div>` });
   }
 
   function directTo(key) {
     dmTo = p12(key);
     view = "dm";
-    delete unread.dm;
+    newMark = unreadDm[dmTo] ? { conv: `d${dmTo}`, n: unreadDm[dmTo] } : null;
+    delete unreadDm[dmTo];
+    unread.dm = Object.values(unreadDm).reduce((a, b) => a + b, 0) || undefined;
+    if (!unread.dm) delete unread.dm;
     renderTabs(); renderMessages(); renderCompose();
+    api.changed();
     $b(".mc-text").focus();
   }
 
   function renderCompose() {
     const to = $b(".mc-to");
-    if (view === "dm") {
-      to.hidden = false;
+    if (view === "dm" && dmTo) {
       const c = byKey(dmTo);
-      to.innerHTML = dmTo
-        ? `To <b>${esc(name(dmTo))}</b> <span class="wl-dim">${esc(c ? TYPE[c.type] || c.type : "")} ${esc(dmTo)}</span> <button class="chip chip-mini" data-to-x>✕</button>`
-        : `<span class="wl-dim">Pick a node on the right (or a sender) to message it</span>`;
-      const x = to.querySelector("[data-to-x]");
-      if (x) x.onclick = () => { dmTo = null; renderCompose(); };
+      to.hidden = false;
+      to.innerHTML = `<span class="wl-dim">To</span> <b>${esc(name(dmTo))}</b> <span class="wl-dim">${esc(c ? TYPE[c.type] || c.type : "")} ${esc(dmTo)}</span>`;
     } else {
       to.hidden = true;
+      to.innerHTML = "";
     }
-    $b(".mc-text").placeholder = view === "dm" ? "Direct message" : "Message to the channel";
+    const ch = (snap.channels || []).find((c) => c.index === view);
+    $b(".mc-text").placeholder = view === "dm" ? (dmTo ? `Message ${name(dmTo)}` : "Pick a conversation first") : `Message ${ch?.name || "the channel"}`;
     count();
   }
 
   function count() {
     const max = snap.text_max || 140, n = bytes($b(".mc-text").value.trim()), c = $b(".mc-count");
-    c.textContent = n ? `${n}/${max}` : "";
+    c.textContent = n > max ? `${n}/${max}` : n > max * 0.75 ? `${max - n} left` : "";
+    c.title = `${n} of ${max} bytes`;
     c.classList.toggle("mc-over", n > max);
     $b(".mc-send").disabled = !connected() || !n || n > max || (view === "dm" && !dmTo);
   }
@@ -380,8 +424,7 @@
     const text = $b(".mc-text").value.trim();
     if (!text || $b(".mc-send").disabled) return;
     api.send("send", view === "dm" ? { text, to: dmTo } : { text, ch: view });
-    $b(".mc-text").value = "";
-    count();
+    compose.clear();
   }
 
   // ---------------------------------------------------------------- nodes
@@ -676,12 +719,16 @@
     if (m.result && m.result.key === selected) { renderCard(); renderMap(); }
     if (m.cli && m.cli.key === selected) renderCard();
     if (m.msg) {
-      const v = viewOf(m.msg);
-      if (v === view) renderMessages();
-      else if (!m.msg.mine) { unread[v] = (unread[v] || 0) + 1; renderTabs(); }
+      const v = viewOf(m.msg), here = v === view && (v !== "dm" || peerOf(m.msg) === dmTo);
+      if (here) renderMessages();
+      else if (!m.msg.mine) {
+        if (v === "dm") { const k = peerOf(m.msg); unreadDm[k] = (unreadDm[k] || 0) + 1; unread.dm = Object.values(unreadDm).reduce((a, b) => a + b, 0); }
+        else unread[v] = (unread[v] || 0) + 1;
+      }
+      renderTabs();
       if (!m.msg.mine) {
         if (m.msg.from) pulse(m.msg.from);
-        if (m.msg.dm && typeof toast === "function") toast(`MeshCore · ${m.msg.name || name(m.msg.from)}: ${m.msg.text}`, "info");
+        if (m.msg.dm && !here && typeof toast === "function") toast(`MeshCore · ${m.msg.name || name(m.msg.from)}: ${m.msg.text}`, "info");
       }
     }
     if (m.update && viewOf(m.update) === view) renderMessages();

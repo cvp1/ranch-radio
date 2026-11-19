@@ -545,26 +545,9 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .stat.mesh-key-bad { color: #ff8a8a; margin-left: 10px; }
 .mesh-unread { display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 8px; font-size: 10px;
   background: rgba(var(--warm-rgb), .25); color: var(--warm); }
-.mesh-list { display: flex; flex-direction: column; height: 260px; overflow-y: auto; padding: 4px 0;
-  border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.2); }
-.mesh-msg { display: grid; grid-template-columns: 3.2em 6.5em 1fr auto; gap: 8px; align-items: baseline;
-  padding: 4px 10px; font: 13px var(--sans); color: var(--text); }
-.mesh-msg.mine { background: rgba(var(--accent-rgb), .05); }
-.mesh-time, .mesh-meta { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
-.mesh-who { font: 600 12px var(--mono); color: var(--muted); background: none; border: 0; padding: 0;
-  text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.mesh-msg.mine .mesh-who { color: var(--accent); cursor: default; }
-.mesh-text { overflow-wrap: anywhere; user-select: text; }
-.mesh-ack { margin-left: 6px; color: var(--muted); }
-.mesh-ack.delivered, .mesh-ack.relayed { color: var(--accent); }
-.mesh-ack.failed { color: #ff8a8a; }
-.mesh-to { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-.mesh-form { flex-wrap: nowrap; }
-.mesh-form #mesh-text { flex: 1; min-width: 0; }
-#mesh-count.warn { color: #ff8a8a; }
+/* The messages themselves, the composer and the conversations: chat.css. */
 #mesh-find { flex: 1; min-width: 0; padding: 4px 8px; }
 .mesh-nodes { max-height: 316px; }
-.mesh-cols .wl-session .mesh-nodes { max-height: none; flex: 1 1 0; min-height: 260px; }
 .mesh-node { display: grid; grid-template-columns: 5em 1fr 8.5em 3.5em 2.5em; gap: 8px; align-items: baseline;
   text-align: left; padding: 6px 10px; border: 0; border-bottom: 1px solid var(--line);
   background: transparent; font: 12px var(--sans); color: var(--muted); }
@@ -587,23 +570,9 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mesh-trace.failed { color: #ff8a8a; }
 .mesh-hop { white-space: nowrap; }
 .mesh-stats .stat { margin-left: 10px; font: 11px var(--mono); color: var(--muted); }
-.mesh-quote { display: block; font-size: 11px; color: var(--dim); border-left: 2px solid var(--line-hi); padding-left: 6px; margin-bottom: 2px; }
-.mesh-quote b { color: var(--muted); font-weight: 600; }
-.mesh-reacts:empty { display: none; }
-.mesh-reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
-.mesh-react { font-size: 11px; padding: 0 5px; border-radius: 8px; background: rgba(255,255,255,.06); }
-.mesh-acts { visibility: hidden; margin-right: 6px; }
-.mesh-msg:hover .mesh-acts { visibility: visible; }
-.mesh-acts button { background: none; border: 0; padding: 0 2px; cursor: pointer; font-size: 12px; color: var(--muted); }
-.mesh-acts button:hover { color: var(--text); }
 .mesh-retry { margin-right: 6px; }
 .mesh-retry-in { margin-right: 6px; font-size: 0.85em; }
 .mesh-replying { display: inline-flex; align-items: center; gap: 6px; }
-.mesh-conv { display: grid; grid-template-columns: 5em 1fr 3em 2em; gap: 8px; align-items: baseline; text-align: left;
-  background: none; border: 0; border-bottom: 1px solid var(--line); padding: 6px 8px; color: var(--muted); cursor: pointer; font: inherit; }
-.mesh-conv:hover { background: rgba(255,255,255,.04); color: var(--text); }
-.mesh-conv b { font: 600 12px var(--mono); color: var(--text); }
-.mesh-conv-last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mesh-node.ignored { opacity: .5; }
 .mesh-reqs { align-items: center; }
 .mesh-req-note { font-size: 11px; }
@@ -681,8 +650,6 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mm-none { padding: 12px 10px; color: var(--muted); }
 .mm-src { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10.5px; line-height: 1.35; }
 /* The map given the room (⤢): the conversation steps aside until it is asked back. */
-.mesh-bigmap .wl-mail > .wl-bar, .mesh-bigmap .mesh-list, .mesh-bigmap .mesh-to, .mesh-bigmap .mesh-form { display: none; }
-.mesh-bigmap .mesh-map { height: 76vh; }
 @media (max-width: 700px) { .mm-side:not(.shut) { top: auto; left: 8px; width: auto; height: 45%; } }
 .mm-pulse { fill: none; stroke: var(--accent); stroke-width: 2; transform-box: fill-box; transform-origin: center;
   animation: mm-pulse 1.6s ease-out forwards; pointer-events: none; }
