@@ -14,7 +14,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
   and session bandwidth, the S/N of the last decoded frame, speed (ARDOP's
   frame modulation and decode quality; VARA's speed level and rate), BUSY,
   and PTT. A reading older than 90 s says how old it is; a modem whose log
-  isn't followed says "not tracked" instead of showing blanks. Nothing talks
+  isn't followed says "not tracked", one followed but silent so far
+  says "waiting", and a radio server on older code says "no status", never blanks. Nothing talks
   to the modems: Pat keeps their host ports to itself.
 - **Winlink panel, console layout.** A status strip on top (state, the via,
   who the next session calls, how many messages wait in the outbox, unread),

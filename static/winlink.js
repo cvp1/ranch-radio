@@ -419,7 +419,7 @@ const winlink = (() => {
   // read from ardopcf's and xara's logs; relayed by the station). Which modem:
   // the running session's scheme, else the via's. Every reading shows its
   // age once it is old: a number from an hour ago is not the link now.
-  let modemSnap = null, modemTimer = null;
+  let modemSnap = null, modemTimer = null, lastId = null;   // lastId: the ID ledger's snapshot (which logs are followed)
   const MODEM_FRESH_S = 90;          // ago() says "just now" below this
   const STATE_LABEL = { ISS: "sending (ISS)", IRS: "receiving (IRS)", IRStoISS: "turning over",
     IDLE: "linked, idle", DISC: "not linked", CONNECTED: "linked", DISCONNECTED: "not linked" };
@@ -453,10 +453,20 @@ const winlink = (() => {
     const r = modemSnap?.[kind];
     const name = MODEM_LABEL[kind];
     if (!r) {
-      // No record: the radio's server does not follow this modem's log. Say so, never blank-as-fine.
-      setPill("modem", `${name} · not tracked`, { off: true });
+      // No record. Three reasons, each said as itself, never blank-as-fine
+      // (2026-11-19: a radio server still on old code read "not tracked",
+      // blaming a flag that was set):
+      //   modemSnap null: the radio's server sends no modem status (older code);
+      //   the ID ledger follows this modem's log: nothing read from it yet;
+      //   otherwise: its log is not followed.
+      const tracked = !!lastId?.tracked && (!Array.isArray(lastId.tracked_modems) || lastId.tracked_modems.includes(kind));
+      const [word, why] = modemSnap === null
+        ? ["no status", `The radio's server sends no modem status: it runs older code. ranch-radio update restarts it once it is idle.`]
+        : tracked ? ["waiting", `Following ${name}'s log; nothing read from it yet (it writes on its next frame, busy change or key-up).`]
+          : ["not tracked", `No status from ${name}: start the radio's server with ${ID_FLAG[kind]}`];
+      setPill("modem", `${name} · ${word}`, { off: true });
       for (const id of ["link", "snr", "speed", "busy", "ptt"]) setPill(id, "—", { off: true });
-      $("#wl-pill-modem").title = `No status from ${name}: start the radio's server with ${ID_FLAG[kind]}`;
+      $("#wl-pill-modem").title = why;
       return;
     }
     $("#wl-pill-modem").title = "The modem the next session uses, and its link state (from its own log)";
@@ -1194,6 +1204,7 @@ const winlink = (() => {
   function idState(i) {
     const el = $("#wl-id");
     if (!i) return;
+    lastId = i;
     let text = "", warn = false, title = "";
     const at = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const kind = viaKind();
@@ -1278,7 +1289,7 @@ const winlink = (() => {
       if (armed) setState(session ? `Armed · session to ${targetOf(session) || session}` : "Armed", "on");
       renderSession();
     }
-    if (m.id) idState(m.id);
+    if (m.id) { idState(m.id); renderModem(); }
     if ("modem" in m) { modemSnap = m.modem || null; renderModem(); }
     if ("blocked" in m && (m.blocked || null) !== blocked) {
       blocked = m.blocked || null;
