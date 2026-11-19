@@ -594,6 +594,7 @@ const rrMapMath = (() => {
       if (m.map) receive(m.map.decodes || []);
     },
     off() { snap = {}; stations = []; sel = null; if (timer) { clearInterval(timer); timer = null; } if (body) body.innerHTML = ""; built = false; },
+    data() { return snap; },     // UX plan 5.3 (PR 3a, 2026-11-19): the merged state, for other views
     tab() {
       if (!snap.map) return { dot: "off", title: "Map" };
       const a = onAir(), c = counts();

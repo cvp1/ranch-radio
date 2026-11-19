@@ -300,6 +300,7 @@ const station = (() => {
     entryFor = null;              // an open entry was for the old focus: the rebuild drops it
     prepareFocus();
     renderBar();
+    homeChanged();                // the band strip follows the focus radio's bands (PR 3a)
   }
 
   // ---------- tuneFocus: the one way the station page retunes a radio
@@ -1029,6 +1030,9 @@ const station = (() => {
       el.append(lane);
     }
     mission.mount(el);
+    // The band strip under the clock row (UX plan PR 3a, 2026-11-19): the
+    // bands the focus radio covers. Display only; it never retunes.
+    bandStrip.render($("#mc-bands"), { range: live[focusId()]?.cfg?.caps?.freq || null });
     // The view is redrawn often: every pulse starts at the same point of one
     // 3.2 s clock (its periods divide it), so a redraw never restarts one.
     $("#view-home").style.setProperty("--sync", `-${Date.now() % 3200}ms`);

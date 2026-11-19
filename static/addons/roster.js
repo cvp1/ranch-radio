@@ -22,6 +22,27 @@
   const RANK = ["dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "dxcc_unconfirmed", "call_band_mode"];
   const ALERTS = { off: -1, dxcc: 0, band: 1, grid: 4, any: 6 };
 
+  // Strong needs on the decoding band (UX plan PR 3a, 2026-11-19): one filter
+  // for this tab's Mission Control card and the band strip (via data()). A
+  // row keeps the band and mode it arrived on and outlives a band change
+  // (logsync_roster.py Roster.add), so only rows on the roster's current band
+  // and mode count, and only fresh ones: KEEP_S there is 120 s, and a snapshot
+  // ages here while JTDX is quiet. null while the needs index is unavailable
+  // (still building, or no logbook): unknown, never zero.
+  const STRONG = ["dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band"];
+  const FRESH_S = 120;
+  let snapAt = 0;
+  function needCounts() {
+    const R = snap.roster;
+    if (!R || !R.needs) return null;
+    const late = (Date.now() - snapAt) / 1000;
+    const rows = (R.rows || []).filter((r) => r.band === R.band && r.mode === R.mode && (r.age || 0) + late <= FRESH_S);
+    return { band: R.band, mode: R.mode, strong: rows.filter((r) => STRONG.includes(r.need)),
+             unconfirmed: rows.filter((r) => r.need === "dxcc_unconfirmed").length,
+             new_calls: rows.filter((r) => r.need === "call_band_mode").length };
+  }
+  function take(s) { snap = s; snapAt = Date.now(); }
+
   function save() { localStorage.setItem("roster.opts", JSON.stringify(opt)); }
 
   function beep() {
@@ -100,20 +121,27 @@
 
   addons.register("roster", {
     mount(b) { body = b; render(); },
-    hello(s) { snap = s || {}; render(); },
+    hello(s) { take(s || {}); render(); },
     event(m) {
       if (m.callcard) { window.callcard?.answer(m.callcard); return; }     // a call card's answer (static/callcard.js)
-      if (m.roster) { snap = { roster: m.roster }; alertFor(m.roster.rows || []); render(); }
+      if (m.roster) { take({ roster: m.roster }); alertFor(m.roster.rows || []); render(); }
     },
     off() { snap = {}; if (body) body.innerHTML = ""; },
+    // UX plan 5.3: the snapshot plus the strong-needs counts (null: unknown).
+    data() { const c = needCounts(); return { ...snap, need_counts: c && { ...c, strong: c.strong.length } }; },
     tab() {
       const rows = snap.roster?.rows || [];
       const top = rows.find((r) => r.need === "dxcc");
       return { dot: !snap.roster ? "off" : top ? "tx" : "ok", title: top ? `${top.call}: new DXCC` : `${rows.length} heard` };
     },
     card() {
-      const rows = (snap.roster?.rows || []).filter((r) => r.need);
-      return { state: snap.roster ? `${rows.length} needed` : "off", lines: rows.slice(0, 3).map((r) => `${esc(r.call)} — ${esc((NEED[r.need] || [r.need])[0])}`) };
+      // The band strip's filter (PR 3a). It was a count of every row with
+      // any need, which counted rows kept from the previous band and the
+      // weak levels (unconfirmed, new call) alike.
+      if (!snap.roster) return { state: "off", lines: [] };
+      const c = needCounts();
+      if (!c) return { state: "needs unknown", lines: ["the needs index is not ready"] };
+      return { state: `${c.strong.length} strong needs`, lines: c.strong.slice(0, 3).map((r) => `${esc(r.call)} — ${esc((NEED[r.need] || [r.need])[0])}`) };
     },
   });
 })();

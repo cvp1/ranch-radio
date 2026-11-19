@@ -11,15 +11,17 @@
 
 (() => {
   let snap = {}, body = null, observer = null, tip = null, showTable = false;
+  // The last PSKReporter counts that arrived without an error. The server
+  // drops its counts when PSKReporter fails (unknown is not zero); Mission
+  // Control's band strip keeps showing them, marked stale, from data()
+  // (UX plan PR 3a, 2026-11-19). This tab still shows "unknown".
+  let pskLast = null;
 
   // Regions keep one color everywhere (fixed slots, validated for colour
-  // vision deficiency on the dark panel; see propagation.css).
-  const REGIONS = [
-    ["JA", "Japan"], ["NA_EAST", "NA east"], ["EU", "Europe"], ["SA", "S America"],
-    ["VK_ZL", "VK/ZL"], ["NA_WEST", "NA west"], ["OCEANIA_DEEP", "Pacific"],
-  ];
+  // vision deficiency on the dark panel; see propagation.css). The names
+  // live in common.js (REGION_NAMES, regionName) since the band strip uses them.
+  const REGIONS = REGION_NAMES;
   const SLOT = Object.fromEntries(REGIONS.map(([k], i) => [k, i + 1]));
-  const regionName = (r) => (REGIONS.find(([k]) => k === r) || [r, r.replace(/_/g, " ")])[1];
   const regionSlot = (r) => SLOT[r] || 8;          // anything else shares slot 8 ("other")
   const SOURCE = { jtdx: "JTDX", wsjtx: "WSJT-X", skimmer: "skimmer", js8: "JS8Call" };
   const HF = BANDS.filter((b) => b.hi <= 54e6);
@@ -386,11 +388,21 @@
 
   function update() { render(); badgeBands(); strip(); watchBands(); }
 
+  function take(s) {
+    snap = s || {};
+    if (snap.pskreporter && !snap.psk_error && snap.psk_checked) pskLast = { bands: snap.psk || {}, checked: snap.psk_checked };
+    if (!snap.pskreporter) pskLast = null;
+    update();
+  }
+
   addons.register("propagation", {
     mount(b) { body = b; tips(b); update(); },
-    hello(s) { snap = s || {}; update(); },
-    event(m) { if (m.state) { snap = m.state; update(); } },
-    off() { snap = {}; lastHtml = ""; if (body) body.innerHTML = ""; unbadge(); },
+    hello(s) { take(s); },
+    event(m) { if (m.state) take(m.state); },
+    off() { snap = {}; pskLast = null; lastHtml = ""; if (body) body.innerHTML = ""; unbadge(); },
+    // The merged state for other views (UX plan 5.3, PR 3a): the server's
+    // snapshot plus psk_last, the last good PSKReporter counts {bands, checked}.
+    data() { return { ...snap, psk_last: pskLast }; },
     tab() {
       const k = kpRead(snap.kp?.kp);
       return { dot: !k ? "off" : k.st === "good" ? "ok" : "tx",
