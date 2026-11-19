@@ -214,6 +214,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- Every map (the Map tab, Mesh, MeshCore, APRS): the wheel no longer runs away. A sideways trackpad swipe zoomed out a whole level each time (five swipes went from zoom 5 to 1) and a momentum tail did too; now a sideways swipe pans, a vertical scroll adds up to a level per mouse notch or deliberate swipe, and a pinch zooms in finer steps.
 - Chat: a conversation hidden and shown again with no frame between (a quick tab switch) could still open on an old message.
 - Mesh / MeshCore chat: a conversation drawn while its tab was hidden opened on its oldest message; it now opens on the newest.
 - **Mission Control cards keep their own height.** A card in the same row as

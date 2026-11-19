@@ -264,12 +264,9 @@ const meshMap = (() => {
       if (click && onExpand && !big && !e.target.closest(".mm-ctl, .mm-attr, .mm-node, .mm-side")) onExpand();
     });
     el.addEventListener("pointercancel", endDrag);
-    el.addEventListener("wheel", (e) => {
-      if (e.target.closest(".mm-side")) return;   // the list scrolls
-      e.preventDefault();
-      const r = el.getBoundingClientRect();
-      zoomBy(e.deltaY < 0 ? 1 : -1, e.clientX - r.left, e.clientY - r.top);
-    }, { passive: false });
+    basemaps.wheel(el, { zoom: (dz, x, y) => zoomBy(dz, x, y),
+      pan: (dx, dy) => { cx += dx; cy += dy; moved = true; render(); },
+      skip: (e) => !!e.target.closest(".mm-side") });   // the list scrolls
     el.addEventListener("dblclick", (e) => {
       if (e.target.closest(".mm-side, .mm-ctl")) return;
       const r = el.getBoundingClientRect();
