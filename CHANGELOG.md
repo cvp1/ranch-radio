@@ -213,6 +213,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- Mesh / MeshCore chat: a conversation drawn while its tab was hidden opened on its oldest message; it now opens on the newest.
 - **Mission Control cards keep their own height.** A card in the same row as
   the wide radio card no longer stretches to match it, and on a phone the
   clock's UTC label sits beside the time instead of drifting to the right.
