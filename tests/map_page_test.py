@@ -27,6 +27,9 @@ the add-on's loop isn't started; tiles are never asked for).
              nothing (they used to zoom out), a notch or a pinch is a level
   the page   two-way needs both directions on one band; the window and the
              layer switches take stations off; a first look frames them all
+  the list   opens on the first tab with rows (You hear when nobody reports
+             you); a click on a tab is kept over later snapshots; a click on
+             the map moves the list only while that station is selected
   sun        the subsolar point at the June and December solstices; night and
              day at reference places and times (NOAA); the night polygon covers
              the winter pole
@@ -406,6 +409,26 @@ try:
           (b.js("document.querySelectorAll('#mapbox .rm-beamp').length"), b.js("document.querySelector('#mapbox .rm-beamt').textContent")), (1, "→ ZL1ABC"))
     check("  the nav: transmitting", b.js("__impl.tab().dot"), "tx")
     check("  what is on the air changing does not redraw the stations", b.js("document.querySelector('#mapbox .rm-s').__same"), True)
+    # ---- the list's tab (UX plan PR 0.2): no Two-way rows, no empty Two-way list
+    LIST = """JSON.stringify([document.querySelector('#mapbox .rm-list [data-tab].on')?.dataset.tab,
+      [...document.querySelectorAll('#mapbox .rm-row b')].map((e) => e.textContent).sort()])"""
+    no_hb = dict(snap_js, hears_me=None, hears_me_why="Switch on the Propagation add-on to see who hears you")
+    b.js("__impl.hello(" + json.dumps(no_hb) + ")")
+    b.js("document.querySelector('#mapbox .rm-list [data-toggle]').click()")      # a narrow window starts with it shut
+    check("list: decodes and no hears-you data: 'You hear' rows, no click",
+          json.loads(b.js(LIST)), ["rx", ["JA1ABC", "K6ABC", "VK2ABC"]])
+    b.js("__impl.hello(" + json.dumps(snap_js) + ")")
+    check("  two-way rows come: the list shows them", json.loads(b.js(LIST)), ["both", ["JA1ABC"]])
+    b.js("document.querySelector('#mapbox .rm-list [data-tab=\"rx\"]').click()")
+    b.js("document.querySelector('#mapbox .rm-list [data-tab=\"both\"]').click()")
+    b.js("__impl.hello(" + json.dumps(no_hb) + ")")
+    check("  after a click on 'Two-way' a new snapshot does not move it", json.loads(b.js(LIST)), ["both", []])
+    b.js("document.querySelector('#mapbox .rm-s[data-call=\"VK2ABC\"]').dispatchEvent(new MouseEvent('click', {bubbles: true}))")
+    check("  a click on a station on the map: the list follows to its tab", json.loads(b.js(LIST))[0], "rx")
+    b.js("__impl.hello(" + json.dumps(no_hb) + ")")
+    check("    and stays there while it is selected", json.loads(b.js(LIST))[0], "rx")
+    b.js("document.querySelector('#mapbox .rm-card [data-x]').click(); __impl.hello(" + json.dumps(no_hb) + ")")
+    check("    closed, the next snapshot goes back to the operator's tab", json.loads(b.js(LIST))[0], "both")
 finally:
     b.close()
 
