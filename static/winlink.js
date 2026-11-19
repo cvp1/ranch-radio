@@ -412,6 +412,72 @@ const winlink = (() => {
     const url = session || $("#wl-url").value.trim();
     $("#wl-strip-target").textContent = targetOf(url) || (mode === "peer" ? "pick a station" : "pick a gateway");
     $("#wl-pill-target").classList.toggle("wl-pill-hot", !!session);
+    renderModem();
+  }
+
+  // ---------- the modem's own state (modem_status.py on the radio's server,
+  // read from ardopcf's and xara's logs; relayed by the station). Which modem:
+  // the running session's scheme, else the via's. Every reading shows its
+  // age once it is old: a number from an hour ago is not the link now.
+  let modemSnap = null, modemTimer = null;
+  const MODEM_FRESH_S = 90;          // ago() says "just now" below this
+  const STATE_LABEL = { ISS: "sending (ISS)", IRS: "receiving (IRS)", IRStoISS: "turning over",
+    IDLE: "linked, idle", DISC: "not linked", CONNECTED: "linked", DISCONNECTED: "not linked" };
+  function modemKind() {
+    const sch = session ? String(session).split(":")[0] : viaKind();
+    return isHF(sch) ? sch : null;
+  }
+  const ageText = (t) => {
+    if (t == null) return "";
+    const s = Math.max(0, Date.now() / 1000 - t);
+    return s < MODEM_FRESH_S ? "" : ` · ${ago(s)}`;
+  };
+  // The Modem pill's text is #wl-m-state; the rest share their pill's name.
+  // A missing element skips that pill: the strip must never take the page
+  // down with it (2026-11-18: a wrong id threw in hello and the station page
+  // lost its tabs).
+  function setPill(id, text, cls = {}) {
+    const span = $(`#wl-m-${id === "modem" ? "state" : id}`), pill = $(`#wl-pill-${id}`);
+    if (!span || !pill) return;
+    span.textContent = text;
+    for (const c of ["wl-pill-stale", "wl-pill-warm", "wl-pill-tx", "wl-pill-off", "wl-pill-hot"]) pill.classList.remove(c);
+    for (const [c, on] of Object.entries(cls)) if (on) pill.classList.add(`wl-pill-${c}`);
+  }
+  function renderModem() {
+    const group = $("#wl-modem");
+    const kind = modemKind();
+    group.hidden = !kind || off;
+    clearInterval(modemTimer);
+    modemTimer = null;
+    if (group.hidden) return;
+    const r = modemSnap?.[kind];
+    const name = MODEM_LABEL[kind];
+    if (!r) {
+      // No record: the radio's server does not follow this modem's log. Say so, never blank-as-fine.
+      setPill("modem", `${name} · not tracked`, { off: true });
+      for (const id of ["link", "snr", "speed", "busy", "ptt"]) setPill(id, "—", { off: true });
+      $("#wl-pill-modem").title = `No status from ${name}: start the radio's server with ${ID_FLAG[kind]}`;
+      return;
+    }
+    $("#wl-pill-modem").title = "The modem the next session uses, and its link state (from its own log)";
+    setPill("modem", `${name} · ${STATE_LABEL[r.state] || (r.state ? r.state : "no state yet")}`, { hot: r.linked });
+    setPill("link", r.linked ? `${r.partner || "?"}${r.bw_hz ? ` · ${r.bw_hz} Hz` : ""}`
+      : r.partner ? `last ${r.partner}` : "—", { hot: r.linked, off: !r.linked });
+    const snrOld = r.snr_at == null || Date.now() / 1000 - r.snr_at >= MODEM_FRESH_S;
+    setPill("snr", r.snr_db == null ? "—" : `${r.snr_db > 0 ? "+" : ""}${r.snr_db} dB${ageText(r.snr_at)}`, { stale: snrOld });
+    let speed = "—";
+    if (kind === "ardop" && r.frame) {
+      const [mod, bw] = r.frame.split(".");
+      speed = `${mod} ${bw} Hz${r.quality != null ? ` · Q ${r.quality}` : ""}`;
+    } else if (kind === "varahf" && r.level != null) {
+      speed = `L${r.level} · ${r.bps} bps ${r.rate_dir || ""}`.trim();
+    }
+    const rateOld = r.rate_at == null || Date.now() / 1000 - r.rate_at >= MODEM_FRESH_S;
+    setPill("speed", speed === "—" ? speed : speed + ageText(r.rate_at), { stale: rateOld });
+    setPill("busy", r.busy == null ? "—" : r.busy ? "YES" : "no", { warm: r.busy, off: r.busy === false });
+    setPill("ptt", r.ptt == null ? "—" : r.ptt ? "TX" : "RX", { tx: r.ptt });
+    // Ages move with the clock: redraw while anything shown has an age.
+    if (r.snr_at != null || r.rate_at != null) modemTimer = setInterval(renderModem, 5000);
   }
 
   // ---------- gateways
@@ -1186,6 +1252,7 @@ const winlink = (() => {
     $("#wl-mycall").textContent = snap.mycall || "";
     setLog(snap.log || []);
     codec(snap.codec_db);
+    modemSnap = snap.modem || null;
     idState(snap.id);
     idleState();
     renderSession();
@@ -1212,6 +1279,7 @@ const winlink = (() => {
       renderSession();
     }
     if (m.id) idState(m.id);
+    if ("modem" in m) { modemSnap = m.modem || null; renderModem(); }
     if ("blocked" in m && (m.blocked || null) !== blocked) {
       blocked = m.blocked || null;
       idleState();

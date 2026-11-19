@@ -339,9 +339,10 @@ class ArdopLogTail:
     """Follows the newest ARDOPDebug*.log in ardopcf's --logdir (read only)
     and feeds the ledger. Starts at the end of the file: history is not replayed."""
 
-    def __init__(self, logdir, ledger):
+    def __init__(self, logdir, ledger, modem=None):
         self.logdir = logdir
         self.ledger = ledger
+        self.modem = modem           # modem_status.ModemStatus: the same lines, for the panel's strip
         self.parser = ArdopLogParser()
         self.path = None
         self.ino = None
@@ -386,6 +387,10 @@ class ArdopLogTail:
             self.part = lines.pop()
             for line in lines:
                 self._apply(self.parser.feed(line, date))
+                if self.modem is not None:
+                    m = _LINE.match(line.rstrip("\r"))
+                    if m:
+                        self.modem.feed_ardop(m.group(5))
         self._apply(self.parser.tick(time.time()))
 
     def _apply(self, events):
@@ -444,9 +449,10 @@ class VaraLogTail:
     of the file: history is not replayed. A truncated file, or a new file
     under the name (log rotated, xara reinstalled), is read from its start."""
 
-    def __init__(self, path, ledger):
+    def __init__(self, path, ledger, modem=None):
         self.path = os.path.expanduser(path)
         self.ledger = ledger
+        self.modem = modem           # modem_status.ModemStatus: the same lines, for the panel's strip
         self.ino = None
         self.pos = 0
         self.part = ""
@@ -494,6 +500,8 @@ class VaraLogTail:
             return
         t = xara_wall(*m.groups()[:7])
         rest = m.group(8)
+        if self.modem is not None:
+            self.modem.feed_xara(rest)
         cw = _XARA_CW.match(rest)
         if cw:
             self.ledger.id_started(f"CW ID{f' ({cw.group(1)})' if cw.group(1) else ''}", t, "xara")
