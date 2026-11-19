@@ -32,9 +32,11 @@
   <span class="theme-pick"></span>
 </header>
 
-<!-- Every connected HF radio at a glance, on the views that hide its page
-     (review 2026-10-18): frequency, mode, on air, and Release TX. -->
-<div class="st-strip" id="st-strip" hidden aria-live="polite"></div>
+<!-- The rig bar (UX plan PR 1a, 2026-11-19; was the radio strip of
+     2026-10-18): every configured HF radio on every view, status only:
+     frequency, mode, band, S-meter or watts, ON AIR with Release TX. The focus
+     radio is in full, the others compact (a click focuses one). -->
+<div class="rig-bar" id="rig-bar" hidden aria-label="HF radios"></div>
 
 <main class="st-main">
   <!-- Mission Control: what is on the air, what needs you, and every radio

@@ -31,10 +31,7 @@ window.addEventListener("rr-theme", () => { ACCENT = theme.rgb("--accent-rgb", A
 
 const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 
-function fmtFreq(f) {
-  const s = String(Math.round(f)).padStart(7, "0");
-  return `${s.slice(0, -6) || "0"}.${s.slice(-6, -3)}.${s.slice(-3)}`;
-}
+// fmtFreq is in common.js (shared with the station's rig bar, 2026-11-19).
 
 function modeFamily(m) { return m === "LSB" || m === "USB" ? "SSB" : m.startsWith("CW") ? "CW" : m.startsWith("RTTY") ? "RTTY" : m; }
 

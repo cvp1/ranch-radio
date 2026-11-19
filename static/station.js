@@ -95,7 +95,7 @@ const station = (() => {
       document.title = `${r === "home" ? "Mission Control" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
     }
     renderNav();
-    renderStrip();
+    renderBar();
     if (r === "home") { renderCards(); refreshWlCounts(); }
   }
 
@@ -116,18 +116,21 @@ const station = (() => {
     }
   }
 
-  // ---------- the radio strip (review 2026-10-18: Winlink, Mesh and Packet
-  // hid whether an HF radio was transmitting)
+  // ---------- the rig bar (UX plan PR 1a, 2026-11-19; replaces the radio
+  // strip of 2026-10-18, which Winlink, Mesh and Packet needed because they hid
+  // whether an HF radio was transmitting). Every configured HF radio, on every
+  // view, Mission Control and the radios' own tabs included: name and state
+  // dot, frequency, mode, band, S-meter (on the air: watts, red), ON AIR with
+  // Release TX. Status only: nothing here retunes a radio (typing a frequency
+  // is PR 1d); the frequency opens the radio's tab. The one thing it sends is
+  // the Release TX the strip always had: {t: "set", k: "tx", v: false}.
 
-  const fmtF = (f) => {
-    const s = String(Math.round(f || 0)).padStart(7, "0");
-    return `${s.slice(0, -6) || "0"}.${s.slice(-6, -3)}.${s.slice(-3)}`;
-  };
-
+  // Each radio's own socket, read only: its state, config (tx_stopped, caps),
+  // Winlink arm state and STOP TX latch (kept for PR 1b), and its notices.
   function syncLive() {
     for (const r of present()) {
       if (live[r.id]) continue;
-      const l = live[r.id] = { S: {}, ws: null };
+      const l = live[r.id] = { S: {}, ws: null, cfg: {}, armed: false, txStopped: null };
       const open = () => {
         if (live[r.id] !== l) return;
         const w = new WebSocket(withToken(`r/${encodeURIComponent(r.id)}/ws`));
@@ -137,13 +140,24 @@ const station = (() => {
           // A scope frame: Mission Control's mini spectrum (drawn only while shown).
           if (typeof e.data !== "string") { mission.scopeOf(r.id).push(e.data); return; }
           const m = JSON.parse(e.data);
-          if (m.t === "hello") Object.assign(l.S, m.state);
-          else if (m.t === "state") Object.assign(l.S, m.d);
-          else return;
+          if (m.t === "hello") {
+            Object.assign(l.S, m.state);
+            l.cfg = m.config || {};
+            l.txStopped = l.cfg.tx_stopped || null;
+            l.armed = !!m.winlink?.armed;
+          } else if (m.t === "state") Object.assign(l.S, m.d);
+          else if (m.t === "config") { l.cfg = m.config || l.cfg; l.txStopped = l.cfg.tx_stopped || null; renderBar(); return; }
+          else if (m.t === "winlink") { if ("armed" in m) { l.armed = !!m.armed; renderBar(); } return; }
+          else if (m.t === "tx_stop") { l.txStopped = m.stopped || null; renderBar(); return; }
+          else if (m.t === "notice") {
+            // A refusal or warning from the radio's server. Its own page shows
+            // it when that page is the open view; elsewhere the station does.
+            if (route() !== r.id) toast(`${r.name}: ${m.msg}`, m.level);
+            return;
+          } else return;
           instruments(r.id, l.S);
           homeChanged();
-          if ("freq" in (m.d || m.state || {}) || "tx" in (m.d || m.state || {}) ||
-              "mode" in (m.d || m.state || {}) || "data" in (m.d || m.state || {}) || m.t === "hello") renderStrip();
+          renderBar();
         };
         w.onclose = () => { if (live[r.id] === l) setTimeout(open, 2000); };
       };
@@ -157,7 +171,7 @@ const station = (() => {
         if (l.ws) l.ws.close();
       }
     }
-    renderStrip();
+    renderBar();
   }
 
   function release(id) {
@@ -165,30 +179,116 @@ const station = (() => {
     if (l && l.ws && l.ws.readyState === 1) l.ws.send(JSON.stringify({ t: "set", k: "tx", v: false }));
   }
 
-  function renderStrip() {
-    const el = $("#st-strip");
-    const onRadio = radios.some((x) => x.id === route() && x.present);
-    const rs = present().filter((r) => live[r.id] && live[r.id].S.freq);
-    el.hidden = onRadio || home() || !rs.length;
+  // The focus radio (UX plan 5.1): localStorage["rr-focus"] holds its id; by
+  // default the radio on the shared port, else the first present one. A focus
+  // whose radio is gone falls back without forgetting it, so it comes back.
+  const FOCUS_KEY = "rr-focus";
+  function focusId() {
+    let want = null;
+    try { want = localStorage.getItem(FOCUS_KEY); } catch { /* storage off: the default */ }
+    const p = present();
+    if (want && p.some((r) => r.id === want)) return want;
+    return (p.find((r) => r.shared) || p[0] || radios[0])?.id || null;
+  }
+  function setFocus(id) {
+    try { localStorage.setItem(FOCUS_KEY, id); } catch { /* storage off: this page only */ }
+    barSig = "";
+    renderBar();
+  }
+
+  // Redraws are batched to one per frame (an S-meter moves several times a
+  // second) and fill the existing elements in place: a rebuild under the
+  // pointer would eat a Release TX click.
+  let barSig = "", barQueued = false;
+  function renderBar() {
+    if (barQueued) return;
+    barQueued = true;
+    requestAnimationFrame(() => { barQueued = false; drawBar(); });
+  }
+
+  function drawBar() {
+    const el = $("#rig-bar");
+    el.hidden = !radios.length;
     if (el.hidden) return;
-    el.innerHTML = "";
-    for (const r of rs) {
-      const S = live[r.id].S, tx = !!S.tx;
-      const a = document.createElement("a");
-      a.className = "sr" + (tx ? " tx" : "");
-      a.href = `#/${r.id}`;
-      a.title = `${r.name}: open its page`;
-      a.innerHTML = `<b>${esc(r.name)}</b><span class="f">${fmtF(S.freq)}</span>` +
-        `<span>${esc(S.mode || "")}${S.data ? "-D" : ""}</span>` + (tx ? `<span class="air">ON AIR</span>` : "");
-      el.append(a);
-      if (tx) {
-        const b = document.createElement("button");
-        b.textContent = "Release TX";
-        b.title = `Unkey the ${r.name} (anyone may unkey)`;
-        b.onclick = () => release(r.id);
-        el.append(b);
-      }
+    const fid = focusId();
+    const sig = radios.map((r) => `${r.id}:${r.present ? 1 : 0}`).join(",") + `|${fid}`;
+    if (sig !== barSig) {
+      barSig = sig;
+      el.innerHTML = "";
+      for (const r of radios) el.append(rigEl(r, r.id === fid));
     }
+    for (const r of radios) {
+      const d = [...el.children].find((c) => c.dataset.id === r.id);
+      if (d) fillRig(d, r);
+    }
+  }
+
+  function rigEl(r, focus) {
+    const d = document.createElement("div");
+    d.className = `rb-rig${focus ? " focus" : ""}`;
+    d.dataset.id = r.id;
+    const href = `#/${encodeURIComponent(r.id)}`;
+    const name = `<i class="st-dot"></i><b>${esc(r.name)}</b>`;
+    d.innerHTML = (r.present ? `<a class="rb-name" href="${href}" title="Open the ${esc(r.name)}'s page">${name}</a>`
+        : `<span class="rb-name">${name}</span>`) +
+      (focus && r.present ? `<a class="rb-f" href="${href}"></a>` : `<span class="rb-f"></span>`) +
+      `<span class="rb-mode"></span><span class="rb-band"></span>` +
+      `<span class="rb-meter" aria-hidden="true"><i></i></span><span class="rb-lvl"></span>` +
+      `<span class="rb-tag" hidden></span><span class="rb-air" hidden>ON AIR</span>` +
+      `<button type="button" class="rb-release" hidden title="Unkey the ${esc(r.name)} (anyone may unkey)">Release TX</button>`;
+    d.querySelector(".rb-release").onclick = () => release(r.id);
+    if (!focus) {
+      // A compact radio: a click (not on its name, which opens its tab) focuses it.
+      d.tabIndex = 0;
+      d.setAttribute("role", "button");
+      d.title = `Show the ${r.name} in full here`;
+      const pick = (e) => {
+        if (e.target.closest("a, button")) return;
+        if (e.type === "keydown" && e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        setFocus(r.id);
+      };
+      d.addEventListener("click", pick);
+      d.addEventListener("keydown", pick);
+    }
+    return d;
+  }
+
+  function fillRig(d, r) {
+    const l = live[r.id], S = (r.present && l?.S) || {};
+    const off = !r.present, dead = r.present && S.connected === false;
+    const tx = r.present && !dead && !!S.tx;
+    const put = (sel, text) => { const e = d.querySelector(sel); if (e.textContent !== text) e.textContent = text; };
+    d.classList.toggle("tx", tx);
+    d.classList.toggle("off", off || dead);
+    d.querySelector(".st-dot").className = `st-dot ${tx ? "tx" : off || dead ? "off" : "ok"}`;
+    put(".rb-f", off ? "offline" : dead ? "no answer" : S.freq ? fmtFreq(S.freq) : "…");
+    const f = d.querySelector(".rb-f");
+    f.title = off ? `${r.name}: not connected` : dead ? `${r.name}: its server is up, the radio isn't answering`
+      : f.tagName === "A" ? `Open the ${r.name}'s page (tune it there)` : "";
+    const up = r.present && !dead && S.freq;
+    const band = up ? bandOf(S.freq) : null;
+    put(".rb-mode", up && S.mode ? `${S.mode}${S.data ? "-D" : ""}` : "");
+    put(".rb-band", band ? (band.label || `${band.n} m`) : "");
+    let pct = 0, lvl = "";
+    if (up && tx) {
+      pct = poPct(S.po || 0);
+      lvl = `${Math.round((pct / 100) * (l?.cfg?.caps?.max_watts || 100))} W`;
+    } else if (up) {
+      pct = ((S.smeter || 0) / 241) * 100;
+      lvl = sUnits(S.smeter || 0).text;
+    }
+    d.querySelector(".rb-meter i").style.width = `${clamp(pct, 0, 100).toFixed(0)}%`;
+    put(".rb-lvl", lvl);
+    // Read-only lane state: STOP TX latched, or a Winlink session armed here.
+    const tag = d.querySelector(".rb-tag");
+    const t = r.present && l?.txStopped ? "TX STOPPED" : r.present && l?.armed ? "WINLINK" : "";
+    put(".rb-tag", t);
+    tag.hidden = !t;
+    tag.title = t === "TX STOPPED" ? "STOP TX is latched on this radio: nothing keys it until it is resumed on its page"
+      : t ? "A Winlink session has this radio's transmitter" : "";
+    d.querySelector(".rb-air").hidden = !tx;
+    d.querySelector(".rb-release").hidden = !tx;
   }
 
   // ---------- Mission Control (the home view)
@@ -272,7 +372,7 @@ const station = (() => {
     const watts = Math.round((poPct(S.po || 0) / 100) * (S.max_watts || 100));
     const su = sUnits(S.smeter || 0);
     return { title: r.name, icon: "radio", wide: true, scope: r.id, state: tx ? "tx" : "ok", tag: tx ? "ON AIR" : "",
-      big: `<span class="mc-f">${fmtF(S.freq)}</span>`,
+      big: `<span class="mc-f">${fmtFreq(S.freq)}</span>`,
       sub: esc(`${S.mode || ""}${S.data ? "-D" : ""}${band ? ` · ${band.label || `${band.n} m`}` : ""}`),
       meter: tx ? { pct: poPct(S.po || 0), text: `${watts} W`, tx: true }
         : { pct: ((S.smeter || 0) / 241) * 100, text: su.text, scale: S_SCALE },
@@ -309,7 +409,7 @@ const station = (() => {
     const on = [];
     for (const r of present()) {
       const S = live[r.id]?.S;
-      if (S?.tx) on.push({ r, text: `${r.name} · ${fmtF(S.freq)} ${S.mode || ""}${S.data ? "-D" : ""}`, href: `#/${r.id}` });
+      if (S?.tx) on.push({ r, text: `${r.name} · ${fmtFreq(S.freq)} ${S.mode || ""}${S.data ? "-D" : ""}`, href: `#/${r.id}` });
     }
     if (wlOn && wlArmed) on.push({ text: `Winlink · ${winlink.summary().text}`, href: "#/winlink" });
     for (const d of addons.list()) {
