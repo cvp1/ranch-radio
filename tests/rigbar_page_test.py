@@ -395,6 +395,11 @@ try:
     check("S2. one radio down at the press: the other latches",
           (testkit.wait_for(lambda: latched(G90), 10), bool(b.wait(f"{ST_TEXT}.includes('QMX not reached (offline)')", 10))),
           (True, True))
+    # Wait for the bar to draw the G90's own latch too: the check above only
+    # waited for the QMX's "not reached", and on a slow runner the G90's
+    # tx_stop reply could still be on its way (CI, 2026-11-19). The wait still
+    # fails if the bar never reaches "partial, G90 stopped".
+    b.wait(f"{STATE}.dataset.state === 'partial' && {ST_TEXT}.includes('G90 stopped')", 10)
     check("  the bar names the one not reached, not TX STOPPED",
           (b.js(f"{STATE}.dataset.state"), b.js(f"{ST_TEXT}.includes('TX STOPPED')"), b.js(f"{ST_TEXT}.includes('G90 stopped')")),
           ("partial", False, True))
