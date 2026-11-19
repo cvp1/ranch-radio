@@ -15,7 +15,8 @@
     a command's reply shows in it; a favourite star sticks
   - "+" adds the pending node; Message opens the Direct view with a To bar,
     and a sent message shows delivered, in that node's own conversation on
-    the rail; a #channel is joined from the page
+    the rail; a #channel is joined from the page; ⤢ gives the map the
+    panel and Esc gives it back
 
     python3 tests/meshcore_page_test.py      (SHOT=/path.png saves a screenshot)
 """
@@ -169,6 +170,14 @@ try:
              i.dispatchEvent(new Event('input')); {P}.querySelector('.mc-form').requestSubmit(); }})()""")
     check("  a sent message shows delivered", b.wait(f"[...{P}.querySelectorAll('.mc-list .chat-msg.mine')].some(x => x.textContent.includes('page dm') && x.querySelector('.mesh-ack.delivered')) && 'yes'"), "yes")
     check("  the rail has its conversation, open", b.js(f"{P}.querySelector('.mc-tabs .chat-conv.on[data-conv^=d] b')?.textContent"), "Alpha")
+
+    # The big map, as on the Mesh tab: ⤢ gives it the panel, Esc gives it back.
+    b.js(f"{P}.querySelector('.mc-map [data-big]').click()")
+    check("⤢: the MeshCore map takes the panel", (b.js(f"{P}.querySelector('.mc-main').classList.contains('mesh-bigmap')"),
+          b.js(f"{P}.querySelector('.mc-map [data-big]').textContent")), (True, "✕ Close map"))
+    b.call("Input.dispatchKeyEvent", type="keyDown", key="Escape", code="Escape", windowsVirtualKeyCode=27)
+    b.call("Input.dispatchKeyEvent", type="keyUp", key="Escape", code="Escape", windowsVirtualKeyCode=27)
+    check("  Esc gives it back", b.js(f"{P}.querySelector('.mc-main').classList.contains('mesh-bigmap')"), False)
 
     b.js("window.prompt = () => '#ranchnet'")
     b.js(f"{P}.querySelector('[data-join]').click()")

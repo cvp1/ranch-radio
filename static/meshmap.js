@@ -28,7 +28,9 @@ const meshMap = (() => {
   const FAN_PX = 14;                 // radius of the ring nodes sharing a position are drawn on
 
   // rings: distance rings around this node (km). onExpand: a button that asks
-  // the page for more room (the page resizes the map; it redraws itself).
+  // the page for more room (the page resizes the map; it redraws itself); with
+  // it, a click on the small map (not a drag, not a node) asks too, and the
+  // page says which it is with setBig (2026-11-19: "click it to drive around").
   function create(el, { onSelect, meSelectable = false, rings = false, onExpand = null }) {
     el.innerHTML = `<div class="mm-tiles"></div><svg class="mm-svg"><g class="mm-world">` +
       `<g class="mm-rings"></g><g class="mm-boxes"></g><g class="mm-links"></g><g class="mm-track"></g><g class="mm-trace"></g><g class="mm-nodes"></g><g class="mm-pulses"></g></g></svg>` +
@@ -36,8 +38,10 @@ const meshMap = (() => {
       `<div class="mm-ctl"><button class="chip chip-mini" data-z="1" title="Zoom in">+</button>` +
       `<button class="chip chip-mini" data-z="-1" title="Zoom out">−</button>` +
       `<button class="chip chip-mini" data-fit title="Frame the nodes heard in the last day">Fit</button>` +
-      (onExpand ? `<button class="chip chip-mini" data-big title="Give the map the room, or give it back">⤢</button>` : "") + `</div>` +
-      `<a class="mm-attr" target="_blank" rel="noopener"></a>`;
+      (onExpand ? `<button class="chip chip-mini" data-big title="Give the map the room (or click the map)">⤢</button>` : "") + `</div>` +
+      `<a class="mm-attr" target="_blank" rel="noopener"></a>` +
+      (onExpand ? `<div class="mm-open-hint" aria-hidden="true">Click to open the map</div>` : "");
+    let big = false;
     const tilesEl = el.querySelector(".mm-tiles"), svg = el.querySelector(".mm-svg");
     // The background (basemaps.js): one choice for all the local maps, with its menu beside Fit.
     const base = basemaps.layer(tilesEl, { key: "local", def: "terrain", cls: "mm-tile", attr: el.querySelector(".mm-attr"),
@@ -241,7 +245,7 @@ const meshMap = (() => {
     let drag = null;
     el.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".mm-ctl, .mm-attr, .mm-node, .mm-side")) return;
-      drag = { x: e.clientX, y: e.clientY, cx, cy };
+      drag = { x: e.clientX, y: e.clientY, cx, cy, moved: false };
       el.setPointerCapture(e.pointerId);
       el.classList.add("dragging");
     });
@@ -249,11 +253,16 @@ const meshMap = (() => {
       if (!drag) return;
       cx = drag.cx - (e.clientX - drag.x);
       cy = drag.cy - (e.clientY - drag.y);
-      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) moved = true;
+      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) { moved = true; drag.moved = true; }
       render();
     });
     const endDrag = () => { drag = null; el.classList.remove("dragging"); };
-    el.addEventListener("pointerup", endDrag);
+    // A click (no drag) on the small map opens it big; a node's own click selects it.
+    el.addEventListener("pointerup", (e) => {
+      const click = drag && !drag.moved;
+      endDrag();
+      if (click && onExpand && !big && !e.target.closest(".mm-ctl, .mm-attr, .mm-node, .mm-side")) onExpand();
+    });
     el.addEventListener("pointercancel", endDrag);
     el.addEventListener("wheel", (e) => {
       if (e.target.closest(".mm-side")) return;   // the list scrolls
@@ -278,6 +287,16 @@ const meshMap = (() => {
     // ---------- from mesh.js
 
     return {
+      // The page made the map big (or small): the ⤢ becomes a way back.
+      setBig(b) {
+        big = !!b;
+        el.classList.toggle("mm-big", big);
+        const btn = el.querySelector("[data-big]");
+        if (btn) {
+          btn.textContent = big ? "✕ Close map" : "⤢";
+          btn.title = big ? "Back to the conversation (Esc)" : "Give the map the room (or click the map)";
+        }
+      },
       setNodes(list, me) { nodes = list || []; myId = me; refan(); render(); },
       select(id) { selected = id; drawNodes(); },
       setTrace(rec) { trace = rec; drawTrace(); },

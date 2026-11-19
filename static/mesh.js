@@ -580,7 +580,12 @@ const mesh = (() => {
 
   // The map given the room, or the conversation back (the map's own ⤢).
   let bigMap = store.get("mesh.bigmap", false);
-  function showBig() { $("#mesh-main").classList.toggle("mesh-bigmap", bigMap); }
+  function showBig() { $("#mesh-main").classList.toggle("mesh-bigmap", bigMap); map.setBig?.(bigMap); }
+  // Esc gives the room back, unless it is closing something else first (a picker).
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !bigMap || e.defaultPrevented || $("#mesh").closest("[hidden]")) return;
+    toggleBig(false);
+  });
   function toggleBig(want = !bigMap) { bigMap = want; store.set("mesh.bigmap", bigMap); showBig(); }
 
   function select(id, fromMap = false) {

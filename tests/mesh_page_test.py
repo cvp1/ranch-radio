@@ -260,6 +260,35 @@ try:
         check("  Message on a node's card brings the conversation back",
               (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), b.js("getComputedStyle(document.querySelector('#mesh-main .chat-main')).visibility") == "visible"),
               (False, True))
+        # A click on the small map opens it (2026-11-19: "click it to drive around"); a drag only pans.
+        SPOT = """(() => { const m = document.querySelector('#mesh-map'), r = m.getBoundingClientRect();
+          for (let y = r.top + 40; y < r.bottom - 30; y += 9) for (let x = r.left + 12; x < r.right - 12; x += 9) {
+            const e = document.elementFromPoint(x, y);
+            if (e && m.contains(e) && !e.closest('.mm-node, .mm-ctl, .mm-side, .mm-attr, .mm-note')) return [x, y]; }
+          return null; })()"""
+
+        def mouse(kind, x, y):
+            b.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button="left", buttons=1 if kind != "mouseReleased" else 0, clickCount=1)
+
+        x, y = b.js(SPOT)
+        mouse("mousePressed", x, y)
+        mouse("mouseMoved", x + 40, y + 10)
+        mouse("mouseReleased", x + 40, y + 10)
+        check("a drag on the small map pans, it doesn't open it", b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), False)
+        x, y = b.js(SPOT)
+        mouse("mousePressed", x, y)
+        mouse("mouseReleased", x, y)
+        check("a click on the small map opens it big", b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), True)
+        check("  it fills the panel", b.js("document.querySelector('#mesh-map').clientWidth > document.querySelector('#mesh-main').clientWidth * 0.6"), True)
+        check("  ⤢ is now the way back", b.js("document.querySelector('#mesh-map [data-big]').textContent"), "✕ Close map")
+        x, y = b.js(SPOT)
+        mouse("mousePressed", x, y)
+        mouse("mouseReleased", x, y)
+        check("  a click on the big map keeps it big", b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"), True)
+        b.call("Input.dispatchKeyEvent", type="keyDown", key="Escape", code="Escape", windowsVirtualKeyCode=27)
+        b.call("Input.dispatchKeyEvent", type="keyUp", key="Escape", code="Escape", windowsVirtualKeyCode=27)
+        check("  Esc gives the room back", (b.js("document.querySelector('#mesh-main').classList.contains('mesh-bigmap')"),
+                                           b.js("document.querySelector('#mesh-map [data-big]').textContent")), (False, "⤢"))
         b.js(f"{tab('HomeNet')}.click(); document.querySelector('#mesh-nodes .mesh-node.on')?.click()")
         b.wait("!document.querySelector('#mesh-nodes .mesh-node.on')", 5)
         check("  tiles requested", b.js("document.querySelectorAll('#mesh-map .mm-tile').length > 0"), True)

@@ -7,6 +7,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- Mesh and MeshCore maps: a click on the small map opens it big, to pan and zoom around; the big map fills the panel with the node list beside it. ✕ Close map or Esc gives the room back. MeshCore gets the big map too.
 - Mesh and MeshCore messaging redesigned (`static/chat.js`, `static/chat.css`): a rail of conversations (each channel and each DM, with its last message and unread count), a full-height chat with bubbles, names in their own colour, day and "New" lines and a jump-to-latest button, a hover (or tap) bar to react or reply, an emoji picker for the box and for reactions, quotes that jump to the message they answer, and a box that grows and sends on Enter (Shift+Enter for a new line, Escape to drop a reply). The node list, card and map sit on the right; ⤢ still gives the map the room.
 - Themes: a picker in the top bar (the palette button) sets the page's look: Midnight blue (the new default), Mint (classic), Amber, Sandstone, Aurora and High contrast. The choice is kept in the browser and reaches the station's radio and packet tabs at once. Status green and the on-air red stay as they were in every theme.
 - **Winlink strip: the modem's own state.** Beside the session state, the
@@ -213,6 +214,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- Chat: a conversation hidden and shown again with no frame between (a quick tab switch) could still open on an old message.
 - Mesh / MeshCore chat: a conversation drawn while its tab was hidden opened on its oldest message; it now opens on the newest.
 - **Mission Control cards keep their own height.** A card in the same row as
   the wide radio card no longer stretches to match it, and on a phone the

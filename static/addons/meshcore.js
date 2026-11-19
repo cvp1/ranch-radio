@@ -83,6 +83,23 @@
   const hopName = (hash) => hop(hash)?.name || `?${hash}`;
   const hopId = (hash) => hop(hash)?.key || `?${hash}`;
 
+  // ---------------------------------------------------------------- the big map
+  // As the Mesh tab: ⤢ or a click on the map gives it the panel; ✕ or Esc back.
+  let bigMap = typeof store !== "undefined" ? store.get("meshcore.bigmap", false) : false;
+  function showBig() {
+    $b(".mc-main")?.classList.toggle("mesh-bigmap", bigMap);
+    map?.setBig?.(bigMap);
+  }
+  function toggleBig(want = !bigMap) {
+    bigMap = want;
+    if (typeof store !== "undefined") store.set("meshcore.bigmap", bigMap);
+    showBig();
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !bigMap || !body || e.defaultPrevented || body.closest("[hidden]")) return;
+    toggleBig(false);
+  });
+
   // ---------------------------------------------------------------- skeleton
 
   function skeleton() {
@@ -117,7 +134,8 @@
           <div class="mesh-map mc-map"></div>
         </div>
       </div>`;
-    map = typeof meshMap !== "undefined" ? meshMap.create($b(".mc-map"), { onSelect: (k) => select(k, true) }) : null;
+    map = typeof meshMap !== "undefined" ? meshMap.create($b(".mc-map"), { onSelect: (k) => select(k, true), onExpand: () => toggleBig() }) : null;
+    showBig();
     $b(".mc-form").onsubmit = submit;
     compose = chat.composer({ form: $b(".mc-form"), text: $b(".mc-text"), emoji: $b(".mc-emoji"), onInput: count });
     $b(".mc-find").oninput = renderNodes;
@@ -385,6 +403,7 @@
   }
 
   function directTo(key) {
+    if (bigMap) toggleBig(false);    // a conversation was asked for: the map gives the room back
     dmTo = p12(key);
     view = "dm";
     newMark = unreadDm[dmTo] ? { conv: `d${dmTo}`, n: unreadDm[dmTo] } : null;
