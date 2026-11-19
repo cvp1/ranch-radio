@@ -307,6 +307,11 @@ body.tx .tx-meters { opacity: 1; }
 .vol svg { width: 18px; height: 18px; flex: none; }
 .vol input { flex: 1; accent-color: var(--accent); }
 .chip-mini { min-width: 0; height: 24px; padding: 0 8px; font-size: 10.5px; border-color: var(--line); }
+/* Shared form controls for add-on bars (2026-11-19, UX plan PR 0.3): the Roster's
+   and the Map's selects and checkboxes were the browser's own, unlike the rest. */
+.rr-select { font: 12px var(--mono); color: var(--text); background: rgba(0,0,0,.3);
+  border: 1px solid var(--line-hi); border-radius: 8px; padding: 2px 6px; height: 26px; }
+.rr-check { width: 15px; height: 15px; margin: 0 4px 0 0; vertical-align: -2px; accent-color: var(--accent); }
 .txl { display: flex; flex-direction: column; gap: 6px; }
 .txl-head, .txl-ctl { display: flex; align-items: center; gap: 6px; }
 .txl-head { justify-content: space-between; }

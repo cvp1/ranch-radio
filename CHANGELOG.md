@@ -217,6 +217,12 @@ All notable changes to Ranch Radio are recorded here. The format follows
   showed an empty Two-way list; it now opens on the first of Two-way, Hear you, You hear that has
   rows, and follows as they fill. A click on a tab is remembered and wins from then on; a click on
   the map still moves the list to that station's tab while it is selected.
+- **The Roster reads at a glance.** A line under its bar says what a click does (JTDX answers a CQ;
+  other messages only if its settings allow); it was only a tooltip. "New call", the lowest need and
+  the most common, is shown quietly so the higher needs stand out (the order is unchanged). The
+  Roster's checkboxes and alert menu and the Map's band and window menus share one look. On a phone or
+  a narrow pane the table keeps Call, To, Distance, dB and Need and drops Entity, Grid, DF, Message
+  and Age, so Need is on screen.
 - **A click on a Map station opens its card; Answer is a button on it.** The
   card has both directions, distance and bearing, and what the station is to
   you. Before, a click on a dot sent JTDX the Reply at once; the Roster tab

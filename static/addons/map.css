@@ -2,7 +2,6 @@
    amber what goes out (it hears you), white both ways, red the transmitter. */
 .addon-map { --rm-in: #5ac8fa; --rm-out: #ffb020; --rm-both: #ffffff; --rm-tx: #ff4d5e; }
 .rm-bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 6px; font-size: 0.9em; }
-.rm-bar select { font: inherit; }
 .rm-sum b { font-size: 1.25em; font-variant-numeric: tabular-nums; }
 .rm-sum small, .rm-dim { color: var(--muted, #8a95a1); }
 .rm-n-rx { color: var(--rm-in); } .rm-n-tx { color: var(--rm-out); } .rm-n-both { color: var(--rm-both); }

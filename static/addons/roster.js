@@ -60,9 +60,9 @@
         <span><b>${esc(R.band || "?")}</b> ${esc(R.mode || "")} ${R.dial ? (R.dial / 1e6).toFixed(3) : ""}</span>
         <span>${(R.rows || []).length} heard</span>
         ${n ? `<span title="worked / confirmed">DXCC ${n.dxcc_worked}/${n.dxcc_confirmed} · grids ${n.grids_worked}/${n.grids_confirmed}</span>` : `<span class="lb-bad">needs: building…</span>`}
-        <label><input type="checkbox" class="rs-o" data-o="cq" ${opt.cq ? "checked" : ""}> CQ only</label>
-        <label><input type="checkbox" class="rs-o" data-o="needs" ${opt.needs ? "checked" : ""}> needs only</label>
-        <label>alert <select class="rs-alert">${Object.keys(ALERTS).map((k) => `<option${k === opt.alert ? " selected" : ""}>${k}</option>`).join("")}</select></label>
+        <label><input type="checkbox" class="rs-o rr-check" data-o="cq" ${opt.cq ? "checked" : ""}> CQ only</label>
+        <label><input type="checkbox" class="rs-o rr-check" data-o="needs" ${opt.needs ? "checked" : ""}> needs only</label>
+        <label>alert <select class="rs-alert rr-select">${Object.keys(ALERTS).map((k) => `<option${k === opt.alert ? " selected" : ""}>${k}</option>`).join("")}</select></label>
       </div>`;
     const tr = rows.map((r) => {
       const [label, cls] = NEED[r.need] || ["", "rs-none"];
@@ -72,13 +72,16 @@
       return `<tr class="rs-row ${cls}${r.to_me ? " rs-me" : ""}${r.answer === "cq" ? "" : " rs-nocq"}" data-key="${esc(r.key)}" data-call="${esc(r.call)}" title="${esc(tip)}">
         <td class="rs-call">${esc(r.call)}${r.lotw ? ` <span class="rs-lotw" title="uses LoTW">L</span>` : ""}</td>
         <td>${r.cq ? `CQ${r.cq_word ? " " + esc(r.cq_word) : ""}` : r.to_me ? "<b>you</b>" : esc(r.to || "")}</td>
-        <td>${esc(r.entity)}</td><td>${esc(r.grid)}</td>
+        <td class="rs-c-entity">${esc(r.entity)}</td><td class="rs-c-grid">${esc(r.grid)}</td>
         <td class="rs-num">${r.km != null ? `${r.km.toLocaleString()} km ${r.bearing}°` : ""}</td>
-        <td class="rs-num">${r.snr}</td><td class="rs-num">${r.df}</td>
-        <td class="rs-need">${esc(label)}</td><td class="rs-msg">${esc(r.message)}</td><td class="rs-num">${r.age}s</td></tr>`;
+        <td class="rs-num">${r.snr}</td><td class="rs-num rs-c-df">${r.df}</td>
+        <td class="rs-need">${esc(label)}</td><td class="rs-msg rs-c-msg">${esc(r.message)}</td><td class="rs-num rs-c-age">${r.age}s</td></tr>`;
     }).join("");
-    body.innerHTML = head + (rows.length ? `<table class="rs-t"><tr><th>Call</th><th>To</th><th>Entity</th><th>Grid</th>
-        <th>Distance</th><th>dB</th><th>DF</th><th>Need</th><th>Message</th><th>Age</th></tr>${tr}</table>`
+    // A click's Reply is easy to miss in a tooltip, and JTDX may refuse it
+    // (2026-11-19, UX plan PR 0.3): say so on the page once there are rows.
+    const hint = `<div class="rs-hint">Click a station to answer it in JTDX (it answers a CQ; other messages only if its settings allow).</div>`;
+    body.innerHTML = head + (rows.length ? `${hint}<table class="rs-t"><tr><th>Call</th><th>To</th><th class="rs-c-entity">Entity</th><th class="rs-c-grid">Grid</th>
+        <th>Distance</th><th>dB</th><th class="rs-c-df">DF</th><th>Need</th><th class="rs-c-msg">Message</th><th class="rs-c-age">Age</th></tr>${tr}</table>`
       : `<div class="st-empty">Nothing ${opt.cq || opt.needs ? "matching the filters " : ""}heard in the last two minutes.</div>`);
     for (const c of body.querySelectorAll(".rs-o")) c.onchange = () => { opt[c.dataset.o] = c.checked; save(); render(); };
     const al = body.querySelector(".rs-alert");
