@@ -79,9 +79,30 @@ const chat = (() => {
       b.onclick = () => { list.scrollTo({ top: list.scrollHeight, behavior: "smooth" }); };
       list.parentElement.append(b);
       list.addEventListener("scroll", () => {
+        // Only a reader's scroll moves the pin; a list with no height (its tab
+        // hidden) can't tell where the reader is.
+        if (list.clientHeight) list._stuck = atBottom(list);
         if (atBottom(list)) b.dataset.n = "";
         jumpLabel(list, b);
       }, { passive: true });
+      // Drawn while its tab was hidden (no height), or the pane resized: a
+      // list pinned to the newest stays there (live 2026-11-19: the Mesh tab
+      // opened on the oldest message).
+      // Hiding resets the scroll and showing fires a scroll event, so the pin
+      // is saved as the list hides and used as it shows again.
+      if (typeof ResizeObserver === "function") new ResizeObserver(() => {
+        if (!list.clientHeight) {
+          if (!list._hidden) { list._hidden = true; list._pinHidden = list._stuck !== false; }
+          return;
+        }
+        const reopened = list._hidden;
+        list._hidden = false;
+        if (reopened ? list._pinHidden : list._stuck) {
+          list._stuck = true;
+          list.scrollTop = list.scrollHeight;
+        }
+        jumpLabel(list, b);
+      }).observe(list);
     }
     return b;
   }
@@ -163,7 +184,11 @@ const chat = (() => {
     const conv = String(o.conv ?? ""), switched = list.dataset.conv !== conv;
     list.dataset.conv = conv;
     if (switched) list.dataset.count = "0";
-    const stick = switched || atBottom(list) || !list.childElementCount;
+    // Hidden (no height), where the reader is can't be measured: keep the
+    // pin it had when it hid; a different conversation starts at the bottom.
+    const hidden = !list.clientHeight;
+    const stick = switched || (hidden ? list._pinHidden !== false : atBottom(list) || !list.childElementCount);
+    if (hidden) { list._hidden = true; list._pinHidden = stick; }
     const prevTop = list.scrollTop;
     const before = Number(list.dataset.count || 0);
     list.innerHTML = "";
@@ -212,6 +237,7 @@ const chat = (() => {
     });
     list.dataset.count = String(items.length);
     const jb = jumpBtn(list);
+    list._stuck = stick;
     if (stick) {
       list.scrollTop = list.scrollHeight;
       jb.dataset.n = "";

@@ -12,6 +12,8 @@ against tests/fake_mesh_bridge.py:
   - the action bar's + opens the picker; a pick there sends a reaction
   - scrolled up, a new message doesn't move the reader: "↓ 1 new" shows,
     and clicking it goes to the bottom
+  - drawn while its tab is hidden, a conversation still opens on its newest
+    message (live 2026-11-19: the Mesh tab opened on the oldest)
 
     python3 tests/chat_page_test.py
 """
@@ -161,7 +163,9 @@ try:
     check("+ on the bar: the pick goes as a reaction to it", r and (r[0]["reply_to"], r[0]["emoji"]), (1001, True))
 
     # Scrolled up: the reader stays; a button says what's new
-    b.js(f"(() => {{ const l = document.querySelector('{LIST}'); l.style.maxHeight = '160px'; l.scrollTop = 0; }})()")
+    b.js(f"document.querySelector('{LIST}').style.maxHeight = '160px'")
+    time.sleep(0.3)                                 # the pane resizes first, then the reader scrolls up
+    b.js(f"document.querySelector('{LIST}').scrollTop = 0")
     time.sleep(0.3)
     b.js("mesh.event({ t: 'mesh', msg: { k: 'msg', id: 901, t: Date.now() / 1000, from: '!0000beef', to: '^all', "
          "ch: 1, dm: false, text: 'cattle out by the wash', snr: 5, hops: 0 } })")
@@ -170,6 +174,16 @@ try:
     b.js("document.querySelector('#mesh-main .chat-jump').click()")
     check("  clicking it goes to the latest", bool(b.wait(f"(() => {{ const l = document.querySelector('{LIST}'); "
                                                            "return l.scrollHeight - l.scrollTop - l.clientHeight < 60; })()", 5)), True)
+
+    # Drawn hidden, shown later: the newest is in view
+    b.js(f"document.querySelector('{LIST}').style.maxHeight = '160px'; document.querySelector('#mesh').hidden = true")
+    for i in range(8):
+        b.js("mesh.event({ t: 'mesh', msg: { k: 'msg', id: %d, t: Date.now() / 1000, from: '!0000beef', to: '^all', "
+             "ch: 1, dm: false, text: 'while away %d', snr: 5, hops: 0 } })" % (950 + i, i))
+    b.js("document.querySelector('#mesh').hidden = false")
+    check("drawn while hidden: opens on the newest", bool(b.wait(f"(() => {{ const l = document.querySelector('{LIST}'); "
+          "return l.clientHeight > 0 && l.scrollHeight - l.scrollTop - l.clientHeight < 60; })()", 5)), True)
+    check("  no jump button", b.js("!!document.querySelector('#mesh-main .chat-jump:not([hidden])')"), False)
     check("no page errors", b.js("window.__errs"), [])
 finally:
     b.close()
