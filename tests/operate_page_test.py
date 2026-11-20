@@ -402,6 +402,14 @@ try:
     # S. The frame's STOP TX, clicked where it shows in the pane.
     b.js("location.hash = '#/operate'")
     operate_ready()
+    if SHOTS:                                     # the README's shot: a full Roster and Map (tools/readme_fixture.py)
+        sys.path[:0] = [ROOT, os.path.join(ROOT, "tools")]
+        import readme_fixture as F
+        b.js("addons.event({t: 'addon', addon: 'roster', on: true, snapshot: %s})" % json.dumps({"roster": F.ROSTER}))
+        b.js("addons.event({t: 'addon', addon: 'map', on: true, snapshot: %s})" % json.dumps(F.MAP))
+        b.wait("document.querySelectorAll('#view-addon-roster .rs-row').length === %d" % len(F.ROSTER["rows"]), 10)
+        time.sleep(2)                             # the map draws its paths and the waterfall fills
+        shot("1600-populated")
     click_at(*frame_point("ic7300", "#tx-stop"))
     check("S. a real click on the frame's STOP TX in the pane latches the radio",
           frame_wait("ic7300", "document.body.classList.contains('tx-stopped')", 10), True)
