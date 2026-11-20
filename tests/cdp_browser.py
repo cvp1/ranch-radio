@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -40,7 +41,10 @@ class Browser:
             # speakers without this (2026-11-19). Web Audio keeps running.
             [chrome, "--headless=new", "--mute-audio", f"--remote-debugging-port={cdp_port}", f"--user-data-dir={self.dir}",
              "--no-first-run", "--no-default-browser-check", f"--window-size={size}", *extra, "about:blank"],
-            stdout=subprocess.DEVNULL, stderr=self._err, env=self._env())
+            # its own process group: Chrome's helpers (the network service)
+            # outlive the browser process and kept writing into the profile
+            # after close removed it (1 close in 12 on Linux, 2026-11-20)
+            stdout=subprocess.DEVNULL, stderr=self._err, env=self._env(), start_new_session=True)
         page = self._wait_for_page(cdp_port, START_S)
         self.loop = asyncio.new_event_loop()
         self.n = 0
@@ -71,13 +75,45 @@ class Browser:
                            f"port {cdp_port}; {last}")
             time.sleep(0.1)
 
-    def _fail(self, why):
+    def _stop(self):
+        """Stop Chrome and every helper in its group, then remove the profile.
+        Bounded: a few seconds, then SIGKILL; the removal is retried while a
+        late helper write recreates part of it."""
+        for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 2)):
+            try:
+                os.killpg(self.proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            try:
+                self.proc.wait(grace)
+            except subprocess.TimeoutExpired:
+                continue
+            end = time.monotonic() + grace          # the helpers, after the browser
+            while time.monotonic() < end:
+                try:
+                    os.killpg(self.proc.pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    break
+                time.sleep(0.05)
+            else:
+                continue
+            break
         if self.proc.poll() is None:
             self.proc.kill()
             self.proc.wait(5)
-        self._err.close()
+        if not self._err.closed:
+            self._err.close()
+        end = time.monotonic() + 2
+        while True:
+            shutil.rmtree(self.dir, ignore_errors=True)
+            if not os.path.exists(self.dir) or time.monotonic() > end:
+                break
+            time.sleep(0.1)
+
+    def _fail(self, why):
+        self._err.flush()
         err = tail(self.err_path)
-        shutil.rmtree(self.dir, ignore_errors=True)
+        self._stop()
         raise SystemExit(f"{why}\n--- chrome stderr (tail) ---\n{err or '(empty)'}\n--- end ---")
 
     @staticmethod
@@ -142,7 +178,4 @@ class Browser:
         try:
             self.loop.run_until_complete(self.sess.close())
         finally:
-            self.proc.terminate()
-            self.proc.wait(5)
-            self._err.close()
-            shutil.rmtree(self.dir, ignore_errors=True)
+            self._stop()

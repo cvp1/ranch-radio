@@ -132,7 +132,8 @@ HTTPServer(("127.0.0.1", port), H).serve_forever()
         check("it starts and evaluates", b.js("1 + 1"), 2)
         d = b.dir
         b.close()
-        check("  close removes its profile", os.path.exists(d), False)
+        left = sorted(os.path.relpath(os.path.join(r, f), d) for r, _, fs in os.walk(d) for f in fs)
+        check("  close removes its profile (what is left)", (os.path.exists(d), left[:10]), (False, []))
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
