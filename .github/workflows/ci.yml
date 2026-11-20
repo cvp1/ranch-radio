@@ -44,7 +44,8 @@ jobs:
           LOGDIR: ${{ runner.temp }}/rr-suite
           RR_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           RR_SENTINEL: 1   # decoy station state in the runner's HOME must survive the suite
-        run: bash tests/run_all.sh
+        shell: bash      # -o pipefail: the suite's exit status, not tee's
+        run: bash tests/run_all.sh | tee "$RUNNER_TEMP/suite.txt"
       - name: Keep this shard's run times
         if: always()
         uses: actions/upload-artifact@v6
@@ -53,13 +54,14 @@ jobs:
           path: ${{ runner.temp }}/rr-suite/durations.tsv
           if-no-files-found: ignore
           retention-days: 7
+      # Every failed run's log, whatever it holds. 2026-11-20: this matched
+      # ^FAIL|Traceback across all logs, so it printed passing runs that log
+      # tracebacks and skipped runs that failed with a one-line SystemExit
+      # ("... did not start"): addons_page_test and winlink_vara_test failed
+      # three times and never showed why.
       - name: Logs of failed tests
         if: failure()
-        run: |
-          for f in "$RUNNER_TEMP"/rr-suite/*.log; do
-            grep -qE '^FAIL|FAILED|Traceback' "$f" || continue
-            echo "::group::$(basename "$f")"; grep -nE -B3 -A14 '^FAIL|Traceback' "$f" | head -200; echo "::endgroup::"
-          done
+        run: bash tests/ci/failed_logs.sh "$RUNNER_TEMP/suite.txt" "$RUNNER_TEMP/rr-suite"
   # The one required check: green only when every shard passed and every
   # run reported a time. Warns (never fails) on a run that got much slower,
   # a new run over 90 s, or shards that drifted apart (tests/ci/shard.py).

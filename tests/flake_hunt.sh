@@ -24,7 +24,13 @@ for r in $(seq "$RUNNERS"); do
     docker run --rm --cpus "$CPUS" --memory "$MEMORY" -v "$PWD":/src:ro -v "$OUT":/out \
         -e PASSES="$PASSES" -e RUNNER="$r" -e RR_SENTINEL=1 -e RR_SKIP="${names} ${RR_SKIP:-}" "$IMAGE" bash -c '
         cp -r /src ~/work && rm -rf ~/work/.venv && ln -s ~/venv ~/work/.venv && cd ~/work
+        # Each pass plants the sentinel decoys in this HOME, and plant refuses a
+        # HOME that holds station state, so clear what it guards between passes
+        # (2026-11-20: every pass after the first died in a second on that
+        # refusal, so PASSES>1 ran one pass). Only in this throwaway container.
+        guarded=$(python3 -c "import sys; sys.path.insert(0, \"tests/ci\"); import sentinel; print(*sentinel.DIRS)")
         for p in $(seq "$PASSES"); do
+            for d in $guarded; do rm -rf "$HOME/$d"; done
             LOGDIR=/out/r$RUNNER-p$p bash tests/run_all.sh --full > /out/r$RUNNER-p$p.txt 2>&1
         done' &
 done
