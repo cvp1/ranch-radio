@@ -254,11 +254,18 @@ const station = (() => {
 
   // ---------- spots on each radio's scope (UX plan PR 4a, 2026-11-19)
   //
-  // Display only, and no new feed: the Roster's decodes and the Map's POTA
-  // spots, which this page already gets, go to each radio page's scope as
-  // labels (rrFrame.spots). Nothing here sends a radio anything; tuning from
-  // a label is PR 4c.
+  // No new feed: the Roster's decodes and the Map's POTA spots, which this
+  // page already gets, go to each radio page's scope as labels
+  // (rrFrame.spots). From PR 4c (2026-11-19) a click on a label comes back
+  // here (rrFrame.onspot, with the label's key) and tunes the focus radio
+  // through tuneFocus, the one way this page retunes a radio; the frame
+  // itself sends nothing for it. A decode tunes the dial it was decoded on
+  // (row.dial), never the tone's RF, and sends no mode: JTDX keeps its own
+  // mode and offset. A POTA spot tunes khz * 1000 with potaTune()'s mode.
   const spotSrc = { roster: [], pota: [] };
+  const spotTune = {};            // radio id -> Map(key -> what a click on that label tunes)
+  const spotHook = {};            // radio id -> the onspot this page gave its rrFrame
+  let spotSeq = 0;                // keys never repeat: a click on a label from an older push finds nothing
   const spotBand = {};            // radio id -> the band its spots were last made for
   // A POTA frequency is the whole field as a decimal in kHz, or nothing:
   // parseFloat would take "14074abc" as 14074 and "1e4" as 10000.
@@ -269,12 +276,14 @@ const station = (() => {
 
   function spotsFor(id) {
     const l = live[id], band = bandName(l?.S?.freq), range = l?.cfg?.caps?.freq, out = [];
+    const tune = spotTune[id] = new Map();
+    const key = (t) => { const k = `s${++spotSeq}`; tune.set(k, t); return k; };
     if (!band) return out;
     for (const r of spotSrc.roster) {
       // JTDX's dial when the row arrived plus the decode's audio offset: the
       // signal's RF on USB. Only on a radio on the band the row was heard on.
       if (r?.band !== band || !Number.isFinite(r.dial) || !Number.isFinite(r.df)) continue;
-      out.push({ f: r.dial + r.df, label: String(r.call || ""), kind: String(r.mode || "JTDX"), need: r.need || null,
+      out.push({ key: key({ dial: r.dial }), f: r.dial + r.df, label: String(r.call || ""), kind: String(r.mode || "JTDX"), need: r.need || null,
         tip: [`${r.call}${r.grid ? ` ${r.grid}` : ""} · ${r.snr} dB${r.entity ? ` · ${r.entity}` : ""}`,
           NEED_WORDS[r.need] || "", r.message || ""].filter(Boolean).join("\n") });
     }
@@ -283,7 +292,7 @@ const station = (() => {
       if (!POTA_KHZ.test(khz)) continue;
       const f = Math.round(Number(khz) * 1000);
       if (!Number.isFinite(f) || f <= 0 || (Array.isArray(range) && (f < range[0] || f > range[1]))) continue;
-      out.push({ f, label: String(p.call || ""), kind: "POTA", need: null,
+      out.push({ key: key({ f, mode: p.mode }), f, label: String(p.call || ""), kind: "POTA", need: null,
         tip: [`${p.call} · POTA ${p.ref || ""}${p.name ? ` ${p.name}` : ""}`, `${p.mode || ""} ${khz} kHz`.trim()].join("\n") });
     }
     return out;
@@ -294,8 +303,45 @@ const station = (() => {
       const a = api(id);
       if (!a || typeof a.spots !== "function") continue;    // a radio page from before PR 4a
       spotBand[id] = bandName(live[id]?.S?.freq);
-      try { a.spots(spotsFor(id)); } catch { /* the frame's problem, not the station's */ }
+      try {
+        if (a.onspot !== spotHook[id]) a.onspot = spotHook[id] ||= (k) => spotClicked(id, k);
+        a.spots(spotsFor(id));
+      } catch { /* the frame's problem, not the station's */ }
     }
+  }
+
+  // POTA's mode label -> what to send (UX plan PR 4c): CW is CW; SSB is the
+  // band's own sideband (common.js BANDS: LSB below 10 MHz, USB on 60 m);
+  // FT8, FT4 and other digital labels are USB, with data on only where the
+  // radio has a data setting for USB. A mode the radio does not list
+  // (caps.modes: radio.py refuses it) or a label not mapped here (AM, FM, an
+  // empty one): the frequency only.
+  const POTA_DIGITAL = /^(FT8|FT4|JS8|JT65|JT9|Q65|FST4W?|MSK144|WSPR|PSK\d*|BPSK\d*|QPSK\d*|RTTY|OLIVIA|MFSK\d*|DATA|DIGI(?:TAL)?|VARA|PACKET)$/;
+  function potaTune(f, label, caps) {
+    const m = String(label || "").trim().toUpperCase();
+    let mode = null, data = null;
+    if (m === "CW") mode = "CW";
+    else if (m === "SSB") mode = bandOf(f)?.m || null;
+    else if (POTA_DIGITAL.test(m)) {
+      mode = "USB";
+      if ((caps?.data_modes || []).includes("USB")) data = true;
+    }
+    if (!mode || !(caps?.modes || []).includes(mode)) return { freq: f };
+    return { freq: f, mode, data };
+  }
+
+  // A click on a label in radio `id`'s scope (its rrFrame.onspot). Spots act
+  // on the focus radio (UX plan 5.1): a label on another radio's scope tunes
+  // nothing and says so. Everything else is tuneFocus's to refuse.
+  function spotClicked(id, k) {
+    const t = spotTune[id]?.get(String(k)), r = present().find((x) => x.id === id);
+    if (!t || !r) { toast("That spot is no longer listed: nothing sent.", "warn"); return null; }
+    if (focusId() !== id) {
+      toast(`Spots tune the focus radio: make the ${r.name} the focus (click it in the rig bar) first. Nothing sent.`, "warn");
+      return null;
+    }
+    // A decode: its dial, no mode. A POTA spot: mode by potaTune, read now.
+    return tuneFocus(t.dial != null ? { freq: t.dial } : potaTune(t.f, t.mode, live[id]?.cfg?.caps), id);
   }
   // A radio changed band: its spots change with it.
   function spotsRadio(id) { if (bandName(live[id]?.S?.freq) !== spotBand[id]) pushSpots(id); }
@@ -529,9 +575,10 @@ const station = (() => {
 
   // tuneFocus({freq, mode, band}, expect): retune the focus radio. freq in
   // Hz; band ("40", ...) picks from the shared band stack when no freq is
-  // given; mode only when it differs. Resolves {ok, why, freq, mode}: what
-  // happened, also said in a toast when it is not plain success.
-  async function tuneFocus({ freq = null, mode = null, band = null } = {}, expect = null) {
+  // given; mode only when it differs; data (true/false) last, only when it
+  // differs (PR 4c). Resolves {ok, why, freq, mode, data}: what happened,
+  // also said in a toast when it is not plain success.
+  async function tuneFocus({ freq = null, mode = null, band = null, data = null } = {}, expect = null) {
     const why = tuneBlocked(expect);
     if (why === "locked") { nudgeBarLock(); return { ok: false, why }; }
     if (why) { toast(why, "warn"); return { ok: false, why }; }
@@ -542,7 +589,7 @@ const station = (() => {
       freq = mem.f;
       mode = mode || mem.m;
     }
-    const out = { ok: true, why: "", freq: false, mode: false };
+    const out = { ok: true, why: "", freq: false, mode: false, data: false };
     if (freq != null) {
       freq = Math.round(Number(freq));
       const range = l.cfg?.caps?.freq;
@@ -571,6 +618,19 @@ const station = (() => {
         return { ...out, ok: false, why: a.why };
       }
       out.mode = true;
+    }
+    // data (PR 4c, 2026-11-19: a POTA spot in a digital mode): the last step,
+    // read again like mode, and only on a radio that has a data setting
+    // (caps.data_modes: radio.py settable() takes "data" only then).
+    if (data != null && l.cfg?.caps?.data_modes?.length && !!data !== !!l.S.data) {
+      const again = tuneBlocked(id);
+      const a = again ? { ok: false, why: again === "locked" ? "tuning was locked" : again }
+        : (setOn(w, "data", !!data), await answer(l, w, "data", !!data));
+      if (!a.ok) {
+        toast(`${r.name}: ${out.freq || out.mode ? `on ${fmtFreq(l.S.freq)} ${l.S.mode || ""}, but ` : ""}data stayed ${l.S.data ? "on" : "off"} (${a.why})`, "warn");
+        return { ...out, ok: false, why: a.why };
+      }
+      out.data = true;
     }
     return out;
   }
@@ -1186,8 +1246,11 @@ const station = (() => {
     }
     mission.mount(el);
     // The band strip under the clock row (UX plan PR 3a, 2026-11-19): the
-    // bands the focus radio covers. Display only; it never retunes.
-    bandStrip.render($("#mc-bands"), { range: live[focusId()]?.cfg?.caps?.freq || null });
+    // bands the focus radio covers. From PR 4c (2026-11-19) a cell's band
+    // button tunes the focus radio to that band through tuneFocus.
+    const fr = present().find((x) => x.id === focusId());
+    bandStrip.render($("#mc-bands"), { range: live[fr?.id]?.cfg?.caps?.freq || null, radio: fr?.name || "",
+      autoTune: !!live[fr?.id]?.cfg?.auto_tune, tune: (band) => tuneFocus({ band }) });
     // The view is redrawn often: every pulse starts at the same point of one
     // 3.2 s clock (its periods divide it), so a redraw never restarts one.
     $("#view-home").style.setProperty("--sync", `-${Date.now() % 3200}ms`);
@@ -1365,6 +1428,9 @@ const station = (() => {
           if (LAYOUTS[route()]) { relayout(); operateStrip(); }   // an add-on on or off; the strip's data (PR 2b)
         });
       },
+      // An add-on's api.tune({band}) (UX plan PR 4c, 2026-11-19): the focus
+      // radio, through tuneFocus.
+      tune: ({ band } = {}) => tuneFocus({ band }),
     });
     // A resize can cross Operate's 1100 px (the tab comes or goes, the route
     // goes home) or its 1500 px (station.css re-places the panes by itself).
@@ -1390,6 +1456,7 @@ const station = (() => {
     connect();
   }
 
-  // tuneFocus: for PR 4c's band cells, openings and spots, and the tests.
-  return { start, tuneFocus };
+  // tuneFocus: the band cells, openings and spots (PR 4c) and the tests.
+  // potaTune: the POTA mode map, for the tests.
+  return { start, tuneFocus, potaTune };
 })();

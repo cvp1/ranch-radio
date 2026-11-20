@@ -12,14 +12,19 @@
 //
 // and, on the band JTDX is decoding, the Roster's strong needs.
 //
-// Display only: a cell does not retune. Tuning from a cell is PR 4c, through
-// station.tuneFocus. Reads addons.data("propagation") and
-// addons.data("roster") (UX plan 5.3). station.js calls render(el, {range})
-// whenever Mission Control redraws, and for Operate's strip (PR 2b); each
-// strip also redraws itself when the
-// UTC hour turns, with or without an event, since a window "now to 05Z"
-// ends on the hour and the next one starts. Uses common.js (BANDS, esc,
-// regionName) and addons.js.
+// From PR 4c (2026-11-19) each cell's band name is a button that tunes the
+// focus radio to that band (its band stack: where it was last left there,
+// else the band's default), through the tune the station gives in render()'s
+// context (station.tuneFocus, the one way that page retunes a radio). The
+// rest of a cell stays display: its facts keep their own titles.
+//
+// Reads addons.data("propagation") and addons.data("roster") (UX plan 5.3).
+// station.js calls render(el, {range, radio, autoTune, tune}) whenever
+// Mission Control redraws, and for Operate's strip (PR 2b); each strip keeps
+// its own ctx; the strip also redraws itself when the UTC hour
+// turns, with or without an event, since a window "now to 05Z" ends on the
+// hour and the next one starts. Uses common.js (BANDS, esc, regionName,
+// fmtFreq, bandChangeNote) and addons.js.
 
 const bandStrip = (() => {
   // Each element it draws into: its context and the HTML last written. Two
@@ -119,6 +124,18 @@ const bandStrip = (() => {
       title: `JTDX on ${c.band} ${c.mode}, the last two minutes: ${text}; ${plural(c.new_calls, "new call", "new calls")}` };
   }
 
+  // The band's name: a tune button when the station gave a tune (PR 4c).
+  // Its title says what a click does and, as every band-changing control
+  // does (PR 1d), that on a station with auto-tune a band change transmits a
+  // tune carrier (common.js bandChangeNote, for the focus radio).
+  function bandEl(c) {
+    if (typeof ctx.tune !== "function") return `<b class="bs-band">${esc(c.k)}</b>`;
+    const t = `Tune the ${ctx.radio || "focus radio"} to ${c.k}: where it was last left there, else ` +
+      `${fmtFreq(c.b.f)} ${c.b.m}. Tuning must be unlocked (the rig bar's padlock). ${bandChangeNote(!!ctx.autoTune)}`;
+    return `<button type="button" class="bs-band bs-tune" data-n="${esc(c.b.n)}" title="${esc(t)}" ` +
+      `aria-label="${esc(t)}">${esc(c.k)}</button>`;
+  }
+
   const fact = (cls, f) => `<div class="bs-fact ${cls}" data-state="${f.state}" title="${esc(f.title)}">${f.text}</div>`;
 
   // One line for each fact whose state is the same on every band (not set
@@ -146,13 +163,13 @@ const bandStrip = (() => {
     const P = addons.data("propagation"), N = needs(), now = api.now();
     const cells = bandsFor(ctx.range).map((b) => {
       const k = key(b);
-      return { k, h: heard(P, k), y: hearsYou(P, k), f: forecast(P, k, now) };
+      return { b, k, h: heard(P, k), y: hearsYou(P, k), f: forecast(P, k, now) };
     });
     const shown = N && cells.some((c) => c.k === N.band);
     const body = cells.map((c) => {
       const dec = N && c.k === N.band;
       return `<div class="bs-cell${dec ? " bs-decoding" : ""}" data-band="${esc(c.k)}">
-        <div class="bs-head"><b class="bs-band">${esc(c.k)}</b>${fact("bs-you", c.y)}</div>
+        <div class="bs-head">${bandEl(c)}${fact("bs-you", c.y)}</div>
         ${fact("bs-heard", c.h)}${fact("bs-fc", c.f)}
         ${dec ? `<div class="bs-needs" data-state="${N.state}" title="${esc(N.title)}">${esc(N.text)}</div>` : ""}
       </div>`;
@@ -169,6 +186,17 @@ const bandStrip = (() => {
     d.ctx = c;
     drawn.set(target, d);
     ctx = c;
+    // One listener per strip, reading that strip's newest ctx at click time
+    // (Mission Control's and Operate's each have their own): a click tunes
+    // whatever radio has focus then (tuneFocus reads it again).
+    if (!target.dataset.tuneBound) {
+      target.dataset.tuneBound = "1";
+      target.addEventListener("click", (e) => {
+        const btn = e.target.closest?.(".bs-tune");
+        const t = drawn.get(target)?.ctx?.tune;
+        if (btn && target.contains(btn) && typeof t === "function") t(btn.dataset.n);
+      });
+    }
     lastHour = Math.floor(api.now() / 3600);
     // Nothing to say without the add-ons that feed it.
     const here = addons.list().some((x) => x.name === "propagation" || x.name === "roster");

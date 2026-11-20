@@ -6,7 +6,8 @@
 // with its name and an on/off switch, and routes {"t": "addon"} messages to it.
 //
 // An add-on script calls addons.register(name, impl), where impl may have:
-//   mount(body, api)   build the panel's content once (api.send(verb, extra))
+//   mount(body, api)   build the panel's content once (api.send(verb, extra);
+//                      api.tune({band}) retunes, below)
 //   hello(snapshot)    the server's state for it (on connect, and when switched on)
 //   event(m)           a {"t": "addon", addon: name, ...} message
 //   off()              it was switched off: forget the device's state
@@ -20,7 +21,13 @@
 //                      back at full width. Reversible, and it persists nothing.
 //                      Through addons.layout(name, opts); a script that
 //                      registers later gets the last one at register().
-// The page (tabs.js / station.js) sets a host: {place(name, panel), changed()}.
+// The page (tabs.js / station.js) sets a host: {place(name, panel), changed(),
+// tune({band})}. api.tune({band}) (UX plan PR 4c, 2026-11-19) asks the page to
+// put its radio on a band ("20m", "70cm" or "20"): the station tunes the focus
+// radio through station.tuneFocus, a radio's own page uses its band stack
+// (app.js bandStack); each refuses as its page does (locked, Winlink armed).
+// An add-on never sends a radio a set itself. api.canTune(): the page has a
+// way to tune (a radio page inside the station's frame has none).
 // Uses common.js ($, esc, toast) and the page's send().
 
 const addons = (() => {
@@ -36,6 +43,13 @@ const addons = (() => {
   const api = (name) => ({
     send: (verb, extra = {}) => send({ t: "addon", addon: name, do: verb, ...extra }),
     changed: () => host.changed(),
+    canTune: () => typeof host.tune === "function",
+    tune({ band } = {}) {
+      const s = String(band ?? "");
+      const b = BANDS.find((x) => x.n === s || (x.label || `${x.n}m`) === s);
+      if (!b || typeof host.tune !== "function") return Promise.resolve({ ok: false, why: b ? "no tuning here" : "no such band" });
+      return Promise.resolve(host.tune({ band: b.n }));
+    },
   });
 
   function load(d) {
