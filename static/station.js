@@ -69,7 +69,8 @@ const station = (() => {
     if (radio && !radio.present) { location.hash = "#/home"; return; }
     // A layout that can't be shown now (too narrow, no radio, its add-ons
     // off) sends the route home, as a radio that is gone does.
-    const plan = LAYOUTS[r] ? layoutPlan(r) : null;
+    // The wall (PR 5a) is a layout with no radio pane: always showable.
+    const plan = LAYOUTS[r] ? layoutPlan(r) : r === "wall" ? wallPlan() : null;
     if (LAYOUTS[r] && !plan) { location.hash = "#/home"; return; }
     const addon = addons.list().find((d) => d.name === r);
     if ((r === "winlink" && !wlOn) || (r === "mesh" && !meshOn) || (r === "packet" && !packet.configured)
@@ -77,7 +78,11 @@ const station = (() => {
     if (!radio && !addon && !plan && !["home", "winlink", "mesh", "packet", "modules"].includes(r)) r = "home";
     for (const v of document.querySelectorAll(".st-view")) v.hidden = true;
     applyLayout(plan);
-    if (plan) {
+    wall.show(r === "wall");
+    if (r === "wall") {
+      for (const [, v] of plan.views) v.hidden = false;
+      document.title = `Wall · ${cfg.name || "Station"}`;
+    } else if (plan) {
       for (const [, v] of plan.views) v.hidden = false;
       frame(plan.radio);
       for (const [id, f] of Object.entries(frames)) f.hidden = id !== plan.radio.id;
@@ -110,7 +115,9 @@ const station = (() => {
       if (r === "modules") modules.shown();
       document.title = `${r === "home" ? "Mission Control" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
     }
+    if (r !== "wall") prepareFocus();     // the wall builds no frame; leaving it builds the focus one (PR 1c)
     hostFrames();
+    barInert();
     renderNav();
     renderBar();
     if (r === "home") { renderCards(); refreshWlCounts(); }
@@ -180,25 +187,35 @@ const station = (() => {
     const main = $(".st-main"), was = laid;
     for (const v of main.querySelectorAll(":scope > .st-view[data-pane]")) delete v.dataset.pane;
     for (const c of [...main.classList]) if (c === "lay" || c.startsWith("lay-") || c.startsWith("no-")) main.classList.remove(c);
-    laid = plan ? { name: plan.name, sig: plan.sig, radio: plan.radio.id, addons: plan.addons } : null;
+    laid = plan ? { name: plan.name, sig: plan.sig, radio: plan.radio?.id || null, addons: plan.addons } : null;
     for (const n of was?.addons || []) if (!laid?.addons.includes(n)) addons.layout(n, { pane: false });
     if (!plan) return;
     main.classList.add("lay", `lay-${plan.name}`, ...plan.missing.map((n) => `no-${n}`));
     for (const [pane, v] of plan.views) v.dataset.pane = pane;
-    for (const n of plan.addons) addons.layout(n, { pane: true });
+    for (const n of plan.addons) addons.layout(n, { pane: true, ...(plan.opts || {}) });
+  }
+
+  // The wall (UX plan PR 5a, 2026-11-19): the Map, when it is on, beside the
+  // wall's own view; no radio pane, ever (the radio page binds Space to PTT
+  // and the arrows to tuning). wall: true turns the Map's night side on for
+  // the visit without writing its layers.
+  function wallPlan() {
+    const map = addons.list().some((d) => d.name === "map" && d.on && !d.error) && document.getElementById("view-addon-map");
+    return { name: "wall", radio: null, addons: map ? ["map"] : [], missing: map ? [] : ["map"], opts: { wall: true },
+      views: [["wall", $("#view-wall")], ...(map ? [["map", map]] : [])], sig: `wall|${map ? "map" : ""}` };
   }
 
   // On a layout route: show() again when what it would show has changed.
   function relayout() {
     const r = route();
-    if (!LAYOUTS[r]) return;
-    const plan = layoutPlan(r);
+    if (!LAYOUTS[r] && r !== "wall") return;
+    const plan = r === "wall" ? wallPlan() : layoutPlan(r);
     if (!plan || plan.sig !== laid?.sig) show();
   }
 
   // Operate's band strip (PR 3a's, display only): the focus radio's bands.
   function operateStrip() {
-    if (!laid) return;
+    if (!laid?.radio) return;     // the wall has no radio pane and its own strip
     const el = $("#op-bands");
     bandStrip.render(el, { range: live[laid.radio]?.cfg?.caps?.freq || null });
     $("#view-operate").hidden = el.hidden;
@@ -233,6 +250,7 @@ const station = (() => {
   // The focus radio's frame, made early and hidden; tell every frame whether
   // it is on screen (a hidden one drops its spectrum socket and loops).
   function prepareFocus() {
+    if (route() === "wall") return;           // no radio frame on the wall (PR 5a)
     const r = present().find((x) => x.id === focusId());
     if (r) frame(r);
   }
@@ -408,7 +426,7 @@ const station = (() => {
           // A scope frame: Mission Control's mini spectrum (drawn only while shown).
           if (typeof e.data !== "string") { mission.scopeOf(r.id).push(e.data); return; }
           const m = JSON.parse(e.data);
-          if (m.t === "state") Object.assign(l.S, m.d);
+          if (m.t === "state") { tickerState(r, l.S, m.d); Object.assign(l.S, m.d); }
           // tuneFocus's waiters see each message on their socket after the state
           // has taken it; one that claims a notice keeps it out of the toasts
           // (its own report says it).
@@ -451,6 +469,9 @@ const station = (() => {
             // as does a release for any other reason.
             const stopInfo = (m.level !== "warn" && /^STOP TX:/.test(m.msg || ""))
               || m.msg === "Transmitter released: STOP TX pressed";
+            // The wall's ticker (PR 5a) keeps warns, but not a press's own
+            // "Transmitter released": it logs "STOP TX latched" itself.
+            if (m.level === "warn" && !stopInfo) wall.note(`${r.name}: ${m.msg}`, "warn");
             if (route() !== r.id && laid?.radio !== r.id && !claimed && !stopInfo) toast(`${r.name}: ${m.msg}`, m.level);
             return;
           } else return;
@@ -479,6 +500,14 @@ const station = (() => {
       }
     }
     renderBar();
+  }
+
+  // The wall's ticker (PR 5a, 2026-11-19): what changed, in this page's
+  // memory only. A radio keyed or unkeyed, or moved to another band.
+  function tickerState(r, was, d) {
+    if (!d || !Object.keys(was).length) return;           // its first state: nothing changed yet
+    if ("tx" in d && !!d.tx !== !!was.tx) wall.note(`${r.name} ${d.tx ? "on the air" : "back to receive"}`, d.tx ? "tx" : "info");
+    if ("freq" in d && d.freq && was.freq && bandName(d.freq) !== bandName(was.freq)) wall.note(`${r.name} to ${bandName(d.freq) || fmtFreq(d.freq)}`);
   }
 
   function release(id) {
@@ -726,6 +755,18 @@ const station = (() => {
       if (d) fillRig(d, r);
     }
     fillStop(el.querySelector(".rb-stop"));
+    barInert();
+  }
+
+  // On the wall (PR 5a) the bar's STOP TX is its only control that takes
+  // input: each radio (its tab link, Listen, the frequency entry, the lock,
+  // Release TX, focus) and Cancel are inert. Set at once in show() and again
+  // after each redraw, which may rebuild them.
+  function barInert() {
+    const el = $("#rig-bar"), w = route() === "wall";
+    for (const c of el.children) c.inert = w && !c.classList.contains("rb-stop");
+    const c = el.querySelector(".rb-stop-cancel");
+    if (c) c.inert = w;
   }
 
   function rigEl(r, focus) {
@@ -917,6 +958,9 @@ const station = (() => {
     const prev = latch[id];
     if (!fresh && prev?.ws !== w) return;
     latch[id] = { ws: w, stopped, sent: !fresh && !!prev.sent, fail: (!fresh && prev.fail) || "" };
+    const rn = radios.find((x) => x.id === id)?.name || id;
+    if (stopped && !wasStopped[id]) wall.note(`${rn}: STOP TX latched`, "warn");
+    else if (!stopped && wasStopped[id]) wall.note(`${rn}: no longer stopped${fresh ? " (its server restarted)" : " (resumed)"}`, "warn");
     if (stopped) {
       wasStopped[id] = true;
       delete unstopped[id];
@@ -1248,6 +1292,7 @@ const station = (() => {
       el.append(lane);
     }
     mission.mount(el);
+    wall.mount();                 // the wall's spectrum back in its slot (PR 5a)
     // The band strip under the clock row (UX plan PR 3a, 2026-11-19): the
     // bands the focus radio covers. From PR 4c (2026-11-19) a cell's band
     // button tunes the focus radio to that band through tuneFocus.
@@ -1279,6 +1324,7 @@ const station = (() => {
 
   function hotkey(e) {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (route() === "wall") return;          // only Exit and STOP TX take input there (PR 5a)
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (e.key === "0") { location.hash = "#/home"; e.preventDefault(); return; }
@@ -1306,7 +1352,14 @@ const station = (() => {
   let landed = false;             // the first radios message has picked the opening view
 
   function applyRadios(m) {
+    const before = landed ? new Set(present().map((r) => r.id)) : null;
     radios = m.radios || [];
+    if (before) {
+      for (const r of radios) {
+        if (r.present && !before.has(r.id)) wall.note(`${r.name} connected`);
+        else if (!r.present && before.has(r.id)) wall.note(`${r.name} offline`, "warn");
+      }
+    }
     sharedPort = (m.shared_port !== undefined && m.shared_port !== null) ? m.shared_port : sharedPort;
     packet = m.packet || packet;
     dropGoneFrames();
@@ -1358,12 +1411,14 @@ const station = (() => {
         winlink.event(m);
         if (m.session === "ended" || "inbound" in m) refreshWlCounts(true);
         homeChanged();
+        if ("armed" in m && !!m.armed !== wlArmed) wall.note(m.armed ? "Winlink session armed" : "Winlink session ended", m.armed ? "tx" : "info");
         if ("armed" in m) { wlArmed = !!m.armed; renderNav(); renderCards(); }
       } else if (m.t === "mesh") {
         mesh.event(m);
         homeChanged();
         if (m.status) { meshConnected = !!m.status.connected; renderNav(); renderCards(); }
         if (m.msg && !m.msg.mine && !m.msg.emoji && route() !== "mesh") { meshUnread++; renderNav(); renderCards(); }
+        if (m.msg && !m.msg.mine && !m.msg.emoji) wall.note(`Mesh: a message from ${mesh.summary().last?.who || "a node"}`);
       } else if (m.t === "addon" && m.addon === "winlink") {
         winlink.power(m);                 // Winlink's page is its own panel
         if ("on" in m) modules.addonChanged();
@@ -1382,6 +1437,7 @@ const station = (() => {
         modules.event(m);
       } else if (m.t === "notice") {
         toast(m.msg, m.level);
+        wall.note(m.msg, m.level === "warn" ? "warn" : "info");
       } else if (m.t === "identity") {      // the Logbook settings changed the callsign
         cfg.call = m.call; cfg.grid = m.grid;
         showIdentity(cfg);
@@ -1429,6 +1485,7 @@ const station = (() => {
           queued = false;
           renderNav(); renderCards();
           if (LAYOUTS[route()]) { relayout(); operateStrip(); }   // an add-on on or off; the strip's data (PR 2b)
+          else if (route() === "wall") relayout();                // the Map on or off (PR 5a)
         });
       },
       // An add-on's api.tune({band}) (UX plan PR 4c, 2026-11-19): the focus
@@ -1446,6 +1503,15 @@ const station = (() => {
         if (!!layoutPlan("operate") !== navOperate) renderNav();
         relayout();
       });
+    });
+    wall.setHost({
+      scope: () => { const id = focusId(); return id ? mission.scopes[id] || null : null; },
+      radio: () => {
+        const r = present().find((x) => x.id === focusId());
+        return r ? { name: r.name, ...(live[r.id]?.S || {}) } : null;
+      },
+      range: () => live[focusId()]?.cfg?.caps?.freq || null,
+      linked: () => !!ws && ws.readyState === 1,
     });
     modules.mount($("#modules"), { changed: renderNav, visible: () => route() === "modules" });
     window.addEventListener("hashchange", show);

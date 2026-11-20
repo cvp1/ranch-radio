@@ -121,3 +121,8 @@
    the map fills the pane's height instead of the window's. */
 .addon-body.rm-pane { display: flex; flex-direction: column; }
 .rm-pane .rm-wrap { flex: 1 1 0; height: auto; min-height: 160px; }
+/* On the station's wall (UX plan PR 5a, 2026-11-19): the map only. Its bar,
+   zoom buttons, station list and station card (with Answer) are controls,
+   and the wall takes no input. The on-air panel stays: it is display. */
+.rm-wall :is(.rm-bar, .rm-ctl, .rm-list, .rm-card) { display: none !important; }
+.rm-wall .rm-wrap { cursor: default; }
