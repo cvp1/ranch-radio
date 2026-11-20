@@ -203,7 +203,7 @@ WATERFALL_FILL_S = 25                # seconds of scope frames before the waterf
 # (test, its screenshot, the README image, crop width, height)
 STATION_SHOTS = [
     ("mission_density_page_test", "mission-density-1600x1000.png", "mission-control.png", 1600, 880),
-    ("operate_page_test", "operate-1600.png", "operate.png", 1600, 1000),
+    ("operate_page_test", "operate-1600-populated.png", "operate.png", 1600, 1000),
     ("callcard_page_test", "callcard-roster.png", "callcard.png", 1200, 290),
 ]
 
