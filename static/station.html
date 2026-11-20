@@ -37,6 +37,9 @@
      2026-10-18): every configured HF radio on every view, status only:
      frequency, mode, band, S-meter or watts, ON AIR with Release TX. The focus
      radio is in full, the others compact (a click focuses one). -->
+<!-- The wall's Exit (UX plan PR 5a, 2026-11-19): before the rig bar, so it
+     is the first thing Tab reaches on the wall, ahead of STOP TX. -->
+<button type="button" class="wall-exit" id="wall-exit" hidden title="Leave the wall (Esc)">Exit wall</button>
 <div class="rig-bar" id="rig-bar" hidden aria-label="HF radios"></div>
 
 <main class="st-main">
@@ -61,6 +64,20 @@
        station.css (.st-main.lay); this view holds only the strip. -->
   <section class="st-view" id="view-operate" hidden>
     <div class="mc-bands op-bands" id="op-bands" hidden></div>
+  </section>
+
+  <!-- The wall (static/wall.js, UX plan PR 5a, 2026-11-19): display only,
+       inert. The Map beside it is the Map add-on's own view, placed by
+       station.css (.st-main.lay-wall), never moved. -->
+  <section class="st-view" id="view-wall" hidden>
+    <div class="wall-clock"><span class="wall-utc" id="wall-utc"></span><small>UTC</small>
+      <span class="wall-local" id="wall-local"></span><span class="wall-date" id="wall-date"></span></div>
+    <div class="wall-radio" id="wall-radio"></div>
+    <div class="wall-scope" id="wall-scope"></div>
+    <div class="wall-scope-note" id="wall-scope-note" hidden></div>
+    <div class="mc-bands wall-bands" id="wall-bands" hidden></div>
+    <ol class="wall-ticker" id="wall-ticker" aria-label="Latest events"></ol>
+    <div class="wall-foot" id="wall-foot" role="status"></div>
   </section>
 
   <!-- One frame per connected HF radio: its own Radio Remote page -->
@@ -277,6 +294,7 @@
 <script src="static/callcard.js"></script>
 <script src="static/addons.js"></script>
 <script src="static/bands.js"></script>
+<script src="static/wall.js"></script>
 <script src="static/modules.js"></script>
 <script>station.start();</script>
 </body>

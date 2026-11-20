@@ -130,6 +130,10 @@ const rrMapMath = (() => {
   // the list's state from before the visit and is put back after it; nothing
   // here or in a click during the visit writes map.list.
   let paneList = null;
+  // On the station's wall (UX plan PR 5a, 2026-11-19) the night side is on
+  // whatever the Night chip says, and map.layers is never written for it.
+  let wallOn = false;
+  const nightOn = () => layers.night || wallOn;
   // The list's tab (2026-11-19, UX plan PR 0.2): it opened on Two-way even when
   // that was empty and "You hear" was full. Two values now: the operator's
   // preference, set only by a click on a tab and kept, and the tab shown. With
@@ -340,7 +344,7 @@ const rrMapMath = (() => {
   }
 
   // Over the Earth background the night side is drawn as what is there: its city lights.
-  const litNight = () => base.id() === "earth" && layers.night;
+  const litNight = () => base.id() === "earth" && nightOn();
 
   function drawTiles() {
     base.render(z, cx, cy, w, h);
@@ -379,7 +383,7 @@ const rrMapMath = (() => {
     pan();
     const g = (c) => { const x = $$(`.rm-${c}`); x.innerHTML = ""; return x; };
     const nightG = g("night"), gridsG = g("grids"), pathsG = g("paths"), potaG = g("pota"), stG = g("st");
-    if (layers.night) {
+    if (nightOn()) {
       const pts = nightPts.map(([lo, la]) => `${px(lo).toFixed(1)},${py(la).toFixed(1)}`).join(" ");
       el("polygon", { points: pts, class: `rm-nightp${litNight() ? " lit" : ""}` }, nightG);
     }
@@ -584,7 +588,7 @@ const rrMapMath = (() => {
   window.rrMapMath = rrMapMath;               // the tests check the gray line and the paths against reference points
   window.rrMap = { stations: () => stations, onAir };       // and what the page worked out
   addons.register("map", {
-    mount(b) { body = b; body.classList.toggle("rm-pane", paneList !== null); built = false; centred = false; fitted = false; cx = null; render(); },
+    mount(b) { body = b; body.classList.toggle("rm-pane", paneList !== null); body.classList.toggle("rm-wall", wallOn); built = false; centred = false; fitted = false; cx = null; render(); },
     hello(s) { snap = { chosen: snap.chosen }; take(s || {}); for (const d of (snap.map && snap.map.decodes) || []) seen.add(d.key); render(); },
     event(m) {
       if (m.callcard) { window.callcard?.answer(m.callcard); return; }     // the station card's call card (static/callcard.js)
@@ -602,7 +606,8 @@ const rrMapMath = (() => {
     data() { return snap; },     // UX plan 5.3 (PR 3a, 2026-11-19): the merged state, for other views
     // UX plan 5.3 (PR 2b): in a narrow pane, or back at full width. The map
     // fills the pane's height (map.css .rm-pane); the ResizeObserver redraws it.
-    layout({ pane } = {}) {
+    layout({ pane, wall } = {}) {
+      if (!!wall !== wallOn) { wallOn = !!wall; if (body) { body.classList.toggle("rm-wall", wallOn); draw(); } }
       if (!!pane === (paneList !== null)) return;
       if (pane) { paneList = listOpen; listOpen = false; }
       else { listOpen = paneList; paneList = null; }

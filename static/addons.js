@@ -16,9 +16,10 @@
 //   data()             its current merged state, for other views (UX plan
 //                      5.3, PR 3a, 2026-11-19: this file keeps only the hello
 //                      snapshot); read through addons.data(name)
-//   layout({pane})     pane: true, it is shown in a narrow pane (the station's
+//   layout({pane, wall}) pane: true, it is shown in a narrow pane (the station's
 //                      Operate view, UX plan 5.3, PR 2b, 2026-11-19); false,
-//                      back at full width. Reversible, and it persists nothing.
+//                      back at full width. wall: the pane is the station's
+//                      read-only wall (PR 5a). Reversible; it persists nothing.
 //                      Through addons.layout(name, opts); a script that
 //                      registers later gets the last one at register().
 // The page (tabs.js / station.js) sets a host: {place(name, panel), changed(),
@@ -181,10 +182,11 @@ const addons = (() => {
     },
     // {pane: bool} for an add-on's view in a layout (the station's Operate,
     // PR 2b). Only a change reaches the add-on.
+    // wall: shown on the station's wall (PR 5a, 2026-11-19), a pane too.
     layout(name, opts) {
-      const pane = !!opts?.pane;
-      if (!!lays[name]?.pane === pane) return;
-      lays[name] = { pane };
+      const pane = !!opts?.pane, wall = pane && !!opts?.wall;
+      if (!!lays[name]?.pane === pane && !!lays[name]?.wall === wall) return;
+      lays[name] = { pane, wall };
       callLayout(name);
     },
   };
