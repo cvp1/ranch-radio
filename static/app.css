@@ -396,6 +396,22 @@ body.tx .tx-meters { opacity: 1; }
   #waterfall { height: 170px; }
   .txpanel { display: flex; align-items: stretch; }
   .stat#rtt { display: none; }
+  /* A phone as a remote (UX plan PR 5b, 2026-11-19): what you reach for
+     first comes first. VFO, meters, the TX panel (Listen, PTT), scope, band
+     and mode, levels; every other panel after them. CSS order only: nothing
+     moves in the DOM. Not in the Operate pane (PR 2b), which lays out its own. */
+  html:not(.pane) .grid > * { order: 7; }
+  html:not(.pane) .grid > .vfo { order: 1; }
+  html:not(.pane) .grid > .meters { order: 2; }
+  html:not(.pane) .grid > .txpanel { order: 3; }
+  html:not(.pane) .grid > .scope { order: 4; }
+  html:not(.pane) .grid > .bandmode { order: 5; }
+  html:not(.pane) .grid > .levels { order: 6; }
+}
+/* A phone (PR 5b): a tighter header, so the first screen holds more. */
+@media (max-width: 700px) {
+  .topbar { padding: 8px 12px; gap: 6px; }
+  .grid { gap: 10px; }
 }
 
 /* ---------- Winlink ---------- */
