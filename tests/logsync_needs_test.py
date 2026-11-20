@@ -109,16 +109,41 @@ check("  grids worked, 4 characters", sorted(n.worked["grid"]), ["FN03", "JO62",
 for args, want, why in [
         (("VK9NA", "RG30", "20m", "FT8"), ("dxcc", ["dxcc", "grid", "call_band_mode"]), "an entity never worked"),
         (("JA2XYZ", "PM95", "40m", "FT8"), ("dxcc_band", ["dxcc_band", "grid_band", "call_band_mode"]), "worked, not on this band"),
-        (("JA2XYZ", "PM95", "20m", "CW"), ("dxcc_mode", ["dxcc_mode", "call_band_mode"]), "worked on the band, not in this mode group"),
+        (("JA2XYZ", "PM95", "20m", "CW"), ("dxcc_mode", ["dxcc_mode", "grid_mode", "call_band_mode"]),
+         "worked on the band, not in this mode group (nor the grid in this mode)"),
         (("JA2XYZ", "PM96", "20m", "FT8"), ("grid", ["grid", "call_band_mode"]), "a new grid"),
         (("VE3ABC", "FN03", "40m", "CW"), ("dxcc_unconfirmed", ["dxcc_unconfirmed", "call_band_mode"]), "worked, never confirmed"),
         (("JA2XYZ", "PM95", "20m", "FT8"), ("call_band_mode", ["call_band_mode"]), "only the call is new"),
         (("JA1ABC", "PM95", "20m", "FT8"), (None, []), "worked before, same band and mode"),
-        (("JA1ABC", "PM95", "20m", "FT4"), (None, []), "FT4 is the same mode group as FT8"),
+        (("JA1ABC", "PM95", "20m", "FT4"), ("grid_mode", ["grid_mode"]),
+         "FT4 is FT8's mode group (no dxcc_mode, no new call) but a grid in a new mode (2026-11-20)"),
+        (("JA1ABC", "PM95", "20m", "MFSK", "FT4"), ("grid_mode", ["grid_mode"]), "  and MFSK/FT4 is FT4"),
+        (("JA1ABC", "PM95", "40m", "CW"), ("dxcc_band", ["dxcc_band", "dxcc_mode", "grid_band", "call_band_mode"]),
+         "grid_band outranks grid_mode: one grid reason, the strongest"),
+        (("DL2ABC", "JO62", "20m", "USB"), ("call_band_mode", ["call_band_mode"]), "USB is the SSB a grid was worked in"),
         (("W1AW/MM", "", "20m", "FT8"), ("call_band_mode", ["call_band_mode"]), "no entity: only the call can be new")]:
     check(f"need: {why}", n.need(*args), want)
 check("summary", n.summary(), {"qsos": 4, "dxcc_worked": 4, "dxcc_confirmed": 2, "grids_worked": 4, "grids_confirmed": 2,
                                "lotw_users": 0})
+
+# ================================================================ grids by band and operating mode (the Grids tab, 2026-11-20)
+# grid_cells: every grid worked, each band and the mode an operator names
+# (op_mode, not the LoTW group), confirmed if any QSO there is.
+for (mode, sub), want in [(("FT8", ""), "FT8"), (("MFSK", "FT4"), "FT4"), (("MFSK", "JS8"), "JS8"), (("SSB", "USB"), "SSB"),
+                          (("USB", ""), "SSB"), (("SSB", ""), "SSB"), (("CW", ""), "CW"), (("AM", ""), "AM"), (("", ""), "?")]:
+    check(f"op_mode {mode}/{sub or '-'} -> {want}", N.op_mode(mode, sub), want)
+cells = n.grid_cells()
+check("grid_cells from a ledger: band, mode, confirmed",
+      (cells["PM95"], cells["FN03"], cells["JO62"]), ([["20m", "FT8", 1]], [["40m", "CW", 0]], [["20m", "SSB", 1]]))
+m = N.Needs()
+m.add("K1AA", "20m", "FT8", "", "<GRIDSQUARE:6>EM10ab", False)
+m.add("K1AB", "20m", "FT8", "", "<GRIDSQUARE:4>EM10", True)          # same cell, now confirmed
+m.add("K1AC", "20m", "FT8", "", "<GRIDSQUARE:4>EM10", False)         # a later worked QSO doesn't unconfirm it
+m.add("K1AD", "40m", "MFSK", "FT4", "<GRIDSQUARE:4>EM10", False)
+m.add("K1AE", "20m", "SSB", "USB", "<GRIDSQUARE:4>em10", False)      # lower case is the same square
+m.add("K1AF", "20m", "FT8", "", "", True)                            # no grid: no cell
+check("grid_cells: one cell per band and mode, confirmed sticks, case folded, no grid no cell",
+      m.grid_cells(), {"EM10": [["20m", "FT8", 1], ["20m", "SSB", 0], ["40m", "FT4", 0]]})
 
 # ================================================================ one call's history (the call card, 2026-11-19, UX plan PR 4b)
 # Ledger.history: the latest QSOs with one exact call, read the way the needs

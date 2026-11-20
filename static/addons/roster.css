@@ -11,7 +11,7 @@
 .rs-dxcc { border-left-color: #e5484d; } .rs-dxcc .rs-need { color: #e5484d; font-weight: 700; }
 .rs-band { border-left-color: #f76b15; } .rs-band .rs-need { color: #f76b15; font-weight: 600; }
 .rs-mode { border-left-color: #ffc53d; } .rs-mode .rs-need { color: #d4a017; }
-.rs-grid, .rs-gridband { border-left-color: #3e63dd; } .rs-grid .rs-need, .rs-gridband .rs-need { color: #5b7fff; }
+.rs-grid, .rs-gridband, .rs-gridmode { border-left-color: #3e63dd; } .rs-grid .rs-need, .rs-gridband .rs-need, .rs-gridmode .rs-need { color: #5b7fff; }
 .rs-unconf { border-left-color: #8e4ec6; } .rs-unconf .rs-need { color: #a970e0; }
 /* "New call" is the lowest tier and most rows have it: its word stays quiet so the
    higher needs stand out (2026-11-19, UX plan PR 0.3). The edge keeps its colour. */

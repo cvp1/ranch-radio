@@ -25,7 +25,7 @@ const callcard = (() => {
   const slots = {};                    // slot -> {id, call, state: "wait"|"ok"|"err", data}
   const NEED = {
     dxcc: "New DXCC", dxcc_band: "New band", dxcc_mode: "New mode", grid: "New grid",
-    grid_band: "Grid on band", dxcc_unconfirmed: "DXCC unconfirmed", call_band_mode: "New call",
+    grid_band: "Grid on band", grid_mode: "Grid in mode", dxcc_unconfirmed: "DXCC unconfirmed", call_band_mode: "New call",
   };
 
   function ask(slot, addon, call, ctx = {}) {

@@ -226,6 +226,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
 | `logsync` | Every QSO JTDX logs, to Wavelog, QRZ and LoTW, with receipts and confirmations back; status on the Logbook tab | Wavelog's API key; QRZ's logbook key; TQSL with a password-free certificate |
+| `grids` | The grid squares you still need, by mode and band: the 488 Lower-48 squares (ARRL's FFMA set) worked, confirmed and missing, the missing ones on the air now, grids worked worldwide | the logbook sync (`logsync`) |
 | `wavelog_cat` | Each radio's frequency and mode to Wavelog's live QSO form; Wavelog's spot clicks tune the radio (replaces WaveLogGate) | Wavelog's API key (the logsync one by default) |
 | `halow` | An OpenWrt Wi-Fi HaLow (802.11ah) bridge, such as one carrying cameras: its radios and networks, every station's signal, rates and retries, the box's health, a DHCP guard (a bridge on the main LAN must not hand out addresses), services and log; reboot, disconnect, channel, power, network name, on/off and service restarts, each shown as its exact command and run only when you confirm | SSH to the bridge with a key in its `/etc/dropbear/authorized_keys`; nothing installed on it |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
@@ -691,8 +692,8 @@ come back. The station runs it from the host file's `logsync` block:
 - **What you still need.** `ranch-radio logsync needs` prints DXCC entities and
   grids worked and confirmed (from the ledger; LoTW or QRZ confirmations),
   and with `--call CALL --grid GRID --band 20m --mode FT8` what that station
-  would be: new DXCC, new on the band or in the mode, new grid, not yet
-  confirmed, or a new call on the band and mode, and whether it uses LoTW.
+  would be: new DXCC, new on the band or in the mode, new grid, a grid new
+  on the band or in the mode (FT8 and FT4 count apart), not yet confirmed, or a new call on the band and mode, and whether it uses LoTW.
   It keeps country-files.com's cty.csv (weekly) and ARRL's LoTW user list
   (daily) beside the ledger, and falls back to the cached copy when a fetch
   fails. The roster and map build on it.
@@ -722,6 +723,26 @@ come back. The station runs it from the host file's `logsync` block:
 
   Needs the logbook sync.
 
+- **The Grids tab** (the `grids` add-on: `ranch-radio add grids`). The grid
+  squares you still need, by operating mode and band: what GridTracker2's grid
+  tracking shows, from your own logbook.
+  - Pick a mode (All, FT8, FT4, SSB, CW, whatever the log holds), a band (All
+    or one), and whether a square counts once worked or only once confirmed
+    (LoTW or QRZ).
+  - The 488 squares of the Lower 48 (ARRL's FFMA set) drawn where they lie:
+    confirmed, worked, missing; your own square outlined.
+  - A tally per mode: Lower-48 confirmed, worked and missing, and squares
+    worked/confirmed anywhere. Click a row to pick that mode.
+  - The missing squares listed nearest first, with any square a station JTDX
+    is decoding right now at the top, ringed on the lattice and named.
+  - An alert for those: off (the default), a chime, or a voice that spells
+    the square ("Wanted grid D M 5 3, 20 metres FT8"), with a toast and a
+    browser notification if allowed. It follows the mode and band you
+    picked, sounds once per square, band and mode in half an hour, and never
+    for what was already on the air when the page opened.
+
+  Read-only. Needs the logbook sync.
+
 - **Map backgrounds.** Every map (the Map tab, Mesh, MeshCore, APRS) has a
   menu for its background; the choice is kept in the browser, one for the
   world map and one for the local maps.
@@ -739,7 +760,8 @@ come back. The station runs it from the host file's `logsync` block:
   drawn larger. Without internet the maps draw on a plain background.
 - **The Roster tab** (the `roster` add-on: `ranch-radio add roster`). Who JTDX
   is hearing now, coloured by what you still need — new DXCC, new on this
-  band or in this mode, new grid, not yet confirmed, new call — with the
+  band or in this mode, new grid (or a grid new on this band or in this
+  mode), not yet confirmed, new call — with the
   entity, a LoTW marker, distance and bearing; stations calling you sit at
   the top. Filters: CQ only, needs only; an optional alert (sound and a
   browser notification) at a chosen need level. **Click a row to answer that
