@@ -244,3 +244,26 @@
 .chat-menu button.danger { color: var(--bad, #ff8a8a); }
 .chat-menu-note { font-size: 11.5px; color: var(--dim); padding: 6px 10px 4px; line-height: 1.35; border-top: 1px solid var(--line); margin-top: 4px; }
 .chat-bar .chat-tool { font-size: 13px; color: var(--muted); }
+
+/* Mesh header on a phone (UX plan PR 5b, 2026-11-19): the key, stats and
+   buttons fold into one menu behind ⋯, so the first message moves up (it
+   started at 425 px on a 390x844 phone). Wider, the wrapper is invisible. */
+.mesh-tools { display: contents; }
+.mesh-more { display: none; }
+@media (max-width: 700px) {
+  #mesh .wl-head { position: relative; flex-wrap: nowrap; }
+  #mesh .mesh-more { display: inline-flex; margin-left: auto; }
+  #mesh .mesh-tools { display: none; }
+  #mesh .mesh-tools.open { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; display: flex;
+    flex-direction: column; align-items: stretch; gap: 6px; min-width: 220px; padding: 8px; border-radius: 12px;
+    background: var(--bg); border: 1px solid var(--line-hi); box-shadow: 0 16px 40px rgba(0, 0, 0, .6); }
+  #mesh .mesh-tools.open .mesh-stats { order: 0; flex-basis: auto; }
+  /* The conversation strip: its chips in one row (they stacked, so the strip
+     stood about 115 px tall), the search box small beside them. */
+  .chat-rail-body { flex-direction: row; gap: 4px; }
+  .chat-rail-find { flex: 0 0 110px; width: 110px; margin: 0 2px; align-self: center; }
+  /* A shorter conversation title row, and less panel padding. */
+  .chat-head { min-height: 44px; padding: 6px 12px; gap: 10px; }
+  .chat-head .chat-av { width: 30px; height: 30px; font-size: 12px; }
+  #mesh.panel { padding: 12px; gap: 8px; }
+}

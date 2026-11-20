@@ -59,6 +59,56 @@ const station = (() => {
       const mods = nav.querySelector('a[href="#/modules"]');
       if (mods) mods.title += `\nOff or not connected: ${tucked.join(", ")}`;
     }
+    renderBottom(view, [...first, ...items, ...end]);
+  }
+
+  // A phone's bottom tab bar (UX plan PR 5b, 2026-11-19), shown at 700 px and
+  // under instead of the top nav (station.css): Home, Radio (the focus
+  // radio), Messages, Mesh, More. More opens every tab the top nav has, so
+  // nothing is out of reach. The same items as the top nav; nothing new sends.
+  function renderBottom(view, all) {
+    const bar = $("#st-bottom"), more = $("#st-more");
+    if (!bar || !more) return;
+    if (renderBottom.view !== view) { more.hidden = true; renderBottom.view = view; }   // a new route closes More
+    const byGroup = (g) => all.filter((it) => it.group === g);
+    const msgs = byGroup("messaging"), mesh = byGroup("mesh");
+    const pick = (list) => list.find((it) => it.id === view) || list.find((it) => !it.off) || list[0];
+    const radio = present().length ? (present().find((r) => r.id === focusId()) || present()[0]) : null;
+    const tabs = [
+      { label: "Home", href: "#/home", on: view === "home" },
+      { label: "Radio", href: radio ? `#/${radio.id}` : "", focus: true, on: !!radios.find((r) => r.id === view) },
+      { label: "Messages", href: pick(msgs) ? `#/${pick(msgs).id}` : "", on: msgs.some((it) => it.id === view),
+        badge: msgs.reduce((n, m) => n + (parseInt(m.badge, 10) || 0), 0) },
+      { label: "Mesh", href: pick(mesh) ? `#/${pick(mesh).id}` : "", on: mesh.some((it) => it.id === view),
+        badge: mesh.reduce((n, m) => n + (parseInt(m.badge, 10) || 0), 0) },
+    ];
+    bar.innerHTML = "";
+    for (const t of tabs) {
+      const a = document.createElement(t.href ? "a" : "span");
+      a.className = "st-btab" + (t.on ? " on" : "") + (t.href ? "" : " off");
+      if (t.href) a.href = t.href;
+      a.textContent = t.label;
+      if (t.badge) { const b = document.createElement("b"); b.className = "st-badge"; b.textContent = t.badge; a.append(b); }
+      // The focus can change without a nav redraw: Radio reads it on the click.
+      if (t.focus) a.onclick = (e) => { const id = focusId(); if (id) { e.preventDefault(); location.hash = `#/${id}`; } };
+      bar.append(a);
+    }
+    const m = document.createElement("a");
+    m.className = "st-btab st-btab-more" + (more.hidden ? "" : " on");
+    m.href = "#";
+    m.textContent = "More";
+    m.setAttribute("aria-haspopup", "menu");
+    m.onclick = (e) => { e.preventDefault(); more.hidden = !more.hidden; m.classList.toggle("on", !more.hidden); };
+    bar.append(m);
+    more.innerHTML = "";
+    for (const it of all) {
+      const a = document.createElement("a");
+      a.className = "st-mi" + (view === it.id ? " on" : "") + (it.off ? " off" : "");
+      a.href = `#/${it.id}`;
+      a.textContent = it.label;
+      a.onclick = () => { more.hidden = true; };
+      more.append(a);
+    }
   }
 
   // ---------- views

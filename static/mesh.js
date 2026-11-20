@@ -928,6 +928,20 @@ const mesh = (() => {
     $("#mesh-health").hidden = !healthOpen;
     $("#mesh-main").hidden = cfgOpen || healthOpen;
   }
+  // On a phone the header's key, stats and buttons fold behind ⋯ (UX plan PR
+  // 5b, 2026-11-19; app.css shows it at 700 px and under). It opens and shuts
+  // that menu; choosing one of its buttons, or a click outside, shuts it.
+  const tools = $("#mesh-tools"), more = $("#mesh-more");
+  if (tools && more) {
+    const shutTools = () => { tools.classList.remove("open"); more.setAttribute("aria-expanded", "false"); };
+    more.onclick = (e) => {
+      e.stopPropagation();
+      const open = tools.classList.toggle("open");
+      more.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    tools.addEventListener("click", (e) => { if (e.target.closest("button")) shutTools(); });
+    document.addEventListener("click", (e) => { if (!e.target.closest("#mesh-tools, #mesh-more")) shutTools(); });
+  }
   $("#mesh-cfg-btn").onclick = () => {
     cfgOpen = !cfgOpen;
     healthOpen = false;

@@ -221,12 +221,17 @@
       <span class="wl-call" id="mesh-me"></span>
       <span class="mesh-state" id="mesh-state">Not connected</span>
       <span class="spacer"></span>
-      <span id="mesh-key"></span>
-      <span class="mesh-stats" id="mesh-stats"></span>
-      <button class="chip chip-mini" id="mesh-hears-btn" hidden title="Nodes that hear this one">heard by 0</button>
-      <button class="chip chip-mini" id="mesh-health-btn" title="What this node hears: traffic, channel load, what looks wrong">Health</button>
-      <button class="chip chip-mini" id="mesh-cfg-btn" title="The node's settings: name, role, LoRa, position, ...">Settings</button>
-      <button class="chip chip-mini" id="mesh-power" title="Close the link to the node and free its port">Switch off</button>
+      <!-- On a phone these fold into one menu behind the ⋯ button (UX plan PR 5b). -->
+      <button class="chip chip-mini mesh-more" id="mesh-more" type="button" aria-haspopup="menu" aria-expanded="false"
+              title="The node: key, stats, Health, Settings, Switch off">⋯</button>
+      <span class="mesh-tools" id="mesh-tools">
+        <span id="mesh-key"></span>
+        <span class="mesh-stats" id="mesh-stats"></span>
+        <button class="chip chip-mini" id="mesh-hears-btn" hidden title="Nodes that hear this one">heard by 0</button>
+        <button class="chip chip-mini" id="mesh-health-btn" title="What this node hears: traffic, channel load, what looks wrong">Health</button>
+        <button class="chip chip-mini" id="mesh-cfg-btn" title="The node's settings: name, role, LoRa, position, ...">Settings</button>
+        <button class="chip chip-mini" id="mesh-power" title="Close the link to the node and free its port">Switch off</button>
+      </span>
     </div>
     <div class="mesh-hears" id="mesh-hears" hidden></div>
     <div class="mesh-health" id="mesh-health" hidden></div>
@@ -279,6 +284,11 @@
     <div class="panel modules-panel" id="modules" hidden></div>
   </section>
 </main>
+
+<!-- A phone's bottom tab bar and its More sheet (UX plan PR 5b); station.css
+     shows them at 700 px and under, station.js fills them. -->
+<nav class="st-bottom" id="st-bottom" aria-label="Sections"></nav>
+<div class="st-more" id="st-more" role="menu" aria-label="All sections" hidden></div>
 
 <div class="toasts" id="toasts"></div>
 

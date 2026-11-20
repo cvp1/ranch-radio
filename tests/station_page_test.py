@@ -350,7 +350,11 @@ try:
     mid = [(r[0] + r[1]) / 2 for r in head]
     check("phone: brand, dot, clock and theme picker on one row", max(mid) - min(mid) < 8, True)
     check("  all inside the screen", all(r[2] >= 0 and r[3] <= 390 and r[3] > r[2] for r in head), True)
-    check("  the tabs are the row below", row["#st-nav"][0] >= max(r[1] for r in head), True)
+    # Since PR 5b (2026-11-19) a phone's tabs are a bar at the bottom, not a
+    # row under the header: the top nav is hidden, the bottom bar under it all.
+    check("  the tabs are a bar at the bottom, the top nav hidden",
+          (b.js("getComputedStyle(document.querySelector('#st-nav')).display"),
+           (b.js(f"{RECT}('#st-bottom')") or [0])[0] >= max(r[1] for r in head)), ("none", True))
     check("  the pill is its dot, its words in the title",
           [b.js("document.querySelector('#conn').offsetWidth <= 30"), b.js("document.querySelector('#conn').title")],
           [True, "Connected"])
