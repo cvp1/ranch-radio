@@ -164,6 +164,10 @@ check("a test with no longer owner keeps its short stem (addons/uvpro.py -> uvpr
 
 check("README.md picks nothing", affected.select(["README.md"]), {})
 check("the harness picks everything", len(affected.select(["tests/run_all.sh"])), len(names))
+check("the CI split's timings pick only the split's test",
+      affected.select(["tests/ci/durations.json"]), {"ci_shard_test": "tests/ci/durations.json"})
+check("so does the splitter", set(affected.select(["tests/ci/shard.py"])), {"ci_shard_test"})
+check("the rest of tests/ci/ is still harness", len(affected.select(["tests/ci/sentinel.py"])), len(names))
 check("so does requirements.txt", len(affected.select(["requirements.txt"])), len(names))
 check("a module that is gone still picks by name (no hold.py, but hold_test)", "hold_test" in affected.select(["hold.py"]), True)
 check("a test naming another test is prose, not an edge", "aprs_msg_test" in affected.select(["addons/logbook.py"]), False)

@@ -20,7 +20,10 @@ A run is picked when a changed file is
     (station_page_test, with no station_page module, is still station's);
   - under static/ (a page asset): every *_page_test, plus the above.
 A change to the harness itself (tests/run_all.sh, tests/ci/, requirements.txt,
-install.sh, .github/) picks every run. Deleted files count as changed.
+install.sh, .github/) picks every run, except the CI split's own files
+(tests/ci/shard.py, tests/ci/durations.json): they decide which shard a run
+lands on, never whether it passes, so they pick ci_shard_test alone. Deleted
+files count as changed.
 
     import affected; affected.select(["civ.py"]) -> {"civ_safety_test": "civ.py", ...}
 """
@@ -33,6 +36,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ("tests/run_all.sh", "tests/ci/", "requirements.txt", "install.sh", ".github/")
+# 2026-11-20: a durations refresh picked all 136 runs through the
+# tests/ci/ prefix. The split cannot change a result; ci_shard_test proves it
+# still places every run exactly once.
+SPLIT_ONLY = {"tests/ci/shard.py": "ci_shard_test", "tests/ci/durations.json": "ci_shard_test"}
 PACKAGES = ("addons", "ranch_radio")
 PATH_TOKEN = re.compile(r"[\w./-]+\.(?:py|js|css|html|sh|json|csv|bin|c|swift|qml|conf|rules|plist)\b")
 
@@ -187,11 +194,11 @@ def select(changed):
     changed = [rel(c) for c in changed]
     all_runs = runs()
     for c in changed:
-        if any(c == h or c.startswith(h) for h in HARNESS):
+        if c not in SPLIT_ONLY and any(c == h or c.startswith(h) for h in HARNESS):
             return {name: c for name, _ in all_runs}
     idx = _index()
     memo = {}
-    picked = {}
+    picked = {SPLIT_ONLY[c]: c for c in changed if c in SPLIT_ONLY}
     page_tests = [name for name, _ in all_runs if name.endswith("_page_test")]
     # A changed module that is gone (or new) still names its tests.
     stems = _module_stems() | {s for s in map(_stem, changed) if s}
