@@ -265,6 +265,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- The P2P directory's listing requests survive a flood. One station sending a few hundred P2PDIR messages used to push every other station's request out of view (only the newest 50 were read), and Dismiss cleared only those 50. Now up to 2,000 are read, one Dismiss archives all of a station's messages, an internet sender's flood is one card, and the panel says when a bound left anything out. When a station's newest minute holds messages that disagree (a remove and a listing, say), the request is shown but Publish is refused: Pat dates messages to the minute and orders a tie arbitrarily, so nothing says which came last. Dates with different time-zone offsets now order by the instant.
+
 - **A browser can no longer retune a radio whose Winlink lane is armed.** Between the session's
   transmissions, a band button or VFO swap on the radio page moved the dial under Pat, and the
   band change then started an ATU tune (a carrier). While armed, the radio server now refuses a

@@ -7,7 +7,9 @@ winlink.directory.maintain = the path of a clone of the directory repo
 
   - requests() reads Pat's inbox for messages whose subject names P2PDIR and
     returns one request per callsign, the newest (the older ones from the same
-    station ride along and are archived with it);
+    station ride along and are archived with it). A station's newest minute
+    holding messages that disagree is shown, never published: Pat dates by
+    the minute and sorts ties arbitrarily, so nothing says which came last;
   - act(..., "publish") writes what the operator sent (a listing, `confirm` or
     `remove`), checks the whole directory with the repo's own build (--strict),
     commits, pushes, then moves that station's request messages to the archive;
@@ -42,7 +44,13 @@ log = logging.getLogger("p2p_intake")
 SUBJECT_RE = re.compile(r"\bp2pdir\b", re.I)
 CALL_RE = re.compile(r"[A-Z0-9]{1,3}[0-9][A-Z]{1,4}")
 MID_RE = re.compile(r"[A-Za-z0-9]{1,32}")
-MAX_MESSAGES = 50           # inbox messages looked at per read
+# 2026-11-18: one station sent 223 P2PDIR messages; with only the newest 50
+# looked at, a valid listing from another station never showed, and Dismiss
+# could not clear the flood. Pat's listing is the whole folder in one answer,
+# so the bound is on what is read from it, not on pages.
+MAX_SCAN = 2000             # P2PDIR messages looked at per read, newest first
+MAX_REQUESTS = 50           # requests shown per read (one body fetch each)
+MAX_TIED = 5                # same-minute messages per station read to see if they agree
 MAX_BODY = 8192             # a listing is at most ~2 KB (SPEC.md); anything bigger is refused
 RUN_TIMEOUT_S = 60          # each git / parser / build run
 PAT_TIMEOUT_S = 10
@@ -80,6 +88,16 @@ def utc_date(pat_date):
         return datetime.fromisoformat(str(pat_date).replace("Z", "+00:00")).astimezone(UTC).date().isoformat()
     except ValueError:
         return datetime.now(UTC).date().isoformat()
+
+
+def when(msg):
+    """A message's Date as an aware UTC datetime (oldest possible if unreadable):
+    Pat's Date carries the sender's offset, so the strings don't sort."""
+    try:
+        d = datetime.fromisoformat(str(msg.get("Date")).replace("Z", "+00:00"))
+        return d.astimezone(UTC) if d.tzinfo else d.replace(tzinfo=UTC)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def listing_text(body):
@@ -149,28 +167,41 @@ class Intake:
 
     async def requests(self, http, pat):
         """One request per callsign, newest message first. `pat` is Pat's base URL."""
+        return (await self.scan(http, pat))[0]
+
+    async def scan(self, http, pat):
+        """(requests, note): note says what a bound left out, else None."""
         listing = await _pat_json(http, f"{pat}/api/mailbox/in")
         cand = [m for m in listing if isinstance(m, dict) and SUBJECT_RE.search(str(m.get("Subject") or ""))
                 and MID_RE.fullmatch(str(m.get("MID") or ""))]
-        cand.sort(key=lambda m: str(m.get("Date") or ""), reverse=True)
-        cand = cand[:MAX_MESSAGES]
-        by_call, refused = {}, []
+        # Newest first; MID breaks a tie only so every read agrees, it is not an order.
+        cand.sort(key=lambda m: (when(m), str(m["MID"])), reverse=True)
+        notes = []
+        if len(cand) > MAX_SCAN:
+            notes.append(f"{len(cand)} listing messages in the inbox; only the newest {MAX_SCAN} were read")
+            cand = cand[:MAX_SCAN]
+        by_call, by_sender = {}, {}
         for m in cand:
             call, why = sender_call(m)
-            if not call:
-                refused.append({"mid": m["MID"], "date": m.get("Date"), "from": (m.get("From") or {}).get("Addr"),
-                                "kind": "refused", "error": why, "mids": [m["MID"]]})
+            if call:
+                by_call.setdefault(call, []).append(m)
                 continue
-            by_call.setdefault(call, []).append(m)
+            addr = str((m.get("From") or {}).get("Addr") or "")
+            r = by_sender.setdefault(addr, {"mid": m["MID"], "date": m.get("Date"), "from": addr,
+                                            "kind": "refused", "error": why, "mids": []})
+            r["mids"].append(m["MID"])
         out = []
         for call, msgs in by_call.items():
             newest = msgs[0]
-            full = await _pat_json(http, f"{pat}/api/mailbox/in/{quote(newest['MID'], safe='')}")
-            body = str(full.get("Body") or "") if isinstance(full, dict) else ""
+            body = await _pat_body(http, pat, newest["MID"])
             req = {"call": call, "mid": newest["MID"], "date": newest.get("Date"),
                    "confirmed": utc_date(newest.get("Date")), "mids": [m["MID"] for m in msgs],
                    "current": self.current(call)}
-            if len(body.encode()) > MAX_BODY:
+            tied = [m for m in msgs if when(m) == when(newest)]
+            clash = await self._clash(http, pat, call, newest, body, tied)
+            if clash:
+                req.update(kind=kind_of(body), error=clash)
+            elif len(body.encode()) > MAX_BODY:
                 req.update(kind="refused", error=f"the message is over {MAX_BODY} bytes")
             else:
                 kind = kind_of(body)
@@ -182,8 +213,34 @@ class Intake:
                 elif not req["current"]:
                     req["error"] = f"{call} isn't listed, so there is nothing to {kind}"
             out.append(req)
-        out.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
-        return out + refused
+        out.sort(key=lambda r: (when(r), r["mid"]), reverse=True)
+        out += sorted(by_sender.values(), key=lambda r: (when(r), r["mid"]), reverse=True)
+        if len(out) > MAX_REQUESTS:
+            notes.append(f"{len(out)} stations have requests; the newest {MAX_REQUESTS} are shown")
+            out = out[:MAX_REQUESTS]
+        return out, "; ".join(notes) or None
+
+    async def _clash(self, http, pat, call, newest, body, tied):
+        """Why a station's newest minute can't be published, or None. Pat dates
+        to the minute and its listing sorts a tie arbitrarily, so when two
+        messages in that minute say different things there is no telling which
+        the operator sent last: show it, publish nothing, let Dismiss clear it."""
+        if len(tied) < 2:
+            return None
+        n = len(tied)
+        if n > MAX_TIED:
+            return (f"{n} messages from {call} in the same minute; there is no telling which came last. "
+                    f"Dismiss them and ask for one more")
+        said = {(kind_of(body), listing_text(body))}
+        for m in tied:
+            if m is not newest:
+                b = await _pat_body(http, pat, m["MID"])
+                said.add((kind_of(b), listing_text(b)))
+        if len(said) == 1:
+            return None
+        kinds = sorted({k for k, _ in said})
+        return (f"{n} messages from {call} in the same minute disagree ({', '.join(kinds)}); there is no telling "
+                f"which came last. Dismiss them and ask for one more")
 
     # --- what a click does
 
@@ -337,6 +394,11 @@ async def _pat_json(http, url):
             return await r.json(content_type=None) or []
     except (TimeoutError, aiohttp.ClientError, ValueError) as e:
         raise IntakeError(f"Pat not available: {e}") from None
+
+
+async def _pat_body(http, pat, mid):
+    full = await _pat_json(http, f"{pat}/api/mailbox/in/{quote(mid, safe='')}")
+    return str(full.get("Body") or "") if isinstance(full, dict) else ""
 
 
 async def _pat_move(http, pat, mid, box):
