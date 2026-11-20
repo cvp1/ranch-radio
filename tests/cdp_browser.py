@@ -16,7 +16,10 @@ class Browser:
     def __init__(self, chrome, cdp_port, size="1500,1400", extra=()):
         self.dir = tempfile.mkdtemp(prefix="page-chrome-")
         self.proc = subprocess.Popen(
-            [chrome, "--headless=new", f"--remote-debugging-port={cdp_port}", f"--user-data-dir={self.dir}",
+            # --mute-audio: the page tests play simulator audio (Listen, the
+            # audio scope); headless Chrome still sends it to the host's
+            # speakers without this (2026-11-19). Web Audio keeps running.
+            [chrome, "--headless=new", "--mute-audio", f"--remote-debugging-port={cdp_port}", f"--user-data-dir={self.dir}",
              "--no-first-run", "--no-default-browser-check", f"--window-size={size}", *extra, "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=self._env())
         for _ in range(300):              # 30 s: Chromium starts slowly on a loaded 2-CPU runner
