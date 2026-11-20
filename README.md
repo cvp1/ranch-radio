@@ -692,8 +692,8 @@ come back. The station runs it from the host file's `logsync` block:
 - **What you still need.** `ranch-radio logsync needs` prints DXCC entities and
   grids worked and confirmed (from the ledger; LoTW or QRZ confirmations),
   and with `--call CALL --grid GRID --band 20m --mode FT8` what that station
-  would be: new DXCC, new on the band or in the mode, new grid, not yet
-  confirmed, or a new call on the band and mode, and whether it uses LoTW.
+  would be: new DXCC, new on the band or in the mode, new grid, a grid new
+  on the band or in the mode (FT8 and FT4 count apart), not yet confirmed, or a new call on the band and mode, and whether it uses LoTW.
   It keeps country-files.com's cty.csv (weekly) and ARRL's LoTW user list
   (daily) beside the ledger, and falls back to the cached copy when a fetch
   fails. The roster and map build on it.
@@ -735,6 +735,11 @@ come back. The station runs it from the host file's `logsync` block:
     worked/confirmed anywhere. Click a row to pick that mode.
   - The missing squares listed nearest first, with any square a station JTDX
     is decoding right now at the top, ringed on the lattice and named.
+  - An alert for those: off (the default), a chime, or a voice that spells
+    the square ("Wanted grid D M 5 3, 20 metres FT8"), with a toast and a
+    browser notification if allowed. It follows the mode and band you
+    picked, sounds once per square, band and mode in half an hour, and never
+    for what was already on the air when the page opened.
 
   Read-only. Needs the logbook sync.
 
@@ -755,7 +760,8 @@ come back. The station runs it from the host file's `logsync` block:
   drawn larger. Without internet the maps draw on a plain background.
 - **The Roster tab** (the `roster` add-on: `ranch-radio add roster`). Who JTDX
   is hearing now, coloured by what you still need — new DXCC, new on this
-  band or in this mode, new grid, not yet confirmed, new call — with the
+  band or in this mode, new grid (or a grid new on this band or in this
+  mode), not yet confirmed, new call — with the
   entity, a LoTW marker, distance and bearing; stations calling you sit at
   the top. Filters: CQ only, needs only; an optional alert (sound and a
   browser notification) at a chosen need level. **Click a row to answer that

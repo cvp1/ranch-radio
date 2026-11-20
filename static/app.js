@@ -403,10 +403,10 @@ function bindFreq() {
 const SPOT_MAX = 200;             // a busy band, not a DoS: the rest are dropped, least needed first
 const SPOT_MERGE_PX = 40;         // labels closer than this collapse to one ("FT8 ×23 · 4 new")
 const SPOT_ROWS = 3;
-const SPOT_RANK = { dxcc: 0, dxcc_band: 1, dxcc_mode: 2, grid: 3, grid_band: 4, dxcc_unconfirmed: 5, call_band_mode: 6 };
-const SPOT_VAR = { dxcc: "dxcc", dxcc_band: "band", dxcc_mode: "mode", grid: "grid", grid_band: "grid",
+const SPOT_RANK = { dxcc: 0, dxcc_band: 1, dxcc_mode: 2, grid: 3, grid_band: 4, grid_mode: 5, dxcc_unconfirmed: 6, call_band_mode: 7 };
+const SPOT_VAR = { dxcc: "dxcc", dxcc_band: "band", dxcc_mode: "mode", grid: "grid", grid_band: "grid", grid_mode: "grid",
   dxcc_unconfirmed: "unconf", call_band_mode: "call" };
-const spotRank = (s) => SPOT_RANK[s.need] ?? 7;
+const spotRank = (s) => SPOT_RANK[s.need] ?? 8;
 const spotOrder = (a, b) => spotRank(a) - spotRank(b) || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) || a.f - b.f;
 function spotColours() {
   const c = { pota: theme.rgb("--spot-pota-rgb", [70, 167, 88]), none: theme.rgb("--need-none-rgb", [160, 172, 184]) };

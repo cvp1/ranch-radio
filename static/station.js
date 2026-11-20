@@ -339,7 +339,7 @@ const station = (() => {
   // parseFloat would take "14074abc" as 14074 and "1e4" as 10000.
   const POTA_KHZ = /^\d{1,7}(?:\.\d{1,3})?$/;
   const NEED_WORDS = { dxcc: "new DXCC", dxcc_band: "new DXCC on this band", dxcc_mode: "new DXCC in this mode",
-    grid: "new grid", grid_band: "new grid on this band", dxcc_unconfirmed: "DXCC not confirmed", call_band_mode: "new call" };
+    grid: "new grid", grid_band: "new grid on this band", grid_mode: "new grid in this mode", dxcc_unconfirmed: "DXCC not confirmed", call_band_mode: "new call" };
   const bandName = (f) => { const b = bandOf(f || 0); return b ? b.label || `${b.n}m` : ""; };
 
   function spotsFor(id) {

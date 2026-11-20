@@ -14,6 +14,7 @@ need(call, grid, band, mode) -> (level, reasons), level the highest of:
     dxcc_mode       the entity, never in this mode group
     grid            a grid never worked
     grid_band       the grid, never on this band
+    grid_mode       the grid, never in this mode (op_mode: FT8 and FT4 apart, 2026-11-20)
     dxcc_unconfirmed the entity is worked but not confirmed anywhere
     call_band_mode  this call never worked on this band in this mode group
     None            worked before, on this band and mode
@@ -33,9 +34,10 @@ import sqlite3
 
 from logsync_cty import mode_group
 
-LEVELS = ("dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "dxcc_unconfirmed", "call_band_mode")
+LEVELS = ("dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "grid_mode", "dxcc_unconfirmed", "call_band_mode")
 LABELS = {"dxcc": "new DXCC", "dxcc_band": "new DXCC on this band", "dxcc_mode": "new DXCC in this mode",
-          "grid": "new grid", "grid_band": "new grid on this band", "dxcc_unconfirmed": "DXCC not yet confirmed",
+          "grid": "new grid", "grid_band": "new grid on this band", "grid_mode": "new grid in this mode",
+          "dxcc_unconfirmed": "DXCC not yet confirmed",
           "call_band_mode": "new call on this band and mode"}
 LOTW_ACTIVE_DAYS = 365
 _F = re.compile(r"<([A-Za-z0-9_]+):(\d+)(?::[A-Za-z])?>")
@@ -74,7 +76,7 @@ def grid4(g):
 class Needs:
     def __init__(self, cty=None):
         self.cty = cty
-        self.worked = {"dxcc": set(), "dxcc_band": set(), "dxcc_mode": set(), "grid": set(), "grid_band": set(),
+        self.worked = {"dxcc": set(), "dxcc_band": set(), "dxcc_mode": set(), "grid": set(), "grid_band": set(), "grid_mode": set(),
                        "call_band_mode": set()}
         self.confirmed = {"dxcc": set(), "grid": set(), "grid_band": set()}
         self.cells = {}                  # grid4 -> {(band, op_mode): confirmed}
@@ -102,6 +104,7 @@ class Needs:
         if g:
             w["grid"].add(g)
             w["grid_band"].add((g, band))
+            w["grid_mode"].add((g, op_mode(mode, submode)))
             if confirmed:
                 self.confirmed["grid"].add(g)
                 self.confirmed["grid_band"].add((g, band))
@@ -161,6 +164,8 @@ class Needs:
                 reasons.append("grid")
             elif (g, band) not in w["grid_band"]:
                 reasons.append("grid_band")
+            elif (g, op_mode(mode, submode)) not in w["grid_mode"]:
+                reasons.append("grid_mode")
         if ent and ent in w["dxcc"] and ent not in self.confirmed["dxcc"]:
             reasons.append("dxcc_unconfirmed")
         if ((call or "").upper(), band, mg) not in w["call_band_mode"]:

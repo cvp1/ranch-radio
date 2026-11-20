@@ -14,6 +14,11 @@
 //             missing square someone is calling from right now; your own
 //             square outlined. Hover a square for what you have there.
 //   missing   the missing squares, on the air now first, then nearest first
+//   alert     off (the default), chime or voice: a missing square coming on
+//             the air (as the chips filter it) sounds once per square, band
+//             and mode per ALERT_AGAIN_MS, with a toast and, if the browser
+//             allows, a notification. What is on the air when the page opens
+//             counts as seen. Voice spells the square ("D M 5 3, 20 metres").
 //
 // Server: addons/grids.py ({ready, cells: {grid: [[band, mode, 0|1]]}, qsos,
 // sets: {l48: {label, grids}}, heard: [{grid, call, band, mode, snr}], me},
@@ -25,7 +30,10 @@
   const MODE_FIRST = ["FT8", "FT4", "SSB", "CW", "JS8", "RTTY"];
   const CW = 22, CH = 14;                         // a square drawn 2:1 wide-ish: 2° of longitude, 1° of latitude, at ~35°N
   let body = null, api = null, snap = {};
-  const pick = { mode: store.get("grids.mode", "All"), band: store.get("grids.band", "All"), basis: store.get("grids.basis", "worked") };
+  const pick = { mode: store.get("grids.mode", "All"), band: store.get("grids.band", "All"), basis: store.get("grids.basis", "worked"),
+                 alert: store.get("grids.alert", "off") };
+  const ALERT_AGAIN_MS = 30 * 60 * 1000;
+  const alerted = new Map();                      // "grid|band|mode" -> when it last sounded (or was seen at page open)
 
   function gridXY(g) {                            // Maidenhead square -> (column, row) in 2°x1° steps
     return { x: (g.charCodeAt(0) - 65) * 10 + Number(g[2]), y: (g.charCodeAt(1) - 65) * 10 + Number(g[3]) };
@@ -135,6 +143,7 @@
         ${chips(ms, pick.mode, "mode", "Mode")}
         ${chips(bs, pick.band, "band", "Band")}
         ${chips(["worked", "confirmed"], pick.basis, "basis", "Count")}
+        ${chips(["off", "chime", "voice"], pick.alert, "alert", "Alert")}
       </div>
       <div class="grids-head">
         <div class="grids-big"><b>${sel.miss}</b><span>Lower-48 squares missing<br>${esc(scope)}, counting ${esc(pick.basis)}</span></div>
@@ -174,6 +183,56 @@
     });
     body.querySelectorAll("[data-band]").forEach((el) => { el.onclick = () => set("band", el.dataset.band); });
     body.querySelectorAll("[data-basis]").forEach((el) => { el.onclick = () => set("basis", el.dataset.basis); });
+    body.querySelectorAll("[data-alert]").forEach((el) => {
+      el.onclick = () => {
+        set("alert", el.dataset.alert);
+        if (pick.alert !== "off") {
+          chime();                                // the click is the gesture a browser wants before it plays sound
+          if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+        }
+      };
+    });
+  }
+
+  function airNow() {                            // [{grid, band, mode, call, snr}]: missing squares on the air, as filtered
+    if (!snap.ready) return [];
+    const l48 = target(), st = status(pick.mode, pick.band);
+    return Object.entries(onAir(new Set([...l48].filter((g) => !done(st[g]))))).flatMap(([g, hs]) => hs.map((h) => ({ ...h, grid: g })));
+  }
+
+  function chime() {                              // two rising notes: not the Roster's single beep
+    try {
+      const a = new (window.AudioContext || window.webkitAudioContext)(), g = a.createGain();
+      g.gain.value = 0.08; g.connect(a.destination);
+      [[660, 0], [990, 0.16]].forEach(([f, t]) => {
+        const o = a.createOscillator(); o.frequency.value = f; o.connect(g);
+        o.start(a.currentTime + t); o.stop(a.currentTime + t + 0.14);
+      });
+    } catch (e) { /* no audio: the toast still shows */ }
+  }
+
+  function say(h) {
+    try {
+      const words = `Wanted grid ${h.grid.split("").join(" ")}, ${(h.band || "").replace(/m$/, " metres")} ${h.mode || ""}`;
+      speechSynthesis.speak(new SpeechSynthesisUtterance(words));
+    } catch (e) { chime(); }
+  }
+
+  // seen: true at a snapshot (page open, switched on): remember, don't sound
+  function alertFor(seen) {
+    const now = Date.now();
+    for (const h of airNow()) {
+      const k = `${h.grid}|${h.band}|${h.mode}`;
+      if (now - (alerted.get(k) ?? -Infinity) < ALERT_AGAIN_MS) continue;
+      alerted.set(k, now);
+      if (seen || pick.alert === "off") continue;
+      toast(`Grids: ${h.grid} on the air — ${h.call} ${h.band} ${h.mode} ${h.snr ?? ""}`.trim(), "info");
+      if (pick.alert === "voice" && window.speechSynthesis) say(h); else chime();
+      if (window.Notification && Notification.permission === "granted") {
+        try { new Notification(`Wanted grid ${h.grid}`, { body: `${h.call} ${h.band} ${h.mode}` }); } catch (e) { /* ignore */ }
+      }
+    }
+    if (alerted.size > 2000) for (const [k, t] of alerted) if (now - t > ALERT_AGAIN_MS) alerted.delete(k);
   }
 
   function missingOnAir() {
@@ -184,8 +243,8 @@
 
   addons.register("grids", {
     mount(b, a) { body = b; api = a; render(); },
-    hello(s) { snap = s || {}; render(); },
-    event(m) { snap = { ...snap, ...m }; delete snap.t; delete snap.addon; render(); },
+    hello(s) { snap = s || {}; alertFor(true); render(); },
+    event(m) { snap = { ...snap, ...m }; delete snap.t; delete snap.addon; alertFor(false); render(); },
     off() { snap = {}; render(); },
     tab() {
       if (!snap.ready) return { dot: "off", title: "Grids: waiting for the logbook" };
