@@ -42,6 +42,8 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
 
 <p align="center"><img src="docs/images/phone.png" width="300" alt="The radio page on a phone"></p>
 
+![An IC-7300's spectrum and waterfall on the radio page: FT8 signals on 20 m, the passband shaded at the tuned frequency](docs/images/waterfall.png)
+
 ## The station page
 
 A station with more than one radio, or with Winlink, Mesh and packet, opens
