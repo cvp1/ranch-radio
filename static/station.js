@@ -1195,7 +1195,11 @@ const station = (() => {
     const ports = `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
     if (!r.present) return { title: r.name, icon: "radio", state: "off", tag: "not connected", lines: [`${ports} when plugged in`] };
     const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? "VARA HF" : "ARDOP")).join(" and ")}` : "";
-    if (!S.freq) return { title: r.name, icon: "radio", wide: true, state: "ok", big: "…", lines: [ports, lane], href: `#/${r.id}` };
+    // Its ports and lane on one line (UX plan PR 3b, 2026-11-19): two lines
+    // under the trace were the card's dead space, and Mission Control has to
+    // fit one screen.
+    const line = [ports, lane].filter(Boolean).join(" · ");
+    if (!S.freq) return { title: r.name, icon: "radio", wide: true, state: "ok", big: "…", lines: [line], href: `#/${r.id}` };
     const band = bandOf(S.freq);
     const tx = !!S.tx;
     const watts = Math.round((poPct(S.po || 0) / 100) * (S.max_watts || 100));
@@ -1205,7 +1209,7 @@ const station = (() => {
       sub: esc(`${S.mode || ""}${S.data ? "-D" : ""}${band ? ` · ${band.label || `${band.n} m`}` : ""}`),
       meter: tx ? { pct: poPct(S.po || 0), text: `${watts} W`, tx: true }
         : { pct: ((S.smeter || 0) / 241) * 100, text: su.text, scale: S_SCALE },
-      lines: [ports, lane], href: `#/${r.id}` };
+      lines: [line], href: `#/${r.id}` };
   }
 
   // S-meter ticks (raw 0..241: S9 = 120, +60 dB = 241).
@@ -1296,6 +1300,49 @@ const station = (() => {
     }
   }
 
+  // Now and Log (UX plan PR 3b, 2026-11-19), from the Roster add-on's data()
+  // (static/addons/roster.js): Now is up to five fresh decodes with strong
+  // needs, the band strip's filter (needCounts there), and a click on one is
+  // the Roster's own Reply through window.roster.reply: the same message a
+  // row click sends, its outcome the same notice. No other command, and
+  // nothing is sent without a click. Log is the needs index's totals
+  // (logsync_needs summary(), which the roster carries), read-only, opening
+  // the Logbook tab. Unknown is said, never drawn as none or zero.
+  let nowHtml = "", logHtml = "";
+  function renderNow() {
+    const el = $("#mc-now");
+    const list = addons.list(), rd = list.find((d) => d.name === "roster");
+    el.hidden = !rd;
+    if (!rd) return;
+    const d = addons.data("roster"), R = d?.roster, c = d?.need_counts;
+    const why = rd.error ? `the Roster is not loaded (${rd.error})` : !rd.on ? "the Roster is switched off"
+      : !d ? "waiting for the Roster" : d.error ? d.error : !R ? "waiting for JTDX"
+      : !c ? "strong needs unknown (the needs index is not ready)"
+      : !c.now.length ? `no fresh strong needs on ${c.band || "?"} ${c.mode || ""}`.trim() : "";
+    const html = why ? `<span class="mc-now-empty">Now: ${esc(why)}</span>`
+      : `<span class="mc-now-name">Now</span>` + c.now.map((r) => `<button type="button" class="mc-now-item${r.to_me ? " me" : ""}" data-key="${esc(r.key)}" data-call="${esc(r.call)}"` +
+          ` data-need="${esc(r.need)}" title="${esc(r.tip)}"><b>${esc(r.call)}</b> <span>${esc(r.label)}</span>` +
+          `<small>${esc(r.entity || "")}${r.entity ? " · " : ""}${esc(String(r.snr))} dB</small></button>`).join("");
+    // Redrawn only when it changes: Mission Control redraws ~3 times a
+    // second, and a button replaced between press and release loses its click.
+    const box = el.querySelector(".mc-now-list");
+    if (html !== nowHtml) { box.innerHTML = html; nowHtml = html; }
+    box.onclick = (e) => {
+      const b = e.target.closest(".mc-now-item");
+      if (b) window.roster?.reply(b.dataset.key, b.dataset.call);
+    };
+    const n = R?.needs, log = $("#mc-log"), book = list.some((x) => x.name === "logbook");
+    const lh = n ? `<span class="mc-now-name">Log</span><span><b data-k="qsos">${Number(n.qsos).toLocaleString()}</b> QSOs</span>` +
+        `<span>DXCC <b data-k="dxcc">${n.dxcc_worked}/${n.dxcc_confirmed}</b></span>` +
+        `<span>grids <b data-k="grids">${n.grids_worked}/${n.grids_confirmed}</b></span>`
+      : `<span class="mc-now-name">Log</span><span class="mc-dim">totals unknown</span>`;
+    if (lh !== logHtml) { log.innerHTML = lh; logHtml = lh; }
+    log.dataset.state = n ? "ok" : "wait";
+    log.title = (n ? "Worked/confirmed, from the logbook sync's needs index" : "The needs index is not ready, or the Roster has no data")
+      + (book ? ". Opens the Logbook." : "");
+    if (book) log.setAttribute("href", "#/logbook"); else log.removeAttribute("href");
+  }
+
   function renderCards() {
     const el = $("#st-cards");
     keyed.length = 0;
@@ -1334,6 +1381,9 @@ const station = (() => {
       if (!g.cards.length) continue;
       const lane = document.createElement("section");
       lane.className = `mc-lane mc-lane-${g.id}`;
+      // Lanes flow in rows (UX plan PR 3b, 2026-11-19): Messaging and Mesh
+      // share one, each as wide as its cards ask (station.css --cards).
+      lane.style.setProperty("--cards", g.cards.reduce((n, c) => n + (c.wide ? 2 : 1), 0));
       lane.innerHTML = `<h2 class="mc-lane-name">${esc(g.label)}</h2>`;
       const grid = document.createElement("div");
       grid.className = "st-cards";
@@ -1354,6 +1404,7 @@ const station = (() => {
     $("#view-home").style.setProperty("--sync", `-${Date.now() % 3200}ms`);
     renderAir();
     renderNeeds(offline);
+    renderNow();
     const p = present();
     const sp = sharedPort ?? 0;
     $("#st-help").innerHTML = !p.length
