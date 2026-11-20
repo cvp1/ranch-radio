@@ -108,10 +108,10 @@ const rrMapMath = (() => {
 
 (() => {
   const TILE = 256, ZMIN = 1, ZMAX = 10, SVGNS = "http://www.w3.org/2000/svg";
-  const NEED = { dxcc: "#e5484d", dxcc_band: "#f76b15", dxcc_mode: "#ffc53d", grid: "#5b7fff", grid_band: "#5b7fff",
+  const NEED = { dxcc: "#e5484d", dxcc_band: "#f76b15", dxcc_mode: "#ffc53d", grid: "#5b7fff", grid_band: "#5b7fff", grid_mode: "#5b7fff",
                  dxcc_unconfirmed: "#a970e0", call_band_mode: "#00d8ff" };
   const NEED_WORD = { dxcc: "new DXCC", dxcc_band: "new DXCC on this band", dxcc_mode: "new DXCC in this mode", grid: "new grid",
-                      grid_band: "new grid on this band", dxcc_unconfirmed: "DXCC worked, never confirmed", call_band_mode: "new call" };
+                      grid_band: "new grid on this band", grid_mode: "new grid in this mode", dxcc_unconfirmed: "DXCC worked, never confirmed", call_band_mode: "new call" };
   const LAYERS = [["hear", "You hear", "Stations JTDX decoded"], ["heard", "Hears you", "Stations that reported you to PSKReporter"],
                   ["paths", "Paths", "The great-circle path to each station"], ["grids", "Grids", "Grids worked and confirmed"],
                   ["pota", "POTA", "Parks on the Air activators on the band"], ["night", "Night", "The gray line"]];

@@ -16,11 +16,11 @@
     JSON.parse(localStorage.getItem("roster.opts") || "{}"));
   const NEED = {
     dxcc: ["New DXCC", "rs-dxcc"], dxcc_band: ["New band", "rs-band"], dxcc_mode: ["New mode", "rs-mode"],
-    grid: ["New grid", "rs-grid"], grid_band: ["Grid on band", "rs-gridband"],
+    grid: ["New grid", "rs-grid"], grid_band: ["Grid on band", "rs-gridband"], grid_mode: ["Grid in mode", "rs-gridmode"],
     dxcc_unconfirmed: ["Unconfirmed", "rs-unconf"], call_band_mode: ["New call", "rs-newcall"],
   };
-  const RANK = ["dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "dxcc_unconfirmed", "call_band_mode"];
-  const ALERTS = { off: -1, dxcc: 0, band: 1, grid: 4, any: 6 };
+  const RANK = ["dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "grid_mode", "dxcc_unconfirmed", "call_band_mode"];
+  const ALERTS = { off: -1, dxcc: 0, band: 1, grid: 5, any: 7 };   // indexes into RANK: "grid" takes grid_mode too
 
   // Strong needs on the decoding band (UX plan PR 3a, 2026-11-19): one filter
   // for this tab's Mission Control card and the band strip (via data()). A
@@ -29,7 +29,7 @@
   // and mode count, and only fresh ones: KEEP_S there is 120 s, and a snapshot
   // ages here while JTDX is quiet. null while the needs index is unavailable
   // (still building, or no logbook): unknown, never zero.
-  const STRONG = ["dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band"];
+  const STRONG = ["dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "grid_mode"];   // grid_mode: 2026-11-20
   const FRESH_S = 120;
   let snapAt = 0;
   function needCounts() {

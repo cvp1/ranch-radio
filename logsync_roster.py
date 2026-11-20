@@ -31,8 +31,8 @@ _CQ_WORD = re.compile(r"^(?:[A-Z]{1,4}|[0-9]{3})$")
 # What the Map tab gets of a roster row (map_view).
 MAP_KEYS = ("key", "answer", "call", "grid", "need", "reasons", "snr", "cq", "to_me", "entity", "km", "bearing", "age",
             "band", "mode", "message", "lotw")
-NEED_RANK = {"dxcc": 0, "dxcc_band": 1, "dxcc_mode": 2, "grid": 3, "grid_band": 4, "dxcc_unconfirmed": 5,
-             "call_band_mode": 6, None: 7}
+NEED_RANK = {"dxcc": 0, "dxcc_band": 1, "dxcc_mode": 2, "grid": 3, "grid_band": 4, "grid_mode": 5,
+             "dxcc_unconfirmed": 6, "call_band_mode": 7, None: 8}
 
 
 def is_grid(t):
@@ -171,7 +171,7 @@ class Roster:
                         "need": level, "reasons": reasons, "entity": e.name if e else "", "cont": e.cont if e else "",
                         "lotw": bool(self.needs and self.needs.lotw_user(call)), "km": km, "bearing": brg,
                         "band": r["band"], "mode": r["mode"], "dial": r.get("dial")})
-        out.sort(key=lambda x: (not x["to_me"], NEED_RANK.get(x["need"], 7), -x["snr"]))
+        out.sort(key=lambda x: (not x["to_me"], NEED_RANK.get(x["need"], 8), -x["snr"]))
         return {"band": self.st.get("band", ""), "mode": self.st.get("mode", ""), "dial": self.st.get("dial"),
                 "rows": out[:MAX_ROWS], "needs": self.needs.summary() if self.needs else None}
 
