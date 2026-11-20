@@ -334,8 +334,14 @@ try:
     open_entry()
     b.js("localStorage.setItem('rr-focus', 'g90')")          # this document: no storage event
     type_enter("14.1")
-    check("6. focus changed while open: Enter says so",
-          bool(b.wait(f"{TOASTS}.some((t) => /focus radio changed/.test(t))", 3)), True)
+    # Two right answers (2026-11-19): Enter says the focus changed, or the bar
+    # redrew for the new focus first and closed the entry (PR 1d closes an open
+    # entry on a focus change), so Enter reached nothing. Mission Control's
+    # redraws (PR 3b) make the second likelier. Either way nothing is sent,
+    # which the next check proves.
+    check("6. focus changed while open: Enter says so, or the entry closed",
+          bool(b.wait(f"{TOASTS}.some((t) => /focus radio changed/.test(t)) || "
+                      f"!{SHOWN}(document.querySelector('#rig-bar .rb-in'))", 3)), True)
     quiet()
     check("  nothing sent; neither dial moved",
           (b.js(SETS), dial(IC)[0], dial(G90)[0]), ([], type_ok, g_before))
