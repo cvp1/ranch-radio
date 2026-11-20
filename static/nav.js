@@ -8,9 +8,12 @@
 //   Mesh       Meshtastic, MeshCore
 //   Tools      Propagation, and any add-on that names no group
 //
-// The bar grew a flat tab per add-on and got crowded (2026-11-05). Now the
-// group holding the open view shows its members in place; every other group
-// is one tab that opens the member last used there (kept in localStorage).
+// The bar grew a flat tab per add-on and got crowded (2026-11-05). A group
+// with more than one member is one split button (UX plan PR 2a, 2026-11-19):
+// its label opens the member last used there (kept in localStorage); its
+// chevron opens a menu of every member with its dot and badge. The group
+// holding the open view reads "Tools · Map". Nothing expands in place, so the
+// bar keeps the same items, in the same places, on every route.
 // A group with one member is just that member's tab, so a station with only a
 // radio and Winlink looks as it always did.
 //
@@ -55,6 +58,49 @@ const navGroups = (() => {
     return dots.includes("tx") ? "tx" : dots.includes("ok") ? "ok" : dots.includes("off") ? "off" : "";
   }
 
+  // The group whose menu is open, if any. Kept here, not in the DOM: the pages
+  // redraw the bar often (status changes), and an open menu must survive that.
+  let openMenu = null;
+
+  // Show the open menu (if any) under its chevron and hide the rest. The menu
+  // is position: fixed because the bar scrolls sideways and would clip it.
+  function applyMenus() {
+    for (const m of document.querySelectorAll(".st-menu")) {
+      const on = m.dataset.group === openMenu;
+      m.hidden = !on;
+      const chev = m.parentElement?.querySelector(".st-chev");
+      chev?.setAttribute("aria-expanded", on ? "true" : "false");
+      if (on && chev) {
+        const r = chev.getBoundingClientRect(), w = Math.max(m.offsetWidth, 160);
+        m.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+        m.style.top = `${r.bottom + 4}px`;
+      }
+    }
+  }
+
+  // One set of document listeners for every bar on the page: the chevron
+  // toggles its menu; a member, an outside click, Escape or a scroll of the
+  // bar closes it.
+  document.addEventListener("click", (e) => {
+    const chev = e.target.closest?.(".st-chev");
+    if (chev) { openMenu = openMenu === chev.dataset.group ? null : chev.dataset.group; applyMenus(); return; }
+    if (!openMenu) return;
+    if (e.target.closest?.(".st-menu a") || !e.target.closest?.(".st-menu")) { openMenu = null; applyMenus(); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && openMenu) { openMenu = null; applyMenus(); }
+  });
+  document.addEventListener("scroll", () => { if (openMenu) { openMenu = null; applyMenus(); } }, true);
+
+  // A member in a group's menu: the tab's dot, label and badge, but its own
+  // class, so the bar's tab count stays one per group.
+  function menuItem(m, view) {
+    const a = tab(m, view, m.short || m.label);
+    a.className = "st-mi" + (view === m.id ? " on" : "") + (m.off ? " off" : "");
+    a.setAttribute("role", "menuitem");
+    return a;
+  }
+
   // Draw the bar. items: [{id, label, short?, group, dot, off, badge, title, sub}]
   // in the order wanted within each group; first/end: ungrouped tabs before and
   // after the groups (Mission Control, Modules). tuck: an item that is off leaves the
@@ -71,26 +117,39 @@ const navGroups = (() => {
       if (!members.length) continue;
       if (members.length === 1) { nav.append(tab(members[0], view)); continue; }
       const open = members.find((m) => m.id === view);
-      if (open) {
-        remember(g.id, open.id);
-        const box = document.createElement("span");
-        box.className = "st-group on";
-        box.setAttribute("role", "group");
-        box.setAttribute("aria-label", g.label);
-        box.innerHTML = `<span class="st-group-name">${esc(g.label)}</span>`;
-        for (const m of members) box.append(tab(m, view, m.short || m.label));
-        nav.append(box);
-      } else {
-        const to = members.find((m) => m.id === last[g.id]) || members[0];
-        const badge = members.reduce((n, m) => n + (parseInt(m.badge, 10) || 0), 0);
-        const a = tab({ id: to.id, label: g.label, dot: dotOf(members), badge: badge || "",
-          title: `${g.label}: ${members.map((m) => m.short || m.label).join(", ")}` }, view);
-        a.classList.add("st-group-tab");
-        a.dataset.group = g.id;
-        nav.append(a);
-      }
+      if (open) remember(g.id, open.id);
+      const to = open || members.find((m) => m.id === last[g.id]) || members[0];
+      const badge = members.reduce((n, m) => n + (parseInt(m.badge, 10) || 0), 0);
+      const names = members.map((m) => m.short || m.label);
+      const split = document.createElement("span");
+      split.className = "st-split" + (open ? " on" : "");
+      split.dataset.group = g.id;
+      // Open, the button stands for that member: its title (a radio's channel,
+      // say) and whether it is off; closed, for the group.
+      const a = tab({ id: to.id, label: open ? `${g.label} · ${open.short || open.label}` : g.label,
+        dot: dotOf(members), badge: badge || "", off: !!open?.off,
+        title: open?.title || `${g.label}: ${names.join(", ")}` }, view);
+      if (open) a.classList.add("on");
+      a.classList.add("st-group-tab");
+      a.dataset.group = g.id;
+      const chev = document.createElement("button");
+      chev.type = "button";
+      chev.className = "st-chev";
+      chev.dataset.group = g.id;
+      chev.title = `All of ${g.label}`;
+      chev.setAttribute("aria-label", `${g.label}: ${names.join(", ")}`);
+      chev.setAttribute("aria-haspopup", "menu");
+      const menu = document.createElement("div");
+      menu.className = "st-menu";
+      menu.dataset.group = g.id;
+      menu.setAttribute("role", "menu");
+      menu.setAttribute("aria-label", g.label);
+      for (const m of members) menu.append(menuItem(m, view));
+      split.append(a, chev, menu);
+      nav.append(split);
     }
     for (const it of end) nav.append(tab(it, view));
+    applyMenus();
     return tucked;
   }
 

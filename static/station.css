@@ -18,16 +18,29 @@ body.station { overflow: hidden; height: 100vh; display: flex; flex-direction: c
 .st-dot.off { background: #5b6170; }
 .st-badge { min-width: 16px; padding: 0 5px; border-radius: 8px; font: 700 10px var(--mono); text-align: center;
   align-self: center; background: rgba(var(--warm-rgb), .25); color: var(--warm); }
-/* Tab groups (static/nav.js): the open group shows its members in a frame
-   named for it; a closed group is one tab with a chevron. */
-.st-group { display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 0; border-radius: 9px; flex: none;
-  background: rgba(var(--accent-rgb), .04); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .22); }
-.st-group-name { padding: 0 4px 0 10px; font: 700 9.5px var(--mono); letter-spacing: .09em; text-transform: uppercase;
-  color: rgba(var(--accent-rgb), .7); white-space: nowrap; }
-.st-group .st-tab { padding: 4px 10px; }
-.st-group .st-tab.on { box-shadow: none; background: rgba(var(--accent-rgb), .16); }
-.st-group-tab::after { content: ""; width: 5px; height: 5px; align-self: center; margin: -2px 0 0 1px;
-  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); opacity: .5; }
+/* Tab groups (static/nav.js, UX plan PR 2a, 2026-11-19): a group is one split
+   button. Its label opens the member last used; its chevron opens a menu of
+   every member. Nothing expands in place. The menu is position: fixed because
+   the bar scrolls sideways (overflow-x) and would clip it; nav.js places it. */
+.st-split { display: inline-flex; align-items: stretch; flex: none; border-radius: 9px; }
+.st-split .st-group-tab { border-radius: 9px 0 0 9px; padding-right: 8px; }
+.st-chev { display: inline-flex; align-items: center; padding: 0 9px 0 5px; border: 0; border-radius: 0 9px 9px 0;
+  background: none; color: var(--muted); cursor: pointer; }
+.st-chev::after { content: ""; width: 5px; height: 5px; margin-top: -3px;
+  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); opacity: .6; }
+.st-chev:hover, .st-chev[aria-expanded="true"] { color: var(--text); background: rgba(255,255,255,.04); }
+.st-split.on .st-chev { color: var(--accent); background: rgba(var(--accent-rgb), .1); }
+.st-menu { position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 2px; min-width: 160px; padding: 4px;
+  background: var(--bg, #0b0e14); border: 1px solid var(--line-hi, rgba(255, 255, 255, .2)); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45); }
+.st-menu[hidden] { display: none; }
+.st-mi { display: flex; align-items: baseline; gap: 6px; padding: 6px 10px; border-radius: 7px; color: var(--muted);
+  text-decoration: none; font: 600 13px var(--sans); white-space: nowrap; }
+.st-mi small { font: 500 10.5px var(--mono); color: var(--dim); }
+.st-mi .st-badge { margin-left: auto; }
+.st-mi:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.st-mi.on { color: var(--accent); background: rgba(var(--accent-rgb), .12); }
+.st-mi.off { opacity: .55; }
 
 .st-main { flex: 1; min-height: 0; position: relative; }
 .st-view { position: absolute; inset: 0; overflow-y: auto; }

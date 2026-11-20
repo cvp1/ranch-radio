@@ -149,23 +149,49 @@ try:
     check("  the packet card's short name; its full title on hover",
           b.js("[...document.querySelectorAll('.st-card b')].find((x) => x.textContent.startsWith('Packet')).title"), "Packet (UV-PRO)")
     check("  names the shared port", str(SHARED) in b.js(f"({TEXT})('#st-help')"), True)
+    # A group is one split button (UX plan PR 2a, 2026-11-19): its label opens
+    # the member last used, its chevron a menu of every member. Nothing
+    # expands in place, so the bar has the same items on every route.
+    home_count = b.js(f"{TABS}.length")
     b.js(f"{TABS}[1].click()")
     b.wait("location.hash === '#/g90'")
-    check("opening Radios opens its first radio and shows the group",
-          b.wait(f"{TABS}.length >= 5 && {TABS}.map((t) => t.querySelector('span').textContent)"),
-          ["Mission Control", "G90", "QMX", "Winlink", "Mesh"])
-    check("  inside a frame named Radios",
-          b.js("document.querySelector('#st-nav .st-group .st-group-name')?.textContent"), "Radios")
-    t = tabs()
-    check("  one radio carries the shared port", sum(" · " in x for x in t), 1)
-    own = {x.split()[0]: x.split()[-1] for x in t if x.split()[0] in ("G90", "QMX")}
+    check("opening Radios opens its first radio; the group stays one button, named for it",
+          b.wait(f"{TABS}.length === {home_count} && {TABS}[1].querySelector('span').textContent === 'Radios · G90' && "
+                 f"{TABS}.map((t) => t.querySelector('span').textContent)"),
+          ["Mission Control", "Radios · G90", "Winlink", "Mesh"])
+    check("  the bar has as many tabs on a radio as on Mission Control", b.js(f"{TABS}.length"), home_count)
+    MENU = "document.querySelector('#st-nav .st-menu[data-group=\"radios\"]')"
+    CHEV = "document.querySelector('#st-nav .st-chev[data-group=\"radios\"]')"
+    MI = f"[...{MENU}.querySelectorAll('.st-mi')]"
+    check("  its menu starts closed", b.js(f"{MENU}.hidden"), True)
+    b.js(f"{CHEV}.click()")
+    check("  the chevron opens it, under the chevron and on screen",
+          b.wait(f"!{MENU}.hidden && (() => {{ const m = {MENU}.getBoundingClientRect(), c = {CHEV}.getBoundingClientRect(); "
+                 f"return m.top >= c.bottom && m.width > 0 && m.right <= innerWidth; }})()"), True)
+    check("  and says so", b.js(f"{CHEV}.getAttribute('aria-expanded')"), "true")
+    mi = b.js(f"{MI}.map((t) => t.querySelector('span').textContent + (t.querySelector('small') ? ' ' + t.querySelector('small').textContent : ''))")
+    check("  the menu lists both radios, the open one marked",
+          ([x.split()[0] for x in mi], b.js(f"{MI}.find((t) => t.classList.contains('on'))?.querySelector('span').textContent")),
+          (["G90", "QMX"], "G90"))
+    check("  one radio carries the shared port", sum(" · " in x for x in mi), 1)
+    own = {x.split()[0]: x.split()[-1] for x in mi}
     check("  each radio's own port", own, {"G90": str(G90["rigctl"]), "QMX": str(QMX["rigctl"])})
     shot("overview")
+    b.js("document.querySelector('#st-name').click()")
+    check("  an outside click closes it", bool(b.wait(f"{MENU}.hidden", 5)), True)
+    b.js(f"{CHEV}.click()")
+    b.wait(f"!{MENU}.hidden")
+    b.js("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))")
+    check("  so does Escape", bool(b.wait(f"{MENU}.hidden", 5)), True)
 
-    b.js(f"{TABS}.find((t) => t.textContent.startsWith('QMX')).click()")
+    b.js(f"{CHEV}.click()")
+    b.wait(f"!{MENU}.hidden")
+    b.js(f"{MI}.find((t) => t.textContent.startsWith('QMX')).click()")
     b.wait(f"location.hash === '#/qmx'")
+    check("  a member in the menu opens it and the menu closes",
+          bool(b.wait(f"{MENU}.hidden && {TABS}[1].querySelector('span').textContent === 'Radios · QMX'", 5)), True)
     b.js("location.hash = '#/home'")
-    b.wait(f"{TABS}[1].classList.contains('st-group-tab')")
+    b.wait(f"{TABS}[1].querySelector('span').textContent === 'Radios'")
     check("  Radios now opens the radio last used", b.js(f"{TABS}[1].getAttribute('href')"), "#/qmx")
     b.js(f"{TABS}[1].click()")
     b.wait(f"location.hash === '#/qmx'")
@@ -190,9 +216,11 @@ try:
     b.js(f"{FRAME}.contentDocument.querySelector('#conn').className = 'pill pill-wait'")
     check("  its pill comes back when it is not Connected", b.js(f"{SHOWN}('#conn')"), True)
     b.js(f"{FRAME}.contentDocument.querySelector('#conn').className = 'pill pill-ok'")
-    check("  the tab is marked", b.js(f"{TABS}.find((t) => t.classList.contains('on')).textContent.startsWith('QMX')"), True)
+    check("  the tab is marked", b.js(f"{TABS}.find((t) => t.classList.contains('on'))?.querySelector('span').textContent"), "Radios · QMX")
     shot("qmx")
-    b.js(f"{TABS}.find((t) => t.textContent.startsWith('G90')).click()")
+    b.js(f"{CHEV}.click()")
+    b.wait(f"!{MENU}.hidden")
+    b.js(f"{MI}.find((t) => t.textContent.startsWith('G90')).click()")
     b.wait(f"{FRAME}?.src.includes('/r/g90/')")
     check("G90 tab: G90 frame shown, QMX frame kept but hidden",
           sorted(b.js("[...document.querySelectorAll('#view-radio iframe')].map((f) => [f.src.split('/r/')[1], f.hidden])")),
