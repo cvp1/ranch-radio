@@ -43,6 +43,19 @@
   }
   function take(s) { snap = s; snapAt = Date.now(); }
 
+  // A Reply to one decode: the only way this page asks JTDX to answer a
+  // station. A row click here and a click in Mission Control's Now row (UX
+  // plan PR 3b, 2026-11-19, through window.roster) both come through it, so
+  // the two send the same message and JTDX's outcome comes back the same way
+  // (addons/roster.py's notice, a toast). It sends nothing else.
+  function reply(key, call) { send({ t: "addon", addon: "roster", do: "reply", key, call }); }
+  function tipFor(r) {
+    return r.answer === "cq" ? `Click to answer ${r.call}'s CQ in JTDX`
+      : r.answer === "line" ? `${r.call} isn't calling CQ: JTDX answers this only if its UDP reply filter accepts any message`
+      : `Nothing fresh from ${r.call} to answer`;
+  }
+  window.roster = { reply };
+
   function save() { localStorage.setItem("roster.opts", JSON.stringify(opt)); }
 
   function beep() {
@@ -87,9 +100,7 @@
       </div>`;
     const tr = rows.map((r) => {
       const [label, cls] = NEED[r.need] || ["", "rs-none"];
-      const tip = r.answer === "cq" ? `Click to answer ${r.call}'s CQ in JTDX`
-        : r.answer === "line" ? `${r.call} isn't calling CQ: JTDX answers this only if its UDP reply filter accepts any message`
-        : `Nothing fresh from ${r.call} to answer`;
+      const tip = tipFor(r);
       return `<tr class="rs-row ${cls}${r.to_me ? " rs-me" : ""}${r.answer === "cq" ? "" : " rs-nocq"}" data-key="${esc(r.key)}" data-call="${esc(r.call)}" title="${esc(tip)}">
         <td class="rs-call">${esc(r.call)}${r.lotw ? ` <span class="rs-lotw" title="uses LoTW">L</span>` : ""}${window.callcard ? callcard.button(r) : ""}</td>
         <td>${r.cq ? `CQ${r.cq_word ? " " + esc(r.cq_word) : ""}` : r.to_me ? "<b>you</b>" : esc(r.to || "")}</td>
@@ -113,7 +124,7 @@
     for (const row of body.querySelectorAll(".rs-row")) {
       row.onclick = (e) => {
         if (e.target.closest(".cc-info")) return;      // the call card's button is never a Reply (2026-11-19, PR 4b)
-        send({ t: "addon", addon: "roster", do: "reply", key: row.dataset.key, call: row.dataset.call });
+        reply(row.dataset.key, row.dataset.call);
       };
     }
     window.callcard?.wire(body);
@@ -127,8 +138,16 @@
       if (m.roster) { take({ roster: m.roster }); alertFor(m.roster.rows || []); render(); }
     },
     off() { snap = {}; if (body) body.innerHTML = ""; },
-    // UX plan 5.3: the snapshot plus the strong-needs counts (null: unknown).
-    data() { const c = needCounts(); return { ...snap, need_counts: c && { ...c, strong: c.strong.length } }; },
+    // UX plan 5.3: the snapshot plus the strong-needs counts (null: unknown),
+    // and the first five of those rows for Mission Control's Now row (PR 3b),
+    // in the server's order (to you, then need, then signal), each with its
+    // need's name and the click's tooltip as this tab gives them.
+    data() {
+      const c = needCounts();
+      return { ...snap, need_counts: c && { ...c, strong: c.strong.length,
+        now: c.strong.slice(0, 5).map((r) => ({ key: r.key, call: r.call, need: r.need, label: (NEED[r.need] || [r.need])[0],
+          entity: r.entity, snr: r.snr, to_me: r.to_me, tip: tipFor(r) })) } };
+    },
     tab() {
       const rows = snap.roster?.rows || [];
       const top = rows.find((r) => r.need === "dxcc");

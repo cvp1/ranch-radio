@@ -54,6 +54,13 @@
     </div>
     <!-- The band strip (static/bands.js, UX plan PR 3a): display only -->
     <div class="mc-bands" id="mc-bands" hidden></div>
+    <!-- Now: fresh decodes with strong needs, a click is the Roster's own
+         Reply; Log: the needs index's totals, opening the Logbook tab (UX
+         plan PR 3b, 2026-11-19). Shown when the Roster add-on is here. -->
+    <div class="mc-now" id="mc-now" hidden>
+      <div class="mc-now-list" aria-live="polite"></div>
+      <a class="mc-log" id="mc-log" data-state="wait"></a>
+    </div>
     <div class="mc-lanes" id="st-cards"></div>
     <p class="st-help" id="st-help"></p>
     <p class="st-help mc-keys">Keys: <kbd>1</kbd>–<kbd>9</kbd> open a card's tab · <kbd>0</kbd> back here</p>

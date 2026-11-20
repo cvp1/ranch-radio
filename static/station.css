@@ -206,7 +206,7 @@ a.rb-tag { text-decoration: none; }
 @keyframes mc-breathe { 50% { box-shadow: 0 0 2px var(--ok); opacity: .75; } }
 
 .mc-band { display: grid; grid-template-columns: auto 1fr auto; gap: 14px 26px; align-items: center;
-  margin: 16px 20px 6px; padding: 14px 20px; border-radius: 16px; position: relative; overflow: hidden;
+  margin: 10px 20px 4px; padding: 10px 18px; border-radius: 16px; position: relative; overflow: hidden;
   border: 1px solid rgba(var(--accent-rgb), .2);
   background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(0,0,0,.25));
   box-shadow: 0 10px 40px -20px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05); }
@@ -276,18 +276,25 @@ a.rb-tag { text-decoration: none; }
   .bs-cell { scroll-snap-align: start; }
 }
 
-.mc-lane { padding: 0 20px; --lane: var(--accent-rgb); }
+/* Lanes flow in rows (UX plan PR 3b, 2026-11-19): Radios and Tools take a row
+   each, Messaging and Mesh share one, each as wide as its cards ask (--cards,
+   set by station.js). Stacked full-width lanes left most of each row empty
+   and pushed Tools off a 900 px screen. */
+.mc-lanes { display: flex; flex-wrap: wrap; gap: 0 20px; padding: 0 20px; }
+.mc-lane { flex: 1 1 100%; min-width: 0; --lane: var(--accent-rgb); }
+.mc-lane-messaging, .mc-lane-mesh { flex: var(--cards, 1) 1 0; }
 .mc-lane-messaging { --lane: 255,181,71; }
 .mc-lane-mesh { --lane: 167,139,250; }
 .mc-lane-tools { --lane: 96,165,250; }
-.mc-lane-name { display: flex; align-items: center; gap: 10px; margin: 16px 2px 0;
+.mc-lane-name { display: flex; align-items: center; gap: 10px; margin: 8px 2px 0;
   font: 700 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: rgba(var(--lane), .85); }
 .mc-lane-name::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(var(--lane), .35), transparent); }
-.mc-lane .st-cards { padding: 10px 0 4px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+/* auto-fit: a lane's cards share its row, no empty tracks beside them (PR 3b). */
+.mc-lane .st-cards { padding: 6px 0 2px; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 /* A card sharing a row with a tall one (the wide radio card) keeps its own height. */
 .mc-lane .st-cards { align-items: start; }
 
-.mc-card { position: relative; overflow: hidden; cursor: default; gap: 7px;
+.mc-card { position: relative; overflow: hidden; cursor: default; gap: 6px; padding: 10px 14px;
   border-color: rgba(255,255,255,.07);
   background: linear-gradient(160deg, rgba(var(--lane), .07), rgba(255,255,255,.015) 40%, rgba(0,0,0,.2));
   box-shadow: 0 8px 28px -18px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.04);
@@ -316,13 +323,25 @@ a.rb-tag { text-decoration: none; }
 .mc-key { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: 5px; text-align: center;
   font: 600 10.5px var(--mono); color: var(--dim); border: 1px solid var(--line); background: rgba(0,0,0,.25); }
 .mc-big { font: 600 24px var(--mono); color: var(--text); line-height: 1.15; font-variant-numeric: tabular-nums; }
-.mc-wide .mc-big { font-size: 30px; }
+.mc-wide .mc-big { font-size: 26px; }
 .mc-big small { margin-left: 6px; font: 500 12.5px var(--sans); color: var(--muted); }
 .mc-card.tx .mc-f { color: #ff4d5e; text-shadow: 0 0 20px rgba(255,77,94,.5); }
 .mc-card.ok .mc-f { color: var(--accent); text-shadow: 0 0 22px rgba(var(--accent-rgb), .35); }
-.mc-scope-slot { height: 92px; border-radius: 8px; overflow: hidden; background: var(--deep);
+.mc-scope-slot { height: 64px; border-radius: 8px; overflow: hidden; background: var(--deep);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
 .mc-scope-slot:empty { display: none; }
+/* A radio card with its mini spectrum (UX plan PR 3b, 2026-11-19): the
+   spectrum beside the frequency, meter and trace, not under them, so the card
+   is no taller than without it. Not on a phone: the column is too narrow. */
+@media (min-width: 621px) {
+  .mc-wide:has(> .mc-scope-slot:not(:empty)) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 14px; align-content: start; }
+  .mc-wide:has(> .mc-scope-slot:not(:empty)) > * { grid-column: 1; }
+  .mc-wide:has(> .mc-scope-slot:not(:empty)) > :is(.st-card-head, .st-card-line) { grid-column: 1 / -1; }
+  .mc-wide > .mc-scope-slot:not(:empty) { grid-column: 2; grid-row: 2 / span 3; height: auto; min-height: 64px; position: relative; }
+  /* The canvas fills the slot without sizing it (mission.js reads its box). */
+  .mc-wide > .mc-scope-slot > .mc-scope { position: absolute; inset: 0; }
+}
 .mc-scope { display: block; width: 100%; height: 100%; }
 .mc-meter { position: relative; height: 16px; border-radius: 4px; background: rgba(255,255,255,.05); overflow: hidden;
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
@@ -335,13 +354,54 @@ a.rb-tag { text-decoration: none; }
   font: 700 10.5px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
 .mc-scale em { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding-left: 3px;
   border-left: 1px solid rgba(255,255,255,.18); font: 600 9px var(--mono); font-style: normal; color: rgba(255,255,255,.4); }
-.mc-trace-slot { height: 26px; }
+.mc-trace-slot { height: 22px; }
 .mc-trace-slot:empty { display: none; }
 .mc-trace { display: block; width: 100%; height: 100%; }
 .mc-hot { color: var(--accent); font-weight: 600; }
 .mc-who { color: var(--text); font-weight: 600; }
 .mc-dim { color: var(--dim); }
-.mc-keys { padding-bottom: 16px; }
+#view-home .st-help { padding: 2px 22px; font-size: 12px; }
+.mc-keys { padding-bottom: 8px; }
+
+/* Now and Log (static/station.js renderNow, UX plan PR 3b, 2026-11-19): one
+   row under the band strip. A Now entry is a button: the Roster's Reply. */
+.mc-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px; margin: 8px 20px 0; }
+.mc-now[hidden] { display: none; }
+.mc-now-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.mc-now-name { font: 700 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: rgba(var(--accent-rgb), .85); }
+.mc-now-empty { color: var(--dim); font: 500 12px var(--sans); }
+.mc-now-item { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .08); color: var(--text);
+  font: 500 12px var(--sans); }
+.mc-now-item b { font: 700 12.5px var(--mono); }
+.mc-now-item span { color: var(--accent); font-weight: 600; }
+.mc-now-item small { color: var(--dim); font: 500 11px var(--mono); }
+.mc-now-item.me { border-color: var(--warm); }
+.mc-now-item:hover, .mc-now-item:focus-visible { border-color: var(--accent); background: rgba(var(--accent-rgb), .18); outline: none; }
+.mc-log { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 5px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: rgba(255,255,255,.025); color: var(--muted); font: 500 12px var(--sans);
+  text-decoration: none; }
+.mc-log b { color: var(--text); font: 600 13px var(--mono); }
+.mc-log[href]:hover { border-color: rgba(var(--accent-rgb), .5); color: var(--text); }
+
+/* A phone: one column, in the order bands, on air and needs, Now, radios,
+   then the rest (PR 3b). The Now row and the lanes box give up their own
+   boxes so their parts can take those places. */
+@media (max-width: 620px) {
+  #view-home:not([hidden]) { display: flex; flex-direction: column; }
+  #view-home > .mc-now:not([hidden]), #view-home > .mc-lanes { display: contents; }
+  #view-home > * { order: 6; }
+  #view-home > *, #view-home .mc-now-list, #view-home .mc-lane, #view-home .mc-log { flex-shrink: 0; }   /* the view scrolls; nothing squeezes */
+  #view-home > #mc-bands { order: 1; }
+  #view-home > .mc-band { order: 2; }
+  /* Now stays one row that scrolls sideways, like the band strip above it. */
+  #view-home .mc-now-list { order: 3; margin: 8px 20px 0; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+  .mc-now-item { flex: none; }
+  #view-home .mc-lane { order: 5; padding: 0 20px; }
+  #view-home .mc-lane-radios { order: 4; }
+  #view-home .mc-log { order: 5; margin: 8px 20px 0; align-self: flex-start; }
+  #view-home > .st-help { order: 7; }
+}
 .mc-keys kbd { font: 600 11px var(--mono); padding: 0 4px; border-radius: 4px; border: 1px solid var(--line); }
 @media (hover: none) { .mc-key, .mc-keys { display: none; } }
 @media (prefers-reduced-motion: reduce) {
