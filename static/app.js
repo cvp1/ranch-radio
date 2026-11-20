@@ -751,6 +751,31 @@ class Scope {
 
 const smeter = { el: $("#smeter"), v: 0, peak: 0, peakT: 0 };
 
+// PO, SWR and ALC at their highest over a transmission, held after it ends
+// until the next one starts, so a short FT8 cycle or a tune can still be read
+// (the bars drop to zero at unkey). Display only: nothing here sends.
+const txPeak = { on: false, any: false, po: 0, watts: 0, swr: 0, swrPct: 0, alc: 0 };
+function trackTxPeak(po, watts, swr, swrPct, alc) {
+  if (S.tx && !txPeak.on) Object.assign(txPeak, { on: true, any: true, po: 0, watts: 0, swr: 0, swrPct: 0, alc: 0 });
+  if (!S.tx) { txPeak.on = false; return; }
+  txPeak.po = Math.max(txPeak.po, po); txPeak.watts = Math.max(txPeak.watts, watts);
+  if (swrPct >= txPeak.swrPct) { txPeak.swrPct = swrPct; txPeak.swr = swr; }
+  txPeak.alc = Math.max(txPeak.alc, alc);
+}
+function renderTxPeak() {
+  const when = txPeak.on ? "peak" : "last TX peak";
+  const show = (k, pct, text, bad = false) => {
+    const m = $(`#k-${k}`), p = $(`#p-${k}`);
+    if (!m || !p) return;
+    m.hidden = !txPeak.any; m.style.left = `${clamp(pct, 0, 100)}%`; m.classList.toggle("bad", bad);
+    p.textContent = txPeak.any ? `${when} ${text}` : "";
+    p.classList.toggle("bad", bad);
+  };
+  show("po", txPeak.po, `${Math.round(txPeak.watts)} W`);
+  show("swr", txPeak.swrPct, txPeak.swr >= 9.9 ? "∞" : txPeak.swr.toFixed(1), txPeak.swr > 2);
+  show("alc", txPeak.alc, `${Math.round(txPeak.alc)}%`);
+}
+
 function renderMeters() {
   const raw = S.smeter || 0;
   const su = sUnits(raw);
@@ -765,6 +790,8 @@ function renderMeters() {
   $("#v-swr").textContent = swr >= 9.9 ? "∞" : swr.toFixed(1);
   $("#m-alc").style.width = `${alc}%`;
   $("#v-alc").textContent = `${Math.round(alc)}%`;
+  trackTxPeak(po, watts, swr, clamp((S.swr || 0) / 120 * 100, 0, 100), alc);
+  renderTxPeak();
 }
 
 function drawSmeter() {

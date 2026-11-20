@@ -207,6 +207,10 @@ body.tx .tx-meters { opacity: 1; }
 .bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--warm), #ff8a3d); box-shadow: 0 0 10px rgba(var(--warm-rgb), .6); transition: width .12s; }
 #m-swr.bad { background: linear-gradient(90deg, #ff8a3d, var(--tx)); }
 .tv { font: 600 12px var(--mono); color: var(--text); text-align: right; }
+.bar { position: relative; }
+.bar .pk { display: none; position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--text); opacity: .8; }
+.bar .pk.bad { background: var(--tx); opacity: 1; }
+.tp { display: none; }
 
 /* ---------- scope ---------- */
 .scope-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -786,13 +790,26 @@ html.pane .freq-entry input { font-size: 26px; padding: 4px 10px; }
 html.pane .vfo-foot { gap: 6px 10px; }
 html.pane .vfo-foot .label { display: none; }
 html.pane .sub-freq { font-size: 14px; }
-html.pane .meters { flex-direction: row; align-items: center; gap: 10px; }
+html.pane .meters { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 html.pane .meter-top { flex: none; }
 html.pane .meter-top .label { display: none; }
 html.pane .s-read b { font-size: 18px; }
 html.pane .smeter { flex: 1 1 0; min-width: 0; height: 34px; }
-html.pane .tx-meters { flex: 1.4 1 0; min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-html.pane .tm { grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px; }
+/* PO, SWR and ALC: their own full-width row, large, always at full strength
+   (2026-11-20: the operator reads them to set drive after a band change: ALC and
+   SWR must not run high). The value is big; a marker and a line under each
+   bar hold its peak over this transmission, then the last one. */
+html.pane .tx-meters { flex: 1 1 100%; min-width: 0; opacity: 1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+  padding-top: 8px; border-top: 1px solid rgba(255,255,255,.06); }
+html.pane .tm { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "label value" "bar bar" "peak peak"; gap: 4px 8px; }
+html.pane .tm .label { grid-area: label; align-self: end; font-size: 12px; letter-spacing: .12em; color: var(--muted); }
+html.pane .tm .tv { grid-area: value; font: 700 22px/1 var(--mono); }
+html.pane .tm .bar { grid-area: bar; height: 12px; border-radius: 6px; }
+html.pane .bar .pk:not([hidden]) { display: block; }
+html.pane .tm .tp { grid-area: peak; display: block; font: 500 11px var(--mono); color: var(--muted); text-align: right; min-height: 1.2em; }
+html.pane .tm .tp.bad { color: var(--tx); }
+html.pane body:not(.tx) .tm .tv { color: var(--muted); }
+html.pane .tm:has(#m-swr.bad) .tv { color: var(--tx); }
 html.pane .grid > .scope { flex: 1 0 220px; display: flex; flex-direction: column; padding: 8px; }
 html.pane .scope-head { margin-bottom: 6px; gap: 6px; }
 html.pane .scope-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }

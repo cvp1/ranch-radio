@@ -277,6 +277,35 @@ try:
           [fill[0] > 300, fill[1] <= 1, 0 <= fill[2] <= 12] if isinstance(fill, list) else fill, [True, True, True])
     print("     scope height, overflow, gap under the chips:", fill)
     shot("1600")
+
+    # T. PO, SWR and ALC: their own row, large, with the last transmission's
+    # peak held. Display only: the frame's state is set in the page, nothing keys.
+    tm = frame_js("ic7300", "(() => { const m = document.querySelector('.meters').getBoundingClientRect(), "
+                            "t = document.querySelector('.tx-meters').getBoundingClientRect(), "
+                            "s = document.querySelector('#smeter').getBoundingClientRect(); "
+                            "return [t.width / m.width, t.top >= s.bottom, parseFloat(getComputedStyle(document.querySelector('#v-swr')).fontSize), "
+                            "getComputedStyle(document.querySelector('.tx-meters')).opacity]; })()")
+    check("T. the TX meters: a full-width row under the S-meter, values 20 px or more, full strength",
+          [tm[0] > 0.9, tm[1], tm[2] >= 20, tm[3]] if isinstance(tm, list) else tm, [True, True, True, "1"])
+    hi = frame_js("ic7300", "(() => { let r = 0; while (r < 120 && swrVal(r) <= 2.5) r++; return r; })()")
+    peak = frame_js("ic7300", f"""(() => {{
+        const at = (tx, po, swr, alc) => {{ Object.assign(S, {{tx, po, swr, alc}}); document.body.classList.toggle('tx', tx); renderMeters(); }};
+        at(true, 60, 10, 30); at(true, 90, {hi}, 70); at(true, 40, 10, 20);
+        const during = [document.querySelector('#p-alc').textContent, document.querySelector('#v-alc').textContent];
+        at(false, 0, 0, 0);
+        return [during, ['po', 'swr', 'alc'].map((k) => document.querySelector('#p-' + k).textContent),
+                document.querySelector('#v-swr').textContent, document.querySelector('#k-swr').hidden,
+                document.querySelector('#p-swr').classList.contains('bad')];
+    }})()""")
+    alc_peak = f"{round(70 / 120 * 100)}%"
+    check("  while keyed: the live ALC and its peak so far", peak[0] if isinstance(peak, list) else peak,
+          [f"peak {alc_peak}", f"{round(20 / 120 * 100)}%"])
+    check("  unkeyed: each meter's last TX peak stays, the live values drop",
+          [[x.startswith("last TX peak ") for x in peak[1]], peak[1][2], peak[2], peak[3]] if isinstance(peak, list) else peak,
+          [[True, True, True], f"last TX peak {alc_peak}", "1.0", False])
+    check("  an SWR peak over 2 is marked bad", peak[4] if isinstance(peak, list) else peak, True)
+    shot("1600-tx-meters")
+    frame_js("ic7300", "Object.assign(txPeak, {any: false}), renderMeters(), true")
     click_at(*frame_point("ic7300", "#pane-controls"))
     check("  a click on Controls shows them, all in reach",
           (frame_wait("ic7300", "document.documentElement.classList.contains('pane-open')", 5), frame_js("ic7300", hid)),
