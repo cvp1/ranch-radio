@@ -2119,7 +2119,9 @@ class PatEngine:
                 view["maintainer"] = True
                 view["listed"] = self.p2p_intake.listed()
                 try:
-                    view["intake"] = await self.p2p_intake.requests(self.http, self.base)
+                    view["intake"], note = await self.p2p_intake.scan(self.http, self.base)
+                    if note:
+                        view["intake_error"] = note   # the page's line under the header
                 except p2p_intake.IntakeError as e:
                     view["intake_error"] = str(e)
             return web.json_response(view)

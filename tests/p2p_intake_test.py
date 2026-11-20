@@ -18,6 +18,13 @@ contract, and Pat is a small in-process stand-in serving the inbox.
   edit: a published listing's text replaced, its date kept, one commit;
         refused (nothing changed) on a stale base, a parser or build refusal,
         no change, a station not listed
+  flood (11-18: 223 messages from one station hid a listing): a listing
+        older than 225 flood messages still shows; the flood's newest minute
+        holding a remove and a listing is flagged and never published, since
+        Pat can't say which came last; an identical resend in one minute is
+        not a clash; one Dismiss archives all 225; Dates with different
+        offsets order by instant; an internet sender's flood is one card;
+        the scan and request bounds say what they left out
 
     .venv/bin/python tests/p2p_intake_test.py
 """
@@ -251,6 +258,52 @@ async def main():
         check("dismiss: no commit, archived", (res["commit"], origin_head() == before,
               "BBB1" in [m["MID"] for m in boxes["archive"]]), (None, True, True))
         check("the clone is clean after all of it", git(repo, "status", "--porcelain"), "")
+
+        # a flood: 223 listings from one station, then a remove and a listing in one minute
+        good = "P2PDIR 1\r\ngrid: FN31\r\nentry: 7103 VARA_HF 500 attended sked evenings\r\n"
+        flood = [msg(f"FL{i:03d}", f"2026-11-18T{10 + i // 60:02d}:{i % 60:02d}:00-07:00", "N0FLD",
+                     "P2PDIR listing", good) for i in range(223)]
+        flood += [msg("FLRM", "2026-11-18T15:00:00-07:00", "N0FLD", "P2PDIR listing", "remove\r\n"),
+                  msg("FLLS", "2026-11-18T15:00:00-07:00", "N0FLD", "P2PDIR listing", good)]
+        boxes["in"] = flood + [
+            msg("QUI1", "2026-11-18T09:00:00-07:00", "N0QUI", "P2PDIR listing", good),
+            msg("TWO1", "2026-11-18T08:00:00-07:00", "N0TWO", "P2PDIR listing", good),
+            msg("TWO2", "2026-11-18T08:00:00-07:00", "N0TWO", "P2PDIR listing", good),
+            # 01:00Z on the 18th sorts after 20:00-07:00 on the 17th as a string; it is older
+            msg("TZ01", "2026-11-18T01:00:00Z", "N0TZZ", "P2PDIR listing", "confirm\r\n"),
+            msg("TZ02", "2026-11-17T20:00:00-07:00", "N0TZZ", "P2PDIR listing", good),
+        ] + [msg(f"SP{i:02d}", "2026-11-18T12:00:00-07:00", "spam@example.com", "P2PDIR", good, proto="SMTP")
+             for i in range(30)]
+        boxes["archive"] = []
+        reqs, note = await it.scan(http, pat)
+        by = {r.get("call") or r.get("from"): r for r in reqs}
+        check("flood: the quiet station's listing still shows", (by.get("N0QUI") or {}).get("kind"), "listing")
+        f = by.get("N0FLD") or {}
+        check("flood: one request carrying all 225 messages", len(f.get("mids", [])), 225)
+        check("flood: a same-minute remove and listing is flagged, not picked",
+              ("disagree" in f.get("error", ""), "text" in f), (True, False))
+        check("flood: an identical resend in one minute is no clash",
+              ((by.get("N0TWO") or {}).get("kind"), "error" in (by.get("N0TWO") or {})), ("listing", False))
+        check("flood: Dates with different offsets order by instant",
+              ((by.get("N0TZZ") or {}).get("mid"), (by.get("N0TZZ") or {}).get("kind")), ("TZ02", "listing"))
+        check("flood: an internet sender's 30 messages are one card",
+              ((by.get("spam@example.com") or {}).get("kind"), len((by.get("spam@example.com") or {}).get("mids", []))),
+              ("refused", 30))
+        check("flood: nothing left out, so no note", note, None)
+        await refused(f.get("mid", "?"), "publish", "disagree", "flood: Publish of the clash refused, nothing changed")
+        res = await it.act(http, pat, f["mid"], "dismiss")
+        check("flood: one Dismiss archives all 225", (len(res["archived"]), sum(m["From"]["Addr"] == "N0FLD"
+              for m in boxes["in"])), (225, 0))
+        check("flood: the other stations' messages stay in the inbox",
+              sorted({m["From"]["Addr"] for m in boxes["in"]}), ["N0QUI", "N0TWO", "N0TZZ", "spam@example.com"])
+
+        # the bounds name what they left out
+        I.MAX_SCAN, I.MAX_REQUESTS = 33, 2   # 30 spam + N0QUI + N0TWO x2: three senders
+        reqs, note = await it.scan(http, pat)
+        check("bounds: at most MAX_REQUESTS requests", len(reqs), 2)
+        check("bounds: the note names both caps", ("only the newest 33" in (note or ""), "newest 2 are shown" in (note or "")),
+              (True, True))
+        I.MAX_SCAN, I.MAX_REQUESTS = 2000, 50
     await runner.cleanup()
 
 

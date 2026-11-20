@@ -13,6 +13,9 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
        CAT serial + USB audio
 ```
 
+No radio yet? [Try it without one](#try-it-without-a-radio): one command, a
+simulated station on your own machine.
+
 ## What you get
 
 - **The radio on a page.** A big tunable frequency display, the radio's own
@@ -118,6 +121,25 @@ input, and the screen is kept awake.
 
 "Tested" means run against the real radio. The page shows only the controls
 a radio has.
+
+## Try it without a radio
+
+You need Python 3.12 or newer and git. Nothing is installed and no radio is
+needed:
+
+```sh
+git clone https://github.com/cvp1/ranch-radio.git ~/ranch-radio
+cd ~/ranch-radio && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+./ranch-radio demo
+```
+
+It prints an address on this machine, `http://127.0.0.1:<port>/`. Open it:
+a station page with a simulated IC-7300 behind it, and a Roster and Map of
+made-up stations. Tune, change band and mode, open the spectrum. A simulated
+radio cannot transmit, and a click on a Roster row says it is the demo rather
+than reaching JTDX. Ctrl-C stops it. The demo writes no host file, starts no
+service and leaves your home directory alone: everything it runs lives in a
+scratch directory it removes on exit. Ready for the real thing: install below.
 
 ## Install (macOS or Linux)
 
