@@ -8,7 +8,9 @@ Chromium into docs/images/:
     radio-page.png     the radio page: band badges and the space-weather strip
     propagation.png    the Propagation tab
     phone.png          the radio page at phone size, the first screen
-    station.png        a two-radio station's overview (from tests/station_page_test.py)
+    mission-control.png  a two-radio station's Mission Control (tests/mission_density_page_test.py)
+    operate.png        the Operate tab: radio, Roster and Map (tests/operate_page_test.py)
+    callcard.png       the Roster with a call card open (tests/callcard_page_test.py)
 
     python3 tools/readme_screenshots.py          # CHROME= to pick a browser
 """
@@ -195,6 +197,14 @@ def content_height(b, sel):
                 ".map((e) => e.getBoundingClientRect().bottom)) + 24)")
 
 
+# (test, its screenshot, the README image, crop width, height)
+STATION_SHOTS = [
+    ("mission_density_page_test", "mission-density-1600x1000.png", "mission-control.png", 1600, 880),
+    ("operate_page_test", "operate-1600.png", "operate.png", 1600, 1000),
+    ("callcard_page_test", "callcard-roster.png", "callcard.png", 1200, 290),
+]
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="readme-shots-")
@@ -220,20 +230,28 @@ def main():
         time.sleep(1.5)
         clip(b, os.path.join(OUT, "phone.png"), 390, 844)            # at the 2x device scale
 
-        # The station overview: the station page test's own screenshot, cropped.
-        shots = os.path.join(tmp, "station")
-        os.makedirs(shots)
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "station_page_test.py"), shots],
-                       cwd=ROOT, env=dict(os.environ, CHROME=CHROME), check=True, stdout=subprocess.DEVNULL)
-        b.call("Emulation.clearDeviceMetricsOverride")
-        b.goto("file://" + os.path.join(shots, "station-overview.png"))
-        b.js("document.body.style.margin = '0'")
-        clip(b, os.path.join(OUT, "station.png"), 1500, 290)
+        # The station views: each page test's own screenshot (simulated radios), cropped.
+        # A window wider than any shot, so Chrome's image view neither scales nor centres it.
+        b.call("Emulation.setDeviceMetricsOverride", width=2000, height=1200, deviceScaleFactor=1, mobile=False)
+        for test, shot, name, w, h in STATION_SHOTS:
+            shots = os.path.join(tmp, test)
+            os.makedirs(shots)
+            for attempt in (1, 2):                        # a page test can flake once (operate_page_test)
+                r = subprocess.run([sys.executable, os.path.join(ROOT, "tests", test + ".py"), shots],
+                                   cwd=ROOT, env=dict(os.environ, CHROME=CHROME), stdout=subprocess.DEVNULL)
+                if r.returncode == 0:
+                    break
+                print(f"{test} failed (rc {r.returncode}), attempt {attempt} of 2", file=sys.stderr)
+            else:
+                raise SystemExit(f"{test} failed twice; no {name}")
+            b.goto("file://" + os.path.join(shots, shot))
+            b.js("document.body.style.margin = '0'; document.querySelector('img').style.cssText = 'display:block;margin:0'")
+            clip(b, os.path.join(OUT, name), w, h)
     finally:
         b.close()
         p.terminate()
         p.wait(10)
-    for n in ("radio-page.png", "propagation.png", "phone.png", "station.png"):
+    for n in ["radio-page.png", "propagation.png", "phone.png"] + [s[2] for s in STATION_SHOTS]:
         print(os.path.join("docs", "images", n), os.path.getsize(os.path.join(OUT, n)), "bytes")
 
 

@@ -11,6 +11,6 @@
   for that test. Used 2026-10-14 to find -38 dB on 80 m (ALC 0.03, SWR 1.0).
 
 - `readme_screenshots.py`: retakes the README's screenshots into
-  `docs/images/` from a simulated G90 and the station page test, with
+  `docs/images/` from a simulated G90 and the station page tests, with
   stand-ins for NOAA, InfluxDB and PSKReporter (made-up data, N0CALL, no
   network). Needs Chrome or Chromium (`CHROME=` to pick one).
