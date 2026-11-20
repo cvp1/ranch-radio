@@ -217,9 +217,14 @@ with open(cfg_path, "w") as f:
 # the radio itself would still accept them, so a wrong send would show).
 BOOT = r"""
 window.__sent = [];
+window.__setlog = [];      // every set, with its value, socket and sender (diagnostics, 2026-11-19)
 const __o = WebSocket.prototype.send;
 WebSocket.prototype.send = function (d) {
-  try { const m = JSON.parse(d); window.__sent.push(m.t + (m.k ? ':' + m.k : '')); } catch (e) { window.__sent.push('binary'); }
+  try {
+    const m = JSON.parse(d); window.__sent.push(m.t + (m.k ? ':' + m.k : ''));
+    if (m.t === 'set') window.__setlog.push({k: m.k, v: m.v, url: String(this.url).replace(/^.*?\/\/[^/]+/, ''),
+      from: window === window.top ? 'station' : 'frame', at: Math.round(performance.now())});
+  } catch (e) { window.__sent.push('binary'); }
   return __o.call(this, d);
 };
 if (window === window.top) {
@@ -465,7 +470,20 @@ try:
     radio_tab("ic7300")
     reset()
     check("a decode's label: clicked", click_label("ic7300", "N9ABC"), True)
-    check("  the dial it was decoded on, 14,090,000 Hz (not dial + df)", dial_is(IC, 14_090_000), True)
+    decoded = dial_is(IC, 14_090_000)
+    check("  the dial it was decoded on, 14,090,000 Hz (not dial + df)", decoded, True)
+    if not decoded:
+        # This failed on CI about half the time on 2026-11-19 and never
+        # locally; every later spot check then failed too. Print what was
+        # sent (value, socket, station or frame), what the radio reads, and
+        # what the frame's scope holds, so the next failure names its cause.
+        print("  diag: dial now", dial(IC), flush=True)
+        print("  diag: sets", b.js("JSON.stringify([window].concat([...document.querySelectorAll('iframe')]"
+                                   ".map((f) => f.contentWindow)).flatMap((w) => { try { return w.__setlog || []; } "
+                                   "catch (e) { return []; } }))"), flush=True)
+        print("  diag: scope", frame_eval("ic7300", "JSON.stringify({labels: scope.spotBoxes.map((s) => s.label), "
+                                                    "hidden: scope.spotHidden, locked: store.get('locked', true)})"), flush=True)
+        print("  diag: focus", b.js("localStorage.getItem('rr-focus')"), flush=True)
     quiet()
     check("  no mode sent: only set freq", sets(), ["set:freq"])
     check("  the mode unchanged (fresh socket)", dial(IC)[1], start_m)
