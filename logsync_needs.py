@@ -18,6 +18,10 @@ need(call, grid, band, mode) -> (level, reasons), level the highest of:
     call_band_mode  this call never worked on this band in this mode group
     None            worked before, on this band and mode
 
+grid_cells() is the Grids tab's view (GridTracker2's tracking, by grid, band
+and operating mode): {grid4: [[band, mode, confirmed 0|1], ...]}, mode the
+one an operator names (op_mode: FT8, FT4, SSB, CW, JS8...), not the group.
+
 LoTW users come from ARRL's lotw-user-activity.csv: a call that uploaded to
 LoTW within LOTW_ACTIVE_DAYS counts as a LoTW user.
 """
@@ -51,6 +55,17 @@ def _fields(adif, want):
         i = m.end() + n
 
 
+def op_mode(mode, submode=""):
+    """The mode an operator names: FT4 for MFSK/FT4, SSB for USB or LSB,
+    else the ADIF mode (FT8, CW, AM, FM, RTTY...)."""
+    m, sub = (mode or "").strip().upper(), (submode or "").strip().upper()
+    if m in ("SSB", "USB", "LSB") or sub in ("USB", "LSB"):
+        return "SSB"
+    if m == "MFSK" and sub:
+        return sub[:8]
+    return m[:8] or "?"
+
+
 def grid4(g):
     g = (g or "").strip().upper()[:4]
     return g if _GRID.fullmatch(g) else ""
@@ -62,6 +77,7 @@ class Needs:
         self.worked = {"dxcc": set(), "dxcc_band": set(), "dxcc_mode": set(), "grid": set(), "grid_band": set(),
                        "call_band_mode": set()}
         self.confirmed = {"dxcc": set(), "grid": set(), "grid_band": set()}
+        self.cells = {}                  # grid4 -> {(band, op_mode): confirmed}
         self.qsos = 0
         self.lotw_users = {}
 
@@ -89,6 +105,9 @@ class Needs:
             if confirmed:
                 self.confirmed["grid"].add(g)
                 self.confirmed["grid_band"].add((g, band))
+            c = self.cells.setdefault(g, {})
+            k = (band, op_mode(mode, submode))
+            c[k] = c.get(k, False) or bool(confirmed)
         w["call_band_mode"].add(((call or "").upper(), band, mg))
         self.qsos += 1
 
@@ -159,6 +178,11 @@ class Needs:
         out = {g: "w" for g in self.worked["grid"]}
         out.update({g: "c" for g in self.confirmed["grid"]})
         return out
+
+    def grid_cells(self):
+        """{grid4: [[band, op_mode, 1 confirmed | 0 worked], ...]}: every grid
+        worked, each band and mode it was worked on (the Grids tab filters)."""
+        return {g: sorted([b, m, int(c)] for (b, m), c in cells.items()) for g, cells in self.cells.items()}
 
     def summary(self):
         w, c = self.worked, self.confirmed

@@ -258,6 +258,18 @@ MANIFESTS = {
         "ask": {},
         "needs": [],
     },
+    "grids": {
+        "label": "Grids (the grid squares you still need, by mode and band)",
+        "family": "addon",
+        "block": ("addons", "grids"),
+        "os": ["macos", "linux"],
+        # Needs the logbook sync (the host's logsync block): worked and
+        # confirmed come from its needs index, on the air from its roster.
+        "template": {"any": {"enabled": True}},
+        "rules": {},
+        "ask": {},
+        "needs": [],
+    },
     "halow": {
         "label": "HaLow (an OpenWrt Wi-Fi HaLow bridge: stations, health, settings, changes)",
         "family": "addon",

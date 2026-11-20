@@ -226,6 +226,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
 | `logsync` | Every QSO JTDX logs, to Wavelog, QRZ and LoTW, with receipts and confirmations back; status on the Logbook tab | Wavelog's API key; QRZ's logbook key; TQSL with a password-free certificate |
+| `grids` | The grid squares you still need, by mode and band: the 488 Lower-48 squares (ARRL's FFMA set) worked, confirmed and missing, the missing ones on the air now, grids worked worldwide | the logbook sync (`logsync`) |
 | `wavelog_cat` | Each radio's frequency and mode to Wavelog's live QSO form; Wavelog's spot clicks tune the radio (replaces WaveLogGate) | Wavelog's API key (the logsync one by default) |
 | `halow` | An OpenWrt Wi-Fi HaLow (802.11ah) bridge, such as one carrying cameras: its radios and networks, every station's signal, rates and retries, the box's health, a DHCP guard (a bridge on the main LAN must not hand out addresses), services and log; reboot, disconnect, channel, power, network name, on/off and service restarts, each shown as its exact command and run only when you confirm | SSH to the bridge with a key in its `/etc/dropbear/authorized_keys`; nothing installed on it |
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
@@ -721,6 +722,21 @@ come back. The station runs it from the host file's `logsync` block:
     turns them off). Each layer has its own switch.
 
   Needs the logbook sync.
+
+- **The Grids tab** (the `grids` add-on: `ranch-radio add grids`). The grid
+  squares you still need, by operating mode and band: what GridTracker2's grid
+  tracking shows, from your own logbook.
+  - Pick a mode (All, FT8, FT4, SSB, CW, whatever the log holds), a band (All
+    or one), and whether a square counts once worked or only once confirmed
+    (LoTW or QRZ).
+  - The 488 squares of the Lower 48 (ARRL's FFMA set) drawn where they lie:
+    confirmed, worked, missing; your own square outlined.
+  - A tally per mode: Lower-48 confirmed, worked and missing, and squares
+    worked/confirmed anywhere. Click a row to pick that mode.
+  - The missing squares listed nearest first, with any square a station JTDX
+    is decoding right now at the top, ringed on the lattice and named.
+
+  Read-only. Needs the logbook sync.
 
 - **Map backgrounds.** Every map (the Map tab, Mesh, MeshCore, APRS) has a
   menu for its background; the choice is kept in the browser, one for the

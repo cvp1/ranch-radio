@@ -94,6 +94,11 @@ MODULES = [
              "who hears you from the propagation add-on's PSKReporter poll; the radios' state from station.py's watches)",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block; needs the logbook sync (logsync)"},
+    {"name": "grids", "kind": "addon", "title": "The grid squares you still need, by operating mode and band: Lower-48 (FFMA) "
+                                                "worked, confirmed and missing, the missing ones on the air now, grids worked worldwide",
+     "code": "addons/grids.py, static/addons/grids.js; logsync_needs.py (grid_cells) and grid_targets.py (the 488 squares)",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's addons block; needs the logbook sync (logsync)"},
     {"name": "roster", "kind": "addon", "title": "Who JTDX hears now, coloured by what you still need (new DXCC, band, mode, grid); click to answer",
      "code": "addons/roster.py, static/addons/roster.js; logsync_roster.py and logsync_needs.py (the sync's intake and ledger)",
      "platforms": ["macos", "linux"],

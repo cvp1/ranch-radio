@@ -120,6 +120,25 @@ for args, want, why in [
 check("summary", n.summary(), {"qsos": 4, "dxcc_worked": 4, "dxcc_confirmed": 2, "grids_worked": 4, "grids_confirmed": 2,
                                "lotw_users": 0})
 
+# ================================================================ grids by band and operating mode (the Grids tab, 2026-11-20)
+# grid_cells: every grid worked, each band and the mode an operator names
+# (op_mode, not the LoTW group), confirmed if any QSO there is.
+for (mode, sub), want in [(("FT8", ""), "FT8"), (("MFSK", "FT4"), "FT4"), (("MFSK", "JS8"), "JS8"), (("SSB", "USB"), "SSB"),
+                          (("USB", ""), "SSB"), (("SSB", ""), "SSB"), (("CW", ""), "CW"), (("AM", ""), "AM"), (("", ""), "?")]:
+    check(f"op_mode {mode}/{sub or '-'} -> {want}", N.op_mode(mode, sub), want)
+cells = n.grid_cells()
+check("grid_cells from a ledger: band, mode, confirmed",
+      (cells["PM95"], cells["FN03"], cells["JO62"]), ([["20m", "FT8", 1]], [["40m", "CW", 0]], [["20m", "SSB", 1]]))
+m = N.Needs()
+m.add("K1AA", "20m", "FT8", "", "<GRIDSQUARE:6>EM10ab", False)
+m.add("K1AB", "20m", "FT8", "", "<GRIDSQUARE:4>EM10", True)          # same cell, now confirmed
+m.add("K1AC", "20m", "FT8", "", "<GRIDSQUARE:4>EM10", False)         # a later worked QSO doesn't unconfirm it
+m.add("K1AD", "40m", "MFSK", "FT4", "<GRIDSQUARE:4>EM10", False)
+m.add("K1AE", "20m", "SSB", "USB", "<GRIDSQUARE:4>em10", False)      # lower case is the same square
+m.add("K1AF", "20m", "FT8", "", "", True)                            # no grid: no cell
+check("grid_cells: one cell per band and mode, confirmed sticks, case folded, no grid no cell",
+      m.grid_cells(), {"EM10": [["20m", "FT8", 1], ["20m", "SSB", 0], ["40m", "FT4", 0]]})
+
 # ================================================================ one call's history (the call card, 2026-11-19, UX plan PR 4b)
 # Ledger.history: the latest QSOs with one exact call, read the way the needs
 # are (confirmed = the ledger's confirmed state), indexed and capped.
