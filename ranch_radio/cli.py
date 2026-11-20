@@ -767,6 +767,11 @@ def cmd_radios(a):
     return 0
 
 
+def cmd_demo(a):
+    from . import demo       # loaded only here: nothing else needs the launcher
+    return demo.run(a.port)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="ranch-radio", description="Ranch Radio: ship every radio module from hosts/<host>.json")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -806,6 +811,8 @@ def main(argv=None):
     na.add_argument("--title", help="what it does, one line")
     na.add_argument("--group", default="tools", choices=["radios", "messaging", "mesh", "tools"], help="its tab group")
     na.add_argument("--css", action="store_true", help="also a static/addons/NAME.css")
+    dm = sub.add_parser("demo", help="try it without a radio: a simulated station on this machine, until Ctrl-C")
+    dm.add_argument("--port", type=int, default=0, help="the station page's port (default: a free one)")
     w = sub.add_parser("where", help="the host file this machine uses (exit 1 if none)")
     w.add_argument("host", nargs="?")
     st = sub.add_parser("start", help="enable and start everything the host file renders (after install)")
@@ -849,4 +856,4 @@ def main(argv=None):
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
-            "logsync": cmd_logsync}[a.cmd](a) or 0
+            "logsync": cmd_logsync, "demo": cmd_demo}[a.cmd](a) or 0
