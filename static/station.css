@@ -242,6 +242,10 @@ a.rb-tag { text-decoration: none; }
 .bs-cell.bs-decoding { border-color: rgba(var(--accent-rgb), .5); background: rgba(var(--accent-rgb), .06); }
 .bs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .bs-band { font: 700 14px var(--mono); color: var(--text); }
+/* PR 4c (2026-11-19): the band's name tunes the focus radio. */
+.bs-tune { background: none; border: 0; padding: 0 2px; margin: 0 -2px; border-radius: 4px; cursor: pointer;
+  text-decoration: underline dotted rgba(255,255,255,.25); text-underline-offset: 3px; }
+.bs-tune:hover, .bs-tune:focus-visible { color: var(--accent); text-decoration-color: currentColor; }
 .bs-fact[data-state="off"], .bs-fact:empty { display: none; }
 .bs-fact[data-state="wait"], .bs-fact[data-state="err"], .bs-fact[data-state="none"] { color: var(--dim); }
 .bs-heard b { color: var(--text); font: 600 12.5px var(--mono); }

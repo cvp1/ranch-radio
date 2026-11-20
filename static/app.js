@@ -507,15 +507,17 @@ class Scope {
     this.dirty = true;
   }
 
-  // Spots: [{f (Hz), label, kind, need, tip}]. Display only (PR 4a): a label
-  // never tunes and a click on one sends nothing; tuning from it is PR 4c.
+  // Spots: [{f (Hz), label, kind, need, tip, key}]. This page never tunes
+  // from a label: a click hands the label's key to the station
+  // (rrFrame.onspot, PR 4c, 2026-11-19), which tunes through its tuneFocus.
   setSpots(list) {
     const ok = [];
     for (const s of Array.isArray(list) ? list : []) {
       const f = Number(s?.f);
       if (!Number.isFinite(f) || f <= 0 || typeof s.label !== "string" || !s.label.trim()) continue;
       ok.push({ f: Math.round(f), label: s.label.trim().slice(0, 16), kind: String(s.kind || "").slice(0, 8),
-        need: s.need in SPOT_RANK ? s.need : null, tip: String(s.tip || "").slice(0, 300) });
+        need: s.need in SPOT_RANK ? s.need : null, tip: String(s.tip || "").slice(0, 300),
+        key: s.key == null ? null : String(s.key).slice(0, 40) });
     }
     this.spots = ok.sort(spotOrder).slice(0, SPOT_MAX);
     this.dirty = true;
@@ -554,7 +556,7 @@ class Scope {
       const r = rows.findIndex((row) => row.every((b) => left + w + GAP <= b.left || left >= b.left + b.w + GAP));
       if (r < 0) { this.spotHidden += l.n; continue; }
       const box = { x, f: l.f, left, top: TOP + r * (H + 2), w, h: H, row: r, label: l.label, tip: l.tip, n: l.n,
-        need: l.need, kind: l.kind };
+        need: l.need, kind: l.kind, key: l.key };
       rows[r].push(box);
       this.spotBoxes.push(box);
     }
@@ -671,7 +673,7 @@ class Scope {
 
   bindPointer() {
     const b = this.body, cur = $("#scope-cursor");
-    let drag = null, wheelAcc = { v: 0 }, onSpot = false;
+    let drag = null, wheelAcc = { v: 0 }, onSpot = null;
     const showCursor = (x) => {
       if (!this.n) return;
       const f = snap(this.xf(x), Math.max(step, 10));
@@ -680,9 +682,10 @@ class Scope {
       cur.firstElementChild.textContent = fmtFreq(f);
     };
     b.addEventListener("pointerdown", (e) => {
-      // A spot label is display only (PR 4a, 2026-11-19): pressing one starts
-      // no drag and its release tunes nothing, locked or not.
-      onSpot = !!this.spotAt(e);
+      // A spot label (PR 4a, 2026-11-19): pressing one starts no drag, and
+      // this page's own tune() never runs for it, locked or not. Its release
+      // on the same label goes to the station (PR 4c, below).
+      onSpot = this.spotAt(e);
       if (onSpot) { drag = null; return; }
       if (!this.n || locked) return;
       b.setPointerCapture(e.pointerId);
@@ -699,10 +702,26 @@ class Scope {
         }
       }
       if (e.pointerType === "mouse") showCursor(x);
-      if (!drag) { const s = this.spotAt(e); if (s) b.title = s.tip || s.label; else b.removeAttribute("title"); }
+      if (!drag) {
+        const s = this.spotAt(e);
+        // A label that tunes says so, and what a band change can do (PR 1d's note).
+        const how = s && s.key != null && typeof window.rrFrame?.onspot === "function"
+          ? `\nClick: tune the station's focus radio to it (tuning must be unlocked). ${bandChangeNote(CFG.auto_tune)}` : "";
+        if (s) b.title = (s.tip || s.label) + how; else b.removeAttribute("title");
+      }
     });
     b.addEventListener("pointerup", (e) => {
-      if (onSpot) { onSpot = false; drag = null; return; }
+      if (onSpot) {
+        // PR 4c (2026-11-19): the station decides and tunes (tuneFocus reads
+        // the lock, the focus, Winlink and the rest); this page sends nothing.
+        const s = this.spotAt(e), was = onSpot;
+        onSpot = null; drag = null;
+        const host = window.rrFrame?.onspot;
+        if (s && s.key != null && s.key === was.key && typeof host === "function") {
+          try { host(s.key); } catch { /* the station's problem, not the scope's */ }
+        }
+        return;
+      }
       if (locked && this.n) { nudgeLock(); return; }
       if (drag && !drag.moved) tune(snap(this.xf(e.offsetX), Math.max(step, 10)));
       drag = null;
@@ -1806,8 +1825,11 @@ if (document.documentElement.classList.contains("embedded")) {
     listen,
     listening: running,
     // PR 4a (2026-11-19): the station's spots for this radio, drawn as labels
-    // on the scope. Display only: nothing goes to the radio server.
+    // on the scope. Nothing goes to the radio server from here.
     spots(list) { scope.setSpots(list); },
     onchange: null,
+    // PR 4c (2026-11-19): the host sets a function; a click on a label calls
+    // it with the label's key, and the station tunes (or refuses).
+    onspot: null,
   };
 }

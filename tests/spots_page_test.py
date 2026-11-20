@@ -18,8 +18,11 @@ the radio page's frame. Nothing transmits. Checks:
            an empty list: a control); each single label's x is its
            frequency's position in the span; neighbours within 40 px collapse
            to one ("FT8 ×3 · 2 new") whose tick is its most needed member
-  hover    the label's tip shows; a click on a label sends no `set` and the
-           dial does not move, unlocked; control: a click on the bare scope
+  hover    the label's tip shows; unlocked, a click on a label tunes the
+           radio through the station's tuneFocus (UX plan PR 4c, 2026-11-19;
+           in 4a it sent nothing): a POTA CW spot sets its frequency and CW, a
+           cluster of decodes the dial its best was decoded on and no mode,
+           and the radio page itself sends no `set`; control: a click on the bare scope
            does send a `set` (so the recorder can see one)
   band     the radio changing band changes its spots
   off      the Roster switched off takes its labels away
@@ -246,11 +249,23 @@ try:
     k2 = by["K2ABC"]
     mouse("mouseMoved", *page_xy(k2))
     check("hover: the label's tip shows", bool(b.wait(f"{FRAME}.document.querySelector('#scope-body').title.includes('US-0001')", 5)), True)
-    for name, box in (("a single label", k2), ("the cluster", cl[0] if cl else k2)):
-        click(*page_xy(box))
-        testkit.wait_for(lambda: False, 0.8)          # a quiet window: nothing may be sent
-        check(f"click on {name}: no `set` is sent", sets(), [])
-    check("  the dial did not move", rig_freq(), start_f)
+    # PR 4c (2026-11-19) changes this check on purpose: a click on a label now
+    # tunes the focus radio through the station's tuneFocus (in 4a it sent
+    # nothing). The radio page's own sockets still send no `set` for it.
+    def page_sets(where):
+        return [json.loads(m).get("k") for m in json.loads(where("JSON.stringify(window.__sent || [])"))
+                if json.loads(m).get("t") == "set"]
+    click(*page_xy(k2))
+    check("click on a single label (POTA CW 14074): the radio reads 14,074,000 Hz, CW",
+          testkit.wait_for(lambda: (rig_freq(), rigctl("m")) == (14_074_000, "CW"), 10, 0.2), True)
+    check("  the radio page sent no `set` itself", page_sets(F), [])
+    b.js(rec)
+    click(*page_xy(cl[0] if cl else k2))
+    check("click on the cluster: its best decode's dial, 14,080,000 Hz (not dial + df)",
+          testkit.wait_for(lambda: rig_freq() == 14_080_000, 10, 0.2), True)
+    testkit.wait_for(lambda: False, 0.8)          # a quiet window: no mode may follow
+    check("  the station sent set freq only (no mode); the radio page nothing",
+          (page_sets(b.js), page_sets(F)), (["freq"], []))
     shot("2-hover")
     # Positive control: the same recorder sees a bare-scope click's `set` (lower down, away from the labels).
     x0, y0 = page_xy({"left": x_of(14_055_000), "w": 0, "top": 150, "h": 0})

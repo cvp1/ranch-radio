@@ -115,7 +115,12 @@ a.prop-sw.dim:hover { color: var(--text); }
 .pg-headrow div { font: 600 10.5px var(--sans); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .pg-row.tuned { background: rgba(var(--accent-rgb), .06); box-shadow: inset 3px 0 0 var(--accent); }
 .pg-band { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-.pg-band b { font: 700 22px var(--mono); color: var(--text); letter-spacing: -.02em; }
+.pg-band b, .pg-band .pg-band-n { font: 700 22px var(--mono); color: var(--text); letter-spacing: -.02em; }
+/* PR 4c (2026-11-19): a band's name tunes the radio (api.tune). */
+.pg-tune { background: none; border: 0; padding: 0 2px; margin: 0 -2px; border-radius: 4px; cursor: pointer;
+  text-decoration: underline dotted rgba(255,255,255,.25); text-underline-offset: 3px; }
+.pg-tbl-band.pg-tune { font: inherit; color: inherit; }
+.pg-tune:hover, .pg-tune:focus-visible { color: var(--accent); text-decoration-color: currentColor; }
 .pg-tuned { font: 600 10px var(--sans); color: var(--accent); text-transform: uppercase; letter-spacing: .08em; }
 
 .pg-busy { display: flex; flex-direction: column; gap: 6px; }

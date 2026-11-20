@@ -67,7 +67,11 @@
   // message arrives. Batched to one render per frame.
   let queued = false;
   const later = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; render(); }); } };
-  addons.setHost({ place: (name, panel) => $("main.grid").append(panel), changed: later });
+  // tune: an add-on's api.tune({band}) (UX plan PR 4c, 2026-11-19) takes the
+  // band chips' own path, bandStack(): locked, it points at the lock; the
+  // radio server refuses it while transmitting or a Winlink lane is armed.
+  addons.setHost({ place: (name, panel) => $("main.grid").append(panel), changed: later,
+    tune: ({ band } = {}) => { bandStack(band); } });
   modules.mount($("#modules"), { changed: later, visible: () => route() === "modules" });
   const mo = new MutationObserver(later);
   for (const el of [wl, mesh]) mo.observe(el, { attributes: true, attributeFilter: ["hidden", "class"] });

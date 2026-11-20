@@ -8,9 +8,13 @@
 //    who heard you), with the same numbers as a table for screen readers.
 // A band with no decodes says "no data", never "closed": a receiver only
 // hears the band it is tuned to.
+// From PR 4c (2026-11-19) the band's name in Next openings, the Bands board
+// and the table is a button: api.tune({band}), which the page carries out
+// its own way (the station: tuneFocus on the focus radio; a radio's own
+// page: its band chips' bandStack). This script sends no `set` itself.
 
 (() => {
-  let snap = {}, body = null, observer = null, tip = null, showTable = false;
+  let snap = {}, body = null, observer = null, tip = null, showTable = false, api = null;
   // The last PSKReporter counts that arrived without an error. The server
   // drops its counts when PSKReporter fails (unknown is not zero); Mission
   // Control's band strip keeps showing them, marked stale, from data()
@@ -105,6 +109,18 @@
     </section>`;
   }
 
+  // ------------------------------------------------ tune buttons (PR 4c)
+  // The note every band-changing control carries (PR 1d). The station's
+  // focus radio may change under this tab, so it is said generally here.
+  const TUNE_NOTE = "On a station with auto-tune, a band change transmits a tune carrier.";
+  function tuneEl(k, cls) {
+    const b = BANDS.find((x) => key(x) === k);
+    if (!b || !api?.canTune?.()) return `<b class="${cls}">${esc(k)}</b>`;
+    const t = `Tune to ${k}: where the radio was last left there, else ${fmtFreq(b.f)} ${b.m}. ` +
+      `Tuning must be unlocked. ${TUNE_NOTE}`;
+    return `<button type="button" class="${cls} pg-tune" data-band="${esc(k)}" title="${esc(t)}" aria-label="${esc(t)}">${esc(k)}</button>`;
+  }
+
   // ------------------------------------------------ bands
   const tunedBand = () => {
     const v = document.querySelector("#bands .chip.on")?.dataset.v;
@@ -156,7 +172,7 @@
       const live = w.start <= now;
       const when = live ? `now to ${hhmm(w.end)}` : `${hhmm(w.start)} to ${hhmm(w.end)}`;
       return `<li class="pg-open${live ? " live" : ""}">
-        <b class="pg-open-band">${esc(w.band)}</b>
+        ${tuneEl(String(w.band), "pg-open-band")}
         <span class="pg-open-region"><i class="sw rs-${regionSlot(w.region)}"></i>${esc(regionName(w.region))}</span>
         <span class="pg-open-when">${esc(when)}</span>
         <span class="pg-open-p" data-tip="Forecast chance the path is open at its best hour">${Math.round(w.peak * 100)}%</span>
@@ -218,7 +234,7 @@
           ${d.max_km != null ? `<span><small>farthest</small>${d.max_km.toLocaleString()} km</span>` : ""}
           <span class="src">${esc(src)}</span></div>` : `<div class="pg-stats"></div>`;
       return `<div class="pg-row${k === tuned ? " tuned" : ""}">
-        <div class="pg-band"><b>${esc(k)}</b>${k === tuned ? `<span class="pg-tuned">tuned</span>` : ""}</div>
+        <div class="pg-band">${tuneEl(k, "pg-band-n")}${k === tuned ? `<span class="pg-tuned">tuned</span>` : ""}</div>
         ${heard}
         <div class="pg-regions">${d ? regionBar(d) : ""}</div>
         ${stats}
@@ -251,7 +267,7 @@
     const psk = snap.pskreporter && !snap.psk_error ? snap.psk || {} : {};
     const rows = HF.map((b) => {
       const k = key(b), d = bands[k], y = psk[k];
-      return `<tr><th scope="row">${esc(k)}</th><td>${d ? d.n : "no data"}</td><td>${d?.best_snr ?? ""}</td>
+      return `<tr><th scope="row">${tuneEl(k, "pg-tbl-band")}</th><td>${d ? d.n : "no data"}</td><td>${d?.best_snr ?? ""}</td>
         <td>${d?.max_km ?? ""}</td><td>${d ? (d.regions || []).map(([r, n]) => `${esc(regionName(r))} ${n}`).join(", ") : ""}</td>
         ${snap.pskreporter ? `<td>${y ? `${y.receivers} (${(y.countries || []).map(([c, n]) => `${esc(c)} ${n}`).join(", ")})` : ""}</td>` : ""}</tr>`;
     }).join("");
@@ -396,7 +412,15 @@
   }
 
   addons.register("propagation", {
-    mount(b) { body = b; tips(b); update(); },
+    mount(b, a) {
+      body = b; api = a || null; tips(b);
+      // One listener: a band button tunes through the page (PR 4c).
+      b.addEventListener("click", (e) => {
+        const t = e.target.closest?.(".pg-tune");
+        if (t && b.contains(t)) api?.tune?.({ band: t.dataset.band });
+      });
+      update();
+    },
     hello(s) { take(s); },
     event(m) { if (m.state) take(m.state); },
     off() { snap = {}; pskLast = null; lastHtml = ""; if (body) body.innerHTML = ""; unbadge(); },
