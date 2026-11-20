@@ -11,7 +11,9 @@
 
 Longest first onto the least-loaded shard, ties by name, so every shard
 computes the same split. A run missing from durations.json counts as
-DEFAULT seconds until the next refresh.
+DEFAULT seconds until the next refresh; pick and plan name those runs on
+stderr, so stale timings show in the CI log before they unbalance the shards.
+A missing time is a notice, not a failure.
 """
 import json
 import os
@@ -35,6 +37,21 @@ def split(names, n):
         shards[load][0] += secs.get(name, DEFAULT)
         shards[load][1].append(name)
     return shards
+
+
+def untimed(names):
+    """Runs with no recorded duration: each is planned at DEFAULT seconds."""
+    secs = json.loads(DURATIONS.read_text()) if DURATIONS.exists() else {}
+    return sorted(set(names) - set(secs))
+
+
+def note_untimed(names):
+    # stderr: run_all.sh reads pick's stdout as the shard's run list.
+    missing = untimed(names)
+    if missing:
+        print(f"note: {len(missing)} run(s) have no recorded time, planned at {DEFAULT}s each: "
+              f"{' '.join(missing)}; refresh: gh run view <run-id> --log | python3 tests/ci/shard.py refresh",
+              file=sys.stderr)
 
 
 def check(names, tsvs):
@@ -83,8 +100,10 @@ def main(argv):
         i, n = int(argv[2]), int(argv[3])
         if not 1 <= i <= n:
             sys.exit(f"shard {i} of {n}?")
+        note_untimed(names)
         print("\n".join(split(names, n)[i - 1][1]))
     elif cmd == "plan" and len(argv) == 3:
+        note_untimed(names)
         for i, (secs, picked) in enumerate(split(names, int(argv[2])), 1):
             print(f"shard {i}: ~{secs}s, {len(picked)} runs: {' '.join(picked)}")
     else:
