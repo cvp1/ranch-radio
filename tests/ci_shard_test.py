@@ -45,6 +45,13 @@ check("the split is the same on every call",
 check("the split ignores input order",
       shard("pick", "3", "4", stdin="\n".join(reversed(text.split()))).stdout,
       shard("pick", "3", "4", stdin=text).stdout)
+r = shard("pick", "1", "4", stdin=text)
+check("pick names a run with no recorded time on stderr",
+      "brand_new_test" in r.stderr and "no recorded time" in r.stderr, True)
+check("the notice stays off stdout, which run_all.sh reads as the run list",
+      set(r.stdout.split()) <= set(text.split()), True)
+check("pick still exits 0 with an untimed run", r.returncode, 0)
+check("plan names it too", "brand_new_test" in shard("plan", "4", stdin=text).stderr, True)
 check("shard 0 is refused", shard("pick", "0", "4", stdin=text).returncode != 0, True)
 check("shard 5 of 4 is refused", shard("pick", "5", "4", stdin=text).returncode != 0, True)
 
