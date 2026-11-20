@@ -441,13 +441,16 @@ const station = (() => {
             // A refusal or warning from the radio's server. Its own page shows
             // it when that page is the open view (or Operate's radio pane,
             // PR 2b); elsewhere the station does.
-            // A STOP TX that worked raises an info notice per radio ("STOP TX:
-            // transmitter released, Winlink stopped..."), which only repeats
-            // the bar's stop state; it stays out of the toasts. Warns still
-            // toast: "STOP TX: <step> failed", and "Transmitter released: ..."
-            // (server.py sends that only when the radio really was on the air)
-            // (2026-11-19).
-            const stopInfo = m.level !== "warn" && /^STOP TX:/.test(m.msg || "");
+            // A STOP TX raises two notices per radio that only repeat the bar's
+            // stop state, so neither toasts (2026-11-19):
+            // - info "STOP TX: transmitter released, Winlink stopped...";
+            // - warn "Transmitter released: STOP TX pressed". tx_stop() unkeys
+            //   with force=True, so server.py sends this on every press, keyed
+            //   or not; it says nothing about whether the radio was on the air.
+            // A step that failed ("STOP TX: <step> failed", warn) still toasts,
+            // as does a release for any other reason.
+            const stopInfo = (m.level !== "warn" && /^STOP TX:/.test(m.msg || ""))
+              || m.msg === "Transmitter released: STOP TX pressed";
             if (route() !== r.id && laid?.radio !== r.id && !claimed && !stopInfo) toast(`${r.name}: ${m.msg}`, m.level);
             return;
           } else return;
