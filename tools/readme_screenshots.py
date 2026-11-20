@@ -8,7 +8,10 @@ Chromium into docs/images/:
     radio-page.png     the radio page: band badges and the space-weather strip
     propagation.png    the Propagation tab
     phone.png          the radio page at phone size, the first screen
-    station.png        a two-radio station's overview (from tests/station_page_test.py)
+    waterfall.png      a simulated IC-7300's spectrum and waterfall
+    mission-control.png  a two-radio station's Mission Control (tests/mission_density_page_test.py)
+    operate.png        the Operate tab: radio, Roster and Map (tests/operate_page_test.py)
+    callcard.png       the Roster with a call card open (tests/callcard_page_test.py)
 
     python3 tools/readme_screenshots.py          # CHROME= to pick a browser
 """
@@ -159,26 +162,26 @@ runpy.run_path({server!r}, run_name="__main__")
 """
 
 
-def serve(base, tmp):
+def serve(base, tmp, rig="g90"):
     addons = os.path.join(tmp, "addons.json")
     with open(addons, "w") as f:
         json.dump({"propagation": {"enabled": True, "skywatch": {"url": base, "db": "skywatch"},
                                    "pskreporter": {"call": "N0CALL"}, "window_min": 60}}, f)
     web_port, rigctl = free_port(), free_port()
     code = LAUNCH.format(root=ROOT, base=base, server=os.path.join(ROOT, "server.py"))
-    p = subprocess.Popen([sys.executable, "-c", code, "--sim", "--rig", "g90", "--no-audio",
+    p = subprocess.Popen([sys.executable, "-c", code, "--sim", "--rig", rig, "--no-audio",
                           "--listen", str(web_port), "--host", "127.0.0.1",
                           "--rigctl-port", str(rigctl), "--rigctl-host", "127.0.0.1",
-                          "--addons", addons, "--addons-state", os.path.join(tmp, "state.json")],
+                          "--addons", addons, "--addons-state", os.path.join(tmp, f"state-{rig}.json")],
                          cwd=ROOT, env=dict(os.environ, HOME=tmp, RANCH_RADIO_HOSTS=""),
-                         stdout=open(os.path.join(tmp, "server.log"), "w"), stderr=subprocess.STDOUT)
+                         stdout=open(os.path.join(tmp, f"server-{rig}.log"), "w"), stderr=subprocess.STDOUT)
     for _ in range(100):
         try:
             socket.create_connection(("127.0.0.1", web_port), timeout=0.2).close()
             return p, web_port
         except OSError:
             time.sleep(0.1)
-    raise SystemExit("server did not start: see " + os.path.join(tmp, "server.log"))
+    raise SystemExit("server did not start: see " + os.path.join(tmp, f"server-{rig}.log"))
 
 
 def clip(b, path, width, height, scale=1):
@@ -193,6 +196,16 @@ def clip(b, path, width, height, scale=1):
 def content_height(b, sel):
     return b.js(f"Math.ceil(Math.max(...[...document.querySelectorAll({sel!r})]"
                 ".map((e) => e.getBoundingClientRect().bottom)) + 24)")
+
+
+WATERFALL_FILL_S = 25                # seconds of scope frames before the waterfall shot
+
+# (test, its screenshot, the README image, crop width, height)
+STATION_SHOTS = [
+    ("mission_density_page_test", "mission-density-1600x1000.png", "mission-control.png", 1600, 880),
+    ("operate_page_test", "operate-1600.png", "operate.png", 1600, 1000),
+    ("callcard_page_test", "callcard-roster.png", "callcard.png", 1200, 290),
+]
 
 
 def main():
@@ -220,20 +233,46 @@ def main():
         time.sleep(1.5)
         clip(b, os.path.join(OUT, "phone.png"), 390, 844)            # at the 2x device scale
 
-        # The station overview: the station page test's own screenshot, cropped.
-        shots = os.path.join(tmp, "station")
-        os.makedirs(shots)
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "station_page_test.py"), shots],
-                       cwd=ROOT, env=dict(os.environ, CHROME=CHROME), check=True, stdout=subprocess.DEVNULL)
+        # The waterfall: a simulated IC-7300 has a scope (the G90 has none). Let it fill in.
         b.call("Emulation.clearDeviceMetricsOverride")
-        b.goto("file://" + os.path.join(shots, "station-overview.png"))
-        b.js("document.body.style.margin = '0'")
-        clip(b, os.path.join(OUT, "station.png"), 1500, 290)
+        p2, port2 = serve(f"http://127.0.0.1:{sp}", tmp, rig="ic7300")
+        try:
+            b.goto(f"http://127.0.0.1:{port2}/")
+            b.wait("document.getElementById('scope-empty') && document.getElementById('scope-empty').hidden")
+            time.sleep(WATERFALL_FILL_S)
+            r = b.js("(() => { const e = document.querySelector('.panel.scope').getBoundingClientRect();"
+                     " return [e.x, e.y, e.width, e.height].map(Math.round); })()")
+            import base64
+            shot = b.call("Page.captureScreenshot", format="png", captureBeyondViewport=True,
+                          clip={"x": r[0], "y": r[1], "width": r[2], "height": r[3], "scale": 1})
+            with open(os.path.join(OUT, "waterfall.png"), "wb") as f:
+                f.write(base64.b64decode(shot["result"]["data"]))
+        finally:
+            p2.terminate()
+            p2.wait(10)
+
+        # The station views: each page test's own screenshot (simulated radios), cropped.
+        # A window wider than any shot, so Chrome's image view neither scales nor centres it.
+        b.call("Emulation.setDeviceMetricsOverride", width=2000, height=1200, deviceScaleFactor=1, mobile=False)
+        for test, shot, name, w, h in STATION_SHOTS:
+            shots = os.path.join(tmp, test)
+            os.makedirs(shots)
+            for attempt in (1, 2):                        # a page test can flake once (operate_page_test)
+                r = subprocess.run([sys.executable, os.path.join(ROOT, "tests", test + ".py"), shots],
+                                   cwd=ROOT, env=dict(os.environ, CHROME=CHROME), stdout=subprocess.DEVNULL)
+                if r.returncode == 0:
+                    break
+                print(f"{test} failed (rc {r.returncode}), attempt {attempt} of 2", file=sys.stderr)
+            else:
+                raise SystemExit(f"{test} failed twice; no {name}")
+            b.goto("file://" + os.path.join(shots, shot))
+            b.js("document.body.style.margin = '0'; document.querySelector('img').style.cssText = 'display:block;margin:0'")
+            clip(b, os.path.join(OUT, name), w, h)
     finally:
         b.close()
         p.terminate()
         p.wait(10)
-    for n in ("radio-page.png", "propagation.png", "phone.png", "station.png"):
+    for n in ["radio-page.png", "propagation.png", "phone.png", "waterfall.png"] + [s[2] for s in STATION_SHOTS]:
         print(os.path.join("docs", "images", n), os.path.getsize(os.path.join(OUT, n)), "bytes")
 
 

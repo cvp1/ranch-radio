@@ -31,7 +31,8 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
   the radio, and a watch on the local iGates that carry internet traffic
   onto the air.
 - **One page for the station.** Every radio, Winlink, Mesh, the packet hub
-  and the add-ons behind one address, on a Mac or on Linux. A station of one
+  and the add-ons behind one address, on a Mac or on Linux, with a rig bar
+  and STOP TX for every HF radio on every view (below). A station of one
   radio opens on that radio. On Linux a shared rigctl port follows the radio
   connected longest, as well as each radio's own.
 - **Updates that don't interrupt you.** A radio that is transmitting, in a
@@ -41,7 +42,63 @@ radio ──USB──> host (Ranch Radio) ──LAN──> browser(s)
 
 <p align="center"><img src="docs/images/phone.png" width="300" alt="The radio page on a phone"></p>
 
-![A station page with two radios, Winlink, Mesh and a packet hub](docs/images/station.png)
+![An IC-7300's spectrum and waterfall on the radio page: FT8 signals on 20 m, the passband shaded at the tuned frequency](docs/images/waterfall.png)
+
+## The station page
+
+A station with more than one radio, or with Winlink, Mesh and packet, opens
+on **Mission Control**: everything at once, on one screen at 1440x900 or
+larger.
+
+![Mission Control: the rig bar with STOP TX for all HF radios, the clock, the band strip, the Now row of needed stations, the radios, messaging, mesh and tools](docs/images/mission-control.png)
+
+- **The rig bar** sits under the top bar on every view. Each HF radio shows
+  its frequency, mode, band and S-meter (watts in red while it's on the
+  air); a click on another radio makes it the focus. On the focus radio
+  you can type a frequency, lock tuning, and start or stop **Listen** from
+  any tab.
+- **STOP TX all HF** at the right of the bar sends every HF radio the same
+  STOP TX its own page sends, then shows what each one confirmed. It reads
+  TX STOPPED only when every radio reports the latch. Each radio page keeps
+  its own STOP TX, and Resume stays there.
+- **The band strip** has one cell per band. Each cell shows the decodes
+  heard here in the last hour, the stations that reported hearing you, and
+  the forecast opening, each from its own source. A source that isn't set up
+  says so instead of showing zero. A band's name tunes the focus radio
+  there.
+- **Now** lists up to five fresh stations JTDX decoded that you need (a new
+  DXCC, band, mode or grid). A click answers one through JTDX, exactly as a
+  click on its Roster row does. Beside it, **Log** shows QSOs, DXCC and
+  grids worked and confirmed.
+- **Keys:** 1 to 9 open a card's tab, and 0 comes back.
+
+**Operate** puts the focus radio, the Roster and the Map side by side under
+the band strip (1100 px wide or more). The radio pane is its own page, so
+Listen keeps playing as you switch tabs. **Controls** opens levels, TX
+settings, filter and AGC.
+
+![The Operate tab: the focus radio's compact page with its scope, the Roster of decoded stations and the Map](docs/images/operate.png)
+
+- **Spots on the scope.** Each radio's spectrum names the stations JTDX
+  decoded and the POTA activators the Map add-on has, most needed first. A
+  click on a label tunes the focus radio to it.
+- **Every retune goes through the same checks.** A locked radio, one
+  transmitting or tuning, or one with a Winlink session armed sends nothing,
+  and a note says why. On a station with auto-tune a band change transmits
+  a tune carrier, and every control that can change band says so in its
+  tooltip.
+- **Call cards.** The ⓘ beside a call on the Roster, or a station on the
+  Map, shows what your logbook has with that call: recent QSOs, what's
+  confirmed, and what it still needs. It never sends a reply.
+
+![A call card open over the Roster: two QSOs with JA5XYZ, one confirmed](docs/images/callcard.png)
+
+**On a phone** (700 px wide or less) the tabs move to a bar at the bottom,
+clear of the iPhone home indicator, and the rig bar stays at the top.
+**On a spare screen,** `#/wall` (or `?wall` in the address) shows a
+read-only wall view: a large map, a big UTC clock, the band strip, the
+focus radio's waterfall and recent events. Only STOP TX and Exit wall take
+input, and the screen is kept awake.
 
 ## Supported radios
 
