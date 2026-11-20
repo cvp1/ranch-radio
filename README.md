@@ -100,6 +100,8 @@ read-only wall view: a large map, a big UTC clock, the band strip, the
 focus radio's waterfall and recent events. Only STOP TX and Exit wall take
 input, and the screen is kept awake.
 
+![The wall view: a large map of who you hear and who hears you, a big UTC clock, the focus radio's spectrum and waterfall, and the band strip](docs/images/wall.png)
+
 ## Supported radios
 
 | Rig | Radio | Link | Status |

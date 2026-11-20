@@ -12,6 +12,7 @@ Chromium into docs/images/:
     mission-control.png  a two-radio station's Mission Control (tests/mission_density_page_test.py)
     operate.png        the Operate tab: radio, Roster and Map (tests/operate_page_test.py)
     callcard.png       the Roster with a call card open (tests/callcard_page_test.py)
+    wall.png           the wall view, #/wall, with a full Map (tests/wall_page_test.py)
 
     python3 tools/readme_screenshots.py          # CHROME= to pick a browser
 """
@@ -205,6 +206,7 @@ STATION_SHOTS = [
     ("mission_density_page_test", "mission-density-1600x1000.png", "mission-control.png", 1600, 880),
     ("operate_page_test", "operate-1600-populated.png", "operate.png", 1600, 1000),
     ("callcard_page_test", "callcard-roster.png", "callcard.png", 1200, 290),
+    ("wall_page_test", "wall-populated.png", "wall.png", 1920, 1080),
 ]
 
 
