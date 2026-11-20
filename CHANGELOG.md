@@ -265,6 +265,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- The radio page shows another client's change made just after its own. For 700 ms after you change a setting the page ignores the server's states for it, so a late echo of your own edit cannot snap the dial back; it used to ignore every state, so a retune from a second page or a phone in that window left this page showing the old frequency until the next change. Now only a value this page had or sent in the window is ignored.
+
 - **A browser can no longer retune a radio whose Winlink lane is armed.** Between the session's
   transmissions, a band button or VFO swap on the radio page moved the dial under Pat, and the
   band change then started an ATU tune (a carrier). While armed, the radio server now refuses a

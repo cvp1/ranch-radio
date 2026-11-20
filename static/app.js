@@ -90,7 +90,14 @@ function wheelSteps(e, acc) {
 
 const S = {};          // mirror of the radio state
 let CFG = {};          // server config
-const localEdit = {};  // key -> time of our last change (to ignore stale echoes)
+// key -> {t: our last change, held: every value this page had or sent since
+// the window opened}. Inside ECHO_MS a state that repeats one of those is a
+// stale echo of our own edits and is dropped; any other value is another
+// client's change and is applied (2026-11-20: a retune from a second page
+// inside the window used to be dropped too, so this page showed stale).
+const localEdit = {};
+const ECHO_MS = 700;
+const echoKey = (v) => JSON.stringify(v);
 let ws = null, wsBackoff = 500, overlayTimer = null, lastPing = 0, rtt = null;
 
 
@@ -99,7 +106,10 @@ function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
 function pageLog(msg) { send({ t: "page_log", msg: String(msg).slice(0, 300) }); }
 
 function setRadio(k, v) {
-  localEdit[k] = performance.now();
+  const now = performance.now(), e = localEdit[k];
+  const held = e && now - e.t < ECHO_MS ? e.held : new Set();
+  held.add(echoKey(S[k])).add(echoKey(v));
+  localEdit[k] = { t: now, held };
   S[k] = v;
   send({ t: "set", k, v });
   render();
@@ -130,7 +140,8 @@ function connect() {
       for (const [k, v] of Object.entries(m.d)) {
         // confirmed: the server refused our change and says what the radio has
         if (m.confirmed) delete localEdit[k];
-        else if (k !== "tx" && k !== "connected" && now - (localEdit[k] ?? -1e9) < 700) continue;
+        else if (k !== "tx" && k !== "connected" && localEdit[k] && now - localEdit[k].t < ECHO_MS
+                 && localEdit[k].held.has(echoKey(v))) continue;
         S[k] = v;
         if (!METER_KEYS.has(k)) structural = true;
       }
