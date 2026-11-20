@@ -220,6 +220,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Changed
 
+- **The tab bar no longer reshuffles as you move around.** A group with more than one member
+  (Radios, Messaging, Mesh, Tools) is now always one split button: its name opens the member you
+  used last, and the small arrow beside it opens a menu of every member with its dot and badge.
+  The open group reads "Tools · Map". Nothing expands in place, so the bar has the same tabs in
+  the same places on every page.
 - **One STOP TX press no longer stacks a toast per radio saying it worked.** Each radio's "STOP
   TX: transmitter released, Winlink stopped..." confirmation repeated what the rig bar's stop
   state already shows, and on a phone the stack covered half the screen. Those stay in the bar,
