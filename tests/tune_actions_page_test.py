@@ -321,17 +321,36 @@ def frame_eval(rid, expr):
                 f"try {{ return w && w.rrFrame ? w.eval({json.dumps(expr)}) : null; }} catch (e) {{ return 'JS error: ' + e; }} }})()")
 
 
-def label(rid, name, timeout=10):
-    """The page coordinates of label `name` on radio `rid`'s scope, once drawn."""
-    ok = testkit.wait_for(lambda: frame_eval(rid, f"scope.spotBoxes.some((s) => s.label === {json.dumps(name)})") is True,
-                          timeout, 0.1)
-    if not ok:
-        return None
-    find = f"(() => {{ const c = scope.spec.getBoundingClientRect(); " \
-           f"const s = scope.spotBoxes.find((x) => x.label === {json.dumps(name)}); " \
-           f"return [c.left + s.left + s.w / 2, c.top + s.top + s.h / 2]; }})()"
+def scope_point(rid, fx, fy=0.85):
+    """Page coordinates of a point on radio `rid`'s spectrum, as fractions of
+    its width and height (low on it: clear of the spot labels at the top)."""
     return b.js(f"(() => {{ const f = {FRAME.format(rid)}; const a = f.getBoundingClientRect(); "
-                f"const p = f.contentWindow.eval({json.dumps(find)}); return [a.left + p[0], a.top + p[1]]; }})()")
+                f"const c = f.contentWindow.eval('scope.spec.getBoundingClientRect()'); "
+                f"return [a.left + c.left + c.width * {fx}, a.top + c.top + c.height * {fy}]; }})()")
+
+
+def label(rid, name, timeout=10):
+    """The page coordinates of label `name` on radio `rid`'s scope, once drawn
+    on a span that holds the radio's frequency and still in the same place
+    0.3 s later. Under CI load the scope's frames can lag a retune: a label
+    found on the new band, then a late frame of the old one, and the click
+    landed on the scope instead (2026-11-20: 21.267 MHz after a 20 m click)."""
+    find = f"(() => {{ if (scope.stale()) return null; const c = scope.spec.getBoundingClientRect(); " \
+           f"const s = scope.spotBoxes.find((x) => x.label === {json.dumps(name)}); " \
+           f"return s ? [c.left + s.left + s.w / 2, c.top + s.top + s.h / 2] : null; }})()"
+
+    def at():
+        return b.js(f"(() => {{ const f = {FRAME.format(rid)}; const a = f.getBoundingClientRect(); "
+                    f"const p = f.contentWindow.eval({json.dumps(find)}); return p ? [a.left + p[0], a.top + p[1]] : null; }})()")
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        first = at()
+        if first:
+            time.sleep(0.3)
+            if at() == first:
+                return first
+        time.sleep(0.1)
+    return None
 
 
 def click_label(rid, name):
@@ -528,6 +547,25 @@ try:
     quiet()
     check("  the frequency only (the radio would have taken CW)", sets(), ["set:freq"])
     b.js("localStorage.removeItem('test.dropModes'), true")
+
+    # Click-to-tune on a scope still showing the old band (centre mode): the
+    # frames held on a 15 m span while the radio is on 20 m.
+    radio_tab("ic7300")
+    before = dial(IC)[:2]
+    reset()
+    frame_eval("ic7300", "scope.__push = scope.pushLine; scope.pushLine = () => {}; "
+                         "scope.start = 21_225_000; scope.end = 21_275_000; scope.dirty = true; true")
+    check("stale span: the scope says it is behind", frame_eval("ic7300", "scope.stale()"), True)
+    mouse_click(*scope_point("ic7300", 0.25))
+    quiet()
+    check("  a click on it sends nothing, the IC-7300 unmoved", (sets(), dial(IC)[:2]), ([], before))
+    frame_eval("ic7300", "scope.pushLine = scope.__push; delete scope.__push; true")
+    check("  the next frames catch up", testkit.wait_for(lambda: frame_eval("ic7300", "scope.stale()") is False, 5, 0.1), True)
+    reset()
+    mouse_click(*scope_point("ic7300", 0.25))
+    check("negative control: the same click on a current span tunes (20 m, below the dial)",
+          testkit.wait_for(lambda: 14_000_000 < dial(IC)[0] < before[0], 10, 0.2), True)
+    check("  it sent set freq", sets(), ["set:freq"])
 
     # A label on a radio that is not the focus: nothing.
     check("focus: on the IC-7610", focus_on("ic7610"), True)
