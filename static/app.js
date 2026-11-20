@@ -580,6 +580,12 @@ class Scope {
   }
 
   // The label under a pointer event, or null.
+  // Centre mode, and the drawn span doesn't hold the radio's frequency: the
+  // frames are still catching up with a retune.
+  stale() {
+    return S.scope_mode === "center" && !(S.freq >= this.start && S.freq <= this.end);
+  }
+
   spotAt(e) {
     const r = this.spec.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
     return this.spotBoxes.find((b) => x >= b.left && x <= b.left + b.w && y >= b.top && y <= b.top + b.h) || null;
@@ -723,7 +729,12 @@ class Scope {
         return;
       }
       if (locked && this.n) { nudgeLock(); return; }
-      if (drag && !drag.moved) tune(snap(this.xf(e.offsetX), Math.max(step, 10)));
+      // A click tunes to where it lands on the span the scope last drew. In
+      // centre mode that span must hold the radio's own frequency: right after
+      // a retune a late frame can still show the old band, and a click there
+      // would land on a frequency nobody saw. Then the click sends nothing
+      // (2026-11-20, the tune_actions CI failure: 21.267 MHz after a 20 m click).
+      if (drag && !drag.moved && !this.stale()) tune(snap(this.xf(e.offsetX), Math.max(step, 10)));
       drag = null;
     });
     b.addEventListener("pointerleave", () => { cur.hidden = true; });
