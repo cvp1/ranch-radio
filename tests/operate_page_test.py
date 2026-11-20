@@ -36,6 +36,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 
 os.environ["RANCH_RADIO_HOSTS"] = ""     # never this machine's own host files
 os.environ["RANCH_RADIO_OFFLINE"] = "1"
@@ -137,9 +138,23 @@ def click_at(x, y):
         b.call("Input.dispatchMouseEvent", type=t, x=x, y=y, button="left", clickCount=1)
 
 
-def click(sel):
-    x, y = b.js(f"(() => {{ const r = document.querySelector({json.dumps(sel)}).getBoundingClientRect(); "
-                f"return [r.x + r.width / 2, r.y + r.height / 2]; }})()")
+def click(sel, timeout=5):
+    """A real click on `sel`'s middle, once it has stopped moving and is what
+    sits under that point. The rig bar redraws after a focus change; on a
+    loaded machine a single measure-then-click could land where the element
+    had been, on whatever moved there (2026-11-19). If it never settles the
+    click goes ahead anyway, so a real failure still shows in the check."""
+    probe = (f"(() => {{ const e = document.querySelector({json.dumps(sel)}); if (!e) return null; "
+             "const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2; "
+             "const at = document.elementFromPoint(x, y); return [x, y, !!at && (at === e || e.contains(at))]; })()")
+    end, prev, cur = time.time() + timeout, None, None
+    while time.time() < end:
+        cur = b.js(probe)
+        if cur and cur[2] and prev and cur[:2] == prev[:2]:
+            break
+        prev = cur
+        time.sleep(0.1)
+    x, y = (cur or prev)[:2]
     click_at(x, y)
 
 
@@ -290,8 +305,15 @@ try:
            frame_wait("g90", "document.documentElement.classList.contains('pane')", 15),
            frame_wait("ic7300", "!document.documentElement.classList.contains('pane')", 5)), (True, True, True))
     click("#rig-bar .rb-rig[data-id='ic7300'] .rb-f")
-    check("  focusing the IC-7300 again swaps back",
-          bool(b.wait(f"{SHOWN}({FRAME.format('ic7300')}) && !{SHOWN}({FRAME.format('g90')})", 10)), True)
+    back = bool(b.wait(f"{SHOWN}({FRAME.format('ic7300')}) && !{SHOWN}({FRAME.format('g90')})", 10))
+    if not back:
+        # This failed twice under load on 2026-11-19 and never alone; say what
+        # the page thought, so the next failure names its cause.
+        print("  diag:", b.js("({focus: localStorage.getItem('rr-focus'), "
+                              "chip: document.querySelector(\"#rig-bar .rb-rig[data-id='ic7300']\")?.className, "
+                              "entry: !!document.querySelector('#rig-bar .rb-entry, #rig-bar input'), "
+                              "active: document.activeElement?.className || document.activeElement?.tagName})"), flush=True)
+    check("  focusing the IC-7300 again swaps back", back, True)
 
     # 5. The Map switched off, then on.
     b.js("addons.event({t: 'addon', addon: 'map', on: false})")
