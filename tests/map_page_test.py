@@ -154,6 +154,10 @@ loop.run_until_complete(a.command(None, "reply", {"key": mv["decodes"][0]["key"]
 check("  a click answers through the sync; JTDX's outcome reaches the page", (s.asked, a.host.notes[-1]),
       ([mv["decodes"][0]["key"]], ("info", "Map: JTDX is calling JA5XYZ.")))
 check("  pota off: none in the snapshot", M.Map(Host(s), {"pota": False}).snapshot()["pota"], None)
+m_off = M.Map(Host(s), {"enabled": True})            # pota on, but RANCH_RADIO_OFFLINE=1 (set above)
+loop.run_until_complete(m_off.start())
+check("  offline: start() never polls the POTA API", len(m_off._tasks), 1)
+loop.run_until_complete(m_off.stop())
 
 # ================================================================ who you hear, remembered; who hears you; the parts
 import json as _json  # noqa: E402

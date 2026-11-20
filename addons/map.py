@@ -31,6 +31,7 @@ Options (the host file's addons block):
 """
 import asyncio
 import logging
+import os
 import time
 
 from . import Addon
@@ -93,7 +94,7 @@ class Map(Addon):
 
     async def start(self):
         self._tasks = [asyncio.ensure_future(self._tick_loop())]
-        if self.want_pota:
+        if self.want_pota and os.environ.get("RANCH_RADIO_OFFLINE") != "1":   # tests: never the POTA API
             self._tasks.append(asyncio.ensure_future(self._pota_loop()))
 
     async def stop(self):
