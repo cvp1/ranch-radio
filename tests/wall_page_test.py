@@ -335,6 +335,19 @@ try:
     quiet()
     check("  and sends nothing", b.js(CMDS), [])
 
+    if SHOTS:                                     # the README's shot: a fresh wall (an empty ticker), a full Map
+        sys.path[:0] = [ROOT, os.path.join(ROOT, "tools")]
+        import readme_fixture as F
+        b.goto(f"http://127.0.0.1:{WEB}/?wall")
+        b.wait("!!document.querySelector('#rig-bar .rb-rig.focus')", 30)
+        inject_addons()
+        wall_ready()
+        b.js("addons.event({t: 'addon', addon: 'roster', on: true, snapshot: %s})" % json.dumps({"roster": F.ROSTER}))
+        b.js("addons.event({t: 'addon', addon: 'map', on: true, snapshot: %s})" % json.dumps(F.MAP))
+        b.js("wall.note('IC-7300 to 20m')")
+        time.sleep(15)                            # the reload emptied the waterfall: let it fill
+        shot("populated")
+
     # 4. STOP TX on the wall.
     b.js("store.set('locked', true); location.hash = '#/wall'")
     wall_ready()
