@@ -73,6 +73,11 @@ file by hand. Example host files: `examples/hosts/`.
   failures show as "not loaded" with the reason; the radio runs on.
 - **Headless pages, CORS and Host checks** live in `webguard.py`. Every new HTTP
   route goes through `authorised`.
+- **Operator or read-only** (`webguard.AuthPolicy`, host file `auth`): every
+  WebSocket command a read-only page may send is in a `READONLY_OK` set
+  (server.py, station.py), and every mutating HTTP route is closed to it by
+  `auth_guard`. A new command is operator-only unless it only stops. A
+  connection this host makes to its own radio sends `auth.bearer_headers()`.
 - **Pages run under `webguard.CSP`**: no inline `<script>`, no `on*=` attributes,
   no `eval` (`tests/xss_hygiene_test.py`). Text from the air goes through `esc()`
   or `textContent`. A page test that evals inside a frame calls

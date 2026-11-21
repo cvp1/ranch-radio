@@ -202,6 +202,172 @@ def healthz(role, facts, authorised=None):
     return handler
 
 
+
+# ---------------------------------------------------------------- operator / read-only
+# Two modes, set in the host file's `auth` block (render passes them on):
+#   open          (default) every LAN page operates, as before.
+#   readonly-lan  a page without the operator's session can watch (state,
+#                 spectrum, audio, logs, map) and press STOP TX, and nothing
+#                 else: no keying, no QSY, no Winlink, no settings, no add-on
+#                 or module changes. The operator unlocks with the token
+#                 (POST /auth/login sets a signed cookie, HttpOnly,
+#                 SameSite=Strict, 12 h).
+# The token lives in a file only the user can read (checked at start; a
+# group- or world-readable or missing file stops the server: fail closed),
+# or $RANCH_RADIO_TOKEN; never in argv. The radio server enforces its own
+# commands (it owns the transmitter): the station forwards the browser's
+# cookie through its proxy, and its own lane and watch connections carry the
+# token as a Bearer header. A cookie is HMAC(token, expiry): every process on
+# the host checks it with the same file, and changing the token ends every
+# session (review plan PR 4, panel 2026-11-21).
+import hashlib
+import hmac
+import time as _time
+
+AUTH_MODES = ("open", "readonly-lan")
+COOKIE = "rr_op"
+SESSION_S = 12 * 3600
+
+
+class AuthError(SystemExit):
+    pass
+
+
+def read_token_file(path):
+    """The token from a file only its owner can read; AuthError otherwise."""
+    p = os.path.expanduser(path)
+    try:
+        st = os.stat(p)
+    except OSError as e:
+        raise AuthError(f"auth.token_file {path}: {e.strerror}; readonly-lan needs it (fail closed)") from e
+    if st.st_mode & 0o077:
+        raise AuthError(f"auth.token_file {path} is readable by others (mode {st.st_mode & 0o777:o}); "
+                        f"chmod 600 it (fail closed)")
+    token = open(p).read().strip()
+    if len(token) < 12:
+        raise AuthError(f"auth.token_file {path}: the token is shorter than 12 characters (fail closed)")
+    return token
+
+
+class AuthPolicy:
+    def __init__(self, mode="open", token=None):
+        if mode not in AUTH_MODES:
+            raise AuthError(f"auth.mode {mode!r}: one of {', '.join(AUTH_MODES)}")
+        if mode != "open" and not token:
+            raise AuthError(f"auth.mode {mode}: no token (auth.token_file or $RANCH_RADIO_TOKEN); fail closed")
+        self.mode, self.token = mode, token
+
+    @classmethod
+    def from_config(cls, mode=None, token_file=None):
+        mode = mode or "open"
+        token = os.environ.get("RANCH_RADIO_TOKEN") or (read_token_file(token_file) if token_file else None)
+        return cls(mode, token)
+
+    def _sign(self, exp):
+        return hmac.new(self.token.encode(), f"operator|{exp}".encode(), hashlib.sha256).hexdigest()
+
+    def cookie_value(self, now=None):
+        exp = int((now or _time.time()) + SESSION_S)
+        return f"{exp}.{self._sign(exp)}"
+
+    def cookie_ok(self, value, now=None):
+        try:
+            exp_s, sig = str(value).split(".", 1)
+            exp = int(exp_s)
+        except ValueError:
+            return False
+        return exp > (now or _time.time()) and hmac.compare_digest(sig, self._sign(exp))
+
+    def bearer_ok(self, request):
+        h = request.headers.get("Authorization", "")
+        return h.startswith("Bearer ") and hmac.compare_digest(h[7:].strip(), self.token)
+
+    def role(self, request):
+        """'operator' or 'readonly'."""
+        if self.mode == "open":
+            return "operator"
+        if self.bearer_ok(request) or self.cookie_ok(request.cookies.get(COOKIE, "")):
+            return "operator"
+        return "readonly"
+
+    def session_expiry(self, request):
+        """When this request's operator session ends (None: no expiry, open or Bearer)."""
+        if self.mode == "open" or self.bearer_ok(request):
+            return None
+        v = request.cookies.get(COOKIE, "")
+        try:
+            return int(v.split(".", 1)[0]) if self.cookie_ok(v) else 0
+        except ValueError:
+            return 0
+
+    def bearer_headers(self):
+        """For this host's own connections to its radios (RemoteLane, RadioWatch)."""
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+
+def tx_off_only(body):
+    """A transmit switch request that turns transmit off (the hub's Off): safe for anyone."""
+    return isinstance(body, dict) and body.get("enabled") is False
+
+
+def auth_guard(policy, readonly_ok=()):
+    """aiohttp middleware: in readonly-lan, a read-only caller gets only
+    GET/HEAD/OPTIONS, the /auth routes, and the POST paths in readonly_ok
+    (path -> predicate(body) or None for any body)."""
+    from aiohttp import web
+
+    @web.middleware
+    async def guard(request, handler):
+        request["rr_role"] = policy.role(request)
+        if (policy.mode == "open" or request["rr_role"] == "operator"
+                or request.method in ("GET", "HEAD", "OPTIONS") or request.path.startswith("/auth/")):
+            return await handler(request)
+        allow = dict(readonly_ok).get(request.path, False)
+        if allow is not False:
+            if allow is None:
+                return await handler(request)
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if allow(body):
+                return await handler(request)
+        return web.json_response({"error": "read-only: unlock to operate", "role": "readonly"}, status=403)
+    return guard
+
+
+def add_auth_routes(app, policy):
+    """POST /auth/login {token}, POST /auth/logout, GET /auth/whoami."""
+    from aiohttp import web
+
+    async def login(request):
+        try:
+            token = str((await request.json()).get("token", ""))
+        except (ValueError, AttributeError):
+            token = ""
+        if policy.mode == "open":
+            return web.json_response({"role": "operator", "mode": "open"})
+        if not token or not hmac.compare_digest(token, policy.token):
+            return web.json_response({"error": "wrong token"}, status=401)
+        r = web.json_response({"role": "operator", "mode": policy.mode, "expires_s": SESSION_S})
+        r.set_cookie(COOKIE, policy.cookie_value(), max_age=SESSION_S, path="/", httponly=True,
+                     samesite="Strict", secure=request.secure)
+        return r
+
+    async def logout(request):
+        r = web.json_response({"role": "readonly" if policy.mode != "open" else "operator", "mode": policy.mode})
+        r.del_cookie(COOKIE, path="/")
+        return r
+
+    async def whoami(request):
+        return web.json_response({"role": policy.role(request), "mode": policy.mode},
+                                 headers={"Cache-Control": "no-store"})
+
+    app.router.add_post("/auth/login", login)
+    app.router.add_post("/auth/logout", logout)
+    app.router.add_get("/auth/whoami", whoami)
+
+
 def allowed_names(args):
     """--allow-host names plus the TLS names (not the %l placeholder)."""
     return [*getattr(args, "allow_host", []), *[n for n in getattr(args, "tls_name", []) if n != "%l"]]
