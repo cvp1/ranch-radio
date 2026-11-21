@@ -18,3 +18,9 @@
 .js8call .empty { opacity: .6; font-style: italic; }
 .js8call .js8-msgs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .js8call .js8-msgs li { display: grid; grid-template-columns: auto auto auto auto 1fr; gap: 6px; align-items: baseline; }
+.js8call .js8-status.armed { background: #7a5a00; color: #fff; }
+.js8call .js8-status.onair { background: #8b1a1a; color: #fff; font-weight: 600; }
+.js8call .js8-tx { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.js8call .js8-tx [hidden] { display: none; }
+.js8call .js8-tx .js8-text { flex: 1 1 280px; min-width: 0; font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }
+.js8call .js8-tx .js8-why, .js8call .js8-tx .js8-queue { font-size: 12px; opacity: .75; }

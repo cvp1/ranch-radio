@@ -1,23 +1,30 @@
 "use strict";
 
-// The JS8 tab: what the station's JS8 engines hear, per radio. Receive only.
+// The JS8 tab: what the station's JS8 engines hear, per radio, and sending
+// while armed.
 //
-//   status     engine connected, the rig's frequency and mode, TX disarmed;
-//              a red UNSAFE banner if an engine reports TX, auto-reply or
-//              heartbeat on (js8_engine.py disarms it at every start)
+//   status     engine connected, the rig's frequency and mode, TX disarmed
+//              or armed (time left), ON AIR when the radio's server says it
+//              is keyed; a red UNSAFE banner if an engine reports TX,
+//              auto-reply or heartbeat on without an arm
+//   send       Arm for N minutes (refused, and why, when the radio can't
+//              key); while armed a message box, Send and Disarm. The arm is
+//              this page's: closing it disarms (js8_bridge.py holds the gates)
 //   activity   one row per audio offset (50 Hz bins), the latest text there
 //   messages   complete decodes: from, to, text, newest first
 //   heard      stations heard: call, SNR, grid, when, offset; newest first
 //
 // Server: addons/js8call.py relays js8_bridge.py: hello {ready, why?,
 // radios: {id: {name, status, frames, heard}}}; events {event: "frame" |
-// "status", radio, ...}. Every string from the air goes through
-// textContent: JS8 text can hold < and >.
+// "status", radio, ...}; the page sends api.send("arm", {radio, minutes}),
+// ("send", {radio, text}), ("disarm", {radio}). Every string from the air
+// goes through textContent: JS8 text can hold < and >.
 
 (() => {
   const BIN_HZ = 50, MAX_ROWS = 60, MAX_MSGS = 100, FRESH_MS = 10 * 60 * 1000;
   const FRAME_CALL = /^\s*([A-Z0-9]{1,3}[0-9][A-Z0-9/]{0,8}):/;
-  let body = null, snap = { ready: false }, pick = null;
+  const MAX_SEND = 160, ARM_MINUTES = [5, 10, 30];
+  let body = null, api = null, snap = { ready: false }, pick = null, tx = null, ticker = null;
   const grids = {};                               // call -> grid, from messages that carried one
 
   const radios = () => snap.radios || {};
@@ -46,8 +53,71 @@
       return box;
     }
     const f = typeof s.radio_freq_khz === "number" ? `${(s.radio_freq_khz / 1000).toFixed(3)} MHz` : "frequency unknown";
-    box.textContent = `Listening · ${f} ${s.radio_mode || ""} · ${s.callsign || "no call"} ${s.grid || ""} · receive only`;
+    const state = s.armed ? `TX armed, ${left(s)} left` : "TX disarmed";
+    if (s.armed) box.classList.add(s.radio_tx ? "onair" : "armed");
+    box.textContent = `${s.armed && s.radio_tx ? "ON AIR · " : "Listening · "}${f} ${s.radio_mode || ""} · ${s.callsign || "no call"} ${s.grid || ""} · ${state}`;
     return box;
+  }
+
+  function left(s) {
+    const n = Math.max(0, Math.round((Number(s.armed_until) || 0) - Date.now() / 1000));
+    return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
+  }
+
+  // The send bar is built once and updated in place: a re-render on every
+  // frame must not drop what's being typed or take the focus away.
+  function txBar() {
+    if (tx) return tx;
+    const bar = el("div", "js8-tx");
+    const mins = el("select", "js8-mins");
+    for (const m of ARM_MINUTES) {
+      const o = el("option", null, `${m} min`);
+      o.value = m;
+      if (m === 10) o.selected = true;
+      mins.appendChild(o);
+    }
+    const arm = el("button", "btn js8-arm", "Arm TX");
+    const why = el("span", "js8-why");
+    const input = el("input", "js8-text");
+    input.type = "text";
+    input.maxLength = MAX_SEND;
+    input.placeholder = "Message, e.g. N9ABC SNR?";
+    input.autocomplete = "off";
+    const sendB = el("button", "btn js8-send", "Send");
+    const disarm = el("button", "btn js8-disarm", "Disarm");
+    const queue = el("span", "js8-queue");
+    const send = () => {
+      const text = input.value.trim();
+      if (!text || !api || !pick) return;
+      api.send("send", { radio: pick, text });
+      input.value = "";
+    };
+    arm.onclick = () => api && pick && api.send("arm", { radio: pick, minutes: Number(mins.value) });
+    disarm.onclick = () => api && pick && api.send("disarm", { radio: pick });
+    sendB.onclick = send;
+    input.onkeydown = (e) => { if (e.key === "Enter") send(); };
+    bar.append(mins, arm, why, input, sendB, disarm, queue);
+    tx = { bar, mins, arm, why, input, sendB, disarm, queue };
+    return tx;
+  }
+
+  function updateTx(r) {
+    const t = txBar(), s = (r && r.status) || {};
+    const armed = !!s.armed;
+    t.mins.hidden = t.arm.hidden = t.why.hidden = armed;
+    t.input.hidden = t.sendB.hidden = t.disarm.hidden = t.queue.hidden = !armed;
+    t.arm.disabled = !!s.why_not || !s.connected;
+    t.why.textContent = s.why_not ? `Can't arm: ${s.why_not}` : "";
+    t.queue.textContent = s.queue ? `${s.queue} frame(s) queued` : "";
+    t.bar.classList.toggle("armed", armed);
+    if (armed && !ticker) {
+      ticker = setInterval(() => {
+        const c = cur(), st = (c && c.status) || {};
+        if (!st.armed) { clearInterval(ticker); ticker = null; return; }
+        const box = body && body.querySelector(".js8-status");
+        if (box) box.replaceWith(statusLine(c));
+      }, 1000);
+    }
   }
 
   function activity(r) {
@@ -108,6 +178,17 @@
 
   function render() {
     if (!body) return;
+    if (tx && tx.bar.contains(document.activeElement)) {
+      // Typing: the bar stays put; only what's around it is rebuilt.
+      const root = body.querySelector(".js8call");
+      const r = cur();
+      if (root && r) {
+        root.querySelector(".js8-status").replaceWith(statusLine(r));
+        root.querySelector(".js8-grid").replaceWith(panes(r));
+        updateTx(r);
+        return;
+      }
+    }
     body.replaceChildren();
     const root = el("div", "js8call");
     if (!snap.ready) {
@@ -130,15 +211,21 @@
     const r = cur();
     if (r) {
       root.appendChild(statusLine(r));
-      const grid = el("div", "js8-grid");
-      for (const [title, fn] of [["Band activity", activity], ["Messages", messages], ["Heard", heard]]) {
-        const p = el("section", "js8-pane");
-        p.append(el("h3", null, title), fn(r));
-        grid.appendChild(p);
-      }
-      root.appendChild(grid);
+      root.appendChild(txBar().bar);
+      updateTx(r);
+      root.appendChild(panes(r));
     }
     body.appendChild(root);
+  }
+
+  function panes(r) {
+    const grid = el("div", "js8-grid");
+    for (const [title, fn] of [["Band activity", activity], ["Messages", messages], ["Heard", heard]]) {
+      const p = el("section", "js8-pane");
+      p.append(el("h3", null, title), fn(r));
+      grid.appendChild(p);
+    }
+    return grid;
   }
 
   function upsertHeard(r, f) {
@@ -160,7 +247,7 @@
   }
 
   addons.register("js8call", {
-    mount(b) { body = b; render(); },
+    mount(b, a) { body = b; api = a || null; render(); },
     hello(s) { snap = s || { ready: false }; render(); },
     event(m) {
       const r = radios()[m.radio];
@@ -179,6 +266,9 @@
       if (rs.some((r) => r.status && r.status.unsafe && r.status.unsafe.length)) {
         return { dot: "tx", title: "JS8: an engine reports TX on (UNSAFE)" };
       }
+      if (rs.some((r) => r.status && r.status.armed)) {
+        return { dot: "tx", title: "JS8: TX armed" };
+      }
       const up = rs.some((r) => r.status && r.status.connected);
       const n = fresh();
       return { dot: up ? "ok" : "off", badge: n || undefined,
@@ -187,7 +277,7 @@
     card() {
       if (!snap.ready) return { state: "off", lines: [snap.why || "not set up"] };
       return { state: "on", lines: Object.entries(radios()).map(([id, r]) =>
-        `${r.name || id}: ${(r.status && r.status.connected) ? "listening" : "engine down"}, ${(r.heard || []).length} heard`) };
+        `${r.name || id}: ${(r.status && r.status.connected) ? (r.status.armed ? "TX armed" : "listening") : "engine down"}, ${(r.heard || []).length} heard`) };
     },
   });
 })();

@@ -254,6 +254,7 @@ class RadioWatch:
         self.state = {"armed": False, "codec_db": None, "id": None, "modem": None}
         self.rig = {}                  # RIG keys from the radio's hello and state changes; {} until a hello
         self.seen = False              # a hello has been read since the radio appeared
+        self.tx = {}                   # {"tx_allowed", "tx_stopped"} from its hello and STOP TX; {} until a hello
         self._task = None
 
     def start(self):
@@ -267,9 +268,11 @@ class RadioWatch:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
         self.seen = False
+        self.tx = {}
         if self.rig:
             self.rig = {}
             self.station.rig_changed()
+        self.station.radio_tx_changed(self.radio)
 
     async def _run(self):
         st = self.station
@@ -280,11 +283,15 @@ class RadioWatch:
                                      heartbeat=5) as ws:
                     hello = json.loads((await ws.receive(timeout=5)).data)
                     self._take(hello.get("winlink") or {}, first=True)
+                    cfg = hello.get("config") or {}
+                    self._take_tx({"tx_allowed": bool(cfg.get("tx_allowed")), "tx_stopped": cfg.get("tx_stopped")})
                     self._take_rig(hello.get("state") or {})
                     async for msg in ws:
                         if msg.type == WSMsgType.TEXT:
                             m = json.loads(msg.data)
-                            if m.get("t") == "winlink":
+                            if m.get("t") == "tx_stop":           # STOP TX pressed or cleared at the radio
+                                self._take_tx({"tx_stopped": m.get("stopped")})
+                            elif m.get("t") == "winlink":
                                 self._take(m)
                             elif m.get("t") == "state":
                                 self._take_rig(m.get("d") or {})
@@ -293,7 +300,16 @@ class RadioWatch:
             except (aiohttp.ClientError, OSError, ValueError, TimeoutError, AttributeError) as e:
                 log.debug("watch %s: %s", self.radio.name, e)
             self._take_rig({"connected": False, "tx": False})     # the socket dropped: nothing known to be keyed
+            if self.tx:
+                self.tx = {}                                      # and nothing known about its transmit gates
+                self.station.radio_tx_changed(self.radio)
             await asyncio.sleep(WATCH_RETRY_S)
+
+    def _take_tx(self, d):
+        new = {**self.tx, **d}
+        if new != self.tx:
+            self.tx = new
+            self.station.radio_tx_changed(self.radio)
 
     def _take_rig(self, d):
         """Meter readings arrive many times a second; only a change to what
@@ -302,6 +318,8 @@ class RadioWatch:
         if new:
             self.rig.update(new)
             self.station.rig_changed()
+            if "tx" in new or "connected" in new:
+                self.station.radio_tx_changed(self.radio)
 
     def _take(self, d, first=False):
         changed = {k: d[k] for k in self.KEYS if k in d and d[k] != self.state.get(k)}
@@ -440,7 +458,7 @@ class Station:
         self.settings_plans = None    # logsync_settings.Plans: the Logbook tab's planned host-file edits
         self.wavelog_cat = None       # wavelog_cat.WavelogCat: each radio's frequency to Wavelog, its clicks back
         self.wavelog_cat_error = None # why it isn't running
-        self.js8 = None               # js8_bridge.Js8Bridge: each radio's JS8 engine, receive only
+        self.js8 = None               # js8_bridge.Js8Bridge: each radio's JS8 engine (sends only while armed)
         self.js8_error = None         # why it isn't running
         self._tasks = []
         self._rigctl = None
@@ -734,6 +752,12 @@ class Station:
                     self.notice(f"Rejected: {e}", "warn", ws)
         finally:
             self.clients.discard(ws)
+            if self.js8 is not None:
+                # A JS8 arm belongs to the page that set it: gone, it disarms.
+                try:
+                    await self.js8.page_closed(ws)
+                except Exception:                 # noqa: BLE001 - the Winlink step below must still run
+                    log.exception("js8: page closed")
             if self.winlink and self.winlink.session_owner is ws:
                 # Operator gone: the radio disarms at once (its socket closes),
                 # as when the radio's own page closes; then Pat stops.
@@ -780,7 +804,9 @@ class Station:
             if self.js8 is None:
                 self.notice("JS8 is not running on this station.", "warn", ws)
             else:
-                await self.js8.handle(ws, m)
+                why = await self.js8.handle(ws, m)
+                if why:
+                    self.notice(why, "warn", ws)
         elif t == "ping":
             await ws.send_str(json.dumps({"t": "pong", "ts": m.get("ts")}))
 
@@ -835,7 +861,7 @@ class Station:
             return {"loaded": False, "error": self.wavelog_cat_error}
         return None
 
-    # --- JS8 (js8_bridge.py): each radio's engine, receive only; its failure stays its own
+    # --- JS8 (js8_bridge.py): each radio's engine, armed per radio to send; its failure stays its own
 
     def make_js8(self, block):
         self.js8, self.js8_error = None, None
@@ -855,6 +881,19 @@ class Station:
             self.js8_error = f"did not start: {type(e).__name__}: {str(e)[:200]}"
             log.error("js8 %s", self.js8_error)
             self.js8 = None
+
+    def radio_tx_state(self, rid):
+        """For JS8's arm: the radio's server's word on whether it may key
+        now. Unknown (no hello yet, socket down) reads as not present."""
+        r, w = self.radio(rid), self.watches.get(rid)
+        if r is None or w is None or not r.present or not w.seen or not w.tx:
+            return {"present": False}
+        return {"present": True, "connected": bool(w.rig.get("connected")), "tx": bool(w.rig.get("tx")),
+                "tx_allowed": bool(w.tx.get("tx_allowed")), "tx_stopped": w.tx.get("tx_stopped")}
+
+    def radio_tx_changed(self, radio):
+        if self.js8 is not None:
+            asyncio.ensure_future(self.js8.radio_changed(radio.id))
 
     def js8_status(self):
         if self.js8 is not None:

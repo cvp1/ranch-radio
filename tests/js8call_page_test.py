@@ -2,7 +2,12 @@
 browser: no server, the page's own CSS and script, a stub add-on registry.
 
   - not set up: the tab says why
-  - status: connected, the rig's frequency and mode, receive only
+  - status: connected, the rig's frequency and mode, TX disarmed
+  - arm: the Arm button sends arm with the minutes chosen; disabled with the
+    reason when the radio can't key
+  - armed: the countdown, the message box; Send and Enter send the text
+    (and clear the box); Disarm sends disarm; a frame arriving while typing
+    keeps the text and the focus; ON AIR when the radio's server says keyed
   - activity: one row per audio offset, sorted, the latest text there
   - messages: complete decodes, newest first, from and to
   - heard: newest first; a later frame from a station moves it to the top
@@ -98,13 +103,13 @@ try:
       document.body.innerHTML = '<div class="addon-body" id="j"></div>';
     })()""" % json.dumps(css))
     setup((ROOT / "static/addons/js8call.js").read_text())
-    setup("__impl.js8call.mount(document.getElementById('j')); __impl.js8call.hello({ready: false, why: 'JS8 is not set up here'})")
+    setup("window.__sent = []; __impl.js8call.mount(document.getElementById('j'), {send: (v, x) => __sent.push([v, x])}); __impl.js8call.hello({ready: false, why: 'JS8 is not set up here'})")
     check("not set up: says why", b.js(f"({Q})('.js8-status').textContent"), "JS8 is not set up here")
 
     setup("__impl.js8call.hello(" + json.dumps(SNAP) + ")")
     b.wait("document.querySelectorAll('#j .js8-activity tbody tr').length > 0", 10)
-    check("status: listening, frequency, mode, receive only",
-          b.js(f"({Q})('.js8-status').textContent"), "Listening · 14.078 MHz DATA-U · N0CALL FN31 · receive only")
+    check("status: listening, frequency, mode, TX disarmed",
+          b.js(f"({Q})('.js8-status').textContent"), "Listening · 14.078 MHz DATA-U · N0CALL FN31 · TX disarmed")
     check("activity: one row per offset, sorted",
           b.js("[...document.querySelectorAll('#j .js8-activity tbody tr')].map((r) => r.dataset.bin)"),
           ["800", "1200", "1500"])
@@ -121,6 +126,42 @@ try:
     check("a new frame: the offset's row shows it", b.js("document.querySelector('#j .js8-activity tr[data-bin=\"800\"] td.txt').textContent"),
           "K1ABC: N0CALL SNR? ")
     check("a new frame: its station moves to the top of heard", b.js(f"({TEXTS})('.js8-heard td.call')"), ["K1ABC", "W1AW", "N9ABC"])
+
+    # ------------------------------------------------------------ sending
+    check("disarmed: Arm shown, no message box", b.js(f"[({Q})('.js8-arm').hidden, ({Q})('.js8-text').hidden]"), [False, True])
+    setup(f"({Q})('.js8-mins').value = '5'; ({Q})('.js8-arm').click()")
+    check("Arm sends arm with the minutes", b.js("__sent.at(-1)"), ["arm", {"radio": "ic7300", "minutes": 5}])
+    setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(STATUS)
+          + ", {why_not: 'transmit is off on this radio (--no-tx)'})})")
+    check("can't key: Arm disabled, says why", b.js(f"[({Q})('.js8-arm').disabled, ({Q})('.js8-why').textContent]"),
+          [True, "Can't arm: transmit is off on this radio (--no-tx)"])
+    ARMED = dict(STATUS, armed=True, tx_enabled=True, why_not=None)
+    setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(ARMED)
+          + ", {armed_until: Date.now() / 1000 + 299.5})})")
+    check("armed: message box, Arm hidden", b.js(f"[({Q})('.js8-arm').hidden, ({Q})('.js8-text').hidden]"), [True, False])
+    check("armed: the countdown", b.js(f"/TX armed, (4:5\\d|5:00) left$/.test(({Q})('.js8-status').textContent)"), True)
+    setup(f"{{ const i = ({Q})('.js8-text'); i.focus(); i.value = 'N9ABC SNR?'; }}")
+    setup("__impl.js8call.event({event: 'frame', radio: 'ic7300', frame: {kind: 'frame', utc: '2026-11-21T16:36:15Z', snr: 2, freq_hz: 1300.0, text: 'K2ABC: CQ'}})")
+    check("a frame while typing: text and focus kept", b.js(f"[({Q})('.js8-text').value, document.activeElement === ({Q})('.js8-text')]"),
+          ["N9ABC SNR?", True])
+    check("a frame while typing: the activity still updates",
+          b.js("!!document.querySelector('#j .js8-activity tr[data-bin=\"1300\"]')"), True)
+    setup(f"({Q})('.js8-send').click()")
+    check("Send sends the text, clears the box", [b.js("__sent.at(-1)"), b.js(f"({Q})('.js8-text').value")],
+          [["send", {"radio": "ic7300", "text": "N9ABC SNR?"}], ""])
+    setup(f"{{ const i = ({Q})('.js8-text'); i.value = 'CQ CQ'; i.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter'}})); }}")
+    check("Enter sends", b.js("__sent.at(-1)"), ["send", {"radio": "ic7300", "text": "CQ CQ"}])
+    setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(ARMED)
+          + ", {armed_until: Date.now() / 1000 + 200, radio_tx: true})})")
+    check("keyed: ON AIR", b.js(f"[({Q})('.js8-status').textContent.startsWith('ON AIR'), ({Q})('.js8-status').classList.contains('onair')]"),
+          [True, True])
+    check("armed: the tab's dot is tx", b.js("__impl.js8call.tab().dot"), "tx")
+    if SHOTS:
+        b.screenshot(os.path.join(SHOTS, "js8call-armed.png"))
+    setup(f"({Q})('.js8-disarm').click()")
+    check("Disarm sends disarm", b.js("__sent.at(-1)"), ["disarm", {"radio": "ic7300"}])
+    setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: " + json.dumps(STATUS) + "})")
+    check("disarmed again: Arm back", b.js(f"({Q})('.js8-arm').hidden"), False)
 
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: {connected: false, error: 'engine not reachable on 127.0.0.1:4537 (ClientConnectorError)', unsafe: []}})")
     check("engine down: says so, and why", b.js(f"({Q})('.js8-status').textContent"),
