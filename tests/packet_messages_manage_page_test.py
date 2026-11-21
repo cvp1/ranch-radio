@@ -170,7 +170,11 @@ try:
     b.js("document.querySelector('#thr-delete').click()")
     check("Delete the thread: asks first, naming the count", b.wait("window.confirmed.at(-1).includes('K7XYZ (2 messages)')"), True)
     check("  gone on the hub", T.wait_for(lambda: "K7XYZ" not in threads(hub), 10), True)
-    check("  the page is back to a new message", b.wait("document.querySelector('#msg-with-h').textContent", 10), "New message")
+    # Wait for the value itself: any heading is truthy, so waiting on the text
+    # returned the old "With K7XYZ" when the page was a beat slow (CI, 2026-11-21).
+    check("  the page is back to a new message",
+          b.wait("(t => t === 'New message' && t)(document.querySelector('#msg-with-h').textContent)", 10) or
+          b.js("document.querySelector('#msg-with-h').textContent"), "New message")
 
     # Search, and the guard.
     b.js("(() => { const q = document.querySelector('#msg-q'); q.value = 'NOT FOR'; q.dispatchEvent(new Event('change')); })()")
