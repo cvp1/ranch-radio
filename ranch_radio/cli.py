@@ -377,6 +377,51 @@ def _show_service(lines):
         print(("  ok   " if rc == 0 else f"  FAIL ({rc}) ") + line + (f"\n         {err}" if err else ""))
 
 
+def log_targets(h, home=None):
+    """[(name, module, kind, where)] for every service the host file renders:
+    a Mac agent's console file (its StandardErrorPath, where launchd puts both
+    streams), a Linux unit's journal. From render, so it names what install
+    wrote, not a guess."""
+    out = []
+    for art in artifacts(h, home):
+        if art.fmt == "plist":
+            c = art.content
+            files = list(dict.fromkeys(x for x in (c.get("StandardErrorPath"), c.get("StandardOutPath")) if x))
+            out.append((c["Label"], art.module, "file", files))
+        elif art.fmt == "systemd" and art.path.endswith(".service"):
+            out.append((Path(art.path).name, art.module, "journal", [Path(art.path).name]))
+    return out
+
+
+def cmd_logs(a):
+    h = load_host(a.host or this_host())
+    targets = log_targets(h, a.home)
+    if not a.service:
+        w = max([len(t[0]) for t in targets] + [7])
+        for name, module, kind, where in targets:
+            print(f"{name:{w}}  {module:12} {', '.join(where) or '(none)'}")
+        print("\nranch-radio logs NAME [-f] [-n LINES]   (NAME: a name above, or its module)")
+        return 0
+    hit = [t for t in targets if a.service in (t[0], t[1])] or [t for t in targets if a.service in t[0]]
+    if len(hit) != 1:
+        names = ", ".join(t[0] for t in hit) if hit else "none"
+        print(f"ranch-radio: {a.service!r} matches {names}; `ranch-radio logs` lists them")
+        return 2
+    name, _, kind, where = hit[0]
+    if kind == "journal":
+        argv = [os.environ.get("RANCH_RADIO_JOURNALCTL", "journalctl"), "--user", "-u", where[0], "-n", str(a.lines),
+                "--no-pager"] + (["-f"] if a.follow else [])
+    else:
+        argv = [os.environ.get("RANCH_RADIO_TAIL", "tail"), "-n", str(a.lines)] + (["-F"] if a.follow else []) + where[:1]
+    try:
+        return subprocess.call(argv)
+    except KeyboardInterrupt:
+        return 0
+    except OSError as e:
+        print(f"ranch-radio: {argv[0]}: {e}")
+        return 1
+
+
 def cmd_start(a):
     h = load_host(a.host or this_host())
     _guard(h, a)
@@ -815,6 +860,12 @@ def main(argv=None):
     dm.add_argument("--port", type=int, default=0, help="the station page's port (default: a free one)")
     w = sub.add_parser("where", help="the host file this machine uses (exit 1 if none)")
     w.add_argument("host", nargs="?")
+    lg = sub.add_parser("logs", help="where each service logs, or one service's log (tail; -f follows)")
+    lg.add_argument("service", nargs="?", help="a name from the list, or its module")
+    lg.add_argument("-f", "--follow", action="store_true")
+    lg.add_argument("-n", "--lines", type=int, default=50)
+    lg.add_argument("--host", help="default: this machine")
+    lg.add_argument("--home", help=argparse.SUPPRESS)
     st = sub.add_parser("start", help="enable and start everything the host file renders (after install)")
     st.add_argument("host", nargs="?")
     st.add_argument("--home", help=argparse.SUPPRESS)
@@ -856,4 +907,4 @@ def main(argv=None):
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
-            "logsync": cmd_logsync, "demo": cmd_demo}[a.cmd](a) or 0
+            "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs}[a.cmd](a) or 0

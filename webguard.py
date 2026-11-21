@@ -17,6 +17,7 @@ Two checks:
     server: scheme and authority (review 2026-10-19, Codex).
 """
 import ipaddress
+import os
 import re
 import socket
 from urllib.parse import urlsplit
@@ -171,6 +172,34 @@ def add_security_headers(app):
     all of them; a middleware misses an already-prepared response)."""
     app.on_response_prepare.append(_security_headers)
     return app
+
+
+
+# ---------------------------------------------------------------- /healthz
+# A readiness answer for scripts, monitors and `ranch-radio status`: is this
+# process up, which role is it, and what about it is degraded. Not the
+# restart check: service.idle() reads the WebSocket hello (TX, Winlink,
+# rigctl clients) and stays the only thing that decides a restart is safe
+# (review plan PR 1, panel 2026-11-21). The route is guarded like every
+# other: the Host check above, and the server's token when it has one.
+
+def healthz(role, facts, authorised=None):
+    """An aiohttp handler for GET /healthz. facts() -> (dict, [degraded...])."""
+    import time
+    from aiohttp import web
+    started = time.monotonic()
+
+    async def handler(request):
+        if authorised is not None and not authorised(request):
+            return web.json_response({"error": "token required"}, status=401)
+        try:
+            extra, degraded = facts()
+        except Exception as e:                       # noqa: BLE001 - a health answer never raises
+            extra, degraded = {}, [f"facts failed: {type(e).__name__}"]
+        body = {"ok": not degraded, "role": role, "uptime_s": int(time.monotonic() - started),
+                "pid": os.getpid(), "degraded": list(degraded), **extra}
+        return web.json_response(body, headers={"Cache-Control": "no-store"})
+    return handler
 
 
 def allowed_names(args):
