@@ -51,6 +51,7 @@ RULES = {
     "http_url": (str, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]{0,200})?")),
     "origin_list": (list, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")),
     "net_host": (str, re.compile(r"[A-Za-z0-9.-]{1,253}")),
+    "grid": (str, re.compile(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?")),
 }
 
 
@@ -91,6 +92,10 @@ PAT_FIX = "install Pat (https://getpat.io) and set its path with --set pat=PATH"
 XARA_FIX = ("brew install rust && cargo install --locked --git https://github.com/x0rro/xara "
             "--tag v0.1.3 --root ~/.local xara")
 ARDOP_FIX = "build it from this repo: ardop/build.sh (see ardop/README.md)"
+# The JS8 engine refuses any jf8call but the Ranch Radio build (js8_engine.MIN_RR):
+# upstream 0.7.1 transmits ACKs and relay notices by itself.
+JS8_FIX = ("build the Ranch Radio jf8call (0.7.1+rr.2 or later; see the README's JS8 section), install it "
+           "there, then `python3 js8_engine.py check --bin PATH`")
 # The benlink the UV-PRO bridge is tested against (CI and tests/ci/Dockerfile
 # pin the same commit; tests/modules_test.py checks they agree). A newer
 # benlink requires settings fields the bridge doesn't send.
@@ -146,6 +151,25 @@ MANIFESTS = {
                 "audio_out": "the radio's sound card name for xara to play into",
                 "call": "your callsign (xara sends its CW ID with it)"},
         "needs": [{"bin": "xara", "key": "bin", "default": "~/.local/bin/xara", "fix": XARA_FIX}],
+    },
+    # The JS8 engine (js8_engine.py -> jf8call): one per radio with a
+    # js8_port, keyed only through that radio's rigctl port, TX disarmed at
+    # every start. Linux takes each radio's own audio_in/audio_out.
+    "js8": {
+        "label": "JS8 (jf8call engine)",
+        "family": "files",
+        "block": ("js8",),
+        "os": ["macos", "linux"],
+        "template": {"macos": {"bin": "~/.local/bin/jf8call", "call": ASK, "grid": ASK,
+                               "audio_in": ASK, "audio_out": ASK, "pskreporter": False},
+                     "linux": {"bin": "~/.local/bin/jf8call", "call": ASK, "grid": ASK, "pskreporter": False}},
+        "rules": {"call": "callsign", "grid": "grid", "audio_in": "audio_name", "audio_out": "audio_name"},
+        "ask": {"call": "your callsign (jf8call sends it in every frame)",
+                "grid": "your Maidenhead grid, 4 or 6 characters, e.g. FN31",
+                "audio_in": "the radio's sound card name for jf8call to listen on, e.g. \"USB Audio CODEC\"",
+                "audio_out": "the radio's sound card name for jf8call to play into"},
+        "radios": {"js8_port": "free_port"},
+        "needs": [{"bin": "jf8call", "key": "bin", "default": "~/.local/bin/jf8call", "fix": JS8_FIX}],
     },
     "mesh": {
         "label": "Mesh (Meshtastic node)",

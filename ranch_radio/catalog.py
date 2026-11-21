@@ -37,6 +37,13 @@ MODULES = [
      "platforms": ["macos"],
      "ships": "macOS: a xara launchd agent and three --winlink-vara-* flags on the radio's server, with the station arming VARA sessions over its lane, rendered "
               "from the host file's winlink.xara block"},
+    {"name": "js8", "kind": "service", "title": "JS8 engine: jf8call (JS8Call-compatible) headless beside each radio, "
+                                                 "receive-first, keyed only through the radio's own rigctl port",
+     "code": "js8_engine.py (the launcher: version gate, safe settings put back at every start); jf8call is built "
+             "by the operator from the Ranch Radio patches (doctor prints how)",
+     "platforms": ["macos", "linux"],
+     "ships": "a launchd agent (Mac) or <id>-js8.service (Linux) per radio with a js8_port, rendered from the "
+              "host file's js8 block; its WebSocket on loopback only, for the station"},
     {"name": "mesh", "kind": "addon", "title": "Meshtastic node on the page (channels, conversations, replies and reactions, "
                                                  "nodes with telemetry and requests, map with neighbour links, who hears us, settings); "
                                                  "on/off switch",

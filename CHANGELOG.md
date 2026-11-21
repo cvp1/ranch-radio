@@ -7,6 +7,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- A `js8` module: a JS8 engine (jf8call, JS8Call-compatible, headless) beside each radio with a `js8_port`, as a launchd agent or `<id>-js8.service`. It starts receive-only every time: TX disarmed; no auto-reply, heartbeat or heartbeat ACKs; no schedule or filter changes; PSK Reporter off unless asked. It keys only through the radio's own rigctl port, so STOP TX, `--no-tx` and the transmit time limit apply. Its WebSocket is on loopback only. `js8/build.sh` builds the patched jf8call it requires, and `js8_engine.py` refuses any other build. The station's JS8 tab is not in this release.
+
 - Mesh: more than one Meshtastic node on a station. List the others under the `mesh` block's `radios` (each a `port`, optionally `label`, `keys`, `log`, `feed`, `auto_trace`); each runs its own bridge and history. A switcher beside "Mesh" picks which node the tab shows and sends on, and counts new messages on the other nodes. A station with one node is unchanged.
 
 - Band strip: a "Need: DXCC only" switch under the cells narrows "need near you" to DXCC needs (new DXCC, on the band, in the mode), dropping new grids. This browser keeps the choice; the default still counts both.

@@ -41,6 +41,9 @@ PACKET_LABEL = "org.ranch-radio.packet-hub"
 DIREWOLF_LABEL = "org.ranch-radio.direwolf"
 DIREWOLF_SERVICE = "direwolf.service"
 DIREWOLF_PTY = "/tmp/kisstnc"            # Direwolf -p makes this link to its KISS pseudo-terminal
+# The JS8 engine (js8_engine.py -> jf8call), one per radio with a js8_port.
+JS8_LABEL = "org.ranch-radio.js8"
+JS8_STATE = "~/.local/state/radio-remote/js8"
 ORDERED_KEYS = re.compile(r"^(Exec|Environment)")
 
 
@@ -83,6 +86,7 @@ SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 TEXT = re.compile(r"[^-].*")              # free text passed as one argv element (no shell)
 CLOCK = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 USB_ID = re.compile(r"[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}")
+GRID = re.compile(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?")
 PTT_MODE = re.compile(r"off|serial")
 
 # (path, rule): "*" is every element of a list or every value of an object.
@@ -132,15 +136,17 @@ RULES = [
     (("logsync", "lotw", "password_file"), TOKEN), (("logsync", "lotw", "url"), TOKEN),
     (("wavelog_cat", "url"), TOKEN), (("wavelog_cat", "key_file"), TOKEN), (("wavelog_cat", "radios", "*"), LABEL),
     (("wavelog_cat", "qsy", "station_url"), TOKEN), (("wavelog_cat", "qsy", "origins", "*"), TOKEN),
+    (("js8", "bin"), TOKEN), (("js8", "label"), LABEL), (("js8", "call"), CALL), (("js8", "grid"), GRID),
+    (("js8", "audio_in"), TEXT), (("js8", "audio_out"), TEXT),
     (("addons", "*"), None),     # add-on names: checked below
 ]
-PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"),
+PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"), ("radios", "*", "js8_port"),
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
          ("winlink", "ardopcf", "port"), ("winlink", "xara", "port"), ("winlink", "xara", "lane_port"),
          ("station", "rigctl_port"), ("logsync", "udp", "port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
-         ("updates", "apply"), ("mesh", "feed_tx"), ("logsync", "adopt_wavelog")]
+         ("updates", "apply"), ("mesh", "feed_tx"), ("logsync", "adopt_wavelog"), ("js8", "pskreporter")]
 
 # APRS messaging (plan 2026-11-07, 3.7): packet.aprs caps -> the hub's flags,
 # with their bounds. The hub's overall runaway cap (300/min) bounds the UI total.
@@ -323,7 +329,7 @@ def validate(h):
             raise HostError(f"{h['host']}: radio id {r['id']!r} twice")
         ids.add(r["id"])
         # Two radios on one port would key the wrong transmitter: refuse.
-        for k in ("web", "rigctl", "lane"):
+        for k in ("web", "rigctl", "lane", "js8_port"):
             if k in r:
                 p = r[k]
                 if k == "rigctl" and p == 0:
@@ -424,6 +430,7 @@ def validate(h):
         if not isinstance(opts, dict):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
     _validate_xara(h, ports)
+    _validate_js8(h, ports)
     listen_plan(h)
     listen_hf_plan(h)
     _validate_directory(h)
@@ -514,6 +521,89 @@ def _feature(name):
     tests/affected_test.py keeps both the seam and the stdlib-only rule."""
     import importlib
     return importlib.import_module(name)
+
+
+def js8_radios(h):
+    """The radios that get a JS8 engine: a js8 block on the host, and a
+    js8_port on the radio. A js8_port with no block (left by `remove`) is idle."""
+    if not isinstance(h.get("js8"), dict):
+        return []
+    return [r for r in h["radios"] if r.get("js8_port")]
+
+
+def _validate_js8(h, ports):
+    """js8 (the JS8 engine, js8_engine.py): a callsign and grid, the radio's
+    own rigctl port to key through, and its sound card. A Mac names one card
+    in the block (one radio, as xara); Linux uses each radio's PipeWire nodes."""
+    j = h.get("js8")
+    if j is None:
+        return
+    host = h["host"]
+    if not isinstance(j, dict):
+        raise HostError(f"{host}: js8 must be an object")
+    if not j.get("bin"):
+        raise HostError(f"{host}: js8 is missing 'bin' (the Ranch Radio build of jf8call)")
+    if not (j.get("call") or h.get("call")):
+        raise HostError(f"{host}: js8 needs \"call\" (or the host's \"call\"): jf8call sends it in every frame")
+    if not j.get("grid"):
+        raise HostError(f"{host}: js8 is missing 'grid' (4 or 6 characters, e.g. FN31)")
+    rs = js8_radios(h)
+    if not rs:
+        raise HostError(f"{host}: js8 is on but no radio has a js8_port (its engine's private WebSocket port)")
+    for r in rs:
+        if r.get("rigctl", 4532) == 0:
+            raise HostError(f"{host}: {r['id']}.js8_port: the radio's rigctl port is off (0); the engine keys only "
+                            f"through it (STOP TX, --no-tx and the transmit time limit apply there)")
+    if h["os"] == "macos":
+        for k in ("audio_in", "audio_out"):
+            if not j.get(k):
+                raise HostError(f"{host}: js8 is missing {k!r} (the radio's sound card, e.g. \"USB Audio CODEC\")")
+        if len(rs) > 1:
+            raise HostError(f"{host}: js8 on a Mac runs one engine (one sound card in the block); "
+                            f"js8_port is on {', '.join(r['id'] for r in rs)}")
+    else:
+        for r in rs:
+            if not (r.get("audio_in") and r.get("audio_out")):
+                raise HostError(f"{host}: {r['id']}.js8_port needs the radio's audio_in and audio_out "
+                                f"(the engine listens and plays on the radio's own card)")
+    w = h.get("winlink") or {}
+    taken = {}
+    for k in ("pat_port", "lane_port", "ardop_port"):
+        if isinstance(w.get(k), int):
+            taken[w[k]] = f"winlink.{k}"
+    x = w.get("xara")
+    if isinstance(x, dict):
+        for k in ("port", "lane_port"):
+            if isinstance(x.get(k), int):
+                taken[x[k]] = f"winlink.xara.{k}"
+        if isinstance(x.get("port"), int):
+            taken[x["port"] + 1] = "winlink.xara.port + 1"
+    a = w.get("ardopcf")
+    if isinstance(a, dict) and isinstance(a.get("port"), int):
+        taken[a["port"]] = taken[a["port"] + 1] = "winlink.ardopcf.port"
+    for r in rs:
+        p = r["js8_port"]
+        if p in taken:
+            raise HostError(f"{host}: port {p} is both {taken[p]} and {r['id']}.js8_port")
+        if p == 7300:
+            raise HostError(f"{host}: {r['id']}.js8_port 7300 is the station's port")
+
+
+def js8_argv(h, r, py, repo, pth):
+    """One radio's engine: js8_engine.py run, keyed through the radio's rigctl."""
+    j = h["js8"]
+    linux = h["os"] == "linux"
+    ai, ao = (r["audio_in"], r["audio_out"]) if linux else (j["audio_in"], j["audio_out"])
+    a = [py, f"{repo}/js8_engine.py", "run", "--bin", pth(j["bin"]),
+         "--config-dir", pth(f"{JS8_STATE}/{r['id']}"),
+         "--rigctl", f"127.0.0.1:{r.get('rigctl', 4532)}", "--ws-port", str(r["js8_port"]),
+         "--call", (j.get("call") or h["call"]).upper(), "--grid", j["grid"],
+         "--audio-in", ai, "--audio-out", ao]
+    if linux:
+        a.append("--pulse")
+    if j.get("pskreporter"):
+        a.append("--pskreporter")
+    return a
 
 
 XARA_HF = (500, 2300, 2750)
@@ -829,6 +919,15 @@ def _linux(h):
             body = HEADER.format(host=host) + "[Service]\n" + "".join(l + "\n" for l in lines)
             arts.append(Artifact(rid, f"{UNIT_DIR}/{svc}.d/{name}", "systemd", body))
 
+    for r in js8_radios(h):
+        rid = r["id"]
+        arts.append(Artifact("js8", f"{UNIT_DIR}/{rid}-js8.service", "systemd", unit(host, [
+            ("Unit", [("Description", f"Ranch Radio: JS8 engine for {r['name']} (jf8call, keyed through its rigctl)"),
+                      ("After", f"{rid}-remote.service"), ("BindsTo", f"{rid}-remote.service")]),
+            ("Service", [("ExecStart", exec_line(js8_argv(h, r, py, repo, _unit_path))),
+                         ("Restart", "on-failure"), ("RestartSec", "10"), ("TimeoutStopSec", "10")]),
+            ("Install", [("WantedBy", f"{rid}-remote.service")])])))
+
     rules = wireplumber_rules(h)
     if rules:
         arts.append(Artifact("audio", WIREPLUMBER_CONF, "text", rules))
@@ -1059,6 +1158,17 @@ def _macos(h, home):
                                  "--drive-db", f"{x['drive_db']:g}", "--log", pth(x["log"]), "--quiet",
                                  "--state-dir", pth(x["state"])],
             "StandardErrorPath": console, "StandardOutPath": console}))
+
+    for r in js8_radios(h):
+        # KeepAlive: a refused start (not the Ranch Radio build) exits and is
+        # retried, loudly in its log, once per ThrottleInterval.
+        label = h["js8"].get("label", JS8_LABEL)
+        log = pth(f"~/Library/Logs/ranch-radio-js8-{r['id']}.log")
+        arts.append(Artifact("js8", f"{AGENTS}/{label}.plist", "plist", {
+            "KeepAlive": True, "Label": label, "ProcessType": "Interactive", "RunAtLoad": True,
+            "ThrottleInterval": 10, "ProgramArguments": js8_argv(h, r, py, repo, pth),
+            "WorkingDirectory": repo, "EnvironmentVariables": {"PATH": MAC_PATH},
+            "StandardErrorPath": log, "StandardOutPath": log}))
 
     wd = (h.get("integrations") or {}).get("macos-widget")
     if wd:

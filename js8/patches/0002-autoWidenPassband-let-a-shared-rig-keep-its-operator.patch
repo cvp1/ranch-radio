@@ -1,0 +1,141 @@
+From 4157a6373b201fbf727c7b674f093c62f760a0d7 Mon Sep 17 00:00:00 2001
+From: cvp1 <54213066+cvp1@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 09:02:20 -0700
+Subject: [PATCH 2/3] autoWidenPassband: let a shared rig keep its operator's
+ filter
+
+The 3000 Hz widening on connect and every poll changes an SSB operator's
+filter on a rig shared with voice and other apps. Default stays true.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/config.cpp           |  2 ++
+ src/config.h             |  1 +
+ src/hamlibcontroller.cpp |  5 +++--
+ src/hamlibcontroller.h   |  2 ++
+ src/mainwindow.cpp       | 13 +++++++++----
+ 5 files changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/src/config.cpp b/src/config.cpp
+index e973116..d9cb4f0 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -133,6 +133,7 @@ Config Config::load(const QString &overrideDir)
+     c.autoReply                 = o.value(u"autoReply").toBool(false);
+     c.distMiles                 = o.value(u"distMiles").toBool(true);
+     c.autoAtu                   = o.value(u"autoAtu").toBool(false);
++    c.autoWidenPassband         = o.value(u"autoWidenPassband").toBool(true);
+     // Preserve legacy serial configs if rigModel was omitted in older settings.json
+     const QString savedRigPort = o.value(u"rigPort").toString().trimmed();
+     const int fallbackRigModel = (!savedRigPort.isEmpty() && !savedRigPort.contains(QLatin1Char(':')))
+@@ -215,6 +216,7 @@ void Config::save(const QString &overrideDir) const
+     o[u"autoReply"]                = autoReply;
+     o[u"distMiles"]                = distMiles;
+     o[u"autoAtu"]                  = autoAtu;
++    o[u"autoWidenPassband"]        = autoWidenPassband;
+     o[u"rigModel"]                 = rigModel;
+     o[u"rigPort"]                  = rigPort;
+     if (rigModel == 2) {
+diff --git a/src/config.h b/src/config.h
+index d4f7074..7118718 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -48,6 +48,7 @@ struct Config {
+     bool    autoReply                 = false;
+     bool    distMiles                 = true;
+     bool    autoAtu                   = false;
++    bool    autoWidenPassband         = true;  // false on a rig shared with voice/other apps
+ 
+     int     rigModel    = 2; // RIG_MODEL_NETRIGCTL (network rigctld)
+     QString rigPort     = QStringLiteral("127.0.0.1:4532");
+diff --git a/src/hamlibcontroller.cpp b/src/hamlibcontroller.cpp
+index 69ed08a..0179bce 100644
+--- a/src/hamlibcontroller.cpp
++++ b/src/hamlibcontroller.cpp
+@@ -29,6 +29,7 @@ bool HamlibController::connectRig(const RigConfig &cfg)
+ {
+ #ifdef HAVE_HAMLIB
+     disconnectRig();
++    m_autoWiden.store(cfg.autoWidenPassband);
+ 
+     m_rig = rig_init(cfg.rigModel);
+     if (!m_rig) {
+@@ -230,7 +231,7 @@ void HamlibController::syncSplitVfo(freq_t freqHz, rmode_t rmode)
+ 
+ void HamlibController::ensureWideDigitalPassband()
+ {
+-    if (!m_rig || !m_connected.load())
++    if (!m_rig || !m_connected.load() || !m_autoWiden.load())
+         return;
+     rmode_t rmode = RIG_MODE_NONE;
+     pbwidth_t width = 0;
+@@ -320,7 +321,7 @@ void HamlibController::requestPoll()
+     pbwidth_t width = 0;
+     QString modeStr;
+     if (rig_get_mode(m_rig, RIG_VFO_CURR, &rmode, &width) == RIG_OK) {
+-        if ((rmode == RIG_MODE_PKTUSB || rmode == RIG_MODE_USB) &&
++        if (m_autoWiden.load() && (rmode == RIG_MODE_PKTUSB || rmode == RIG_MODE_USB) &&
+             width > 0 && width < 2800 && m_widenedMode != rmode) {
+             m_widenedMode = rmode;
+             if (rig_set_mode(m_rig, RIG_VFO_CURR, rmode, 3000) != RIG_OK) {
+diff --git a/src/hamlibcontroller.h b/src/hamlibcontroller.h
+index 687853c..f51ec57 100644
+--- a/src/hamlibcontroller.h
++++ b/src/hamlibcontroller.h
+@@ -25,6 +25,7 @@ struct RigConfig {
+     int     pttType     = 0;      // 0=VOX/none 1=CAT 2=DTR 3=RTS
+     bool    emulatedSplit = false; // if true, TX freq ≠ RX freq via rapid VFO switch
+     double  txFreqKhz   = 0.0;   // TX dial freq for emulated split (0 = same as RX)
++    bool    autoWidenPassband = true; // widen USB/DATA-U filters < 2800 Hz to 3000 Hz on connect and poll
+ };
+ Q_DECLARE_METATYPE(RigConfig)
+ 
+@@ -69,6 +70,7 @@ private:
+     void syncSplitVfo(freq_t freqHz, rmode_t rmode = RIG_MODE_NONE);
+     RIG    *m_rig         = nullptr;
+     std::atomic<rmode_t> m_widenedMode{RIG_MODE_NONE};
++    std::atomic<bool>    m_autoWiden{true};
+ #endif
+     std::atomic<bool> m_connected{false};
+     std::atomic<bool> m_pollInFlight{false};
+diff --git a/src/mainwindow.cpp b/src/mainwindow.cpp
+index 721e5d5..c4fba14 100644
+--- a/src/mainwindow.cpp
++++ b/src/mainwindow.cpp
+@@ -2789,6 +2789,7 @@ RigConfig MainWindow::configToRigConfig() const
+     cfg.pttType      = m_config.pttType;
+     cfg.emulatedSplit = m_config.emulatedSplit;
+     cfg.txFreqKhz    = m_config.txFreqHz / 1000.0;
++    cfg.autoWidenPassband = m_config.autoWidenPassband;
+     return cfg;
+ }
+ 
+@@ -4056,8 +4057,10 @@ void MainWindow::apiSetRigConfig(const RigConfig &cfg)
+     m_config.save();
+     if (!cfg.port.trimmed().isEmpty() && (connChanged || !m_hamlib->isConnected())) {
+         QMetaObject::invokeMethod(m_hamlib, &HamlibController::disconnectRig, Qt::QueuedConnection);
+-        QMetaObject::invokeMethod(m_hamlib, [this, cfg]() {
+-            m_hamlib->connectRig(cfg);
++        QMetaObject::invokeMethod(m_hamlib, [this, cfg, widen = m_config.autoWidenPassband]() {
++            RigConfig c = cfg;
++            c.autoWidenPassband = widen;
++            m_hamlib->connectRig(c);
+         }, Qt::QueuedConnection);
+     }
+ }
+@@ -4106,8 +4109,10 @@ void MainWindow::apiConnectRadio(const RigConfig &cfg)
+     rigConfigToConfig(cfg);
+     m_config.save();
+     QMetaObject::invokeMethod(m_hamlib, &HamlibController::disconnectRig, Qt::QueuedConnection);
+-    QMetaObject::invokeMethod(m_hamlib, [this, cfg]() {
+-        m_hamlib->connectRig(cfg);
++    QMetaObject::invokeMethod(m_hamlib, [this, cfg, widen = m_config.autoWidenPassband]() {
++        RigConfig c = cfg;
++        c.autoWidenPassband = widen;
++        m_hamlib->connectRig(c);
+     }, Qt::QueuedConnection);
+ }
+ 
+-- 
+2.55.0
+

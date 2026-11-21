@@ -1,0 +1,20 @@
+From 1289a74788879fdc9dd477ae88823659f9601b9f Mon Sep 17 00:00:00 2001
+From: cvp1 <54213066+cvp1@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 09:04:27 -0700
+Subject: [PATCH 3/3] VERSION 0.7.1+rr.2: the Ranch Radio build (launcher gate)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ VERSION | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/VERSION b/VERSION
+index 39e898a..4fe88ea 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.7.1
++0.7.1+rr.2
+-- 
+2.55.0
+

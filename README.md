@@ -243,6 +243,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `vara` | Winlink over VARA HF beside ARDOP, picked per session (macOS; xara, unregistered) | `winlink`; xara (built with cargo, below) |
+| `js8` | A JS8 engine beside each radio (jf8call, JS8Call-compatible, headless), receive-first: TX disarmed at every start, keyed only through the radio's own rigctl port. The station's JS8 tab comes in a later release | jf8call built by `js8/build.sh` (below) |
 | `mesh` | A Meshtastic node on the page: channels, conversations, replies and reactions, a Health view (traffic, channel load over 24 h, chatty nodes, hop limits, the main relay, the packet log), long messages in parts, a failed send sent again by itself (Cancel to stop it), nodes (telemetry, ask for position / telemetry / user info, ignore, remove), a map with neighbour links, hops, routers, distance rings and the list of who hears you and whom you hear, settings, reboot | a node over USB, Bluetooth or Wi-Fi (`tcp:HOST`; its port has no login, so a trusted LAN only); the `meshtastic` package; more than one node with `"radios"` (below) |
 | `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO / UV-50PRO over Bluetooth (BlueZ on Linux, IOBluetooth on macOS); optional receive-only iGate | Direwolf, a network TNC, or Bluetooth |
 | `uvpro` | UV-PRO / UV-50PRO control: channels, settings, beacon | `benlink`; the packet hub on the same radio |
@@ -855,6 +856,41 @@ file's `wavelog_cat` block (url and key_file default to `logsync.wavelog`'s):
   `"mode": false` moves the frequency and leaves the mode alone.
 - Never keys the radio; refused while it transmits or a Winlink session has
   its lane. Not offered on a station with a token.
+## JS8 (`js8`)
+
+A JS8 engine runs beside each radio with a `js8_port`: jf8call, a headless,
+JS8Call-compatible daemon by Jeff Francis (N0GQ), in Dan Kingshott's fork,
+with three Ranch Radio patches. This release adds only the engine; the
+station's JS8 tab comes in a later one.
+
+```sh
+js8/build.sh                                      # -> js8/build/jf8call
+install -m 755 js8/build/jf8call ~/.local/bin/jf8call
+python3 js8_engine.py check --bin ~/.local/bin/jf8call
+ranch-radio add js8 --set call=N0CALL --set grid=FN31 \
+    --set audio_in="USB Audio CODEC" --set audio_out="USB Audio CODEC"   # Mac; Linux takes the radio's own
+ranch-radio install
+```
+
+- **TX is disarmed at every start.** `js8_engine.py` puts these back in
+  jf8call's `settings.json` each time, whatever a client set: TX off;
+  auto-reply, heartbeat and heartbeat ACKs off; no frequency schedule, no
+  automatic ATU; and no filter widening, so a rig shared with voice keeps
+  its filter. PSK Reporter is off unless the block says `"pskreporter": true`.
+- **It keys only through the radio's own rigctl port.** STOP TX, `--no-tx`,
+  the transmit time limit and the keepalive (a client that goes quiet or
+  dies is unkeyed) all apply to it, as they do to JTDX.
+- **Its WebSocket is on loopback, and its web console is off.** jf8call has
+  no login and checks no Origin, so only this host's station talks to it.
+- **Only the Ranch Radio build starts.** Upstream jf8call 0.7.1 transmits
+  an ACK to any `MSG` addressed to one of its groups (`@ALLCALL` by
+  default), and a "YES MSG ID" to stations it holds overheard messages for,
+  with no auto-reply setting to stop it. `js8/patches` puts both behind
+  auto-reply, turns TX off by default, and adds the filter switch.
+  `js8_engine.py` refuses any build older than `+rr.2`.
+- **jf8call reports a frame as sent even when its PTT was refused.** What
+  went out on air is the radio's own state, as the radio page shows it.
+
 ## How it fits together
 
 - `server.py` runs one radio: its page, audio, rigctl port and Winlink lane,
