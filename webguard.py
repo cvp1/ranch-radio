@@ -132,7 +132,9 @@ def cross_site_guard(allow_hosts=(), log=None):
 # off. Inline style stays allowed (the pages set style= freely); images may
 # come from any https host (map tiles from four basemap servers, and what
 # their redirects reach). connect-src names ws:/wss: as well as 'self' for
-# browsers that do not match a WebSocket against 'self'. No frame-ancestors:
+# browsers that do not match a WebSocket against 'self', and blob: (a page's
+# own exports). frame-src allows any http(s) page: the Logbook tab frames the
+# operator's Wavelog on another host (a framed page runs in its own origin). No frame-ancestors:
 # a home dashboard may embed the station. Referrer-Policy is same-origin,
 # not no-referrer: no-referrer makes a browser send "Origin: null" on a form
 # POST, and same_origin above would refuse it. (2026-11-21, review plan PR 3.)
@@ -141,7 +143,8 @@ CSP = "; ".join((
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
-    "connect-src 'self' ws: wss:",
+    "connect-src 'self' ws: wss: blob:",
+    "frame-src 'self' http: https:",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
     "object-src 'none'",
