@@ -14,6 +14,15 @@
     wrote, consecutive hours merged into one window, soonest first; no
     forecast measurement is no section (not "no openings"); unreachable is
     an error, not empty
+  - needed near you (opt-in "near"): reports from receivers in one grid to
+    one row per (call, band, mode), newest kept, your own call and
+    locator-less or off-band reports dropped, capped; judged per band by a
+    needs index (strong levels only, highest first); no index is unknown
+    (None), never zero; the strong list matches the Roster page's; the query
+    asks PSKReporter by grid over 15 minutes; the two PSKReporter queries
+    never run closer than PSK_GAP_S; "near": true takes the station's grid,
+    else PSKReporter's locator for you; no grid known, or PSKReporter down,
+    is an error with no counts
   - it's in the module catalog and manifest
 
     python3 tests/propagation_addon_test.py
@@ -151,6 +160,65 @@ check("an add-on in the catalog, at addons/propagation, enabled on both OSes",
       ("addon", ("addons", "propagation"), [{"enabled": True}, {"enabled": True}]))
 
 
+# ---------------------------------------------------------------- needed near you
+NEAR_XML = """<?xml version="1.0"?>
+<receptionReports>
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="JA1ZZZ" senderLocator="PM95" frequency="21074500" flowStartSeconds="1793317500" mode="FT8" sNR="-12" />
+  <receptionReport receiverCallsign="K7BBB" receiverLocator="FN31cd" senderCallsign="JA1ZZZ" senderLocator="PM95" frequency="21074600" flowStartSeconds="1793317560" mode="FT8" sNR="-5" />
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="VK2YYY" senderLocator="QF56" frequency="21074900" flowStartSeconds="1793317440" mode="FT8" sNR="-18" />
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="W1XXX" senderLocator="FN42" frequency="21075100" flowStartSeconds="1793317430" mode="FT8" sNR="3" />
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="N0CALL" senderLocator="FN31" frequency="21075200" flowStartSeconds="1793317430" mode="FT8" sNR="9" />
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="G4WWW" senderLocator="IO91" frequency="14074000" flowStartSeconds="1793317400" mode="FT4" sNR="" />
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="F5VVV" senderLocator="" frequency="14074100" flowStartSeconds="1793317400" mode="FT8" sNR="-1" />
+  <receptionReport receiverCallsign="K7AAA" receiverLocator="FN31ab" senderCallsign="EA3UUU" senderLocator="JN11" frequency="9999" flowStartSeconds="1793317400" mode="FT8" sNR="-1" />
+</receptionReports>"""
+near = P.parse_near(NEAR_XML, own="N0CALL")
+check("near: one row per (call, band, mode); own call, no locator, off-band dropped",
+      sorted((r["call"], r["band"]) for r in near),
+      [("G4WWW", "20m"), ("JA1ZZZ", "15m"), ("VK2YYY", "15m"), ("W1XXX", "15m")])
+check("  the newest report of a station is kept (time and SNR)",
+      [(r["t"], r["snr"]) for r in near if r["call"] == "JA1ZZZ"], [(1793317560, -5)])
+check("  newest first, an empty SNR is None, capped",
+      (near[0]["call"], [r["snr"] for r in near if r["call"] == "G4WWW"], len(P.parse_near(NEAR_XML, cap=2))),
+      ("JA1ZZZ", [None], 2))
+
+
+class FakeNeeds:
+    """need(call, grid, band, mode) -> (level, reasons), as logsync_needs.Needs gives it."""
+    LV = {"JA1ZZZ": "dxcc_band", "VK2YYY": "dxcc", "W1XXX": "call_band_mode", "G4WWW": None}
+
+    def __init__(self):
+        self.asked = []
+
+    def need(self, call, grid, band, mode, submode=""):
+        self.asked.append((call, grid, band, mode))
+        lv = self.LV.get(call)
+        return lv, [lv] if lv else []
+
+
+fn = FakeNeeds()
+v = P.near_view(near, fn)
+check("near_view: per band, distinct calls heard and the strong ones counted",
+      {b: (x["heard"], x["strong"]) for b, x in v.items()}, {"15m": (3, 2), "20m": (1, 0)})
+check("  a weak need (new call on this band) is heard, not counted", "call_band_mode" in v["15m"]["levels"], False)
+check("  the top stations: highest need first", [x["call"] for x in v["15m"]["top"]], ["VK2YYY", "JA1ZZZ"])
+check("  per-level counts", v["15m"]["levels"], {"dxcc": 1, "dxcc_band": 1})
+check("  the index is asked with the report's grid, band and mode", ("G4WWW", "IO91", "20m", "FT4") in fn.asked, True)
+check("  no needs index: unknown (None), not zero", P.near_view(near, None), None)
+check("  no rows with an index: no bands", P.near_view([], FakeNeeds()), {})
+
+# Read as text, not imported: the logbook sync's modules are not this test's
+# dependency (tests/affected.py: a needs change must not pick this test).
+import re as _re  # noqa: E402
+js = (ROOT / "static" / "addons" / "roster.js").read_text()
+js_list = lambda name: tuple(_re.findall(r'"([a-z_]+)"', _re.search(rf"const {name} = \[([^\]]*)\]", js).group(1)))
+check("the strong levels are the Roster page's, in its rank order",
+      (js_list("STRONG"), tuple(x for x in js_list("RANK") if x in P.STRONG)), (P.STRONG, P.STRONG))
+check('"near": a grid is kept, true is the station\'s own, junk is off',
+      [P.Propagation(None, {"pskreporter": {"near": n}}).near for n in ("fn31pr", True, "x; rm", False, None, 1)],
+      ["FN31", True, "", "", "", ""])
+
+
 # ---------------------------------------------------------------- against stand-ins
 async def until(addon, pred, timeout=10):
     """Return once pred(snapshot) holds (the poll loop has got that far)."""
@@ -188,7 +256,15 @@ async def noaa(request):
 psk_seen = []
 
 
+near_seen = []
+
+
 async def pskr(request):
+    if request.query.get("modify") == "grid":
+        near_seen.append((time.monotonic(), dict(request.query)))
+        if not noaa_up["on"]:
+            return web.Response(status=503)
+        return web.Response(text=NEAR_XML, content_type="text/xml")
     psk_seen.append(dict(request.query))
     if not noaa_up["on"]:
         return web.Response(status=503)
@@ -298,6 +374,53 @@ async def main():
           (s["forecast_issued"], s["forecast"], s["forecast_error"]), (None, [], None))
     await d.stop()
     check("the horizon is clamped", P.Propagation(Host(), {"forecast_h": 999}).forecast_h, 27)
+
+    # Needed near you, against the stand-in PSKReporter.
+    noaa_up["on"] = True
+    tick, gap = P.TICK_S, P.PSK_GAP_S
+    P.TICK_S = 0.05
+    h = Host()
+    h.logsync = type("LS", (), {"needs": FakeNeeds()})()
+    h.identity = lambda: {"call": "N0CALL", "grid": "FN31pr"}
+    e = P.Propagation(h, {"swpc": False, "pskreporter": {"call": "N0CALL", "near": True}})
+    n_psk = len(psk_seen)
+    await e.start()
+    await asyncio.sleep(1.0)
+    check("the two PSKReporter queries are PSK_GAP_S apart: only 'who hears you' in the first 5 minutes",
+          (len(psk_seen) - n_psk, len(near_seen), e.snapshot()["near_checked"]), (1, 0, None))
+    await e.stop()
+    P.PSK_GAP_S = 0.3
+    t0 = time.monotonic()
+    await e.start()
+    await until(e, lambda s: s["near_checked"])
+    s = e.snapshot()
+    t_near, q = near_seen[-1]
+    check("  then the near query, no sooner than the gap", t_near - t0 >= 0.3, True)
+    check("near: asked by the station's own grid (JTDX's), 15 minutes, reports only",
+          {k: q.get(k) for k in ("receiverCallsign", "modify", "flowStartSeconds", "rronly", "rptlimit")},
+          {"receiverCallsign": "FN31", "modify": "grid", "flowStartSeconds": "-900", "rronly": "1", "rptlimit": "2000"})
+    check("  the snapshot: grid, window, per-band strong counts, no error",
+          (s["near"], s["near_grid"], s["near_window_min"], {b: x["strong"] for b, x in s["near_bands"].items()}, s["near_error"]),
+          (True, "FN31", 15, {"15m": 2, "20m": 0}, None))
+    h.logsync.needs = None
+    check("  the needs index going away: unknown (None), the rows kept", (e.snapshot()["near_bands"], len(e.nearby["rows"])), (None, 4))
+    h.logsync.needs = FakeNeeds()
+    noaa_up["on"] = False
+    e.nearby = await e._poll_near()
+    check("  PSKReporter down: no counts, says why", (e.snapshot()["near_bands"], e.snapshot()["near_error"]),
+          (None, "PSKReporter not reachable"))
+    await e.stop()
+    noaa_up["on"] = True
+    h.identity = lambda: {"call": "N0CALL", "grid": None}
+    check("  no grid from JTDX: PSKReporter's locator for you", (e.psk.update(locator="EM12ab"), e.near_grid())[1], "EM12")
+    e.psk["locator"] = ""
+    g = await e._poll_near()
+    check("  no grid at all: an error, nothing asked", (g["rows"], g["error"], len(near_seen)),
+          ([], "this station's grid is not known yet", len(near_seen)))
+    f = P.Propagation(Host(), {"swpc": False, "pskreporter": {"near": "fn31"}})
+    check("  a grid in the host file is used as given, with no callsign needed", (f.near_grid(), f.snapshot()["near"]), ("FN31", True))
+    check("  off by default", (P.Propagation(Host(), {}).snapshot()["near"], P.Propagation(Host(), {}).near_needs()), (False, None))
+    P.TICK_S, P.PSK_GAP_S = tick, gap
 
     c = P.Propagation(Host(), {"swpc": False, "window_min": 99999})
     check('"swpc": false turns NOAA off', c.snapshot()["swpc"], False)

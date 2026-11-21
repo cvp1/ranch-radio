@@ -30,6 +30,12 @@ strip's clock is fixed (bandStrip.now) so hours are known. Checks:
             the Roster card uses the same count
   display   a click on every cell sends nothing and leaves the radio's
             frequency as it was (read back over rigctl)
+  near      needed near you (R2): not set up, waiting for the needs index
+            (unknown, not zero), PSKReporter failing, then a count on a
+            band JTDX is not on, its tooltip naming the stations and needs,
+            a band heard with nothing needed, a band nobody reported, and
+            the source named once under the cells; the Roster line stays
+            on the Roster's own band
   off       Propagation switched off: the strip says its facts are unknown
 
     python3 tests/band_strip_page_test.py [screenshot-dir]
@@ -175,7 +181,7 @@ def deliver(m):
 def facts(band):
     """{fact: [state, text, title]} for one band's cell."""
     return b.js(f"""(() => {{ const c = {CELL.format(band)}; if (!c) return null; const o = {{}};
-      for (const k of ['heard', 'you', 'fc']) {{ const e = c.querySelector('.bs-' + k);
+      for (const k of ['heard', 'you', 'fc', 'near']) {{ const e = c.querySelector('.bs-' + k);
         o[k] = [e.dataset.state, e.textContent.trim(), e.title]; }}
       const n = c.querySelector('.bs-needs'); if (n) o.needs = [n.dataset.state, n.textContent.trim(), n.title];
       return o; }})()""")
@@ -222,7 +228,8 @@ try:
     b.wait(f"{CELLS}.length === 11")
 
     print("\n# unknown: not set up (the server's own snapshot: no skywatch, no callsign)")
-    check("each fact not set up", [states("heard"), states("you"), states("fc")], [["off"], ["off"], ["off"]])
+    check("each fact not set up", [states("heard"), states("you"), states("fc"), states("near")],
+          [["off"], ["off"], ["off"], ["off"]])
     check("  said once, under the cells",
           [any("Heard here: not set up" in n for n in b.js(NOTES)), any("Hears you: not set up" in n for n in b.js(NOTES)),
            any("Forecast: not set up" in n for n in b.js(NOTES))], [True, True, True])
@@ -291,6 +298,38 @@ try:
     check("  its title says why and how old", f20["you"][2].startswith("PSKReporter not reachable: stale."), True)
     check("  a band with no last count: unknown", facts("15m")["you"][:2], ["err", ""])
     check("  heard here and the forecast unaffected", [f20["heard"][0], f20["fc"][0]], ["ok", "ok"])
+
+    print("\n# near: needed near you, on every band (R2)")
+    NEAR = dict(GOOD, near=True, near_grid="FN31", near_window_min=15, near_checked=T - 30, near_bands=None, near_error=None)
+    deliver({"t": "addon", "addon": "propagation", "state": NEAR})
+    b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'wait'")
+    check("no needs index yet: unknown, not zero", facts("15m")["near"][:2], ["wait", "need: ?"])
+    check("  said once", any(n.startswith("The needs index is not ready") for n in b.js(NOTES)), True)
+    deliver({"t": "addon", "addon": "propagation", "state": dict(NEAR, near_error="PSKReporter not reachable")})
+    b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'err'")
+    check("PSKReporter failing: unknown on every band", [states("near"), facts("15m")["near"][1]], [["err"], "need: ?"])
+    check("  said once", any(n == "PSKReporter not reachable: who you need is unknown" for n in b.js(NOTES)), True)
+    top = [{"call": "VK2YYY", "need": "dxcc", "grid": "QF56", "mode": "FT8", "snr": -18},
+           {"call": "JA1ZZZ", "need": "dxcc_band", "grid": "PM95", "mode": "FT8", "snr": -5}]
+    deliver({"t": "addon", "addon": "propagation", "state": dict(NEAR, near_bands={
+        "15m": {"heard": 3, "strong": 7, "levels": {"dxcc": 1, "dxcc_band": 6}, "top": top},
+        "20m": {"heard": 5, "strong": 0, "levels": {}, "top": []}})})
+    b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'ok'")
+    f15, f20, f40 = facts("15m"), facts("20m"), facts("40m")
+    check("a band JTDX is not on: the count of stations you need", f15["near"][:2], ["ok", "7 need"])
+    check("  its tooltip names them, their need, and the rest",
+          f15["near"][2].split("\n"),
+          ["7 stations you need, of 3 decoded near FN31 on 15m in the last 15 min (PSKReporter):",
+           "VK2YYY (QF56, FT8 -18 dB): new DXCC", "JA1ZZZ (PM95, FT8 -5 dB): new DXCC on this band", "+5 more"])
+    check("a band heard with nothing you need: no count, the title says so",
+          [f20["near"][0], f20["near"][1], f20["near"][2].endswith("none you need for DXCC or a grid")], ["none", "", True])
+    check("a band nobody reported: none, not a zero", [f40["near"][0], f40["near"][1]], ["none", ""])
+    check("  the source named once", any(n == "Need: stations decoded near FN31, last 15 min (PSKReporter), new DXCC or grid"
+                                          for n in b.js(NOTES)), True)
+    check("  the other facts unaffected", [f15["fc"][1], f20["you"][0]], ["next: S America 04Z", "ok"])
+    shot("near")
+    deliver({"t": "addon", "addon": "propagation", "state": GOOD})
+    b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'off'")
 
     print("\n# hour: the clock crosses 04Z with no event")
     # Off Mission Control nothing else redraws it (its S-meter and 30 s
