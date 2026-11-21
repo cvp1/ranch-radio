@@ -286,6 +286,19 @@ A band with no decodes reads "no data", never closed: a receiver hears only
 the band it's tuned to. A source that can't be reached reads "unknown", never
 zero. PSKReporter is asked at most every 10 minutes.
 
+**Needed near you.** Add `"near": true` to the `pskreporter` block and Mission
+Control's band strip gains a fourth fact on every band: how many stations you
+still need (new DXCC or new grid, on that band or in that mode, the Roster's
+strong levels) that receivers in your 4-character grid decoded in the last 15
+minutes. So "15m: 3 need" shows while JTDX sits on 20 m; the tooltip names the
+first five and why. `true` uses your station's grid (JTDX's, else the one
+PSKReporter gives for your call); a grid such as `"near": "FN31"` names one.
+It needs the logbook sync for the needs index; without it the count reads
+unknown, not zero. It sends PSKReporter only that grid, which your own uploads
+already publish. The two PSKReporter questions take turns, at least 5 minutes
+apart, so each is refreshed every 10. It is display only: nothing answers,
+tunes or transmits.
+
 ![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
 
 **The Logbook tab.** The `logbook` add-on shows your web logbook (Wavelog,

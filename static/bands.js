@@ -12,6 +12,12 @@
 //
 // and, on the band JTDX is decoding, the Roster's strong needs.
 //
+// From R2 (needs-all-bands, 2026-11-21) a fourth fact on every band:
+//
+//   need near you  stations that receivers in your grid decoded in the last
+//                  15 minutes (PSKReporter, "near"), judged by the logbook's
+//                  needs index; only the strong levels count, as on the Roster
+//
 // From PR 4c (2026-11-19) each cell's band name is a button that tunes the
 // focus radio to that band (its band stack: where it was last left there,
 // else the band's default), through the tune the station gives in render()'s
@@ -111,6 +117,26 @@ const bandStrip = (() => {
              `Peak: the forecast chance at the window's best hour, not the chance now. Forecast ${issued}.` };
   }
 
+  // Needed near you (R2): {state, text, title} like the three facts above.
+  const NEED_WORD = { dxcc: "new DXCC", dxcc_band: "new DXCC on this band", dxcc_mode: "new DXCC in this mode",
+    grid: "new grid", grid_band: "new grid on this band", grid_mode: "new grid in this mode" };
+  function nearNeeds(P, k) {
+    if (!P || !P.near) return { state: "off", text: "", title: 'Needed near you: not set up ("pskreporter": {"near": true})' };
+    const g = P.near_grid || "your grid", w = P.near_window_min;
+    if (P.near_error) return { state: "err", text: "need: ?", title: `${P.near_error}: who you need on ${k} near ${g} is unknown` };
+    if (!P.near_checked) return { state: "wait", text: "", title: "Waiting for PSKReporter's first answer about your grid" };
+    if (!P.near_bands) return { state: "wait", text: "need: ?",
+      title: "The needs index is not ready (building, or no logbook): who you need is unknown, not zero" };
+    const b = P.near_bands[k];
+    if (!b) return { state: "none", text: "", title: `Nobody reported decoded near ${g} on ${k} in the last ${w} min` };
+    if (!b.strong) return { state: "none", text: "",
+      title: `${plural(b.heard, "station", "stations")} decoded near ${g} on ${k} in the last ${w} min; none you need for DXCC or a grid` };
+    const top = (b.top || []).map((x) => `${x.call} (${x.grid}, ${x.mode}${x.snr != null ? ` ${x.snr} dB` : ""}): ${NEED_WORD[x.need] || x.need}`);
+    return { state: "ok", text: `${b.strong} need`,
+      title: `${plural(b.strong, "station", "stations")} you need, of ${b.heard} decoded near ${g} on ${k} in the last ${w} min (PSKReporter):\n` +
+             top.join("\n") + (b.strong > top.length ? `\n+${b.strong - top.length} more` : "") };
+  }
+
   // The Roster's strong needs, for the band JTDX decodes on. null: no roster here.
   function needs() {
     const R = addons.data("roster");
@@ -142,7 +168,7 @@ const bandStrip = (() => {
   // up, waiting, failed): said once here, not eleven times in the cells.
   function notes(P, cells, N, shown) {
     const out = [];
-    const h = cells[0]?.h, y = cells[0]?.y, f = cells[0]?.f;
+    const h = cells[0]?.h, y = cells[0]?.y, f = cells[0]?.f, n = cells[0]?.n;
     if (!P) out.push("Propagation is off: heard here, hears you and the forecast are unknown");
     else {
       if (h && (h.state === "ok" || h.state === "none")) out.push(`Heard here: decodes, last ${P.window_min} min`);
@@ -154,6 +180,8 @@ const bandStrip = (() => {
         const old = api.now() - P.forecast_issued > FORECAST_STALE_S;
         out.push(`Forecast: skywatch, ${old ? "out of date, " : ""}issued ${ago(P.forecast_issued)}; peak is a path's best hour, not the chance now`);
       } else if (f) out.push(f.title);
+      if (n && (n.state === "ok" || n.state === "none")) out.push(`Need: stations decoded near ${P.near_grid}, last ${P.near_window_min} min (PSKReporter), new DXCC or grid`);
+      else if (n && n.state !== "off") out.push(n.title.replace(/ on \S+ near \S+ is unknown/, " is unknown"));
     }
     if (N && !shown) out.push(`JTDX on ${N.band}: ${N.text}`);
     return out;
@@ -163,14 +191,14 @@ const bandStrip = (() => {
     const P = addons.data("propagation"), N = needs(), now = api.now();
     const cells = bandsFor(ctx.range).map((b) => {
       const k = key(b);
-      return { b, k, h: heard(P, k), y: hearsYou(P, k), f: forecast(P, k, now) };
+      return { b, k, h: heard(P, k), y: hearsYou(P, k), f: forecast(P, k, now), n: nearNeeds(P, k) };
     });
     const shown = N && cells.some((c) => c.k === N.band);
     const body = cells.map((c) => {
       const dec = N && c.k === N.band;
       return `<div class="bs-cell${dec ? " bs-decoding" : ""}" data-band="${esc(c.k)}">
         <div class="bs-head">${bandEl(c)}${fact("bs-you", c.y)}</div>
-        ${fact("bs-heard", c.h)}${fact("bs-fc", c.f)}
+        ${fact("bs-heard", c.h)}${fact("bs-fc", c.f)}${fact("bs-near", c.n)}
         ${dec ? `<div class="bs-needs" data-state="${N.state}" title="${esc(N.title)}">${esc(N.text)}</div>` : ""}
       </div>`;
     }).join("");

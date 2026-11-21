@@ -18,12 +18,21 @@ Two sources, each optional:
   hour, how many stations reported your callsign, the best SNR, the farthest
   and their countries. Off unless the host file gives "pskreporter": {"call"}.
   Polled every 10 minutes (PSKReporter asks for no more than every 5).
+- **Needed near you** (PSKReporter, opt-in with "near"): the stations that
+  receivers in your 4-character grid decoded in the last 15 minutes, on every
+  band, each run through the logbook sync's needs index (logsync_needs), so
+  the band strip can say "15m: 3 you need" while JTDX sits on 20 m. "near":
+  true uses this station's own grid (JTDX's, else the one PSKReporter gives
+  for your call); a grid ("FN31") names one. It sends PSKReporter that grid,
+  which your own uploads already publish. The two PSKReporter queries take
+  turns, at least 5 minutes apart, so each refreshes every 10. Display only:
+  nothing here answers, tunes or keys.
 
 Options (the host file's addons block):
 
     "propagation": {"enabled": true,
                     "skywatch": {"url": "http://192.168.1.20:8086", "db": "skywatch"},
-                    "pskreporter": {"call": "N0CALL"},
+                    "pskreporter": {"call": "N0CALL", "near": true},
                     "window_min": 60,
                     "forecast_h": 12}
 
@@ -63,6 +72,16 @@ FORECAST_MAX = 16           # windows sent to the page
 URL_PSK = "https://retrieve.pskreporter.info/query"
 PSK_EVERY_S = 600
 PSK_RECEIVERS_MAX = 600     # the stations kept one by one for the Map tab (newest first)
+PSK_GAP_S = 300             # any two PSKReporter queries, of either kind, at least this far apart
+NEAR_WINDOW_S = 15 * 60     # "needed near you": who was decoded in your grid, this far back
+NEAR_REPORTS_MAX = 2000     # rptlimit on that query
+NEAR_ROWS_MAX = 500         # distinct (call, band, mode) kept from it, newest first
+NEAR_TOP = 5                # stations named per band in the strip's tooltip
+# The strong need levels, highest first: the same list as static/addons/roster.js
+# STRONG (tests/propagation_addon_test.py holds the two together). Kept here,
+# not imported, so this add-on does not load the logbook sync's modules.
+STRONG = ("dxcc", "dxcc_band", "dxcc_mode", "grid", "grid_band", "grid_mode")
+_GRID4 = re.compile(r"^[A-R]{2}[0-9]{2}$")
 CALL = re.compile(r"^[A-Z0-9/]{3,15}$")
 # HF/6m band edges (Hz) for naming a reported frequency.
 BAND_EDGES = [("160m", 1.8e6, 2.0e6), ("80m", 3.5e6, 4.0e6), ("60m", 5.25e6, 5.45e6), ("40m", 7.0e6, 7.3e6),
@@ -318,6 +337,61 @@ def psk_receivers(xml_text, cap=PSK_RECEIVERS_MAX):
     return sorted(best.values(), key=lambda x: -x["t"])[:cap]
 
 
+def parse_near(xml_text, own="", cap=NEAR_ROWS_MAX):
+    """PSKReporter receptionReports XML (receivers in one grid) -> the stations
+    they decoded: [{call, grid, band, mode, snr, t}], one per (call, band,
+    mode), newest first, capped. Your own call is dropped (your signal heard
+    next door is not a station to work), as are reports with no 4-character
+    locator or off the amateur bands."""
+    root = ET.fromstring(xml_text)
+    own, best = (own or "").upper(), {}
+    for r in root.iter("receptionReport"):
+        call = (r.get("senderCallsign") or "").strip().upper()
+        grid = (r.get("senderLocator") or "").strip().upper()[:4]
+        try:
+            band = band_of(float(r.get("frequency") or 0))
+            t = int(r.get("flowStartSeconds") or 0)
+        except ValueError:
+            continue
+        if not band or not CALL.match(call) or call == own or not _GRID4.match(grid):
+            continue
+        mode = (r.get("mode") or "").strip().upper()[:12]
+        try:
+            snr = int(r.get("sNR"))
+        except (TypeError, ValueError):
+            snr = None
+        k = (call, band, mode)
+        if k not in best or t > best[k]["t"]:
+            best[k] = {"call": call, "grid": grid, "band": band, "mode": mode, "snr": snr, "t": t}
+    return sorted(best.values(), key=lambda x: -x["t"])[:cap]
+
+
+def near_view(rows, needs):
+    """The stations heard near you, judged by the needs index -> {band: {heard,
+    strong, levels, top}}: heard is distinct calls, strong those whose need is
+    one of STRONG, levels a count per level, top the first NEAR_TOP strong
+    stations (highest need, then signal). needs None (no index yet) -> None:
+    the needs are unknown, which is not zero."""
+    if needs is None:
+        return None
+    out = {}
+    for r in rows:
+        level, _ = needs.need(r["call"], r["grid"], r["band"], r["mode"])
+        b = out.setdefault(r["band"], {"heard": set(), "strong": {}, "levels": {}, "top": []})
+        b["heard"].add(r["call"])
+        if level in STRONG:
+            prev = b["strong"].get(r["call"])
+            if prev is None or STRONG.index(level) < STRONG.index(prev["need"]):
+                b["strong"][r["call"]] = {"call": r["call"], "need": level, "grid": r["grid"],
+                                          "mode": r["mode"], "snr": r["snr"]}
+    for b in out.values():
+        st = sorted(b["strong"].values(), key=lambda x: (STRONG.index(x["need"]), -(x["snr"] if x["snr"] is not None else -99)))
+        for x in st:
+            b["levels"][x["need"]] = b["levels"].get(x["need"], 0) + 1
+        b["heard"], b["strong"], b["top"] = len(b["heard"]), len(st), st[:NEAR_TOP]
+    return out
+
+
 def psk_locator(xml_text):
     """Your own locator as the reports give it (senderLocator, the commonest), or ""."""
     seen = {}
@@ -356,7 +430,13 @@ class Propagation(Addon):
         self._last_forecast = 0.0
         call = str((opts.get("pskreporter") or {}).get("call") or "").strip().upper()
         self.psk_call = call if CALL.match(call) else ""
+        near = (opts.get("pskreporter") or {}).get("near")
+        g = str(near or "").strip().upper()[:4] if not isinstance(near, bool) else ""
+        # True: this station's grid, looked up at each poll; a grid: that one; else off.
+        self.near = True if near is True else (g if _GRID4.match(g) else "")
         self._last_psk = 0.0
+        self._last_near = 0.0
+        self._last_psk_any = 0.0
         self._session = None
         self._task = None
         self._last_swpc = 0.0
@@ -367,12 +447,15 @@ class Propagation(Addon):
         self.heard = {"bands": {}, "error": None, "checked": None}
         self.psk = {"bands": {}, "receivers": [], "locator": "", "error": None, "checked": None}
         self.forecast = {"windows": [], "issued": None, "error": None, "checked": None}
+        self.nearby = {"grid": "", "rows": [], "error": None, "checked": None}
 
     async def start(self):
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15, sock_connect=5),
                                               headers={"User-Agent": "ranch-radio propagation add-on"})
         self._last_swpc = 0.0
         self._last_psk = 0.0
+        self._last_near = 0.0
+        self._last_psk_any = 0.0
         self._last_forecast = 0.0
         self._task = asyncio.create_task(self._run(), name="propagation-poll")
 
@@ -467,6 +550,48 @@ class Propagation(Addon):
             return {"bands": {}, "receivers": self.psk.get("receivers") or [], "locator": self.psk.get("locator") or "",
                     "error": "PSKReporter not reachable", "checked": int(time.time())}
 
+    def near_grid(self):
+        """The grid "needed near you" asks about: the host file's, or (near:
+        true) this station's own as JTDX reports it, else PSKReporter's for
+        your call; "" while none is known."""
+        if self.near is not True:
+            return self.near
+        g = ""
+        ident = getattr(self.host, "identity", None)
+        if callable(ident):
+            try:
+                g = str((ident() or {}).get("grid") or "")
+            except Exception:                     # the station's own view failing must not stop the poll
+                g = ""
+        g = (g or self.psk.get("locator") or "").strip().upper()[:4]
+        return g if _GRID4.match(g) else ""
+
+    async def _poll_near(self):
+        grid = self.near_grid()
+        if not grid:
+            return {"grid": "", "rows": [], "error": "this station's grid is not known yet",
+                    "checked": int(time.time())}
+        params = {"receiverCallsign": grid, "modify": "grid", "flowStartSeconds": -NEAR_WINDOW_S,
+                  "rronly": 1, "noactive": 1, "rptlimit": NEAR_REPORTS_MAX}
+        try:
+            async with self._session.get(URL_PSK, params=params) as r:
+                if r.status != 200:
+                    raise ValueError(f"HTTP {r.status}")
+                text = await r.text()
+            return {"grid": grid, "rows": parse_near(text, own=self.psk_call), "error": None,
+                    "checked": int(time.time())}
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, ET.ParseError) as e:
+            log.info("PSKReporter near %s: %s", grid, e)
+            # Unknown is not zero: no rows, and the error says so.
+            return {"grid": grid, "rows": [], "error": "PSKReporter not reachable", "checked": int(time.time())}
+
+    def near_needs(self):
+        """near_view of the last answer against the logbook sync's live index
+        (rebuilt when the ledger changes, never here), or None: unknown."""
+        if not self.near or self.nearby.get("error") or not self.nearby.get("checked"):
+            return None
+        return near_view(self.nearby.get("rows") or [], getattr(getattr(self.host, "logsync", None), "needs", None))
+
     def heard_by(self):
         """Who heard you, station by station, for the Map tab: None without a
         callsign, else {call, window_min, every_s, receivers, locator, error,
@@ -492,9 +617,16 @@ class Propagation(Addon):
             if self.sw_url and now - self._last_forecast >= FORECAST_EVERY_S:
                 self.forecast = await self._poll_forecast()
                 self._last_forecast = now
-            if self.psk_call and now - self._last_psk >= PSK_EVERY_S:
-                self.psk = await self._poll_psk()
-                self._last_psk = now
+            # The two PSKReporter queries take turns, PSK_GAP_S apart at the least.
+            if now - self._last_psk_any >= PSK_GAP_S:
+                psk_due = self.psk_call and now - self._last_psk >= PSK_EVERY_S
+                near_due = self.near and now - self._last_near >= PSK_EVERY_S
+                if psk_due and (not near_due or self._last_psk <= self._last_near):
+                    self.psk = await self._poll_psk()
+                    self._last_psk = self._last_psk_any = now
+                elif near_due:
+                    self.nearby = await self._poll_near()
+                    self._last_near = self._last_psk_any = now
             after = self.snapshot()
             if _changed(before, after):
                 self.emit({"state": after})
@@ -523,13 +655,19 @@ class Propagation(Addon):
             "forecast": self.forecast.get("windows") or [],
             "forecast_issued": self.forecast.get("issued"),
             "forecast_error": self.forecast.get("error"),
+            "near": bool(self.near),
+            "near_grid": self.nearby.get("grid") or "",
+            "near_window_min": NEAR_WINDOW_S // 60,
+            "near_bands": self.near_needs(),
+            "near_error": self.nearby.get("error"),
+            "near_checked": self.nearby.get("checked"),
         }
 
 
 def _changed(a, b):
     """Edge-triggered: say it again only when something a page shows changed."""
     keys = ("kp", "kp_stale", "xray", "f107", "space_error", "bands", "heard_error", "psk", "psk_error",
-            "forecast", "forecast_issued", "forecast_error")
+            "forecast", "forecast_issued", "forecast_error", "near_grid", "near_bands", "near_error")
     return any(a.get(k) != b.get(k) for k in keys)
 
 

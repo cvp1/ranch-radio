@@ -267,6 +267,8 @@ a.rb-tag { text-decoration: none; }
 .bs-fc[data-state="ok"] { color: var(--warm); }
 .bs-fc small { color: var(--dim); }
 .bs-needs { color: var(--accent); font-weight: 600; }
+/* R2: needed near you, on every band. */
+.bs-near[data-state="ok"] { color: var(--accent); font: 600 12px var(--mono); }
 .bs-needs[data-state="wait"], .bs-needs[data-state="none"] { color: var(--dim); font-weight: 500; }
 .bs-notes { display: flex; flex-wrap: wrap; gap: 3px 16px; margin: 6px 2px 0; font: 500 11px var(--mono); color: var(--dim); }
 /* A phone: one row that scrolls sideways, so the bands stay a strip. */
