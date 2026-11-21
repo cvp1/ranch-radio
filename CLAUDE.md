@@ -27,7 +27,7 @@ page at 7300). Changes reach a radio only when the operator runs
 | Logbook sync | `logsync.py` `logsync_config.py` `logsync_udp.py` `logsync_ledger.py` `logsync_adif.py` | the station's JTDX -> Wavelog/QRZ/LoTW uploads and pulls; the Logbook tab shows its status |
 | Wavelog CAT | `wavelog_cat.py` | the station's radio frequency/mode to Wavelog, and Wavelog's spot clicks back (`/wavelog/qsy/`, Origin-pinned); replaces WaveLogGate |
 | Add-ons | `addons/<name>.py` + `static/addons/<name>.js` | switchable modules; contract in `addons/__init__.py` |
-| Ops | `ranch_radio/` | the `ranch-radio` CLI: host file, render, doctor, install, drift, update, add/remove, init |
+| Ops | `ranch_radio/` | the `ranch-radio` CLI: host file, render, doctor, install, drift, update, add/remove, init, status/stop/restart (idle only), logs, backup |
 | Web | `static/` | `index.html` (radio page), `station.html`, `packet.html`; `nav.js` groups, `addons.js` registry, `modules.js` |
 | Tests | `tests/` | 110+ standalone scripts, `tests/run_all.sh` runs them |
 
