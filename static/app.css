@@ -563,6 +563,13 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 }
 .mesh { grid-column: span 12; display: flex; flex-direction: column; gap: 12px; }
 .mesh-state { font: 500 12px var(--mono); color: var(--muted); }
+/* mesh-radios: which node the Mesh tab shows. */
+.mesh-radios { display: inline-flex; gap: 4px; margin-right: 6px; }
+.mesh-radios[hidden] { display: none; }
+.mesh-radio.on { border-color: var(--accent); color: var(--accent); }
+.mesh-radio-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
+.mesh-radio-dot.ok { background: var(--ok, #3fb950); }
+.mesh-radio-n { font: 700 11px var(--mono); color: var(--accent); }
 .mesh-state.on { color: var(--accent); }
 .mesh-state.warn { color: #ffe2b0; }
 .mesh-off .mesh-list, .mesh-off .mesh-nodes { opacity: .55; }
