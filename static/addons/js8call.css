@@ -1,0 +1,20 @@
+/* The JS8 tab (static/addons/js8call.js). */
+.js8call { display: flex; flex-direction: column; gap: 10px; }
+.js8call .js8-radios { display: flex; gap: 6px; }
+.js8call .js8-status { padding: 6px 10px; border-radius: 6px; background: var(--panel-2, rgba(127,127,127,.12)); }
+.js8call .js8-status.down { opacity: .8; }
+.js8call .js8-status.unsafe { background: #8b1a1a; color: #fff; font-weight: 600; }
+.js8call .js8-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .9fr); gap: 10px; }
+@media (max-width: 1100px) { .js8call .js8-grid { grid-template-columns: 1fr; } }
+.js8call .js8-pane { min-width: 0; }
+.js8call .js8-pane h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
+.js8call table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.js8call th { text-align: left; font-weight: 600; opacity: .7; padding: 2px 6px; }
+.js8call td { padding: 2px 6px; border-top: 1px solid rgba(127,127,127,.15); vertical-align: top; }
+.js8call td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.js8call td.t, .js8call .js8-msgs .t { font-variant-numeric: tabular-nums; white-space: nowrap; opacity: .75; }
+.js8call td.txt, .js8call .js8-msgs .txt { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; }
+.js8call td.call { font-weight: 600; }
+.js8call .empty { opacity: .6; font-style: italic; }
+.js8call .js8-msgs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.js8call .js8-msgs li { display: grid; grid-template-columns: auto auto auto auto 1fr; gap: 6px; align-items: baseline; }

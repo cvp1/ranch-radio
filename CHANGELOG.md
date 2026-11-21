@@ -9,6 +9,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 - A `js8` module: a JS8 engine (jf8call, JS8Call-compatible, headless) beside each radio with a `js8_port`, as a launchd agent or `<id>-js8.service`. It starts receive-only every time: TX disarmed; no auto-reply, heartbeat or heartbeat ACKs; no schedule or filter changes; PSK Reporter off unless asked. It keys only through the radio's own rigctl port, so STOP TX, `--no-tx` and the transmit time limit apply. Its WebSocket is on loopback only. `js8/build.sh` builds the patched jf8call it requires, and `js8_engine.py` refuses any other build. The station's JS8 tab is not in this release.
 
+- A JS8 tab (the `js8call` add-on, in Messaging): for each radio with a JS8 engine, band activity by audio offset, complete messages and the stations heard, with the rig's frequency and an UNSAFE banner if an engine reports TX, auto-reply or heartbeat on. Text from the air is shown as text. Receive only.
 - JS8 on the station: `js8_bridge.py` reads each radio's engine (receive only) and pushes the frames it decodes, the stations heard and the engine's state to the station's pages; an engine reporting TX, auto-reply or heartbeat on shows as unsafe. A page may ask for state only. The JS8 tab that shows it comes next.
 - JS8 engine (`+rr.3`): Normal SNR reads as stock JS8Call does (it read 6 dB low on air), and every frame is stamped with the period it went on air (it was stamped when the decode finished, 15 s later). `js8/patches/` is now split by repo; `js8/build.sh` patches the modem as well.
 
