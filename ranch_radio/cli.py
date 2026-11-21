@@ -422,6 +422,46 @@ def cmd_logs(a):
         return 1
 
 
+def cmd_status(a):
+    h = load_host(a.host or this_host())
+    rows = service.status(h)
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for x in rows:
+        if not x["active"]:
+            state = "stopped"
+        elif not x.get("up"):
+            state = f"running, not answering ({x.get('why', '?')})"
+        else:
+            bits = [b for b, on in (("TRANSMITTING", x.get("tx")), ("Winlink session", x.get("armed") or x.get("session")),
+                                    ("STOP TX latched", x.get("stopped")),
+                                    (f"{x.get('rigctl')} rigctl client(s)", x.get("rigctl"))) if on]
+            state = "up" + (": " + ", ".join(bits) if bits else ", idle")
+        print(f"{x['key']:12} {x['name']:20} {state}")
+    return 0
+
+
+def _lifecycle(a, action):
+    h = load_host(a.host or this_host())
+    _guard(h, a)
+    keys = a.names or list(service.servers(h))
+    done, refused = service.lifecycle(h, keys, action, drop_rigctl=a.drop_rigctl)
+    _show_service(done)
+    for why in refused:
+        print(f"not {action}ed: {why}" if action == "restart" else f"not stopped: {why}")
+    bad = [x for x in done if x[1]]
+    return 1 if refused or bad else 0
+
+
+def cmd_stop(a):
+    return _lifecycle(a, "stop")
+
+
+def cmd_restart(a):
+    return _lifecycle(a, "restart")
+
+
 def cmd_start(a):
     h = load_host(a.host or this_host())
     _guard(h, a)
@@ -860,6 +900,17 @@ def main(argv=None):
     dm.add_argument("--port", type=int, default=0, help="the station page's port (default: a free one)")
     w = sub.add_parser("where", help="the host file this machine uses (exit 1 if none)")
     w.add_argument("host", nargs="?")
+    sx = sub.add_parser("status", help="each server: running, answering, transmitting, latched, rigctl clients")
+    sx.add_argument("--host", help="default: this machine")
+    sx.add_argument("--json", action="store_true")
+    for name, what in (("stop", "stop servers (default all) that are idle: never one transmitting or in Winlink"),
+                       ("restart", "restart idle servers (default all); never one transmitting, in Winlink "
+                                   "or with STOP TX latched")):
+        c = sub.add_parser(name, help=what)
+        c.add_argument("names", nargs="*", help="radio ids or 'station' (default: all)")
+        c.add_argument("--host", help="default: this machine")
+        c.add_argument("--drop-rigctl", action="store_true", help="go ahead even with JTDX/WSJT-X connected")
+        c.add_argument("--home", help=argparse.SUPPRESS)
     lg = sub.add_parser("logs", help="where each service logs, or one service's log (tail; -f follows)")
     lg.add_argument("service", nargs="?", help="a name from the list, or its module")
     lg.add_argument("-f", "--follow", action="store_true")
@@ -907,4 +958,5 @@ def main(argv=None):
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
-            "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs}[a.cmd](a) or 0
+            "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs, "status": cmd_status,
+            "stop": cmd_stop, "restart": cmd_restart}[a.cmd](a) or 0
