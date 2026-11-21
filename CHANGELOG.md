@@ -5,6 +5,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Every page the radio server, the station and the packet hub send carries a Content-Security-Policy (only the app's own scripts run: no inline script, no eval, no plugins), `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`. A name or comment heard over the air that slipped past escaping can no longer run script on the LAN page. The station and packet pages' last inline scripts moved to `static/station_boot.js` and `static/packet.js`.
+- `esc()` (both copies) now escapes `'` as well, so a value inside a single-quoted attribute stays inside it.
+
 ### Added
 
 - JS8 tab basics: HB (one heartbeat now, on a clear offset in the heartbeat sub-band; the periodic heartbeat stays off), CQ (`@ALLCALL CQ CQ CQ` and your grid), and SNR?, GRID?, INFO?, STATUS? and HEARING? to a station picked by clicking it in Heard, Messages or Band activity; the message box addresses the picked station. Offset (400-2600 Hz) and speed (Normal, Fast, Turbo, Slow) go with a send. Every control is shown disabled, saying why, until the page arms TX. The station now also sends an engine `tx.hb`, and `tx.send` may carry a bounded offset and a named speed.

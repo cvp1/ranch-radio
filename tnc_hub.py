@@ -1549,6 +1549,7 @@ def cross_site_guard(allow_hosts=()):
 
 def make_web(hub):
     app = web.Application(middlewares=[cross_site_guard(getattr(hub.args, "allow_host", []))])
+    webguard.add_security_headers(app)
 
     async def index(_):
         return web.FileResponse(HERE / "static" / "packet.html", headers={"Cache-Control": "no-cache"})

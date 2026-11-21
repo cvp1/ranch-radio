@@ -1123,6 +1123,7 @@ def cross_site_guard(allow_hosts=()):
 def make_app(station, args):
     allow = webguard.allowed_names(args)
     app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[cross_site_guard(allow)])
+    webguard.add_security_headers(app)
     sockets = set()
 
     def authorised(request):
