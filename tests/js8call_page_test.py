@@ -2,7 +2,9 @@
 browser: no server, the page's own CSS and script, a stub add-on registry.
 
   - not set up: the tab says why
-  - status: connected, the rig's frequency and mode, TX disarmed
+  - status card: a one-word state (Listening, TX armed, ON AIR, STOP TX),
+    frequency, mode, speed, your call and grid; the send panel says to arm
+  - YOU: frames addressed to your call are marked; others are not
   - arm: the Arm button sends arm with the minutes chosen; disabled with the
     reason when the radio can't key
   - disarmed: HB, CQ, the queries and the message box shown, disabled, saying why
@@ -111,8 +113,11 @@ try:
 
     setup("__impl.js8call.hello(" + json.dumps(SNAP) + ")")
     b.wait("document.querySelectorAll('#j .js8-activity tbody tr').length > 0", 10)
-    check("status: listening, frequency, mode, TX disarmed",
-          b.js(f"({Q})('.js8-status').textContent"), "Listening · 14.078 MHz DATA-U · N0CALL FN31 · TX disarmed")
+    check("status card: state, frequency, mode, speed",
+          b.js(f"[({Q})('.js8-state').textContent, ({Q})('.js8-status').textContent]"), ["Listening", "14.078 MHz DATA-U · Normal"])
+    check("status card: your call and grid", b.js(f"({Q})('.js8-me').textContent"), "YouN0CALLFN31")
+    check("send panel: says to arm first", b.js(f"({Q})('.js8-gate').textContent"), "Arm TX above to send")
+    check("lists: each says what it is", b.js(f"({TEXTS})('.js8-pane h3')"), ["Band activity", "Messages", "Stations heard"])
     check("activity: one row per offset, sorted",
           b.js("[...document.querySelectorAll('#j .js8-activity tbody tr')].map((r) => r.dataset.bin)"),
           ["800", "1200", "1500"])
@@ -126,16 +131,21 @@ try:
     check("air text is text: nothing ran", b.js("window.__pwn === undefined"), True)
 
     setup("__impl.js8call.event({event: 'frame', radio: 'ic7300', frame: {kind: 'frame', utc: '2026-11-21T16:36:00Z', snr: 1, freq_hz: 799.0, submode: 'Normal', text: 'K1ABC: N0CALL SNR? '}})")
-    check("a new frame: the offset's row shows it", b.js("document.querySelector('#j .js8-activity tr[data-bin=\"800\"] td.txt').textContent"),
+    check("a new frame: the offset's row shows it", b.js("document.querySelector('#j .js8-activity tr[data-bin=\"800\"] td.txt .air').textContent"),
           "K1ABC: N0CALL SNR? ")
+    check("addressed to you: marked YOU", b.js("[...document.querySelectorAll('#j .js8-activity tr.to-me')].map((r) => r.dataset.bin)"),
+          ["800", "1200"])
+    check("not to you: not marked", b.js("document.querySelector('#j .js8-activity tr[data-bin=\"1500\"]').classList.contains('to-me')"), False)
     check("a new frame: its station moves to the top of heard", b.js(f"({TEXTS})('.js8-heard td.call')"), ["K1ABC", "W1AW", "N9ABC"])
 
     # ------------------------------------------------------------ sending
     check("disarmed: Arm shown; HB, CQ, queries and the box shown but disabled",
-          b.js(f"[({Q})('.js8-arm').hidden, ...['.js8-hb', '.js8-cq', '.js8-text', '.js8-send', '.js8-q'].map((x) => [({Q})(x).hidden, ({Q})(x).disabled])]"),
-          [False, [False, True], [False, True], [False, True], [False, True], [False, True]])
+          b.js(f"[!!({Q})('.js8-arm'), ...['.js8-hb', '.js8-cq', '.js8-text', '.js8-send', '.js8-q'].map((x) => [({Q})(x).hidden, ({Q})(x).disabled])]"),
+          [True, [False, True], [False, True], [False, True], [False, True], [False, True]])
     check("disarmed: buttons say why", b.js(f"({Q})('.js8-hb').title"), "Arm TX first")
-    setup(f"({Q})('.js8-mins').value = '5'; ({Q})('.js8-arm').click()")
+    setup(f"({Q})('.js8-mins [data-min=\"5\"]').click()")
+    check("minutes: the chip picked is on", b.js(f"({Q})('.js8-mins .chip.on').dataset.min"), "5")
+    setup(f"({Q})('.js8-arm').click()")
     check("Arm sends arm with the minutes", b.js("__sent.at(-1)"), ["arm", {"radio": "ic7300", "minutes": 5}])
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(STATUS)
           + ", {why_not: 'transmit is off on this radio (--no-tx)'})})")
@@ -144,35 +154,37 @@ try:
     ARMED = dict(STATUS, armed=True, tx_enabled=True, why_not=None)
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(ARMED)
           + ", {armed_until: Date.now() / 1000 + 299.5})})")
-    check("armed: Arm hidden, Disarm shown, HB/CQ/box enabled",
-          b.js(f"[({Q})('.js8-arm').hidden, ({Q})('.js8-disarm').hidden, ({Q})('.js8-hb').disabled, ({Q})('.js8-cq').disabled, ({Q})('.js8-text').disabled]"),
-          [True, False, False, False, False])
-    check("armed: HB keeps its own tooltip", b.js(f"({Q})('.js8-hb').title.startsWith('One heartbeat')"), True)
+    check("armed: Arm gone, Disarm shown, HB/CQ/box enabled",
+          b.js(f"[!!({Q})('.js8-arm'), !!({Q})('.js8-disarm'), ({Q})('.js8-hb').disabled, ({Q})('.js8-cq').disabled, ({Q})('.js8-text').disabled]"),
+          [False, True, False, False, False])
+    check("armed: the gate says so", b.js(f"({Q})('.js8-gate').textContent.startsWith('Armed')"), True)
+    check("armed: HB keeps its own tooltip", b.js(f"({Q})('.js8-hb').title.startsWith('Heartbeat:')"), True)
     check("armed, no station picked: queries disabled", b.js(f"[...document.querySelectorAll('#j .js8-q')].every((x) => x.disabled)"), True)
     setup(f"({Q})('.js8-hb').click()")
     check("HB sends hb", b.js("__sent.at(-1)"), ["hb", {"radio": "ic7300"}])
     setup(f"({Q})('.js8-cq').click()")
     check("CQ sends @ALLCALL CQ CQ CQ and the grid", b.js("__sent.at(-1)"), ["send", {"radio": "ic7300", "text": "@ALLCALL CQ CQ CQ FN31"}])
     setup("document.querySelector('#j .js8-heard tbody tr').click()")
-    check("click a heard station: picked", b.js(f"[({Q})('.js8-to .call').textContent, !!document.querySelector('#j .js8-heard tr.sel')]"), ["To K1ABC", True])
+    check("click a heard station: picked", b.js(f"[({Q})('.js8-to .call').textContent, !!document.querySelector('#j .js8-heard tr.sel')]"), ["K1ABC", True])
+    check("picked: Ask names the station", b.js(f"[...document.querySelectorAll('#j .js8-field .label')].map((e) => e.textContent).includes('Ask K1ABC')"), True)
     check("picked: queries enabled", b.js(f"[...document.querySelectorAll('#j .js8-q')].every((x) => !x.disabled)"), True)
     setup("[...document.querySelectorAll('#j .js8-q')].find((x) => x.dataset.q === 'SNR?').click()")
     check("SNR? to the picked station", b.js("__sent.at(-1)"), ["send", {"radio": "ic7300", "text": "K1ABC SNR?"}])
-    setup(f"({Q})('.js8-offset').value = '1650'; ({Q})('.js8-speed').value = 'fast'")
+    setup(f"({Q})('.js8-opts').open = true; ({Q})('.js8-offset').value = '1650'; ({Q})('.js8-speed [data-speed=\"fast\"]').click()")
     setup("[...document.querySelectorAll('#j .js8-q')].find((x) => x.dataset.q === 'GRID?').click()")
     check("offset and speed go with it", b.js("__sent.at(-1)"),
           ["send", {"radio": "ic7300", "text": "K1ABC GRID?", "offset_hz": 1650, "speed": "fast"}])
     setup(f"{{ const i = ({Q})('.js8-text'); i.value = 'tnx for the call'; ({Q})('.js8-send').click(); }}")
     check("a message to the picked station is addressed to it", b.js("__sent.at(-1)[1].text"), "K1ABC TNX FOR THE CALL")
     setup("document.querySelector('#j .js8-msgs li.pickable').click()")
-    check("click a message: picks its sender", b.js(f"({Q})('.js8-to .call').textContent"), "To W1AW")
+    check("click a message: picks its sender", b.js(f"({Q})('.js8-to .call').textContent"), "W1AW")
     setup("document.querySelector('#j .js8-msgs li.pickable').click()")
     check("click it again: cleared", b.js(f"!!({Q})('.js8-to .call')"), False)
     setup("document.querySelector('#j .js8-activity tr[data-bin=\"1200\"]').click()")
-    check("click band activity: picks the sender", b.js(f"({Q})('.js8-to .call').textContent"), "To N9ABC")
-    setup(f"({Q})('.js8-clear').click(); ({Q})('.js8-offset').value = ''; ({Q})('.js8-speed').value = ''")
+    check("click band activity: picks the sender", b.js(f"({Q})('.js8-to .call').textContent"), "N9ABC")
+    setup(f"({Q})('.js8-clear').click(); ({Q})('.js8-offset').value = ''; ({Q})('.js8-speed [data-speed=\"\"]').click()")
     check("clear: to everyone again", b.js(f"[!!({Q})('.js8-to .call'), ({Q})('.js8-prefix').textContent]"), [False, ""])
-    check("armed: the countdown", b.js(f"/TX armed, (4:5\\d|5:00) left$/.test(({Q})('.js8-status').textContent)"), True)
+    check("armed: the countdown", b.js(f"/^TX armed · (4:5\\d|5:00)$/.test(({Q})('.js8-state').textContent)"), True)
     setup(f"{{ const i = ({Q})('.js8-text'); i.focus(); i.value = 'N9ABC SNR?'; }}")
     setup("__impl.js8call.event({event: 'frame', radio: 'ic7300', frame: {kind: 'frame', utc: '2026-11-21T16:36:15Z', snr: 2, freq_hz: 1300.0, text: 'K2ABC: CQ'}})")
     check("a frame while typing: text and focus kept", b.js(f"[({Q})('.js8-text').value, document.activeElement === ({Q})('.js8-text')]"),
@@ -186,15 +198,24 @@ try:
     check("Enter sends", b.js("__sent.at(-1)"), ["send", {"radio": "ic7300", "text": "CQ CQ"}])
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(ARMED)
           + ", {armed_until: Date.now() / 1000 + 200, radio_tx: true})})")
-    check("keyed: ON AIR", b.js(f"[({Q})('.js8-status').textContent.startsWith('ON AIR'), ({Q})('.js8-status').classList.contains('onair')]"),
-          [True, True])
+    check("keyed: ON AIR", b.js(f"[({Q})('.js8-state').textContent, ({Q})('.js8-head').classList.contains('onair')]"),
+          ["ON AIR", True])
     check("armed: the tab's dot is tx", b.js("__impl.js8call.tab().dot"), "tx")
     if SHOTS:
         b.screenshot(os.path.join(SHOTS, "js8call-armed.png"))
     setup(f"({Q})('.js8-disarm').click()")
     check("Disarm sends disarm", b.js("__sent.at(-1)"), ["disarm", {"radio": "ic7300"}])
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: " + json.dumps(STATUS) + "})")
-    check("disarmed again: Arm back", b.js(f"({Q})('.js8-arm').hidden"), False)
+    check("disarmed again: Arm back", b.js(f"!!({Q})('.js8-arm')"), True)
+    setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: Object.assign(" + json.dumps(STATUS)
+          + ", {why_not: 'STOP TX is on at the radio; Resume there first'})})")
+    check("STOP TX at the radio: the state says so, Arm says why",
+          b.js(f"[({Q})('.js8-state').textContent, ({Q})('.js8-arm').disabled, ({Q})('.js8-why').textContent]"),
+          ["STOP TX", True, "Can't arm: STOP TX is on at the radio; Resume there first"])
+    if SHOTS:
+        setup("document.querySelector('#j .js8-heard tbody tr').click()")
+        setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: " + json.dumps(STATUS) + "})")
+        b.screenshot(os.path.join(SHOTS, "js8call-disarmed.png"))
 
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: {connected: false, error: 'engine not reachable on 127.0.0.1:4537 (ClientConnectorError)', unsafe: []}})")
     check("engine down: says so, and why", b.js(f"({Q})('.js8-status').textContent"),
