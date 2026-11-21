@@ -51,9 +51,11 @@ jobs:
   # macOS is half the hosts (launchd, CoreAudio): Darwin rendering, the
   # installer and update paths, and the audio import. No real launchctl
   # bootstrap: it needs a GUI session a runner does not have (service.py).
+  # Every process starts ~35 s slow on the runner, so the TX tests stay on
+  # Linux (shards, py312), where they run at speed.
   macos:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       # The runner's host name is a 60-character id that does not resolve:
       # socket.getfqdn() (webguard, at import) waits ~70 s on it, so servers
@@ -73,7 +75,7 @@ jobs:
         run: python -m venv .venv && .venv/bin/pip install -q -r requirements.txt
       - name: macOS tests
         shell: bash
-        run: bash tests/ci/run_list.sh mac_station_test station_audio_test installer_test update_test hostfile_safety_test modules_test modules_apply_test inventory_test scaffold_test webguard_test security_headers_test tx_state_test
+        run: bash tests/ci/run_list.sh mac_station_test station_audio_test installer_test update_test hostfile_safety_test modules_test modules_apply_test inventory_test scaffold_test webguard_test security_headers_test
   # The suite split four ways by measured duration (tests/ci/shard.py), each
   # shard on its own runner, so the serial-only tests never share ports.
   shard:
