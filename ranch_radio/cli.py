@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import catalog, doctor, manifest, modules, paths, render, service, updater
+from . import backup, catalog, doctor, manifest, modules, paths, render, service, updater
 from .render import Artifact, HostError, artifacts, load, same
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -460,6 +460,20 @@ def cmd_stop(a):
 
 def cmd_restart(a):
     return _lifecycle(a, "restart")
+
+
+def cmd_backup(a):
+    name = a.host or this_host()
+    h = load_host(name)
+    out = a.out or f"ranch-radio-{h['host']}-{time.strftime('%Y-%m-%d-%H%M')}.tar.gz"
+    m = backup.backup(h, host_path(name), out, a.home)
+    ok, problems = backup.verify(out)
+    for f in m["files"]:
+        print(f"  {f['name']:40} {f['bytes']:>10} bytes")
+    for why in m["left_out"]:
+        print(f"  not in it: {why}")
+    print(f"{out}: {len(m['files'])} file(s), mode 600" + ("" if ok else f"; DOES NOT VERIFY: {'; '.join(problems)}"))
+    return 0 if ok else 1
 
 
 def cmd_start(a):
@@ -911,6 +925,10 @@ def main(argv=None):
         c.add_argument("--host", help="default: this machine")
         c.add_argument("--drop-rigctl", action="store_true", help="go ahead even with JTDX/WSJT-X connected")
         c.add_argument("--home", help=argparse.SUPPRESS)
+    bk = sub.add_parser("backup", help="one archive (mode 600) of this host's file, state and databases; read-only")
+    bk.add_argument("out", nargs="?", help="default: ranch-radio-<host>-<date>.tar.gz here")
+    bk.add_argument("--host", help="default: this machine")
+    bk.add_argument("--home", help=argparse.SUPPRESS)
     lg = sub.add_parser("logs", help="where each service logs, or one service's log (tail; -f follows)")
     lg.add_argument("service", nargs="?", help="a name from the list, or its module")
     lg.add_argument("-f", "--follow", action="store_true")
@@ -959,4 +977,5 @@ def main(argv=None):
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
             "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs, "status": cmd_status,
-            "stop": cmd_stop, "restart": cmd_restart}[a.cmd](a) or 0
+            "stop": cmd_stop, "restart": cmd_restart,
+            "backup": cmd_backup}[a.cmd](a) or 0
