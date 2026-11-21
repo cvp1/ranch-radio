@@ -55,6 +55,16 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
+      # The runner's host name is a 60-character id that does not resolve:
+      # socket.getfqdn() (webguard, at import) waits ~70 s on it, so servers
+      # "did not start" in time, and the host-file rules refuse it as a
+      # host name (installer_test). A short one that resolves (2026-11-21).
+      - name: A short host name that resolves
+        run: |
+          sudo scutil --set HostName mac-ci
+          sudo scutil --set LocalHostName mac-ci
+          sudo scutil --set ComputerName mac-ci
+          echo "127.0.0.1 mac-ci mac-ci.local" | sudo tee -a /etc/hosts
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
