@@ -12,6 +12,13 @@
 // mesh_node / mesh_reboot out); the server keeps the history, so a page
 // opened later sees it too.
 // Uses app.js's $, send, toast and on.
+//
+// More than one node (mesh-radios, 2026-11-21): the snapshot's "radios" lists
+// them ([{id, label, connected, error}], the first is id ""), and a switcher
+// beside "Mesh" picks which one this view shows. Every command goes out with
+// that node's id (tx()); picking one asks the station for its snapshot
+// (mesh_select) and redraws from it; an event from another node only updates
+// its dot and unread count in the switcher.
 
 const mesh = (() => {
   const HEARD_RECENT_S = 24 * 3600;
@@ -54,6 +61,40 @@ const mesh = (() => {
   let health = null;        // mesh_stats.py summary(): traffic, channel load, findings
   let packets = [];         // the last packets heard ({"rx"} events), for the Health view's log
   const edits = {};         // section -> {field: value} not yet saved
+  let cur = "";             // the node this view shows ("" the first)
+  let radios = [];          // [{id, label, connected, error}] when the station has more than one
+  const unread = {};        // node id -> messages from others since it was last shown
+  const tx = (o) => send(cur ? { ...o, node: cur } : o);    // every command names the node it is for
+  const radioBar = document.createElement("span");
+  radioBar.className = "mesh-radios";
+  radioBar.id = "mesh-radios";
+  radioBar.setAttribute("role", "tablist");
+  radioBar.setAttribute("aria-label", "Mesh radios");
+  $("#mesh-me")?.before(radioBar);
+  function renderRadios() {
+    radioBar.hidden = radios.length < 2;
+    if (radioBar.hidden) { radioBar.innerHTML = ""; return; }
+    radioBar.innerHTML = radios.map((r) => {
+      const n = unread[r.id] || 0, here = r.id === cur;
+      const t = `${r.label}: ${r.connected ? "connected" : (r.error || "not connected")}${n ? `, ${n} new` : ""}`;
+      return `<button type="button" class="chip chip-mini mesh-radio${here ? " on" : ""}" role="tab" aria-selected="${here}" ` +
+        `data-node="${esc(r.id)}" title="${esc(t)}"><i class="mesh-radio-dot${r.connected ? " ok" : ""}"></i>${esc(r.label)}` +
+        `${n && !here ? ` <b class="mesh-radio-n">${n}</b>` : ""}</button>`;
+    }).join("");
+  }
+  radioBar.addEventListener("click", (e) => {
+    const b = e.target.closest?.(".mesh-radio");
+    if (!b || b.dataset.node === cur) return;
+    cur = b.dataset.node;
+    unread[cur] = 0;
+    store.set("mesh.radio", cur);
+    tx({ t: "mesh_select" });
+    renderRadios();
+  });
+  function radioStatus(node, st) {
+    const r = radios.find((x) => x.id === (node || ""));
+    if (r && st) { r.connected = !!st.connected; r.error = st.error || null; renderRadios(); }
+  }
 
   const byId = (id) => nodes.find((n) => n.id === id);
   // A node that has left the radio's list keeps the name it last had (names).
@@ -194,7 +235,7 @@ const mesh = (() => {
     const last = incoming(conv).at(-1);
     if (!last || last.t <= readT(conv)) return;
     convState.convs[conv] = { ...cs(conv), read_t: last.t };      // at once here; the station's echo follows
-    send({ t: "mesh_conv", action: "read", conv, msg_t: last.t });
+    tx({ t: "mesh_conv", action: "read", conv, msg_t: last.t });
   }
   const openConv = () => (view === "dm" ? (dmTo ? convOf("dm", dmTo) : null) : convOf(view));
   let newMark = null;       // {conv, n}: how many were unread when it was opened, for the "New" line
@@ -236,17 +277,17 @@ const mesh = (() => {
     if (act === "read") return markRead(conv);
     if (act === "unread") {
       const last = incoming(conv).at(-1);
-      if (last) send({ t: "mesh_conv", action: "unread", conv, msg_t: last.t });
+      if (last) tx({ t: "mesh_conv", action: "unread", conv, msg_t: last.t });
       return;
     }
     if (act === "clear" || act === "delete") {
       const n = messages.filter((m) => convOfMsg(m) === conv && !isReaction(m)).length;
       const what = act === "delete" ? `your conversation with ${convTitle(conv)}` : `the history of ${convTitle(conv)}`;
       if (!confirm(`Delete ${what} (${n} message${n === 1 ? "" : "s"}) from this station?\n\nThe mesh cannot unsend: everyone else keeps their copies. You can undo this for a few seconds.`)) return;
-      send({ t: "mesh_conv", action: "delete", conv });
+      tx({ t: "mesh_conv", action: "delete", conv });
       return;
     }
-    send({ t: "mesh_conv", action: act, conv });
+    tx({ t: "mesh_conv", action: act, conv });
   }
 
   function renderTabs() {
@@ -368,13 +409,13 @@ const mesh = (() => {
     onReply: (it) => { replyTo = it.m; renderCompose(); $("#mesh-text").focus(); },
     onReact: (it, emoji) => {
       const m = it.m;
-      send({ t: "mesh_send", text: emoji, ch: m.dm ? 0 : m.ch, to: m.dm ? peerOf(m) : null, reply_to: m.id, emoji: true });
+      tx({ t: "mesh_send", text: emoji, ch: m.dm ? 0 : m.ch, to: m.dm ? peerOf(m) : null, reply_to: m.id, emoji: true });
     },
     onAct: (it, act) => {
       const m = it.m;
-      if (act === "retry") send({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
-      else if (act === "cancel") send({ t: "mesh_cancel", msg_t: m.t });
-      else if (act === "delete") send({ t: "mesh_conv", action: "delete", ts: [m.t] });
+      if (act === "retry") tx({ t: "mesh_send", text: m.text, ch: m.ch, to: m.dm ? m.to : null, reply_to: m.reply_id || null });
+      else if (act === "cancel") tx({ t: "mesh_cancel", msg_t: m.t });
+      else if (act === "delete") tx({ t: "mesh_conv", action: "delete", ts: [m.t] });
     },
   };
 
@@ -474,7 +515,7 @@ const mesh = (() => {
     const text = $("#mesh-text").value.trim();
     if (!text || $("#mesh-send").disabled) return;
     const dm = view === "dm";
-    send({ t: "mesh_send", text, ch: dm ? 0 : view, to: dm ? dmTo : null, reply_to: replyTo?.id ?? null });
+    tx({ t: "mesh_send", text, ch: dm ? 0 : view, to: dm ? dmTo : null, reply_to: replyTo?.id ?? null });
     replyTo = null;
     compose.clear();
     renderCompose();
@@ -511,7 +552,7 @@ const mesh = (() => {
       b.onclick = () => select(n.id);
       b.querySelector(".mesh-fav").onclick = (e) => {
         e.stopPropagation();
-        if (connected) send({ t: "mesh_favorite", to: n.id, fav: !n.fav });
+        if (connected) tx({ t: "mesh_favorite", to: n.id, fav: !n.fav });
       };
       el.append(b);
     }
@@ -783,15 +824,15 @@ const mesh = (() => {
       const act = e.target.closest("button")?.dataset.act;
       if (act === "close") select(n.id);
       else if (act === "dm") directTo(n.id);
-      else if (act === "trace") send({ t: "mesh_trace", to: n.id });
-      else if (act === "fav") send({ t: "mesh_favorite", to: n.id, fav: !n.fav });
-      else if (act === "ignore") send({ t: "mesh_node", to: n.id, action: n.ignored ? "unignore" : "ignore" });
+      else if (act === "trace") tx({ t: "mesh_trace", to: n.id });
+      else if (act === "fav") tx({ t: "mesh_favorite", to: n.id, fav: !n.fav });
+      else if (act === "ignore") tx({ t: "mesh_node", to: n.id, action: n.ignored ? "unignore" : "ignore" });
       else if (act === "remove" && confirm(`Remove ${n.shortName || n.id} from the node's list? It comes back when it is next heard.`)) {
-        send({ t: "mesh_node", to: n.id, action: "remove" });
+        tx({ t: "mesh_node", to: n.id, action: "remove" });
         select(n.id);
       }
       const req = e.target.closest("button")?.dataset.req;
-      if (req) send({ t: "mesh_request", to: n.id, kind: req });
+      if (req) tx({ t: "mesh_request", to: n.id, kind: req });
     };
   }
 
@@ -908,7 +949,7 @@ const mesh = (() => {
     if (risky.length && !confirm("These changes can cut this node off the mesh:\n\n" +
         risky.map((f) => `${f.label}: ${cfg.values[cfgSec][f.name]} → ${e[f.name]}\n  ${f.risky}`).join("\n") +
         "\n\nThe node may restart after saving. Save anyway?")) return;
-    send({ t: "mesh_config", section: cfgSec, values: { ...e } });
+    tx({ t: "mesh_config", section: cfgSec, values: { ...e } });
     $("#mesh-cfg-note").textContent = "Saving… (the node may restart)";
   }
 
@@ -1068,14 +1109,33 @@ const mesh = (() => {
   $("#mesh-cfg-save").onclick = saveCfg;
   $("#mesh-cfg-revert").onclick = () => { delete edits[cfgSec]; renderCfg(); };
   $("#mesh-reboot").onclick = () => {
-    if (connected && confirm("Reboot the node? The link drops for a few seconds and comes back on its own.")) send({ t: "mesh_reboot" });
+    if (connected && confirm("Reboot the node? The link drops for a few seconds and comes back on its own.")) tx({ t: "mesh_reboot" });
   };
 
   // ---------- from app.js
 
+  let lastCfg = null;
   function hello(snap, cfg) {
+    lastCfg = cfg || lastCfg;
     $("#mesh").hidden = !cfg?.mesh;
     if (!cfg?.mesh || !snap) return;
+    radios = snap.radios || [];                    // a station with one node sends none
+    // A page opened (or reconnected) with another node picked: the first
+    // node's snapshot arrives in the hello; ask for the picked one's.
+    // Switched off: every node is off, whichever is picked; say so from this snapshot.
+    const want = store.get("mesh.radio", "");
+    if (!snap.__selected && !snap.off && radios.length > 1 && want && radios.some((r) => r.id === want)) {
+      cur = want;
+      renderRadios();
+      tx({ t: "mesh_select" });
+      return;                                      // the picked node's own snapshot follows
+    }
+    if (!snap.__selected) cur = radios.some((r) => r.id === want) && snap.off ? want : "";
+    renderRadios();
+    // Another node's view: nothing of the last one's carries over.
+    for (const k of Object.keys(traces)) delete traces[k];
+    for (const k of Object.keys(edits)) delete edits[k];
+    selected = null; replyTo = null; dmTo = null;
     info = snap.info;
     nodes = snap.nodes || [];
     names = snap.names || {};
@@ -1107,6 +1167,15 @@ const mesh = (() => {
   }
 
   function event(m) {
+    if (m.select) {                                // a node's snapshot, asked for by this page
+      if ((m.node || "") === cur) hello({ ...m.select, __selected: true }, lastCfg);
+      return;
+    }
+    if (m.status) radioStatus(m.node, m.status);
+    if ((m.node || "") !== cur) {                  // another node: its dot and its unread count only
+      if (m.msg && !m.msg.mine && !m.msg.emoji) { unread[m.node || ""] = (unread[m.node || ""] || 0) + 1; renderRadios(); }
+      return;
+    }
     if (m.status) {
       connected = !!m.status.connected;
       linkError = m.status.error || null;
@@ -1138,7 +1207,7 @@ const mesh = (() => {
       const d = m.deleted;
       toast(`Deleted ${d.n} message${d.n === 1 ? "" : "s"} from this station` +
         (d.kept ? ` (${d.kept} still being sent kept)` : ""), "info",
-        { label: "Undo", ms: 12000, fn: () => send({ t: "mesh_conv", action: "undo", ref: d.ref }) });
+        { label: "Undo", ms: 12000, fn: () => tx({ t: "mesh_conv", action: "undo", ref: d.ref }) });
     }       // just what changed; the {nodes} right after it redraws
     if (m.nodes) {
       nodes = m.nodes;
