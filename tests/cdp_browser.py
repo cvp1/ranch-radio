@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -11,31 +12,109 @@ import urllib.request
 
 import aiohttp
 
+START_S = 30                      # Chromium starts slowly on a loaded 2-CPU runner
+TAIL_LINES, TAIL_BYTES = 20, 4000  # how much of Chrome's stderr a failure shows
+
+
+def tail(path, lines=TAIL_LINES, cap=TAIL_BYTES):
+    """The last lines of a file, at most cap bytes; "" when there is none."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - cap))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])
+
 
 class Browser:
     def __init__(self, chrome, cdp_port, size="1500,1400", extra=()):
         self.dir = tempfile.mkdtemp(prefix="page-chrome-")
+        # Chrome's own stderr, kept so a failed start can say why (it went to
+        # DEVNULL before, and CI's "chromium did not start" said nothing more).
+        self.err_path = os.path.join(self.dir, "chrome-stderr.log")
+        self._err = open(self.err_path, "wb")
         self.proc = subprocess.Popen(
             # --mute-audio: the page tests play simulator audio (Listen, the
             # audio scope); headless Chrome still sends it to the host's
             # speakers without this (2026-11-19). Web Audio keeps running.
             [chrome, "--headless=new", "--mute-audio", f"--remote-debugging-port={cdp_port}", f"--user-data-dir={self.dir}",
              "--no-first-run", "--no-default-browser-check", f"--window-size={size}", *extra, "about:blank"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=self._env())
-        for _ in range(300):              # 30 s: Chromium starts slowly on a loaded 2-CPU runner
-            try:
-                targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json"))
-                page = next(t for t in targets if t["type"] == "page")
-                break
-            except (OSError, StopIteration):
-                time.sleep(0.1)
-        else:
-            raise SystemExit("chromium did not start")
+            # its own process group: Chrome's helpers (the network service)
+            # outlive the browser process and kept writing into the profile
+            # after close removed it (1 close in 12 on Linux, 2026-11-20)
+            stdout=subprocess.DEVNULL, stderr=self._err, env=self._env(), start_new_session=True)
+        page = self._wait_for_page(cdp_port, START_S)
         self.loop = asyncio.new_event_loop()
         self.n = 0
         self.ws = self.loop.run_until_complete(self._open(page["webSocketDebuggerUrl"]))
         self.call("Runtime.enable")
         self.call("Page.enable")
+
+    def _wait_for_page(self, cdp_port, timeout):
+        """The first page target, once the DevTools port answers with one.
+        Fails at once if Chrome exits, and on timeout says how far it got;
+        either way with Chrome's exit code and the tail of its stderr."""
+        end, last = time.monotonic() + timeout, "the DevTools port never answered"
+        while True:
+            try:
+                targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json", timeout=2))
+                page = next((t for t in targets if t.get("type") == "page"), None)
+                if page:
+                    return page
+                last = f"the DevTools port answered with no page ({len(targets)} target(s))"
+            except (OSError, ValueError) as e:
+                last = f"the DevTools port never answered (last: {type(e).__name__}: {e})"
+            rc = self.proc.poll()
+            if rc is not None:
+                self._fail(f"chromium did not start: it exited with code {rc} after "
+                           f"{timeout - (end - time.monotonic()):.1f} s; {last}")
+            if time.monotonic() >= end:
+                self._fail(f"chromium did not start: still running after {timeout} s, "
+                           f"port {cdp_port}; {last}")
+            time.sleep(0.1)
+
+    def _stop(self):
+        """Stop Chrome and every helper in its group, then remove the profile.
+        Bounded: a few seconds, then SIGKILL; the removal is retried while a
+        late helper write recreates part of it."""
+        for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 2)):
+            try:
+                os.killpg(self.proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            try:
+                self.proc.wait(grace)
+            except subprocess.TimeoutExpired:
+                continue
+            end = time.monotonic() + grace          # the helpers, after the browser
+            while time.monotonic() < end:
+                try:
+                    os.killpg(self.proc.pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    break
+                time.sleep(0.05)
+            else:
+                continue
+            break
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(5)
+        if not self._err.closed:
+            self._err.close()
+        end = time.monotonic() + 2
+        while True:
+            shutil.rmtree(self.dir, ignore_errors=True)
+            if not os.path.exists(self.dir) or time.monotonic() > end:
+                break
+            time.sleep(0.1)
+
+    def _fail(self, why):
+        self._err.flush()
+        err = tail(self.err_path)
+        self._stop()
+        raise SystemExit(f"{why}\n--- chrome stderr (tail) ---\n{err or '(empty)'}\n--- end ---")
 
     @staticmethod
     def _env():
@@ -99,6 +178,4 @@ class Browser:
         try:
             self.loop.run_until_complete(self.sess.close())
         finally:
-            self.proc.terminate()
-            self.proc.wait(5)
-            shutil.rmtree(self.dir, ignore_errors=True)
+            self._stop()
