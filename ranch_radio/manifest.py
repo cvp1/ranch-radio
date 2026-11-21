@@ -171,6 +171,17 @@ MANIFESTS = {
         "radios": {"js8_port": "free_port"},
         "needs": [{"bin": "jf8call", "key": "bin", "default": "~/.local/bin/jf8call", "fix": JS8_FIX}],
     },
+    # The JS8 tab: relays the station's JS8 bridge (js8_bridge.py); it shows
+    # nothing until the js8 module gives a radio an engine.
+    "js8call": {
+        "label": "JS8",
+        "family": "addon",
+        "block": ("addons", "js8call"),
+        "os": ["macos", "linux"],
+        "template": {"any": {"enabled": True}},
+        "ask": {},
+        "needs": [],
+    },
     "mesh": {
         "label": "Mesh (Meshtastic node)",
         "family": "addon",

@@ -192,9 +192,15 @@ class Js8Bridge:
             raise ValueError(f"js8.radios names no radio on this station: {unknown}")
         self.station = station
         self.engines = {rid: Engine(rid, port, self._push) for rid, port in block["radios"].items()}
+        self.listeners = []          # callables given each push (the JS8 tab's add-on); one failing is logged
 
     def _push(self, msg):
         self.station._broadcast(json.dumps(msg))
+        for fn in list(self.listeners):
+            try:
+                fn(msg)
+            except Exception as e:
+                log.error("js8 listener %s: %s: %s", getattr(fn, "__qualname__", fn), type(e).__name__, e)
 
     async def start(self):
         for e in self.engines.values():
