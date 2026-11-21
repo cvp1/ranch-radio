@@ -203,14 +203,22 @@ class Engine:
         return None
 
     async def disarm(self, why):
-        """Halt and disarm, whatever the state: every step gets its turn."""
+        """Halt and disarm, whatever the state: every step gets its turn.
+        The engine's status lags its config.set, so this disarm reads it back
+        and holds off safety()'s "on without an arm" check for REDISARM_S: a
+        status from before the disarm landed is not an engine armed by itself."""
         was = self.armed is not None
         self.armed = None
+        self._redisarmed = time.monotonic()
         if self._ws is not None and not self._ws.closed:
             for cmd, data in (("tx.halt", None), ("config.set", DISARM)):
                 ok, err = await self._call(cmd, data)
                 if not ok:
                     log.error("js8 %s: disarm: %s: %s", self.rid, cmd, err)
+            ok, got = await self._call("status.get")
+            if ok and isinstance(got, dict):
+                self._status(got)
+            self._redisarmed = time.monotonic()
         if was:
             log.warning("js8 %s: disarmed: %s", self.rid, why)
             self.push({"t": "notice", "level": "warn", "msg": f"JS8 {self.rid} disarmed: {why}."})
