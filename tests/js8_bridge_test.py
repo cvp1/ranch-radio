@@ -69,7 +69,7 @@ class FakeEngine:
 
     def __init__(self, port):
         self.port, self.cmds, self.clients, self.runner = port, [], set(), None
-        self.log, self.obey, self.mute = [], True, False
+        self.log, self.obey, self.mute, self.stale_on_halt = [], True, False, False
         self.status = {"radio_connected": True, "radio_freq_khz": 14078.0, "radio_mode": "USB",
                        "submode_name": "Normal", "callsign": "N0CALL", "grid": "FN31", "transmitting": False,
                        "tx_enabled": False, "auto_reply": False, "heartbeat_enabled": False,
@@ -87,6 +87,9 @@ class FakeEngine:
             self.cmds.append(cmd)
             self.log.append((cmd, data))
             ok, out, err = True, {}, None
+            if cmd == "tx.halt" and self.stale_on_halt:
+                await ws.send_json({"type": "event", "event": "status", "data": dict(self.status)})
+                await asyncio.sleep(js8_bridge.SAFETY_EVERY_S * 1.5)     # a safety tick lands in the gap
             if cmd == "status.get":
                 out = self.status
             elif cmd == "config.set" and self.obey:
@@ -270,7 +273,8 @@ async def main():
     eng.obey = False
     why = await ask(a, do="arm", minutes=10)
     check("unconfirmed arm refused", bool(why) and "did not confirm" in why, True)
-    check("unconfirmed arm: disarmed again", (e.armed, eng.log[-1]), (None, ("config.set", js8_bridge.DISARM)))
+    check("unconfirmed arm: disarmed again, then read back", (e.armed, eng.log[-2:]),
+          (None, [("config.set", js8_bridge.DISARM), ("status.get", {})]))
     eng.obey = True
 
     # ------------------------------------------------------------ arm, send
@@ -342,6 +346,28 @@ async def main():
                        ("STOP TX at the radio", stop_tx), ("the radio went away", radio_gone),
                        ("TX turned off at the radio", no_tx_now)):
         await disarmed_by(name, trig)
+    # a disarm racing the engine's own status: no "on without an arm" error
+    import logging
+
+    class Grab(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.lines = []
+
+        def emit(self, rec):
+            self.lines.append(rec.getMessage())
+    grab = Grab()
+    js8_bridge.log.addHandler(grab)
+    eng.stale_on_halt = True
+    await ask(a, do="arm", minutes=10)
+    await ask(a, do="disarm")
+    await asyncio.sleep(js8_bridge.SAFETY_EVERY_S * 2)
+    eng.stale_on_halt = False
+    js8_bridge.log.removeHandler(grab)
+    check("a disarm with a stale status in flight: no false 'without an arm' error",
+          [x for x in grab.lines if "while not armed" in x], [])
+    check("...and it ends disarmed", (e.armed, e.status.get("tx_enabled")), (None, False))
+
     notices = [m for m in st.pushed if m["t"] == "notice"]
     check("each disarm tells the pages why", any("time ran out" in m["msg"] for m in notices)
           and any("STOP TX" in m["msg"] for m in notices), True)
@@ -374,7 +400,7 @@ async def main():
     check("re-armed on the new engine", await ask(a, do="arm", minutes=10), None)
     mark = len(eng2.log)
     await br.stop()
-    check("station stop disarms first", [c for c, _ in eng2.log[mark:]], ["tx.halt", "config.set"])
+    check("station stop disarms first", [c for c, _ in eng2.log[mark:]], ["tx.halt", "config.set", "status.get"])
 
     # ------------------------------------------------------------ the allowlist
     log_all = eng.log + eng2.log
