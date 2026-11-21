@@ -1,35 +1,78 @@
-/* The JS8 tab (static/addons/js8call.js). */
-.js8call { display: flex; flex-direction: column; gap: 10px; }
-.js8call .js8-radios { display: flex; gap: 6px; }
-.js8call .js8-status { padding: 6px 10px; border-radius: 6px; background: var(--panel-2, rgba(127,127,127,.12)); }
-.js8call .js8-status.down { opacity: .8; }
-.js8call .js8-status.unsafe { background: #8b1a1a; color: #fff; font-weight: 600; }
-.js8call .js8-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .9fr); gap: 10px; }
+/* The JS8 tab (static/addons/js8call.js): status card, send panel, three lists. */
+.js8call { display: flex; flex-direction: column; gap: 12px; }
+.js8call .panel { padding: 14px 16px; }
+.js8call .label { font-size: 10px; }
+.js8call h3 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.js8call .js8-panel-head { display: flex; align-items: center; gap: 10px; }
+.js8call .js8-sub { margin: 2px 0 8px; font-size: 12px; color: var(--muted); }
+.js8call .js8-hint { font-size: 12px; color: var(--muted); }
+.js8call button:disabled, .js8call input:disabled { opacity: .4; cursor: not-allowed; }
+.js8call .chip:not(.on) { border-color: var(--line); background: rgba(255,255,255,.03); }
+
+/* 1 status card */
+.js8call .js8-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
+.js8call .js8-head.armed { border-color: rgba(var(--warm-rgb), .55); }
+.js8call .js8-head.onair { border-color: var(--tx); box-shadow: 0 0 0 1px var(--tx), 0 0 24px -6px var(--tx); }
+.js8call .js8-info { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; min-width: 0; }
+.js8call .js8-state { height: 30px; font-size: 13px; padding: 0 14px; }
+.js8call .js8-status { font-size: 13px; }
+.js8call .js8-freq { font: 700 18px var(--mono); letter-spacing: .02em; }
+.js8call .js8-status.down { color: var(--muted); }
+.js8call .js8-status.unsafe { padding: 6px 10px; border-radius: 8px; background: var(--tx); color: #fff; font-weight: 600; }
+.js8call .js8-me { display: inline-flex; align-items: baseline; gap: 6px; font: 600 13px var(--mono); }
+.js8call .js8-armbox { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.js8call .js8-armrow { display: flex; align-items: center; gap: 8px; }
+.js8call .js8-arm { color: var(--warm); border-color: rgba(var(--warm-rgb), .6) !important; background: rgba(var(--warm-rgb), .12) !important; height: 32px; padding: 0 16px; }
+.js8call .js8-disarm { height: 32px; padding: 0 16px; color: var(--tx); border-color: rgba(var(--tx-rgb), .6) !important; background: rgba(var(--tx-rgb), .12) !important; }
+.js8call .js8-left { font: 700 15px var(--mono); color: var(--warm); }
+.js8call .js8-queue { font-size: 12px; color: var(--muted); }
+.js8call .js8-why { font-size: 12px; color: var(--warm); max-width: 40em; text-align: right; }
+.js8call .js8-why:empty { display: none; }
+
+/* 2 send panel */
+.js8call .js8-sendpanel { display: flex; flex-direction: column; gap: 8px; }
+.js8call .js8-sendpanel.off .js8-gate { color: var(--warm); font-weight: 600; }
+.js8call .js8-gate { margin: 0; }
+.js8call .js8-field { display: grid; grid-template-columns: 6.5em 1fr; align-items: center; gap: 10px; }
+.js8call .js8-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.js8call .js8-to { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.js8call .js8-target { font: 700 13px var(--mono); }
+.js8call .js8-clear { border: 0; background: none; color: inherit; font-size: 15px; line-height: 1; padding: 0 0 0 4px; cursor: pointer; }
+.js8call .js8-msgline { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.js8call .js8-prefix { font: 700 13px var(--mono); color: var(--ok); }
+.js8call .js8-text, .js8call .js8-offset {
+  height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--well, rgba(0,0,0,.25));
+  color: var(--text); font: 500 13px var(--mono);
+}
+.js8call .js8-text { flex: 1; min-width: 0; text-transform: uppercase; }
+.js8call .js8-text::placeholder { text-transform: none; }
+.js8call .js8-offset { width: 8em; }
+.js8call .js8-opts summary { cursor: pointer; font-size: 12px; color: var(--muted); padding: 2px 0; }
+.js8call .js8-opts[open] summary { margin-bottom: 6px; }
+.js8call .js8-opts .js8-field { margin-top: 6px; }
+
+/* 3 lists */
+.js8call .js8-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .9fr); gap: 12px; }
 @media (max-width: 1100px) { .js8call .js8-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+  .js8call .js8-field { grid-template-columns: 1fr; gap: 4px; }
+  .js8call .js8-armbox { align-items: flex-start; }
+  .js8call .js8-why { text-align: left; }
+}
 .js8call .js8-pane { min-width: 0; }
-.js8call .js8-pane h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
 .js8call table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.js8call th { text-align: left; font-weight: 600; opacity: .7; padding: 2px 6px; }
-.js8call td { padding: 2px 6px; border-top: 1px solid rgba(127,127,127,.15); vertical-align: top; }
+.js8call th { text-align: left; font-weight: 600; color: var(--muted); padding: 2px 6px; font-size: 11px; }
+.js8call td { padding: 3px 6px; border-top: 1px solid var(--line); vertical-align: top; }
 .js8call td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.js8call td.t, .js8call .js8-msgs .t { font-variant-numeric: tabular-nums; white-space: nowrap; opacity: .75; }
-.js8call td.txt, .js8call .js8-msgs .txt { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; }
-.js8call td.call { font-weight: 600; }
-.js8call .empty { opacity: .6; font-style: italic; }
-.js8call .js8-msgs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-.js8call .js8-msgs li { display: grid; grid-template-columns: auto auto auto auto 1fr; gap: 6px; align-items: baseline; }
-.js8call .js8-status.armed { background: #7a5a00; color: #fff; }
-.js8call .js8-status.onair { background: #8b1a1a; color: #fff; font-weight: 600; }
-.js8call .js8-tx { display: flex; flex-direction: column; gap: 6px; }
-.js8call .js8-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.js8call .js8-tx [hidden] { display: none; }
-.js8call .js8-tx .js8-text { flex: 1 1 280px; min-width: 0; font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }
-.js8call .js8-tx .js8-why, .js8call .js8-tx .js8-queue { font-size: 12px; opacity: .75; }
-.js8call .js8-tx .js8-offset { width: 7em; }
-.js8call .js8-tx .js8-prefix { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
-.js8call .js8-tx .js8-to { display: inline-flex; gap: 4px; align-items: center; min-width: 11em; }
-.js8call .js8-tx .js8-to .hint { font-size: 12px; opacity: .6; }
-.js8call .js8-tx button:disabled, .js8call .js8-tx input:disabled { opacity: .45; cursor: not-allowed; }
+.js8call td.t, .js8call .js8-msgs .t { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+.js8call td.txt, .js8call .js8-msgs .txt { white-space: pre-wrap; word-break: break-word; font-family: var(--mono); }
+.js8call td.call { font-weight: 700; font-family: var(--mono); }
+.js8call .empty { color: var(--muted); font-style: italic; }
+.js8call .js8-msgs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; font-size: 13px; }
+.js8call .js8-msgs li { display: grid; grid-template-columns: auto auto auto auto 1fr; gap: 6px; align-items: baseline; padding: 4px 6px; border-top: 1px solid var(--line); }
 .js8call .pickable { cursor: pointer; }
-.js8call .pickable:hover { background: rgba(127,127,127,.12); }
-.js8call .sel { background: rgba(80,140,255,.22); }
+.js8call .pickable:hover { background: rgba(var(--accent-rgb), .08); }
+.js8call .sel { background: rgba(var(--accent-rgb), .18); box-shadow: inset 3px 0 0 var(--accent); }
+.js8call .to-me { background: rgba(var(--ok-rgb), .10); }
+.js8call .js8-you { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px; font: 700 10px var(--mono); letter-spacing: .06em; color: var(--bg, #000); background: var(--ok); vertical-align: 1px; }
+.js8call .js8-youcount { font-size: 11px; padding: 2px 8px; }
