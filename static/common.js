@@ -87,7 +87,7 @@ function sUnits(raw) {
 const poPct = (r) => (r <= 143 ? (r / 143) * 50 : 50 + ((r - 143) / 70) * 50);
 
 const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const store = {
   get(k, d) { try { const v = localStorage.getItem("ic7300." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },

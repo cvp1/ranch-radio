@@ -73,6 +73,10 @@ file by hand. Example host files: `examples/hosts/`.
   failures show as "not loaded" with the reason; the radio runs on.
 - **Headless pages, CORS and Host checks** live in `webguard.py`. Every new HTTP
   route goes through `authorised`.
+- **Pages run under `webguard.CSP`**: no inline `<script>`, no `on*=` attributes,
+  no `eval` (`tests/xss_hygiene_test.py`). Text from the air goes through `esc()`
+  or `textContent`. A page test that evals inside a frame calls
+  `Page.setBypassCSP` (see `operate_page_test`).
 - **Legacy name.** State and config paths still say `radio-remote`
   (`~/.config/radio-remote/`, `~/.local/state/radio-remote/`). Keep them; a rename
   needs a migration.

@@ -123,6 +123,53 @@ def cross_site_guard(allow_hosts=(), log=None):
     return guard
 
 
+
+# ---------------------------------------------------------------- response headers
+# Every page renders text that arrived over the air or the mesh (APRS
+# comments, node names, Winlink subjects) through innerHTML, so a missed
+# esc() is script on the LAN page. The policy makes that miss inert: only
+# our own files run (no inline script, no eval), and plugins and <base> are
+# off. Inline style stays allowed (the pages set style= freely); images may
+# come from any https host (map tiles from four basemap servers, and what
+# their redirects reach). connect-src names ws:/wss: as well as 'self' for
+# browsers that do not match a WebSocket against 'self'. No frame-ancestors:
+# a home dashboard may embed the station. Referrer-Policy is same-origin,
+# not no-referrer: no-referrer makes a browser send "Origin: null" on a form
+# POST, and same_origin above would refuse it. (2026-11-21, review plan PR 3.)
+CSP = "; ".join((
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "connect-src 'self' ws: wss:",
+    "media-src 'self' blob:",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+))
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
+
+
+async def _security_headers(request, response):
+    # setdefault: a response that brings its own (a proxied radio page, a
+    # Winlink attachment with Pat's sandbox policy) keeps it.
+    for k, v in SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+
+
+def add_security_headers(app):
+    """Attach the headers to every response the app sends, WebSocket
+    handshakes and static files included (on_response_prepare runs for
+    all of them; a middleware misses an already-prepared response)."""
+    app.on_response_prepare.append(_security_headers)
+    return app
+
+
 def allowed_names(args):
     """--allow-host names plus the TLS names (not the %l placeholder)."""
     return [*getattr(args, "allow_host", []), *[n for n in getattr(args, "tls_name", []) if n != "%l"]]

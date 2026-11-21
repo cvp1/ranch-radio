@@ -235,6 +235,11 @@ front = subprocess.Popen([sys.executable, "station.py", "--config", cfg_path, "-
                           "--rigctl-port", str(SHARED)], cwd=ROOT,
                          stdout=open(os.path.join(TMP, "station.log"), "w"), stderr=subprocess.STDOUT)
 b = Browser(CHROME, CDP, size="1500,1000")
+# The test reads a radio frame's globals with w.eval(); the pages' policy
+# (webguard.CSP, no unsafe-eval) refuses that, as it should. Bypass it
+# for this test only; station_page_test and xss_render_page_test run the
+# pages under it.
+b.call("Page.setBypassCSP", enabled=True)
 try:
     assert testkit.wait_for(lambda: _answers(WEB), 60, 0.1), "station did not start"
     b.goto(f"http://127.0.0.1:{WEB}/#/home")

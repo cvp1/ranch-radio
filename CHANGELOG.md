@@ -5,6 +5,11 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Every page the radio server, the station and the packet hub send carries a Content-Security-Policy (only the app's own scripts run: no inline script, no eval, no plugins), `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`. A name or comment heard over the air that slipped past escaping can no longer run script on the LAN page. The station and packet pages' last inline scripts moved to `static/station_boot.js` and `static/packet.js`.
+- `esc()` (both copies) now escapes `'` as well, so a value inside a single-quoted attribute stays inside it.
+
 ### Added
 
 - A `js8` module: a JS8 engine (jf8call, JS8Call-compatible, headless) beside each radio with a `js8_port`, as a launchd agent or `<id>-js8.service`. It starts receive-only every time: TX disarmed; no auto-reply, heartbeat or heartbeat ACKs; no schedule or filter changes; PSK Reporter off unless asked. It keys only through the radio's own rigctl port, so STOP TX, `--no-tx` and the transmit time limit apply. Its WebSocket is on loopback only. `js8/build.sh` builds the patched jf8call it requires, and `js8_engine.py` refuses any other build. The station's JS8 tab is not in this release.

@@ -1206,6 +1206,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
     # radio (PTT, codec Save, add-ons): unknown Host names and cross-site
     # Origins are refused, as on the station (modules plan M0, 2026-10-21).
     app = web.Application(middlewares=[webguard.cross_site_guard(webguard.allowed_names(args), log)])
+    webguard.add_security_headers(app)
 
     def authorised(request):
         return not args.token or secrets.compare_digest(

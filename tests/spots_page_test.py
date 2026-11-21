@@ -176,6 +176,11 @@ try:
                              env=dict(os.environ, HOME=TMP), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     assert testkit.wait_for(lambda: answers(WEB), 60, 0.1), "station did not start"
     b = Browser(CHROME, CDP, size="1400,900")
+    # The test reads a radio frame's globals with w.eval(); the pages' policy
+    # (webguard.CSP, no unsafe-eval) refuses that, as it should. Bypass it
+    # for this test only; station_page_test and xss_render_page_test run the
+    # pages under it.
+    b.call("Page.setBypassCSP", enabled=True)
     b.goto(f"http://127.0.0.1:{WEB}/#/ic7300")
     b.wait("document.querySelector('#conn b')?.textContent === 'Connected'")
     check("page: the radio's frame draws its scope", bool(FW("scope.n > 0", 30)), True)
