@@ -882,6 +882,11 @@ ranch-radio install
   dies is unkeyed) all apply to it, as they do to JTDX.
 - **Its WebSocket is on loopback, and its web console is off.** jf8call has
   no login and checks no Origin, so only this host's station talks to it.
+- **The station reads each engine, and only reads.** `js8_bridge.py` keeps
+  the frames heard lately (300 per radio) and who sent them, pushes each
+  frame to the station's pages, and shows an engine that reports TX,
+  auto-reply or heartbeat on as unsafe. It sends the engine `status.get`
+  and nothing else; a page may ask for state only.
 - **Only the Ranch Radio build starts.** Upstream jf8call 0.7.1 transmits
   an ACK to any `MSG` addressed to one of its groups (`@ALLCALL` by
   default), and a "YES MSG ID" to stations it holds overheard messages for,
