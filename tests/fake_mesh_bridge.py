@@ -17,6 +17,7 @@ also an "rx" (activity). !0000cafe replies to the first message (reply_id
 hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
 telemetry one fills its air_tx, a neighbours one says it hears us at 4.0 dB); to anyone else, "no reply". "node" ignore /
 unignore / remove change the node list; "reboot" is done.
+$FAKE_MESH_PORT_NAMES=1 names the node after its port's file name.
 $FAKE_MESH_NODES_PAD adds that many far nodes to the node list (a long line).
 $FAKE_MESH_BURST=1 also "hears" 30 position packets from !0000dead (hop limit
 7, 2 hops, relayed by a node ending in fe: RDG) and 5 texts from !0000beef
@@ -80,7 +81,10 @@ def main():
             except OSError:
                 key_ok = None
     emit(ev="status", connected=True, error=None)
-    emit(ev="info", me=ME, preset="LongFast", missing=[],
+    me = dict(ME)
+    if os.environ.get("FAKE_MESH_PORT_NAMES"):     # two fake nodes told apart on a page (mesh_radios_page_test)
+        me["long"] = os.path.basename(args.port)
+    emit(ev="info", me=me, preset="LongFast", missing=[],
          channels=[{"index": 0, "name": "LongFast", "role": "PRIMARY", "key_ok": None},
                    {"index": 1, "name": "HomeNet", "role": "SECONDARY", "key_ok": key_ok}])
     values = {"owner": {"long_name": ME["long"], "short_name": ME["short"]},
@@ -138,7 +142,7 @@ def main():
         m = json.loads(line)
         if os.environ.get("FAKE_MESH_LOG"):
             with open(os.environ["FAKE_MESH_LOG"], "a") as f:
-                f.write(line)
+                f.write(json.dumps({**m, "_port": args.port}) + "\n")     # which node got it (mesh_radios_test)
         if m.get("cmd") == "set":
             if m["values"].get("hop_limit") == 6:
                 emit(ev="done", ref=m["ref"], ok=False, error="node refused")

@@ -243,7 +243,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 |---|---|---|
 | `winlink` | Winlink email over HF (ARDOP), from the page | Pat; ardopcf (built from `ardop/`) |
 | `vara` | Winlink over VARA HF beside ARDOP, picked per session (macOS; xara, unregistered) | `winlink`; xara (built with cargo, below) |
-| `mesh` | A Meshtastic node on the page: channels, conversations, replies and reactions, a Health view (traffic, channel load over 24 h, chatty nodes, hop limits, the main relay, the packet log), long messages in parts, a failed send sent again by itself (Cancel to stop it), nodes (telemetry, ask for position / telemetry / user info, ignore, remove), a map with neighbour links, hops, routers, distance rings and the list of who hears you and whom you hear, settings, reboot | a node over USB, Bluetooth or Wi-Fi (`tcp:HOST`; its port has no login, so a trusted LAN only); the `meshtastic` package |
+| `mesh` | A Meshtastic node on the page: channels, conversations, replies and reactions, a Health view (traffic, channel load over 24 h, chatty nodes, hop limits, the main relay, the packet log), long messages in parts, a failed send sent again by itself (Cancel to stop it), nodes (telemetry, ask for position / telemetry / user info, ignore, remove), a map with neighbour links, hops, routers, distance rings and the list of who hears you and whom you hear, settings, reboot | a node over USB, Bluetooth or Wi-Fi (`tcp:HOST`; its port has no login, so a trusted LAN only); the `meshtastic` package; more than one node with `"radios"` (below) |
 | `packet` | An APRS and Winlink packet hub on Direwolf (a USB sound card cable such as an AIOC), a network KISS TNC, or a UV-PRO / UV-50PRO over Bluetooth (BlueZ on Linux, IOBluetooth on macOS); optional receive-only iGate | Direwolf, a network TNC, or Bluetooth |
 | `uvpro` | UV-PRO / UV-50PRO control: channels, settings, beacon | `benlink`; the packet hub on the same radio |
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
@@ -256,6 +256,20 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `macos-widget` | A menu-bar on/off switch for the radio server | Xcode command-line tools |
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
+
+**More than one Meshtastic node.** The Mesh tab can show several nodes, for
+example one on MediumFast slot 18 and a LongFast monitor on USB. List the
+others under `radios`; each runs its own bridge and keeps its own history:
+
+```json
+"mesh": {"port": "ble:NODE_A", "label": "MF18",
+         "radios": [{"label": "LF", "port": "/dev/cu.usbmodem1,/dev/cu.usbmodem2"}]}
+```
+
+A switcher beside "Mesh" picks which node the tab shows and which one a
+message goes out on; another node's new messages count on its button. An
+extra node takes the first one's keys unless it names its own, never its
+MQTT feed, and has auto traceroute off unless its entry says `"auto_trace": true`.
 
 Three more modules are services a host gets from its host file rather than
 switches: `station` (every radio on one page, Linux), `audio` (pinned

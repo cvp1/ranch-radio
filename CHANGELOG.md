@@ -7,6 +7,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- Mesh: more than one Meshtastic node on a station. List the others under the `mesh` block's `radios` (each a `port`, optionally `label`, `keys`, `log`, `feed`, `auto_trace`); each runs its own bridge and history. A switcher beside "Mesh" picks which node the tab shows and sends on, and counts new messages on the other nodes. A station with one node is unchanged.
+
 - Band strip: a "Need: DXCC only" switch under the cells narrows "need near you" to DXCC needs (new DXCC, on the band, in the mode), dropping new grids. This browser keeps the choice; the default still counts both.
 
 - Band strip: "need near you" on every band. With `"near": true` in the Propagation add-on's `pskreporter` block, each band shows how many stations you still need (new DXCC or new grid, the Roster's strong levels) that receivers in your grid decoded in the last 15 minutes, from PSKReporter, judged by the logbook's needs index. A band JTDX isn't on gets a count too, and the tooltip names the first five stations and their need. An unknown grid, a missing needs index or PSKReporter failing reads unknown, never zero. The two PSKReporter queries take turns at least 5 minutes apart. Display only.
