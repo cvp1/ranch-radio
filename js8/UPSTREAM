@@ -1,0 +1,4 @@
+# jf8call and its JS8 modem, Dan Kingshott's forks of Jeff Francis (N0GQ)'s
+# jf8call (GPL-3.0-or-later). js8/build.sh builds these commits plus js8/patches.
+jf8call https://github.com/rawpurplesmurf/jf8call-fork.git 8cdbf397f288c9a884e74a06c902cba1a77804f1
+gfsk8 https://github.com/rawpurplesmurf/gfsk8-modem-clean-fork.git dbc9876c1557564673e918a7a09cae994175b5ea

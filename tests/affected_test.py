@@ -55,7 +55,9 @@ for f in ("logsync.py", "logsync_config.py", "logsync_udp.py", "logsync_ledger.p
     sel = affected.select([f])
     check(f"{f}: logsync_test, and no transmit/rig/Winlink test",
           ("logsync_test" in sel, [n for n in sel if n.startswith(TX_FAMILY)]), (True, []))
-    check(f"  {f}: a handful, not the suite", len(sel) <= 10, True)
+    # 12: render loads logsync_config by name to validate a host's logsync
+    # block, so every render-module test (vara, js8) is a real consumer.
+    check(f"  {f}: a handful, not the suite", len(sel) <= 12, True)
 
 
 sel = affected.select(["logsync_settings.py"])

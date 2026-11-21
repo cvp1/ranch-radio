@@ -64,7 +64,7 @@ def free_ports(h, n, start=4537):
     """n ports no radio or Winlink block of h already uses, from start up."""
     used = set()
     for r in h["radios"]:
-        used |= {r.get(k) for k in ("web", "rigctl", "lane")}
+        used |= {r.get(k) for k in ("web", "rigctl", "lane", "js8_port")}
     used |= {v for v in (h.get("winlink") or {}).values() if isinstance(v, int)}
     x = (h.get("winlink") or {}).get("xara")
     if isinstance(x, dict):
