@@ -8,8 +8,12 @@
 //              is keyed; a red UNSAFE banner if an engine reports TX,
 //              auto-reply or heartbeat on without an arm
 //   send       Arm for N minutes (refused, and why, when the radio can't
-//              key); while armed a message box, Send and Disarm. The arm is
-//              this page's: closing it disarms (js8_bridge.py holds the gates)
+//              key); then HB, CQ, the directed queries (SNR? GRID? INFO?
+//              STATUS? HEARING?) to the station picked by clicking it in
+//              Heard, Messages or Band activity, a message box (to that
+//              station, or everyone), offset and speed; Disarm. Shown
+//              disabled until armed. The arm is this page's: closing it
+//              disarms (js8_bridge.py holds the gates)
 //   activity   one row per audio offset (50 Hz bins), the latest text there
 //   messages   complete decodes: from, to, text, newest first
 //   heard      stations heard: call, SNR, grid, when, offset; newest first
@@ -17,14 +21,15 @@
 // Server: addons/js8call.py relays js8_bridge.py: hello {ready, why?,
 // radios: {id: {name, status, frames, heard}}}; events {event: "frame" |
 // "status", radio, ...}; the page sends api.send("arm", {radio, minutes}),
-// ("send", {radio, text}), ("disarm", {radio}). Every string from the air
+// ("send", {radio, text, offset_hz?, speed?}), ("hb", {radio}),
+// ("disarm", {radio}). Every string from the air
 // goes through textContent: JS8 text can hold < and >.
 
 (() => {
   const BIN_HZ = 50, MAX_ROWS = 60, MAX_MSGS = 100, FRESH_MS = 10 * 60 * 1000;
   const FRAME_CALL = /^\s*([A-Z0-9]{1,3}[0-9][A-Z0-9/]{0,8}):/;
   const MAX_SEND = 160, ARM_MINUTES = [5, 10, 30];
-  let body = null, api = null, snap = { ready: false }, pick = null, tx = null, ticker = null;
+  let body = null, api = null, snap = { ready: false }, pick = null, tx = null, ticker = null, to = null;
   const grids = {};                               // call -> grid, from messages that carried one
 
   const radios = () => snap.radios || {};
@@ -65,10 +70,21 @@
   }
 
   // The send bar is built once and updated in place: a re-render on every
-  // frame must not drop what's being typed or take the focus away.
+  // frame must not drop what's being typed or take the focus away. Every
+  // control shows whether armed or not; the ones that transmit are disabled
+  // until this page arms.
+  const QUERIES = ["SNR?", "GRID?", "INFO?", "STATUS?", "HEARING?"];
+  const SPEEDS = [["", "Speed: as set"], ["normal", "Normal"], ["fast", "Fast"], ["turbo", "Turbo"], ["slow", "Slow"]];
+
+  function pickTo(call) {
+    to = call && call !== to ? call : null;     // a second click on the same station clears it
+    render();
+  }
+
   function txBar() {
     if (tx) return tx;
     const bar = el("div", "js8-tx");
+    const row1 = el("div", "js8-row"), row2 = el("div", "js8-row"), row3 = el("div", "js8-row");
     const mins = el("select", "js8-mins");
     for (const m of ARM_MINUTES) {
       const o = el("option", null, `${m} min`);
@@ -77,38 +93,102 @@
       mins.appendChild(o);
     }
     const arm = el("button", "btn js8-arm", "Arm TX");
+    const disarm = el("button", "btn js8-disarm", "Disarm");
     const why = el("span", "js8-why");
+    const queue = el("span", "js8-queue");
+    row1.append(mins, arm, disarm, why, queue);
+
+    const toBox = el("span", "js8-to");
+    const hb = el("button", "btn js8-hb", "HB");
+    hb.title = "One heartbeat now (@HB HEARTBEAT and your grid), on a clear offset in the heartbeat sub-band";
+    const cq = el("button", "btn js8-cq", "CQ");
+    cq.title = "@ALLCALL CQ CQ CQ and your grid";
+    const qs = QUERIES.map((q) => {
+      const b = el("button", "btn js8-q", q);
+      b.dataset.q = q;
+      b.onclick = () => to && sendText(`${to} ${q}`);
+      return b;
+    });
+    row2.append(toBox, hb, cq, ...qs);
+
+    const prefix = el("span", "js8-prefix");
     const input = el("input", "js8-text");
     input.type = "text";
     input.maxLength = MAX_SEND;
-    input.placeholder = "Message, e.g. N9ABC SNR?";
+    input.placeholder = "Message";
     input.autocomplete = "off";
     const sendB = el("button", "btn js8-send", "Send");
-    const disarm = el("button", "btn js8-disarm", "Disarm");
-    const queue = el("span", "js8-queue");
+    const offset = el("input", "js8-offset");
+    offset.type = "number";
+    offset.min = 400; offset.max = 2600; offset.step = 10;
+    offset.placeholder = "Offset Hz";
+    offset.title = "Audio offset to transmit on, 400-2600 Hz; empty keeps the engine's";
+    const speed = el("select", "js8-speed");
+    for (const [v, label] of SPEEDS) {
+      const o = el("option", null, label);
+      o.value = v;
+      speed.appendChild(o);
+    }
+    row3.append(prefix, input, sendB, offset, speed);
+    bar.append(row1, row2, row3);
+
+    function sendText(text) {
+      if (!api || !pick || !text) return;
+      const x = { radio: pick, text };
+      const off = Number(offset.value);
+      if (offset.value !== "" && Number.isFinite(off)) x.offset_hz = off;
+      if (speed.value) x.speed = speed.value;
+      api.send("send", x);
+    }
     const send = () => {
-      const text = input.value.trim();
-      if (!text || !api || !pick) return;
-      api.send("send", { radio: pick, text });
+      let text = input.value.trim().toUpperCase();
+      if (!text) return;
+      if (to && !text.startsWith(to + " ")) text = `${to} ${text}`;
+      sendText(text);
       input.value = "";
     };
     arm.onclick = () => api && pick && api.send("arm", { radio: pick, minutes: Number(mins.value) });
     disarm.onclick = () => api && pick && api.send("disarm", { radio: pick });
+    hb.onclick = () => api && pick && api.send("hb", { radio: pick });
+    cq.onclick = () => {
+      const g = String(((cur() || {}).status || {}).grid || "").slice(0, 4);
+      sendText(`@ALLCALL CQ CQ CQ${g ? " " + g : ""}`);
+    };
     sendB.onclick = send;
     input.onkeydown = (e) => { if (e.key === "Enter") send(); };
-    bar.append(mins, arm, why, input, sendB, disarm, queue);
-    tx = { bar, mins, arm, why, input, sendB, disarm, queue };
+    tx = { bar, mins, arm, disarm, why, queue, toBox, hb, cq, qs, prefix, input, sendB, offset, speed };
     return tx;
   }
 
   function updateTx(r) {
     const t = txBar(), s = (r && r.status) || {};
-    const armed = !!s.armed;
-    t.mins.hidden = t.arm.hidden = t.why.hidden = armed;
-    t.input.hidden = t.sendB.hidden = t.disarm.hidden = t.queue.hidden = !armed;
+    const armed = !!s.armed, off = armed ? "" : "Arm TX first";
+    t.mins.hidden = t.arm.hidden = armed;
+    t.disarm.hidden = !armed;
     t.arm.disabled = !!s.why_not || !s.connected;
-    t.why.textContent = s.why_not ? `Can't arm: ${s.why_not}` : "";
+    t.why.textContent = !armed && s.why_not ? `Can't arm: ${s.why_not}` : "";
     t.queue.textContent = s.queue ? `${s.queue} frame(s) queued` : "";
+    for (const b of [t.hb, t.cq, t.sendB, t.input]) {
+      if (b.dataset.tip === undefined) b.dataset.tip = b.title || "";
+      b.disabled = !armed;
+      b.title = off || b.dataset.tip;
+    }
+    for (const b of t.qs) {
+      b.disabled = !armed || !to;
+      b.title = !armed ? "Arm TX first" : !to ? "Pick a station: click it in Heard, Messages or Band activity" : `${to} ${b.dataset.q}`;
+    }
+    t.toBox.replaceChildren();
+    if (to) {
+      t.toBox.append(el("span", "call", `To ${to}`));
+      const x = el("button", "chip chip-mini js8-clear", "×");
+      x.title = "Clear: send to everyone";
+      x.onclick = () => pickTo(null);
+      t.toBox.appendChild(x);
+    } else {
+      t.toBox.append(el("span", "hint", "Pick a station to query"));
+    }
+    t.prefix.textContent = to ? `${to} ` : "";
+    t.input.placeholder = to ? `Message to ${to}` : "Message to all (or pick a station)";
     t.bar.classList.toggle("armed", armed);
     if (armed && !ticker) {
       ticker = setInterval(() => {
@@ -133,6 +213,12 @@
     [...rows.entries()].sort((a, b) => a[0] - b[0]).slice(0, MAX_ROWS).forEach(([bin, f]) => {
       const tr = tb.insertRow();
       tr.dataset.bin = bin;
+      const call = (String(f.text || "").match(FRAME_CALL) || [])[1];
+      if (call) {
+        tr.classList.add("pickable");
+        if (call === to) tr.classList.add("sel");
+        tr.onclick = () => pickTo(call);
+      }
       tr.appendChild(el("td", "t", hhmmss(f.utc)));
       tr.appendChild(el("td", "n", snr(f.snr)));
       tr.appendChild(el("td", "n", bin));
@@ -147,6 +233,11 @@
     const msgs = (r.frames || []).filter((f) => f.kind === "message").slice(-MAX_MSGS).reverse();
     for (const m of msgs) {
       const li = el("li");
+      if (m.from) {
+        li.classList.add("pickable");
+        if (m.from === to) li.classList.add("sel");
+        li.onclick = () => pickTo(m.from);
+      }
       li.appendChild(el("span", "t", hhmmss(m.utc)));
       li.appendChild(el("b", "from", m.from || "?"));
       li.appendChild(el("span", "to", m.to ? `→ ${m.to}` : ""));
@@ -165,6 +256,9 @@
     const tb = t.createTBody();
     for (const h of (r.heard || []).slice(0, MAX_ROWS)) {
       const tr = tb.insertRow();
+      tr.classList.add("pickable");
+      if (h.call === to) tr.classList.add("sel");
+      tr.onclick = () => pickTo(h.call);
       tr.appendChild(el("td", "call", h.call));
       tr.appendChild(el("td", "n", snr(h.snr)));
       tr.appendChild(el("td", null, h.grid || grids[h.call] || ""));

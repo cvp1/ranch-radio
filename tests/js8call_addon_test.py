@@ -5,8 +5,8 @@
   - a bridge: ready, each radio's frames, heard and status, with its name
   - relay: a bridge push reaches the pages as {"t": "addon", "addon": "js8call"}
   - stop takes its listener off the bridge; a failing listener never stops a push
-  - commands: arm, send and disarm go to the bridge with only radio, minutes
-    and text; a refusal or a malformed request comes back to that page as a
+  - commands: arm, send, hb and disarm go to the bridge with only radio,
+    minutes, text, offset and speed; a refusal or a malformed request comes back to that page as a
     notice; any other verb is refused and never reaches the bridge
   - it is in the module catalog and the manifest
 
@@ -115,13 +115,16 @@ reg = Addons(ch, {"js8call": {"enabled": True}}, state_path=None)
 page = object()
 for m in ({"do": "arm", "radio": "ic7300", "minutes": 5, "extra": "dropped"}, {"do": "send", "radio": "ic7300", "text": "CQ"},
           {"do": "send", "radio": "ic7300", "text": "bad"}, {"do": "disarm", "radio": "ic7300"},
+          {"do": "hb", "radio": "ic7300"},
           {"do": "radio.ptt.set", "radio": "ic7300"}):
     asyncio.run(reg.command(page, dict(m, t="addon", addon="js8call")))
-check("commands reach the bridge: arm, send, send, disarm", [m["do"] for _, m in ch.js8.calls], ["arm", "send", "send", "disarm"])
-check("only radio, minutes, text are passed", sorted(ch.js8.calls[0][1]), ["do", "minutes", "radio", "text"])
+check("commands reach the bridge: arm, send, send, disarm, hb", [m["do"] for _, m in ch.js8.calls],
+      ["arm", "send", "send", "disarm", "hb"])
+check("only radio, minutes, text, offset, speed are passed", sorted(ch.js8.calls[0][1]),
+      ["do", "minutes", "offset_hz", "radio", "speed", "text"])
 check("a refusal goes to that page", ch.notices[0], ("Can't arm JS8: transmit is off on this radio (--no-tx).", page))
 check("a malformed request goes to that page", ch.notices[1], ("JS8 send: text must be a string", page))
-check("another verb refused, never reaches the bridge", ("radio.ptt.set" in ch.notices[-1][0], len(ch.js8.calls)), (True, 4))
+check("another verb refused, never reaches the bridge", ("radio.ptt.set" in ch.notices[-1][0], len(ch.js8.calls)), (True, 5))
 ch.js8 = None
 asyncio.run(reg.command(page, {"t": "addon", "addon": "js8call", "do": "arm", "radio": "ic7300"}))
 check("no bridge: arm says how to set JS8 up", "ranch-radio add js8" in ch.notices[-1][0], True)

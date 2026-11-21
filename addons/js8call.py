@@ -9,8 +9,9 @@ The tab shows, per radio with a JS8 engine:
 - messages: complete decodes (from, to, text);
 - stations heard: call, SNR, grid, when and where.
 
-- sending: Arm (per radio, for minutes; js8_bridge.ARM_MAX_S at most),
-  a message box while armed, and Disarm. The arm is the page's: closing
+- sending: Arm (per radio, for minutes; js8_bridge.ARM_MAX_S at most);
+  while armed HB, CQ, the directed queries to a picked station (SNR?,
+  GRID?, INFO?, STATUS?, HEARING?), a message box, offset and speed; Disarm. The arm is the page's: closing
   it, the radio's STOP TX, or the time running out disarms the engine.
 
 Everything comes from the station's JS8 bridge (js8_bridge.py, the "js8"
@@ -66,12 +67,13 @@ class Js8call(Addon):
         if b is None:
             self.notice(getattr(self.host, "js8_error", None) or NO_BRIDGE, "warn", ws)
             return
-        if verb not in ("arm", "disarm", "send"):
+        if verb not in ("arm", "disarm", "send", "hb"):
             self.notice(f"JS8: unknown command {verb!r}.", "warn", ws)
             return
         try:
             why = await b.handle(ws, {"do": verb, "radio": m.get("radio"), "minutes": m.get("minutes", 10),
-                                      "text": m.get("text")})
+                                      "text": m.get("text"), "offset_hz": m.get("offset_hz"),
+                                      "speed": m.get("speed")})
         except ValueError as e:
             why = str(e)
         if why:

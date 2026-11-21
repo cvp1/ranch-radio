@@ -14,12 +14,15 @@
   - arm: config.set ARM exactly, confirmed by status.get; an engine that
     doesn't confirm is disarmed and the arm refused
   - send: only while armed and only from the arming page; text upper-cased,
-    capped, printable ASCII; tx.send carries the text and nothing else
+    capped, printable ASCII; tx.send carries the text, and an offset
+    (OFFSET_HZ) and a named speed (SPEEDS) only when asked and in range
+  - hb: tx.hb, only while armed and only from the arming page
   - disarm: by the page, the time running out, the page closing, STOP TX at
     the radio (at once, through radio_changed), the engine going away, the
     station stopping
   - the allowlist: across everything here the bridge sent only status.get,
-    config.set (ARM or DISARM exactly), tx.send {text} and tx.halt
+    config.set (ARM or DISARM exactly), tx.send {text, tx_freq_hz?, submode?},
+    tx.hb and tx.halt
   - malformed engine messages (not JSON, a list, data not an object) don't stop it
   - the engine restarts: the bridge says disconnected, then reconnects by itself
 
@@ -90,6 +93,11 @@ class FakeEngine:
                 for k, v in data.items():
                     if k in self.KEYS:
                         self.status[self.KEYS[k]] = v
+            elif cmd == "tx.hb":
+                if not self.status.get("tx_enabled"):
+                    ok, err = False, "TX is disarmed — arm TX first"
+                else:
+                    out = {"queue_size": 1, "freq_hz": 730.0, "all_clear": True}
             elif cmd == "tx.send":
                 if not self.status.get("tx_enabled"):
                     ok, err = False, "TX is disabled (txEnabled=false)"
@@ -255,6 +263,8 @@ async def main():
     e.status["callsign"] = call
     check("refused arms sent the engine nothing", eng.cmds[n_cmds:], [])
     check("send while disarmed refused", await ask(a, do="send", text="CQ"), "JS8 isn't armed on this radio.")
+    check("hb while disarmed refused", await ask(a, do="hb"), "JS8 isn't armed on this radio.")
+    check("refused hb sent the engine nothing", "tx.hb" in eng.cmds, False)
 
     # ------------------------------------------------------------ an engine that won't arm
     eng.obey = False
@@ -277,6 +287,16 @@ async def main():
     check("send: non-ASCII refused", "can't send" in (await ask(a, do="send", text="CQ ünïcode") or ""), True)
     check("send: control characters refused", "can't send" in (await ask(a, do="send", text="CQ\x07") or ""), True)
     check("send: empty refused", await ask(a, do="send", text="   "), "Nothing to send.")
+    check("send with offset and speed", await ask(a, do="send", text="cq", offset_hz=1234.4, speed="fast"), None)
+    check("send: offset rounded, speed named", eng.log[-1], ("tx.send", {"text": "CQ", "tx_freq_hz": 1234, "submode": "fast"}))
+    for bad, want in (({"offset_hz": 100}, "Offset"), ({"offset_hz": 9000}, "Offset"), ({"offset_hz": True}, "Offset"),
+                      ({"offset_hz": "1500"}, "Offset"), ({"speed": "ultra"}, "Speed"), ({"speed": "radio.ptt.set"}, "Speed")):
+        n = len(eng.log)
+        why = await ask(a, do="send", text="CQ", **bad)
+        check(f"send {bad} refused, nothing sent", (want in (why or ""), len(eng.log) == n), (True, True))
+    check("hb", await ask(a, do="hb"), None)
+    check("hb: tx.hb, no data", eng.log[-1], ("tx.hb", {}))
+    check("another page can't hb", "another page" in (await ask(other, do="hb") or ""), True)
     await eng.push({"type": "event", "event": "tx.queued", "data": {"queue_size": 3}})
     check("the queue is shown", await until(lambda: e.view()["queue"] == 3), True)
     check("arm is clamped to ARM_MAX_S", (await ask(a, do="arm", minutes=999),
@@ -358,13 +378,15 @@ async def main():
 
     # ------------------------------------------------------------ the allowlist
     log_all = eng.log + eng2.log
-    check("only allowlisted commands", {c for c, _ in log_all} <= {"status.get", "config.set", "tx.send", "tx.halt"},
+    check("only allowlisted commands", {c for c, _ in log_all} <= {"status.get", "config.set", "tx.send", "tx.hb", "tx.halt"},
           True)
     check("config.set only ever ARM or DISARM", all(d in (js8_bridge.ARM, js8_bridge.DISARM)
                                                     for c, d in log_all if c == "config.set"), True)
-    check("tx.send only ever {text}", all(set(d) == {"text"} for c, d in log_all if c == "tx.send"), True)
+    check("tx.send only ever {text, tx_freq_hz?, submode?}",
+          all("text" in d and set(d) <= {"text", "tx_freq_hz", "submode"} for c, d in log_all if c == "tx.send"), True)
+    check("tx.hb never carries data", all(d == {} for c, d in log_all if c == "tx.hb"), True)
     check("never radio.*", any(c.startswith("radio.") for c, _ in log_all), False)
-    check("its own count agrees", set(e.sent) <= {"status.get", "config.set", "tx.send", "tx.halt"}, True)
+    check("its own count agrees", set(e.sent) <= {"status.get", "config.set", "tx.send", "tx.hb", "tx.halt"}, True)
 
     await eng2.stop()
 
