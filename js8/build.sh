@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the jf8call the JS8 engine runs: Dan Kingshott's jf8call-fork and its
-# gfsk8 modem at the commits in js8/UPSTREAM, plus our patches in js8/patches
-# (applied in order). js8_engine.py refuses any other build (+rr.2 or later).
+# gfsk8 modem at the commits in js8/UPSTREAM, plus our patches in
+# js8/patches/<repo>/ (applied in order). js8_engine.py refuses any other build (+rr.2 or later).
 #
 #   js8/build.sh [OUT]          default OUT: js8/build/jf8call
 #
@@ -33,8 +33,10 @@ fetch() {  # name dir src
 }
 fetch gfsk8 gfsk8-modem-clean "${GFSK8_SRC:-$(url gfsk8)}"
 fetch jf8call jf8call "${JF8CALL_SRC:-$(url jf8call)}"
-git -C "$WORK/jf8call" -c user.name=build -c user.email=build@localhost \
-    am -q --committer-date-is-author-date "$HERE"/patches/*.patch
+for r in gfsk8:gfsk8-modem-clean jf8call:jf8call; do
+  git -C "$WORK/${r#*:}" -c user.name=build -c user.email=build@localhost \
+      am -q --committer-date-is-author-date "$HERE"/patches/"${r%%:*}"/*.patch
+done
 
 PREFIX=()
 if [[ "$(uname -s)" == Darwin ]]; then

@@ -1,0 +1,74 @@
+From 3c50711ba91b2a8e351168fb798d57d228539cfb Mon Sep 17 00:00:00 2001
+From: cvp1 <54213066+cvp1@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 10:25:21 -0700
+Subject: [PATCH] SNR: a per-submode calibration, Normal +6 dB to match stock
+ JS8Call
+
+Off air on 20 m (2026-11-21, 129 Normal frames side by side with JS8Call
+3.0.3 on one receiver), Normal read a median 6 dB below JS8Call; Fast
+(11 frames) agreed within 1 dB. SNR reports go on air (SNR?, heartbeat
+ACKs), so they should mean what stock JS8Call means. Turbo and Slow have
+no off-air comparison yet and are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/JS8.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/JS8.cpp b/src/JS8.cpp
+index 9baffb7..e568c01 100644
+--- a/src/JS8.cpp
++++ b/src/JS8.cpp
+@@ -230,6 +230,7 @@ struct ModeA {
+     inline static constexpr int JZ = 62;
+     inline static constexpr float ASTART = 0.5f;
+     inline static constexpr float BASESUB = 40.0f;
++    inline static constexpr float SNR_CAL = 6.0f;
+ 
+     // Derived parameters
+     inline static constexpr float AZ = (12000.0f / NSPS) * 0.64f;
+@@ -260,6 +261,7 @@ struct ModeB {
+     inline static constexpr int JZ = 144;
+     inline static constexpr float ASTART = 0.2f;
+     inline static constexpr float BASESUB = 39.0f;
++    inline static constexpr float SNR_CAL = 0.0f;
+ 
+     // Derived parameters
+     inline static constexpr float AZ = (12000.0f / NSPS) * 0.8f;
+@@ -290,6 +292,7 @@ struct ModeC {
+     inline static constexpr int JZ = 172;
+     inline static constexpr float ASTART = 0.1f;
+     inline static constexpr float BASESUB = 38.0f;
++    inline static constexpr float SNR_CAL = 0.0f;
+ 
+     // Derived parameters
+     inline static constexpr float AZ = (12000.0f / NSPS) * 0.6f;
+@@ -325,6 +328,7 @@ struct ModeE {
+     inline static constexpr int JZ = 32;
+     inline static constexpr float ASTART = 0.5f;
+     inline static constexpr float BASESUB = 42.0f;
++    inline static constexpr float SNR_CAL = 0.0f;
+ 
+     // Derived parameters
+     inline static constexpr float AZ = (12000.0f / NSPS) * 0.64f;
+@@ -355,6 +359,7 @@ struct ModeI {
+     inline static constexpr int JZ = 250;
+     inline static constexpr float ASTART = 0.1f;
+     inline static constexpr float BASESUB = 36.0f;
++    inline static constexpr float SNR_CAL = 0.0f;
+ 
+     // Derived parameters
+     inline static constexpr float AZ = (12000.0f / NSPS) * 0.64f;
+@@ -1582,7 +1587,8 @@ template <typename Mode> class DecodeMode {
+                         std::max(10.0f * std::log10(std::max(
+                                              xsig / xbase - 1.0f, 1.259e-10f)) -
+                                      32.0f,
+-                                 -60.0f); // XXX was -28.0f in Fortran
++                                 -60.0f) + // XXX was -28.0f in Fortran
++                           Mode::SNR_CAL; // match stock JS8Call 3.0.3 off air (Ranch Radio, 2026-11-21)
+ 
+                     m_softCombiner.markDecoded(combined.key);
+ 
+-- 
+2.55.0
+

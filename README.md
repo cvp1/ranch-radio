@@ -860,7 +860,7 @@ file's `wavelog_cat` block (url and key_file default to `logsync.wavelog`'s):
 
 A JS8 engine runs beside each radio with a `js8_port`: jf8call, a headless,
 JS8Call-compatible daemon by Jeff Francis (N0GQ), in Dan Kingshott's fork,
-with three Ranch Radio patches. This release adds only the engine; the
+with Ranch Radio patches (`js8/patches/`). This release adds only the engine; the
 station's JS8 tab comes in a later one.
 
 ```sh
@@ -888,6 +888,10 @@ ranch-radio install
   with no auto-reply setting to stop it. `js8/patches` puts both behind
   auto-reply, turns TX off by default, and adds the filter switch.
   `js8_engine.py` refuses any build older than `+rr.2`.
+- **SNR and times match what other stations see.** A patch to its modem
+  reads Normal SNR as stock JS8Call 3.0.3 does (it read 6 dB low on air;
+  Fast agreed), and each frame is stamped with the period it went on air,
+  not when the decode finished. Turbo and Slow SNR are not yet compared on air.
 - **jf8call reports a frame as sent even when its PTT was refused.** What
   went out on air is the radio's own state, as the radio page shows it.
 

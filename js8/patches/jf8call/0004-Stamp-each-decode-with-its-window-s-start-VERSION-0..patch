@@ -1,0 +1,144 @@
+From a5ce44554d9e8a8dff511b438e50603314e9b281 Mon Sep 17 00:00:00 2001
+From: cvp1 <54213066+cvp1@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 10:26:04 -0700
+Subject: [PATCH] Stamp each decode with its window's start; VERSION 0.7.1+rr.3
+
+parseDecoded stamped the moment the decode finished: the end of the
+window, 15 s after the frame went on air. The decode worker now carries
+the boundary its window ended on, and frames and messages are stamped
+boundary - period: the on-air period start, the time a logbook wants.
+
+Checked on air (20 m, 2026-11-21) against a clock outside the audio
+path: the IC-7300's own spectrum scope over CI-V showed three strong
+frames start at :30-:31 and :46-:47, and jf8call decoded each at the
+boundary right after it ended. (JS8Call 3.0.3, TimeDrift 0, writes the
+same frames in ALL.TXT 15 s earlier than they aired.)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ VERSION            |  2 +-
+ src/imodem.h       |  2 +-
+ src/jf8message.cpp | 25 ++++++++++++++++++++++++-
+ src/jf8message.h   |  2 ++
+ src/mainwindow.cpp | 10 ++++++++--
+ 5 files changed, 36 insertions(+), 5 deletions(-)
+
+diff --git a/VERSION b/VERSION
+index 4fe88ea..febd904 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.7.1+rr.2
++0.7.1+rr.3
+diff --git a/src/imodem.h b/src/imodem.h
+index 48de7da..f8c52a6 100644
+--- a/src/imodem.h
++++ b/src/imodem.h
+@@ -22,7 +22,7 @@ struct ModemDecoded {
+     int         submode     = 0;   ///< Modem-specific submode index (see IModem::submodeParms)
+     float       quality     = 0.f;
+     int         frameType   = 0;   ///< Modem-specific frame type (JS8 type bits; 0 for others)
+-    int         utc         = 0;
++    int         utc         = -1;  ///< decode boundary, seconds of the UTC day; -1: none (stamp now)
+     int         modemType   = 0;   ///< 0=Gfsk8/JS8, 1=Codec2
+     bool        isRawText   = false; ///< true when message is already human-readable (skip JS8 DecodedText)
+     bool        isSyncMark  = false; ///< true = periodic sync heartbeat (strip from display)
+diff --git a/src/jf8message.cpp b/src/jf8message.cpp
+index b37a250..7a00a4e 100644
+--- a/src/jf8message.cpp
++++ b/src/jf8message.cpp
+@@ -38,12 +38,35 @@ bool JF8Message::isAddressedToMe(const QString &mycall, const QStringList &group
+     return false;
+ }
+ 
++QDateTime jf8PeriodStartUtc(int boundarySecOfDay, int submode)
++{
++    // The decode at boundary b reads the window [b - period, b]: stamp a
++    // frame with its window's start, as JS8Call (and WSJT-X) do, not with
++    // the moment the decode finished (which ran one to two periods late).
++    int period = 15;
++    switch (submode) {
++        case 1: period = 10; break;   // Fast
++        case 2: period = 6;  break;   // Turbo
++        case 4: period = 30; break;   // Slow
++        case 8: period = 4;  break;   // Ultra
++        default: break;               // Normal
++    }
++    const QDateTime now = QDateTime::currentDateTimeUtc();
++    QDateTime b = now;               // UTC, as now is (Qt 6.4 has no QTimeZone::UTC)
++    b.setTime(QTime(0, 0));
++    b = b.addSecs(boundarySecOfDay);
++    if (b > now.addSecs(60))
++        b = b.addDays(-1);            // the boundary was before midnight
++    return b.addSecs(-period);
++}
++
+ JF8Message parseDecoded(const ModemDecoded &d,
+                         const QString &rawTextHint,
+                         const QString &mycall)
+ {
+     JF8Message msg;
+-    msg.utc         = QDateTime::currentDateTimeUtc();
++    msg.utc         = d.utc >= 0 ? jf8PeriodStartUtc(d.utc, d.submode)
++                                 : QDateTime::currentDateTimeUtc();
+     msg.audioFreqHz = d.frequencyHz;
+     msg.snrDb       = d.snrDb;
+     msg.submodeEnum = d.submode;
+diff --git a/src/jf8message.h b/src/jf8message.h
+index 6420bc5..60b4ec7 100644
+--- a/src/jf8message.h
++++ b/src/jf8message.h
+@@ -70,6 +70,8 @@ struct JF8Message {
+ 
+ // Parses a ModemDecoded struct (from the modem interface) and the raw text
+ // from DecodedText into a JF8Message.
++QDateTime jf8PeriodStartUtc(int boundarySecOfDay, int submode);
++
+ JF8Message parseDecoded(const ModemDecoded &d,
+                         const QString &rawText,
+                         const QString &mycall);
+diff --git a/src/mainwindow.cpp b/src/mainwindow.cpp
+index c4fba14..783503e 100644
+--- a/src/mainwindow.cpp
++++ b/src/mainwindow.cpp
+@@ -124,6 +124,9 @@ public slots:
+             m[QStringLiteral("frameType")]  = d.frameType;
+             m[QStringLiteral("isSyncMark")] = d.isSyncMark;
+             m[QStringLiteral("isEom")]      = d.isEom;
++            // The boundary this window ended on: frames are stamped with the
++            // window's start (jf8PeriodStartUtc), not when the decode finished.
++            m[QStringLiteral("windowUtc")]  = submodes > 0 ? utc : -1;
+             results.append(m);
+         };
+ 
+@@ -1290,6 +1293,9 @@ void MainWindow::onDecodeFinished(const QList<QVariantMap> &results)
+         d.frameType   = m[QStringLiteral("frameType")].toInt();
+         d.modemType   = m[QStringLiteral("modemType")].toInt();
+         d.isRawText   = m[QStringLiteral("isRawText")].toBool();
++        d.utc         = m.value(QStringLiteral("windowUtc"), -1).toInt();
++        const QDateTime frameUtc = d.utc >= 0 ? jf8PeriodStartUtc(d.utc, submode)
++                                              : QDateTime::currentDateTimeUtc();
+ 
+         // ── GFSK8 multi-frame assembly ────────────────────────────────────────
+         // isSyncMark / isEom: handle before normal message processing.
+@@ -1361,7 +1367,7 @@ void MainWindow::onDecodeFinished(const QList<QVariantMap> &results)
+                 m_wsServer->pushMessageFrame(freqHz, snrDb, submode, d.modemType,
+                                              d.frameType, effectiveRawText,
+                                              effectiveRawText,
+-                                             QDateTime::currentDateTimeUtc());
++                                             frameUtc);
+             continue; // skip model/wsServer/auto-reply
+         }
+ 
+@@ -1385,7 +1391,7 @@ void MainWindow::onDecodeFinished(const QList<QVariantMap> &results)
+                 m_wsServer->pushMessageFrame(freqHz, snrDb, submode, d.modemType,
+                                              d.frameType, effectiveRawText,
+                                              assembled,
+-                                             QDateTime::currentDateTimeUtc());
++                                             frameUtc);
+             continue; // skip model/wsServer/auto-reply
+         }
+ 
+-- 
+2.55.0
+
