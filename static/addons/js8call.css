@@ -20,7 +20,16 @@
 .js8call .js8-msgs li { display: grid; grid-template-columns: auto auto auto auto 1fr; gap: 6px; align-items: baseline; }
 .js8call .js8-status.armed { background: #7a5a00; color: #fff; }
 .js8call .js8-status.onair { background: #8b1a1a; color: #fff; font-weight: 600; }
-.js8call .js8-tx { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.js8call .js8-tx { display: flex; flex-direction: column; gap: 6px; }
+.js8call .js8-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .js8call .js8-tx [hidden] { display: none; }
 .js8call .js8-tx .js8-text { flex: 1 1 280px; min-width: 0; font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }
 .js8call .js8-tx .js8-why, .js8call .js8-tx .js8-queue { font-size: 12px; opacity: .75; }
+.js8call .js8-tx .js8-offset { width: 7em; }
+.js8call .js8-tx .js8-prefix { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+.js8call .js8-tx .js8-to { display: inline-flex; gap: 4px; align-items: center; min-width: 11em; }
+.js8call .js8-tx .js8-to .hint { font-size: 12px; opacity: .6; }
+.js8call .js8-tx button:disabled, .js8call .js8-tx input:disabled { opacity: .45; cursor: not-allowed; }
+.js8call .pickable { cursor: pointer; }
+.js8call .pickable:hover { background: rgba(127,127,127,.12); }
+.js8call .sel { background: rgba(80,140,255,.22); }

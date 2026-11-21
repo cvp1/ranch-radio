@@ -12,7 +12,11 @@ add-on):
 
     state                  that radio's frames, heard and status, to the asking page
     arm     minutes        let the engine send for a while (ARM_S default, ARM_MAX_S most)
-    send    text           queue one message (only the page that armed it)
+    send    text [offset_hz speed]
+                           queue one message (only the page that armed it); the page
+                           composes CQ and the directed queries (N9ABC SNR?) as text
+    hb                     one heartbeat now (jf8call picks a clear offset in the
+                           heartbeat sub-band); the periodic heartbeat stays off
     disarm                 halt the engine's transmission and disarm it
 
 Sending is armed per radio, time-boxed, and owned by the page that armed it.
@@ -24,8 +28,9 @@ away, or the station stops. An engine that reports TX, auto-reply or
 heartbeat on when it isn't armed is disarmed at once and shown unsafe.
 
 What the bridge ever sends an engine is an allowlist: status.get,
-config.set with ARM or DISARM exactly, tx.send {"text"}, tx.halt. Never
-radio.* (PTT, tune, connect) and nothing a page writes beyond the text.
+config.set with ARM or DISARM exactly, tx.send {"text", "tx_freq_hz"?,
+"submode"?}, tx.hb, tx.halt. Never radio.* (PTT, tune, connect), and of what
+a page writes only the text, a bounded offset and a named speed.
 
 Every key-up still goes through the radio's own rigctl port, so the radio
 server's gates (STOP TX latch, --no-tx, --tx-timeout, keepalive unkey) hold
@@ -56,6 +61,8 @@ REPLY_S = 5                  # an engine command not answered by then has failed
 SAFETY_EVERY_S = 1.0
 REDISARM_S = 5               # how often an engine found armed without us is disarmed again
 MAX_SEND = 160               # characters of one message a page may send
+OFFSET_HZ = (400, 2600)      # audio offsets a page may pick to transmit on
+SPEEDS = ("normal", "fast", "turbo", "slow")   # not ultra: stock JS8Call may not decode it
 SEND_OK = re.compile(r"^[\x20-\x7e]+$")   # printable ASCII; jf8call packs it (varicode/JSC)
 ARM = {"txEnabled": True, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
 DISARM = {"txEnabled": False, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
@@ -209,7 +216,7 @@ class Engine:
             self.push({"t": "notice", "level": "warn", "msg": f"JS8 {self.rid} disarmed: {why}."})
         self.pushview()
 
-    async def send(self, page, text):
+    async def _may_send(self, page):
         if not self.armed:
             return "JS8 isn't armed on this radio."
         if self.armed["by"] is not page:
@@ -218,6 +225,22 @@ class Engine:
         if why:
             await self.disarm(why)
             return f"Not sent: {why}."
+        return None
+
+    async def heartbeat(self, page):
+        why = await self._may_send(page)
+        if why:
+            return why
+        ok, got = await self._call("tx.hb")
+        if not ok:
+            return f"Heartbeat not sent: {got}."
+        log.info("js8 %s: heartbeat queued at %s Hz", self.rid, got.get("freq_hz"))
+        return None
+
+    async def send(self, page, text, offset_hz=None, speed=None):
+        why = await self._may_send(page)
+        if why:
+            return why
         text = " ".join(str(text or "").upper().split())
         if not text:
             return "Nothing to send."
@@ -225,7 +248,17 @@ class Engine:
             return f"Too long: {len(text)} characters (at most {MAX_SEND})."
         if not SEND_OK.match(text):
             return "JS8 can't send some of those characters."
-        ok, got = await self._call("tx.send", {"text": text})
+        data = {"text": text}
+        if offset_hz is not None:
+            if not isinstance(offset_hz, (int, float)) or isinstance(offset_hz, bool) \
+                    or not OFFSET_HZ[0] <= offset_hz <= OFFSET_HZ[1]:
+                return f"Offset must be {OFFSET_HZ[0]}-{OFFSET_HZ[1]} Hz."
+            data["tx_freq_hz"] = round(float(offset_hz))
+        if speed is not None:
+            if speed not in SPEEDS:
+                return f"Speed must be one of {', '.join(SPEEDS)}."
+            data["submode"] = speed
+        ok, got = await self._call("tx.send", data)
         if not ok:
             return f"Not sent: {got}."
         log.info("js8 %s: queued %d characters", self.rid, len(text))
@@ -441,7 +474,7 @@ class Js8Bridge:
         """A page's request. Returns None, or why it was refused (the caller
         tells that page); a malformed request raises ValueError."""
         do = m.get("do")
-        if do not in ("state", "arm", "disarm", "send"):
+        if do not in ("state", "arm", "disarm", "send", "hb"):
             raise ValueError(f"JS8: unknown request {do!r}")
         e = self.engines.get(m.get("radio"))
         if e is None:
@@ -457,6 +490,8 @@ class Js8Bridge:
         if do == "disarm":
             await e.disarm("disarmed from the page")
             return None
+        if do == "hb":
+            return await e.heartbeat(ws)
         if not isinstance(m.get("text"), str):
             raise ValueError("JS8 send: text must be a string")
-        return await e.send(ws, m["text"])
+        return await e.send(ws, m["text"], m.get("offset_hz"), m.get("speed"))
