@@ -1,6 +1,7 @@
 """The `js8` module: rendering the JS8 engine from the host file (the
 launcher itself is js8_engine_test).
 
+  - station.json carries {"js8": {"radios": {ID: PORT}}} for the station's bridge
   - Mac: one agent, the exact argv through the radio's rigctl port (4532
     when the host file names none), KeepAlive, a 10 s throttle
   - Linux: <id>-js8.service per radio, bound to the radio's server, the
@@ -66,6 +67,11 @@ check("mac: the exact argv, through the radio's rigctl (4532 when unnamed)", c.g
     "--config-dir", f"{HOME}/.local/state/radio-remote/js8/{mac['radios'][0]['id']}",
     "--rigctl", f"127.0.0.1:{mac['radios'][0].get('rigctl', 4532)}", "--ws-port", "4537",
     "--call", "N0CALL", "--grid", "FN31", "--audio-in", "USB Audio CODEC", "--audio-out", "USB Audio CODEC"])
+sj = next(a for a in render.artifacts(mac, home=HOME) if a.path.endswith("station.json")).content
+check("station.json names each engine's port for the bridge", sj.get("js8"),
+      {"radios": {mac["radios"][0]["id"]: 4537}})
+check("no js8 block: none in station.json", "js8" in next(a for a in render.artifacts(host("mac-shack"), home=HOME)
+                                                           if a.path.endswith("station.json")).content, False)
 check("mac: KeepAlive, RunAtLoad, a 10 s throttle, interactive",
       (c.get("KeepAlive"), c.get("RunAtLoad"), c.get("ThrottleInterval"), c.get("ProcessType")),
       (True, True, 10, "Interactive"))

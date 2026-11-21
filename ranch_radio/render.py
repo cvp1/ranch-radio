@@ -1089,6 +1089,8 @@ def station_json(h):
         d["logsync"] = _logsync_block(h)
     if h.get("wavelog_cat"):
         d["wavelog_cat"] = _wavelog_cat_block(h)
+    if js8_radios(h):
+        d["js8"] = {"radios": {r["id"]: r["js8_port"] for r in js8_radios(h)}}
     if h.get("addons"):
         d["addons"] = h["addons"]
     d["host_file"] = h["host"]                  # the station page's Modules tab

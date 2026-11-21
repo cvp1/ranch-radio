@@ -440,6 +440,8 @@ class Station:
         self.settings_plans = None    # logsync_settings.Plans: the Logbook tab's planned host-file edits
         self.wavelog_cat = None       # wavelog_cat.WavelogCat: each radio's frequency to Wavelog, its clicks back
         self.wavelog_cat_error = None # why it isn't running
+        self.js8 = None               # js8_bridge.Js8Bridge: each radio's JS8 engine, receive only
+        self.js8_error = None         # why it isn't running
         self._tasks = []
         self._rigctl = None
         self._lane = None
@@ -720,7 +722,8 @@ class Station:
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {},
                                       "logsync": self.logsync_status(),
-                                      "wavelog_cat": self.wavelog_cat_status()}))
+                                      "wavelog_cat": self.wavelog_cat_status(),
+                                      "js8": self.js8_status()}))
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -773,6 +776,11 @@ class Station:
                 self.notice(why or f"Correction queued for {m['dest']}.", "warn" if why else "info", ws)
         elif t == "logsync_settings":
             await self._logsync_settings(ws, m)
+        elif t == "js8":
+            if self.js8 is None:
+                self.notice("JS8 is not running on this station.", "warn", ws)
+            else:
+                await self.js8.handle(ws, m)
         elif t == "ping":
             await ws.send_str(json.dumps({"t": "pong", "ts": m.get("ts")}))
 
@@ -796,6 +804,7 @@ class Station:
             await self.addons.start()
         await self.start_logsync()
         await self.start_wavelog_cat()
+        await self.start_js8()
         self._tasks.append(asyncio.create_task(self.presence_loop()))
 
     # --- Wavelog CAT (wavelog_cat.py): WaveLogGate's radio-to-Wavelog jobs; its failure stays its own
@@ -824,6 +833,34 @@ class Station:
             return self.wavelog_cat.status()
         if self.wavelog_cat_error:
             return {"loaded": False, "error": self.wavelog_cat_error}
+        return None
+
+    # --- JS8 (js8_bridge.py): each radio's engine, receive only; its failure stays its own
+
+    def make_js8(self, block):
+        self.js8, self.js8_error = None, None
+        try:
+            import importlib
+            self.js8 = importlib.import_module("js8_bridge").Js8Bridge(block, self)
+        except Exception as e:
+            self.js8_error = f"not loaded: {type(e).__name__}: {str(e)[:200]}"
+            log.error("js8 %s", self.js8_error)
+
+    async def start_js8(self):
+        if self.js8 is None:
+            return
+        try:
+            await self.js8.start()
+        except Exception as e:
+            self.js8_error = f"did not start: {type(e).__name__}: {str(e)[:200]}"
+            log.error("js8 %s", self.js8_error)
+            self.js8 = None
+
+    def js8_status(self):
+        if self.js8 is not None:
+            return self.js8.status()
+        if self.js8_error:
+            return {"loaded": False, "error": self.js8_error}
         return None
 
     # --- the logbook sync (logsync.py): a station module; its failure stays its own
@@ -1023,6 +1060,8 @@ class Station:
             await self.logsync.stop()
         if self.wavelog_cat is not None:
             await self.wavelog_cat.stop()
+        if self.js8 is not None:
+            await self.js8.stop()
         await self.ardop.stop()
         for srv in (self._rigctl, self._lane):
             if srv:
@@ -1284,6 +1323,8 @@ def main():
         station.make_logsync(cfg["logsync"])        # a broken logsync must not take the station down
     if cfg.get("wavelog_cat"):
         station.make_wavelog_cat(cfg["wavelog_cat"])  # a broken block must not take the station down
+    if cfg.get("js8"):
+        station.make_js8(cfg["js8"])                  # a broken block must not take the station down
     if cfg.get("host_file"):
         from ranch_radio import pageapi
         # RANCH_RADIO_REPO / RANCH_RADIO_HOME: tests point these at scratch copies.
