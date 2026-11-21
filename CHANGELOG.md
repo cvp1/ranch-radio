@@ -9,6 +9,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 - A `js8` module: a JS8 engine (jf8call, JS8Call-compatible, headless) beside each radio with a `js8_port`, as a launchd agent or `<id>-js8.service`. It starts receive-only every time: TX disarmed; no auto-reply, heartbeat or heartbeat ACKs; no schedule or filter changes; PSK Reporter off unless asked. It keys only through the radio's own rigctl port, so STOP TX, `--no-tx` and the transmit time limit apply. Its WebSocket is on loopback only. `js8/build.sh` builds the patched jf8call it requires, and `js8_engine.py` refuses any other build. The station's JS8 tab is not in this release.
 
+- JS8 engine (`+rr.3`): Normal SNR reads as stock JS8Call does (it read 6 dB low on air), and every frame is stamped with the period it went on air (it was stamped when the decode finished, 15 s later). `js8/patches/` is now split by repo; `js8/build.sh` patches the modem as well.
+
 - Band strip: a "Need: DXCC only" switch under the cells narrows "need near you" to DXCC needs (new DXCC, on the band, in the mode), dropping new grids. This browser keeps the choice; the default still counts both.
 
 - Band strip: "need near you" on every band. With `"near": true` in the Propagation add-on's `pskreporter` block, each band shows how many stations you still need (new DXCC or new grid, the Roster's strong levels) that receivers in your grid decoded in the last 15 minutes, from PSKReporter, judged by the logbook's needs index. A band JTDX isn't on gets a count too, and the tooltip names the first five stations and their need. An unknown grid, a missing needs index or PSKReporter failing reads unknown, never zero. The two PSKReporter queries take turns at least 5 minutes apart. Display only.
