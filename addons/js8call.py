@@ -1,4 +1,4 @@
-"""JS8 add-on: the station's JS8 tab, from its JS8 engines (receive only).
+"""JS8 add-on: the station's JS8 tab, from its JS8 engines.
 
 The tab shows, per radio with a JS8 engine:
 
@@ -9,10 +9,14 @@ The tab shows, per radio with a JS8 engine:
 - messages: complete decodes (from, to, text);
 - stations heard: call, SNR, grid, when and where.
 
+- sending: Arm (per radio, for minutes; js8_bridge.ARM_MAX_S at most),
+  a message box while armed, and Disarm. The arm is the page's: closing
+  it, the radio's STOP TX, or the time running out disarms the engine.
+
 Everything comes from the station's JS8 bridge (js8_bridge.py, the "js8"
-block station.json gets from the js8 module); this add-on only relays it.
-Read-only: nothing is sent to an engine or put on the air. Without the
-bridge the tab says why.
+block station.json gets from the js8 module); this add-on relays it, and
+hands the page's arm, send and disarm to the bridge, which holds every
+gate. Without the bridge the tab says why.
 
 Options (the host file's addons block):
 
@@ -29,7 +33,7 @@ NO_BRIDGE = "JS8 isn't set up on this station: add the js8 module (ranch-radio a
 class Js8call(Addon):
     name = "js8call"
     label = "JS8"
-    title = "JS8 band activity, directed messages and stations heard, from the station's JS8 engines (receive only)"
+    title = "JS8 band activity, directed messages and stations heard, and sending while armed"
     group = "messaging"
     css = True
 
@@ -56,6 +60,22 @@ class Js8call(Addon):
             self.emit({"event": "frame", "radio": msg["radio"], "frame": msg["frame"]})
         elif msg.get("t") == "js8_status":
             self.emit({"event": "status", "radio": msg["radio"], "status": msg["status"]})
+
+    async def command(self, ws, verb, m):
+        b = self._js8()
+        if b is None:
+            self.notice(getattr(self.host, "js8_error", None) or NO_BRIDGE, "warn", ws)
+            return
+        if verb not in ("arm", "disarm", "send"):
+            self.notice(f"JS8: unknown command {verb!r}.", "warn", ws)
+            return
+        try:
+            why = await b.handle(ws, {"do": verb, "radio": m.get("radio"), "minutes": m.get("minutes", 10),
+                                      "text": m.get("text")})
+        except ValueError as e:
+            why = str(e)
+        if why:
+            self.notice(why, "warn", ws)
 
     def snapshot(self):
         b = self._js8()

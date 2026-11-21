@@ -6,9 +6,20 @@
     message's "from", or a frame's "CALL:" prefix), a message's grid kept
   - bounds: at most MAX_FRAMES frames, text capped at MAX_TEXT; keys the
     engine adds that are not on the allowlist never reach a page
-  - receive only: across everything here the bridge sent status.get and nothing else
-  - unsafe: an engine reporting TX or auto-reply on is shown unsafe, pushed once
-  - pages: "state" answers that page only; send, arm or an unknown radio refused
+  - unsafe: an engine reporting TX or auto-reply on without an arm is shown
+    unsafe, pushed once, and disarmed (tx.halt, then config.set DISARM)
+  - pages: "state" answers that page only; an unknown verb or radio refused
+  - arm gates: refused, and why, with the radio absent, --no-tx, STOP TX on,
+    not connected, or the engine without a callsign; nothing sent then
+  - arm: config.set ARM exactly, confirmed by status.get; an engine that
+    doesn't confirm is disarmed and the arm refused
+  - send: only while armed and only from the arming page; text upper-cased,
+    capped, printable ASCII; tx.send carries the text and nothing else
+  - disarm: by the page, the time running out, the page closing, STOP TX at
+    the radio (at once, through radio_changed), the engine going away, the
+    station stopping
+  - the allowlist: across everything here the bridge sent only status.get,
+    config.set (ARM or DISARM exactly), tx.send {text} and tx.halt
   - malformed engine messages (not JSON, a list, data not an object) don't stop it
   - the engine restarts: the bridge says disconnected, then reconnects by itself
 
@@ -55,6 +66,7 @@ class FakeEngine:
 
     def __init__(self, port):
         self.port, self.cmds, self.clients, self.runner = port, [], set(), None
+        self.log, self.obey, self.mute = [], True, False
         self.status = {"radio_connected": True, "radio_freq_khz": 14078.0, "radio_mode": "USB",
                        "submode_name": "Normal", "callsign": "N0CALL", "grid": "FN31", "transmitting": False,
                        "tx_enabled": False, "auto_reply": False, "heartbeat_enabled": False,
@@ -68,11 +80,30 @@ class FakeEngine:
         await ws.send_json({"type": "hello", "data": {"message": "JF8Call WebSocket API"}})
         async for msg in ws:
             m = json.loads(msg.data)
-            self.cmds.append(m.get("cmd"))
-            if m.get("cmd") == "status.get":
-                await ws.send_json({"type": "reply", "id": m.get("id"), "ok": True, "data": self.status})
+            cmd, data = m.get("cmd"), m.get("data") or {}
+            self.cmds.append(cmd)
+            self.log.append((cmd, data))
+            ok, out, err = True, {}, None
+            if cmd == "status.get":
+                out = self.status
+            elif cmd == "config.set" and self.obey:
+                for k, v in data.items():
+                    if k in self.KEYS:
+                        self.status[self.KEYS[k]] = v
+            elif cmd == "tx.send":
+                if not self.status.get("tx_enabled"):
+                    ok, err = False, "TX is disabled (txEnabled=false)"
+                else:
+                    out = {"queue_size": 2}
+            if self.mute:
+                continue
+            await ws.send_json({"type": "reply", "id": m.get("id"), "ok": ok,
+                                **({"data": out} if ok else {"error": err})})
         self.clients.discard(ws)
         return ws
+
+    KEYS = {"txEnabled": "tx_enabled", "autoReply": "auto_reply", "heartbeatEnabled": "heartbeat_enabled",
+            "heartbeatAckEnabled": "heartbeat_ack_enabled"}
 
     async def push(self, obj):
         for ws in list(self.clients):
@@ -91,6 +122,10 @@ class FakeEngine:
         await self.runner.cleanup()
 
 
+class Page:
+    closed = False
+
+
 class Radio:
     def __init__(self, rid):
         self.id = rid
@@ -100,6 +135,10 @@ class FakeStation:
     def __init__(self):
         self.radios = [Radio("ic7300")]
         self.pushed, self.sent = [], []
+        self.tx = {"present": True, "connected": True, "tx": False, "tx_allowed": True, "tx_stopped": None}
+
+    def radio_tx_state(self, rid):
+        return dict(self.tx)
 
     def _broadcast(self, msg):
         self.pushed.append(json.loads(msg))
@@ -177,38 +216,156 @@ async def main():
           True)
     unsafe_pushes = [m for m in st.pushed[n0:] if m["t"] == "js8_status" and m["status"]["unsafe"]]
     check("unsafe pushed to pages once", len(unsafe_pushes), 1)
-    eng.status = dict(eng.status, tx_enabled=False, auto_reply=False)
+    check("on without an arm: the bridge disarms it", await until(
+        lambda: ("config.set", js8_bridge.DISARM) in eng.log and "tx.halt" in eng.cmds), True)
+    check("halt goes before the disarm", eng.cmds.index("tx.halt") < eng.log.index(("config.set", js8_bridge.DISARM)),
+          True)
     await eng.push({"type": "event", "event": "status", "data": eng.status})
-    await until(lambda: not e.view()["unsafe"])
+    check("then it reads safe", await until(lambda: not e.view()["unsafe"]), True)
 
     # ------------------------------------------------------------ pages
     page = object()
     await br.handle(page, {"t": "js8", "do": "state", "radio": "ic7300"})
     check("state answers the asking page", (st.sent[-1][0] is page, st.sent[-1][1]["t"],
                                             len(st.sent[-1][1]["frames"])), (True, "js8_state", js8_bridge.MAX_FRAMES))
-    for bad in ({"do": "send", "radio": "ic7300", "text": "CQ"}, {"do": "arm", "radio": "ic7300"},
-                {"do": "state", "radio": "g90"}, {"radio": "ic7300"}):
+    for bad in ({"do": "key", "radio": "ic7300"}, {"do": "radio.ptt.set", "radio": "ic7300"},
+                {"do": "state", "radio": "g90"}, {"radio": "ic7300"}, {"do": "arm", "radio": "ic7300", "minutes": "10"},
+                {"do": "send", "radio": "ic7300", "text": ["CQ"]}):
         try:
             await br.handle(page, dict(bad, t="js8"))
             check(f"page {bad} refused", "taken", "refused")
         except ValueError:
             check(f"page {bad} refused", "refused", "refused")
 
+    # ------------------------------------------------------------ arm gates
+    a, other = Page(), Page()
+
+    async def ask(page, **m):
+        return await br.handle(page, dict(m, t="js8", radio="ic7300"))
+
+    n_cmds = len(eng.cmds)
+    for name, tx in (("radio absent", {"present": False}), ("--no-tx", {"tx_allowed": False}),
+                     ("STOP TX on", {"tx_stopped": {"at": 1, "by": "x"}}), ("radio not connected", {"connected": False})):
+        st.tx = dict(st.tx, **tx) if tx.get("present") is not False else {"present": False}
+        why = await ask(a, do="arm", minutes=10)
+        check(f"arm refused: {name}", bool(why) and why.startswith("Can't arm JS8"), True)
+        st.tx = {"present": True, "connected": True, "tx": False, "tx_allowed": True, "tx_stopped": None}
+    call = e.status.pop("callsign")
+    check("arm refused: no callsign", "callsign" in (await ask(a, do="arm") or ""), True)
+    e.status["callsign"] = call
+    check("refused arms sent the engine nothing", eng.cmds[n_cmds:], [])
+    check("send while disarmed refused", await ask(a, do="send", text="CQ"), "JS8 isn't armed on this radio.")
+
+    # ------------------------------------------------------------ an engine that won't arm
+    eng.obey = False
+    why = await ask(a, do="arm", minutes=10)
+    check("unconfirmed arm refused", bool(why) and "did not confirm" in why, True)
+    check("unconfirmed arm: disarmed again", (e.armed, eng.log[-1]), (None, ("config.set", js8_bridge.DISARM)))
+    eng.obey = True
+
+    # ------------------------------------------------------------ arm, send
+    check("arm", await ask(a, do="arm", minutes=10), None)
+    check("arm: config.set ARM exactly", ("config.set", js8_bridge.ARM) in eng.log, True)
+    check("armed: tx_enabled is not unsafe", (e.view()["armed"], e.view()["unsafe"]), (True, []))
+    left = e.view()["armed_until"] - time.time()
+    check("armed for the minutes asked", 590 < left <= 600, True)
+    check("another page can't arm over it", "another page" in (await ask(other, do="arm") or ""), True)
+    check("another page can't send", "another page" in (await ask(other, do="send", text="CQ") or ""), True)
+    check("send", await ask(a, do="send", text="  n9abc   snr?  "), None)
+    check("send: upper-cased, spaces folded, text only", eng.log[-1], ("tx.send", {"text": "N9ABC SNR?"}))
+    check("send: too long refused", "Too long" in (await ask(a, do="send", text="X" * 161) or ""), True)
+    check("send: non-ASCII refused", "can't send" in (await ask(a, do="send", text="CQ ünïcode") or ""), True)
+    check("send: control characters refused", "can't send" in (await ask(a, do="send", text="CQ\x07") or ""), True)
+    check("send: empty refused", await ask(a, do="send", text="   "), "Nothing to send.")
+    await eng.push({"type": "event", "event": "tx.queued", "data": {"queue_size": 3}})
+    check("the queue is shown", await until(lambda: e.view()["queue"] == 3), True)
+    check("arm is clamped to ARM_MAX_S", (await ask(a, do="arm", minutes=999),
+                                          e.view()["armed_until"] - time.time() <= js8_bridge.ARM_MAX_S), (None, True))
+
+    # ------------------------------------------------------------ disarms
+    async def disarmed_by(name, trigger):
+        await ask(a, do="arm", minutes=10)
+        mark = len(eng.log)
+        await trigger()
+        ok = await until(lambda: e.armed is None and ("config.set", js8_bridge.DISARM) in eng.log[mark:]
+                         and ("tx.halt", {}) in eng.log[mark:], 3)
+        check(f"disarmed: {name}", ok, True)
+        a.closed = False
+        st.tx = {"present": True, "connected": True, "tx": False, "tx_allowed": True, "tx_stopped": None}
+
+    async def by_page():
+        await ask(a, do="disarm")
+
+    async def time_out():
+        e.armed["until"] = time.monotonic() - 1
+
+    async def page_closes():
+        a.closed = True
+
+    async def stop_tx():
+        st.tx["tx_stopped"] = {"at": time.time(), "by": "a page"}
+        t0 = time.monotonic()
+        await br.radio_changed("ic7300")
+        check("STOP TX disarms at once, not on the next tick", e.armed is None and time.monotonic() - t0 < 0.5, True)
+
+    async def radio_gone():
+        st.tx = {"present": False}
+
+    async def no_tx_now():
+        st.tx["tx_allowed"] = False
+
+    async def auto_reply_on():
+        eng.status["auto_reply"] = True
+        await eng.push({"type": "event", "event": "status", "data": eng.status})
+
+    for name, trig in (("from the page", by_page), ("the engine turned auto-reply on", auto_reply_on), ("the time ran out", time_out), ("the page closed", page_closes),
+                       ("STOP TX at the radio", stop_tx), ("the radio went away", radio_gone),
+                       ("TX turned off at the radio", no_tx_now)):
+        await disarmed_by(name, trig)
+    notices = [m for m in st.pushed if m["t"] == "notice"]
+    check("each disarm tells the pages why", any("time ran out" in m["msg"] for m in notices)
+          and any("STOP TX" in m["msg"] for m in notices), True)
+
+    # an engine that stops answering: the arm fails, it doesn't hang
+    eng.mute = True
+    js8_bridge.REPLY_S = 0.3
+    t0 = time.monotonic()
+    why = await ask(a, do="arm", minutes=10)
+    check("an engine that doesn't answer: arm refused, bounded", (bool(why), time.monotonic() - t0 < 2), (True, True))
+    eng.mute = False
+    js8_bridge.REPLY_S = 5
+    await until(lambda: e.armed is None)
+
+    # ------------------------------------------------------------ armed when the engine goes away
+    await ask(a, do="arm", minutes=10)
+    check("armed before the engine goes", e.armed is not None, True)
+
     # ------------------------------------------------------------ reconnect
     await eng.stop()
     check("engine gone: disconnected, pushed", await until(lambda: not e.connected and any(
         m["t"] == "js8_status" and not m["status"]["connected"] for m in st.pushed)), True)
     check("engine gone: says why", bool(e.error), True)
+    check("engine gone: the arm is gone too", e.armed, None)
     eng2 = FakeEngine(port)
     await eng2.start()
     check("engine back: reconnects by itself", await until(lambda: e.connected, 6), True)
 
-    # ------------------------------------------------------------ receive only
-    sent = set(eng.cmds) | set(eng2.cmds)
-    check("the bridge sent status.get and nothing else", sent, {"status.get"})
-    check("its own count agrees", set(e.sent), {"status.get"})
-
+    # ------------------------------------------------------------ station stops while armed
+    check("re-armed on the new engine", await ask(a, do="arm", minutes=10), None)
+    mark = len(eng2.log)
     await br.stop()
+    check("station stop disarms first", [c for c, _ in eng2.log[mark:]], ["tx.halt", "config.set"])
+
+    # ------------------------------------------------------------ the allowlist
+    log_all = eng.log + eng2.log
+    check("only allowlisted commands", {c for c, _ in log_all} <= {"status.get", "config.set", "tx.send", "tx.halt"},
+          True)
+    check("config.set only ever ARM or DISARM", all(d in (js8_bridge.ARM, js8_bridge.DISARM)
+                                                    for c, d in log_all if c == "config.set"), True)
+    check("tx.send only ever {text}", all(set(d) == {"text"} for c, d in log_all if c == "tx.send"), True)
+    check("never radio.*", any(c.startswith("radio.") for c, _ in log_all), False)
+    check("its own count agrees", set(e.sent) <= {"status.get", "config.set", "tx.send", "tx.halt"}, True)
+
     await eng2.stop()
 
 

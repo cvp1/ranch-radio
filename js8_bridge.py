@@ -1,4 +1,4 @@
-"""The station's side of the JS8 engines (js8_engine.py -> jf8call): receive only.
+"""The station's side of the JS8 engines (js8_engine.py -> jf8call).
 
 One client per radio with a js8_port, on that engine's loopback WebSocket.
 It keeps the frames heard lately and who sent them, and pushes both to the
@@ -7,15 +7,30 @@ station's pages:
     {"t": "js8", "radio": ID, "frame": {...}}        each decoded frame
     {"t": "js8_status", "radio": ID, "status": {...}} engine up/down, rig, TX state
 
-A page may ask for one radio's state ({"t": "js8", "do": "state", "radio": ID});
-nothing else. This release sends the engine status.get and nothing more: no
-tx.*, no radio.*, no config.set. Sending comes later, through the radio
-server's gates, with its own tests.
+Pages ({"t": "js8", "do": VERB, "radio": ID}, or the JS8 tab through its
+add-on):
 
-The engine's own TX state is reported, never trusted: js8_engine.py disarms
-it at every start, so an engine that says TX, auto-reply or heartbeat is on
-is shown as unsafe on the page. What went out on air is the radio server's
-state (jf8call says "tx.finished" even when its PTT was refused).
+    state                  that radio's frames, heard and status, to the asking page
+    arm     minutes        let the engine send for a while (ARM_S default, ARM_MAX_S most)
+    send    text           queue one message (only the page that armed it)
+    disarm                 halt the engine's transmission and disarm it
+
+Sending is armed per radio, time-boxed, and owned by the page that armed it.
+Arming needs the engine connected with a callsign and the radio's own
+server present, connected, with TX allowed (no --no-tx) and not stopped.
+It ends, with tx.halt then txEnabled false, when the time runs out, the
+owning page closes, the radio's STOP TX is pressed, the radio or engine goes
+away, or the station stops. An engine that reports TX, auto-reply or
+heartbeat on when it isn't armed is disarmed at once and shown unsafe.
+
+What the bridge ever sends an engine is an allowlist: status.get,
+config.set with ARM or DISARM exactly, tx.send {"text"}, tx.halt. Never
+radio.* (PTT, tune, connect) and nothing a page writes beyond the text.
+
+Every key-up still goes through the radio's own rigctl port, so the radio
+server's gates (STOP TX latch, --no-tx, --tx-timeout, keepalive unkey) hold
+whatever the engine does. What went out on air is the radio server's state
+(radio_tx here): jf8call says "tx.finished" even when its PTT was refused.
 """
 
 import asyncio
@@ -35,6 +50,15 @@ MAX_TEXT = 200              # characters kept of one frame or message
 BACKOFF_S = (1, 2, 5, 10, 30)
 STATUS_EVERY_S = 30
 FRAME_CALL = re.compile(r"^\s*([A-Z0-9]{1,3}[0-9][A-Z0-9/]{0,8}):")
+ARM_S = 10 * 60               # an arm lasts this long unless the page asks otherwise
+ARM_MAX_S = 30 * 60
+REPLY_S = 5                  # an engine command not answered by then has failed
+SAFETY_EVERY_S = 1.0
+REDISARM_S = 5               # how often an engine found armed without us is disarmed again
+MAX_SEND = 160               # characters of one message a page may send
+SEND_OK = re.compile(r"^[\x20-\x7e]+$")   # printable ASCII; jf8call packs it (varicode/JSC)
+ARM = {"txEnabled": True, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
+DISARM = {"txEnabled": False, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
 STATUS_KEYS = ("radio_connected", "radio_freq_khz", "radio_mode", "submode_name", "callsign", "grid",
                "transmitting", "tx_enabled", "auto_reply", "heartbeat_enabled", "heartbeat_ack_enabled")
 UNSAFE_KEYS = ("tx_enabled", "auto_reply", "heartbeat_enabled", "heartbeat_ack_enabled")
@@ -72,8 +96,16 @@ def frame_of(event, data):
 class Engine:
     """One radio's engine, seen from the station."""
 
-    def __init__(self, rid, port, push):
+    def __init__(self, rid, port, push, radio=None):
         self.rid, self.port, self.push = rid, port, push
+        self.radio = radio or (lambda: {})   # the radio server's word: {"present", "tx_allowed", "tx_stopped", "tx"}
+        self.armed = None                    # {"by": page, "until": monotonic, "until_utc": epoch} while it may send
+        self.queue = 0                       # frames the engine says it has queued
+        self._ws = None
+        self._lock = asyncio.Lock()
+        self._pending = {}                   # command id -> future of its reply
+        self._ids = 0
+        self._redisarmed = 0.0
         self.frames = collections.deque(maxlen=MAX_FRAMES)
         self.heard = collections.OrderedDict()   # call -> {"utc", "snr", "freq_hz", "grid", "submode"}
         self.status = {}
@@ -87,9 +119,141 @@ class Engine:
                 "heard": [dict(call=c, **h) for c, h in reversed(self.heard.items())]}
 
     def view(self):
-        unsafe = [k for k in UNSAFE_KEYS if self.status.get(k)]
+        unsafe = [k for k in UNSAFE_KEYS if self.status.get(k) and not (k == "tx_enabled" and self.armed)]
+        r = self.radio() or {}
         return {"connected": self.connected, "error": self.error, "unsafe": unsafe,
+                "armed": bool(self.armed), "armed_until": self.armed and self.armed["until_utc"],
+                "queue": self.queue, "radio_tx": bool(r.get("tx")), "why_not": self.why_not(),
                 **{k: self.status.get(k) for k in STATUS_KEYS}}
+
+    def why_not(self):
+        """None, or why this radio can't be armed now."""
+        r = self.radio() or {}
+        if not self.connected:
+            return "the JS8 engine isn't connected"
+        if not self.status.get("callsign"):
+            return "the JS8 engine has no callsign"
+        if not self.status.get("radio_connected"):
+            return "the JS8 engine isn't connected to the radio"
+        if not r.get("present"):
+            return "the radio's server isn't reachable"
+        if not r.get("connected"):
+            return "the radio isn't connected to its server"
+        if not r.get("tx_allowed"):
+            return "transmit is off on this radio (--no-tx)"
+        if r.get("tx_stopped"):
+            return "STOP TX is on at the radio; Resume there first"
+        return None
+
+    def pushview(self):
+        self.push({"t": "js8_status", "radio": self.rid, "status": self.view()})
+
+    # --- commands to the engine: the allowlist, nothing else
+
+    async def _call(self, cmd, data=None):
+        """Send one command and wait for its reply: (ok, data or error)."""
+        ws = self._ws
+        if ws is None or ws.closed:
+            return False, "the JS8 engine isn't connected"
+        self._ids += 1
+        cid = f"rr-{self._ids}"
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[cid] = fut
+        try:
+            async with self._lock:
+                self.sent[cmd] += 1
+                await ws.send_json({"type": "cmd", "id": cid, "cmd": cmd, "data": data or {}})
+            return await asyncio.wait_for(fut, REPLY_S)
+        except asyncio.TimeoutError:
+            return False, f"the JS8 engine didn't answer {cmd}"
+        except (aiohttp.ClientError, ConnectionError, RuntimeError) as e:
+            return False, f"the JS8 engine: {type(e).__name__}"
+        finally:
+            self._pending.pop(cid, None)
+
+    async def arm(self, page, seconds):
+        why = self.why_not()
+        if why:
+            return f"Can't arm JS8: {why}."
+        if self.armed and self.armed["by"] is not page:
+            return "JS8 is armed from another page; disarm it there first."
+        seconds = max(60, min(int(seconds), ARM_MAX_S))
+        rec = {"by": page, "until": time.monotonic() + seconds, "until_utc": time.time() + seconds}
+        self.armed = rec
+        ok, got = await self._call("config.set", ARM)
+        if ok:
+            ok, got = await self._call("status.get")
+            if ok and isinstance(got, dict):
+                self._status(got)
+        st = self.status
+        if self.armed is not rec:            # disarmed while arming: that disarm went out after this
+            return "JS8 was disarmed while arming."
+        if not ok or not st.get("tx_enabled") or any(st.get(k) for k in UNSAFE_KEYS if k != "tx_enabled"):
+            await self.disarm("the engine didn't confirm TX on with auto-reply and heartbeat off")
+            return f"Can't arm JS8: {got if not ok else 'the engine did not confirm the arm'}."
+        log.warning("js8 %s: armed for %d s", self.rid, seconds)
+        self.pushview()
+        return None
+
+    async def disarm(self, why):
+        """Halt and disarm, whatever the state: every step gets its turn."""
+        was = self.armed is not None
+        self.armed = None
+        if self._ws is not None and not self._ws.closed:
+            for cmd, data in (("tx.halt", None), ("config.set", DISARM)):
+                ok, err = await self._call(cmd, data)
+                if not ok:
+                    log.error("js8 %s: disarm: %s: %s", self.rid, cmd, err)
+        if was:
+            log.warning("js8 %s: disarmed: %s", self.rid, why)
+            self.push({"t": "notice", "level": "warn", "msg": f"JS8 {self.rid} disarmed: {why}."})
+        self.pushview()
+
+    async def send(self, page, text):
+        if not self.armed:
+            return "JS8 isn't armed on this radio."
+        if self.armed["by"] is not page:
+            return "JS8 is armed from another page; send from there."
+        why = self.why_not()
+        if why:
+            await self.disarm(why)
+            return f"Not sent: {why}."
+        text = " ".join(str(text or "").upper().split())
+        if not text:
+            return "Nothing to send."
+        if len(text) > MAX_SEND:
+            return f"Too long: {len(text)} characters (at most {MAX_SEND})."
+        if not SEND_OK.match(text):
+            return "JS8 can't send some of those characters."
+        ok, got = await self._call("tx.send", {"text": text})
+        if not ok:
+            return f"Not sent: {got}."
+        log.info("js8 %s: queued %d characters", self.rid, len(text))
+        return None
+
+    async def safety(self):
+        """Once a second, and whenever the radio's state changes: end an arm
+        that has lost its reason, and disarm an engine armed without one."""
+        if self.armed:
+            page = self.armed["by"]
+            why = None
+            if any(self.status.get(k) for k in UNSAFE_KEYS if k != "tx_enabled"):
+                why = "the engine reported auto-reply or heartbeat on"
+            elif time.monotonic() >= self.armed["until"]:
+                why = "the arm time ran out"
+            elif getattr(page, "closed", False):
+                why = "the page that armed it closed"
+            else:
+                why = self.why_not()
+            if why:
+                await self.disarm(why)
+        elif self.connected and any(self.status.get(k) for k in UNSAFE_KEYS):
+            now = time.monotonic()
+            if now - self._redisarmed >= REDISARM_S:
+                self._redisarmed = now
+                log.error("js8 %s: the engine reports %s on while not armed; disarming it", self.rid,
+                          ", ".join(k for k in UNSAFE_KEYS if self.status.get(k)))
+                await self.disarm("it was on without an arm")
 
     def _heard(self, f):
         call = f.get("from") or (FRAME_CALL.match(f["text"]) or [None, None])[1]
@@ -114,11 +278,13 @@ class Engine:
             self.push({"t": "js8_status", "radio": self.rid, "status": new})
 
     async def _send(self, ws, cmd):
-        self.sent[cmd] += 1
-        await ws.send_json({"type": "cmd", "id": cmd, "cmd": cmd, "data": {}})
+        async with self._lock:
+            self.sent[cmd] += 1
+            await ws.send_json({"type": "cmd", "id": cmd, "cmd": cmd, "data": {}})
 
     async def _session(self, session):
         async with session.ws_connect(f"ws://127.0.0.1:{self.port}", heartbeat=20, max_msg_size=1 << 20) as ws:
+            self._ws = ws
             self.connected, self.error = True, None
             self.push({"t": "js8_status", "radio": self.rid, "status": self.view()})
             await self._send(ws, "status.get")
@@ -144,10 +310,18 @@ class Engine:
                 if not isinstance(m, dict):
                     continue
                 data = m.get("data") if isinstance(m.get("data"), dict) else {}
-                if m.get("type") == "reply" and m.get("id") == "status.get" and m.get("ok"):
+                fut = self._pending.get(m.get("id")) if m.get("type") == "reply" else None
+                if fut is not None:
+                    if not fut.done():
+                        fut.set_result((True, data) if m.get("ok") else (False, _text(m.get("error")) or "refused"))
+                elif m.get("type") == "reply" and m.get("id") == "status.get" and m.get("ok"):
                     self._status(data)
                 elif m.get("type") == "event" and m.get("event") == "status":
                     self._status(data)
+                elif m.get("type") == "event" and m.get("event") == "tx.queued":
+                    q = data.get("queue_size")
+                    self.queue = q if isinstance(q, int) and not isinstance(q, bool) and q >= 0 else 0
+                    self.pushview()
                 elif m.get("type") == "event" and m.get("event") in ("message.frame", "message.decoded"):
                     f = frame_of(m["event"], data)
                     self.frames.append(f)
@@ -166,6 +340,17 @@ class Engine:
                     raise
                 except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
                     self.error = f"engine not reachable on 127.0.0.1:{self.port} ({type(e).__name__})"
+                self._ws = None
+                for fut in self._pending.values():
+                    if not fut.done():
+                        fut.set_result((False, "the JS8 engine went away"))
+                if self.armed:
+                    # A restarted engine comes up disarmed (js8_engine.py); one that
+                    # didn't restart is disarmed by safety() when it is back.
+                    self.armed = None
+                    log.warning("js8 %s: disarmed: the engine went away", self.rid)
+                    self.push({"t": "notice", "msg": f"JS8 {self.rid} disarmed: the engine went away.",
+                               "level": "warn"})
                 if self.connected:
                     self.connected = False
                     self.push({"t": "js8_status", "radio": self.rid, "status": self.view()})
@@ -177,6 +362,8 @@ class Engine:
             self._task = asyncio.ensure_future(self.run())
 
     async def stop(self):
+        if self.armed or any(self.status.get(k) for k in UNSAFE_KEYS):
+            await self.disarm("the station is stopping")
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -191,8 +378,15 @@ class Js8Bridge:
         if unknown:
             raise ValueError(f"js8.radios names no radio on this station: {unknown}")
         self.station = station
-        self.engines = {rid: Engine(rid, port, self._push) for rid, port in block["radios"].items()}
+        self.engines = {rid: Engine(rid, port, self._push, lambda rid=rid: self._radio(rid))
+                        for rid, port in block["radios"].items()}
         self.listeners = []          # callables given each push (the JS8 tab's add-on); one failing is logged
+        self._safety = None
+
+    def _radio(self, rid):
+        """What the radio's own server says (station.RadioWatch); {} when unknown."""
+        fn = getattr(self.station, "radio_tx_state", None)
+        return fn(rid) if fn else {}
 
     def _push(self, msg):
         self.station._broadcast(json.dumps(msg))
@@ -205,19 +399,64 @@ class Js8Bridge:
     async def start(self):
         for e in self.engines.values():
             e.start()
+        if self._safety is None:
+            self._safety = asyncio.ensure_future(self._safety_loop())
 
     async def stop(self):
+        if self._safety is not None:
+            self._safety.cancel()
+            await asyncio.gather(self._safety, return_exceptions=True)
+            self._safety = None
         for e in self.engines.values():
             await e.stop()
+
+    async def _safety_loop(self):
+        while True:
+            await asyncio.sleep(SAFETY_EVERY_S)
+            for e in self.engines.values():
+                try:
+                    await e.safety()
+                except Exception:              # noqa: BLE001 - one engine must not stop the others' checks
+                    log.exception("js8 %s: safety check", e.rid)
+
+    async def radio_changed(self, rid):
+        """The radio's server changed what it says (STOP TX, TX allowed,
+        keyed, gone): end an arm that lost its reason now, not in a second."""
+        e = self.engines.get(rid)
+        if e is None:
+            return
+        await e.safety()
+        e.pushview()
+
+    async def page_closed(self, page):
+        for e in self.engines.values():
+            if e.armed and e.armed["by"] is page:
+                await e.disarm("the page that armed it closed")
 
     def status(self):
         """For the page's hello: an allowlist."""
         return {"loaded": True, "radios": {rid: e.view() for rid, e in self.engines.items()}}
 
     async def handle(self, ws, m):
-        if m.get("do") != "state":
-            raise ValueError("JS8 is receive-only on this station: the page may ask for state only")
+        """A page's request. Returns None, or why it was refused (the caller
+        tells that page); a malformed request raises ValueError."""
+        do = m.get("do")
+        if do not in ("state", "arm", "disarm", "send"):
+            raise ValueError(f"JS8: unknown request {do!r}")
         e = self.engines.get(m.get("radio"))
         if e is None:
             raise ValueError(f"no JS8 engine for radio {m.get('radio')!r}")
-        await self.station._send(ws, json.dumps({"t": "js8_state", **e.snapshot()}))
+        if do == "state":
+            await self.station._send(ws, json.dumps({"t": "js8_state", **e.snapshot()}))
+            return None
+        if do == "arm":
+            mins = m.get("minutes", ARM_S / 60)
+            if not isinstance(mins, (int, float)) or isinstance(mins, bool):
+                raise ValueError("JS8 arm: minutes must be a number")
+            return await e.arm(ws, mins * 60)
+        if do == "disarm":
+            await e.disarm("disarmed from the page")
+            return None
+        if not isinstance(m.get("text"), str):
+            raise ValueError("JS8 send: text must be a string")
+        return await e.send(ws, m["text"])

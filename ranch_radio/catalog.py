@@ -45,7 +45,7 @@ MODULES = [
      "ships": "a launchd agent (Mac) or <id>-js8.service (Linux) per radio with a js8_port, rendered from the "
               "host file's js8 block; its WebSocket on loopback only, for the station"},
     {"name": "js8call", "kind": "addon", "title": "The JS8 tab: band activity, messages and stations heard from each radio's "
-                                                   "JS8 engine, an UNSAFE banner if an engine is ever armed; receive only",
+                                                   "JS8 engine, and sending while armed (per radio, time-boxed)",
      "code": "addons/js8call.py (relays js8_bridge.py), static/addons/js8call.js, js8call.css",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block; needs the js8 module for anything to show"},

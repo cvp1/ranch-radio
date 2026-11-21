@@ -4,8 +4,12 @@ and a fake jf8call engine; the test is a page.
   - hello carries js8: loaded, and the radio's engine connected
   - a frame the engine decodes reaches the page as {"t": "js8"}
   - "state" answers the page with js8_state (frames and heard)
-  - a page asking to send is refused with a notice; the station stays up
-  - the station sent the engine status.get and nothing else
+  - a radio with --no-tx: arm refused with a notice that says so; send
+    refused (not armed); the engine was sent status.get only
+  - a radio that may transmit (simulated): arm -> config.set ARM; send ->
+    tx.send; STOP TX pressed on the radio's own page -> tx.halt and
+    config.set DISARM, and arm refused until Resume; the arming page closing
+    -> disarmed
   - a js8 block naming a radio the station lacks: the station runs on, and
     hello says js8 is not loaded, and why
 
@@ -31,6 +35,7 @@ import testkit  # noqa: E402
 
 fails = 0
 LOGS = []
+START = {}
 
 
 def check(name, got, want):
@@ -40,10 +45,16 @@ def check(name, got, want):
     print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f"\n     got:  {got!r}\n     want: {want!r}"))
 
 
+KEYS = {"txEnabled": "tx_enabled", "autoReply": "auto_reply", "heartbeatEnabled": "heartbeat_enabled",
+        "heartbeatAckEnabled": "heartbeat_ack_enabled"}
+ARM = {"txEnabled": True, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
+DISARM = dict(ARM, txEnabled=False)
+
+
 class FakeEngine:
     def __init__(self):
-        self.cmds, self.clients = [], set()
-        self.status = {"radio_connected": True, "radio_freq_khz": 14078.0, "radio_mode": "USB",
+        self.cmds, self.clients, self.log = [], set(), []
+        self.status = {"radio_connected": True, "radio_freq_khz": 14078.0, "radio_mode": "USB", "callsign": "N0CALL",
                        "tx_enabled": False, "auto_reply": False, "heartbeat_enabled": False}
 
     async def ws(self, request):
@@ -52,9 +63,15 @@ class FakeEngine:
         self.clients.add(ws)
         async for msg in ws:
             m = json.loads(msg.data)
-            self.cmds.append(m.get("cmd"))
-            if m.get("cmd") == "status.get":
-                await ws.send_json({"type": "reply", "id": m.get("id"), "ok": True, "data": self.status})
+            cmd, data = m.get("cmd"), m.get("data") or {}
+            self.cmds.append(cmd)
+            self.log.append((cmd, data))
+            if cmd == "config.set":
+                for k, v in data.items():
+                    if k in KEYS:
+                        self.status[KEYS[k]] = v
+            await ws.send_json({"type": "reply", "id": m.get("id"), "ok": True,
+                                "data": self.status if cmd == "status.get" else {}})
         self.clients.discard(ws)
         return ws
 
@@ -71,10 +88,12 @@ async def serve(app):
     return runner, port
 
 
-def start(js8_block):
+def start(js8_block, no_tx=True):
     tmp = Path(tempfile.mkdtemp(prefix="js8-station-"))
     web_p, radio_web, rig = testkit.free_port(), testkit.free_port(), testkit.free_port()
-    radio = subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", "ic7300", "--no-audio", "--no-tx",
+    START["radio_web"] = radio_web
+    radio = subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", "ic7300", "--no-audio",
+                              *(["--no-tx"] if no_tx else []),
                               "--host", "127.0.0.1", "--listen", str(radio_web),
                               "--rigctl-host", "127.0.0.1", "--rigctl-port", str(rig)],
                              cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -150,11 +169,75 @@ async def main():
             check("state: frames and heard", ((m or {}).get("frames", [{}])[-1].get("from"),
                                               [h["call"] for h in (m or {}).get("heard", [])]), ("N9ABC", ["N9ABC"]))
 
+            said = None
+            for _ in range(20):            # until the station's watch has the radio's hello
+                await ws.send_str(json.dumps({"t": "js8", "do": "arm", "radio": "ic7300", "minutes": 5}))
+                m = await page_until(ws, lambda m: m.get("t") == "notice", 2)
+                said = (m or {}).get("msg", "")
+                if "reachable" not in said:
+                    break
+                await asyncio.sleep(0.25)
+            check("--no-tx: arm refused, says so", "--no-tx" in said, True)
             await ws.send_str(json.dumps({"t": "js8", "do": "send", "radio": "ic7300", "text": "CQ CQ"}))
             m = await page_until(ws, lambda m: m.get("t") == "notice")
-            check("send refused with a notice", "receive-only" in (m or {}).get("msg", ""), True)
+            check("send refused with a notice", "isn't armed" in (m or {}).get("msg", ""), True)
         check("the station is still up", await up(web_p), True)
-        check("the station sent the engine status.get only", set(eng.cmds), {"status.get"})
+        check("--no-tx: the station sent the engine status.get only", set(eng.cmds), {"status.get"})
+    finally:
+        stop(st, radio)
+
+    # ---------------------------------------------- a radio that may transmit (simulated)
+    web_p, radio, st = start({"radios": {"ic7300": eport}}, no_tx=False)
+    try:
+        check("TX station up", await up(web_p), True)
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(f"http://127.0.0.1:{web_p}/ws") as ws, \
+                    s.ws_connect(f"http://127.0.0.1:{START['radio_web']}/ws") as rws:
+                await ws.receive(timeout=10)
+                await rws.receive(timeout=10)
+
+                async def armed(want, timeout=8):
+                    def ok(m):
+                        r = ((m.get("status") or {}) if m.get("t") == "js8_status" else {})
+                        return r and r.get("armed") is want
+                    return bool(await page_until(ws, ok, timeout))
+
+                # the station's watch needs the radio's hello before it may arm
+                ok = False
+                for _ in range(40):
+                    await ws.send_str(json.dumps({"t": "js8", "do": "arm", "radio": "ic7300", "minutes": 5}))
+                    if await armed(True, 0.5):
+                        ok = True
+                        break
+                check("arm", ok, True)
+                check("arm: the engine got config.set ARM", ("config.set", ARM) in eng.log, True)
+                await ws.send_str(json.dumps({"t": "js8", "do": "send", "radio": "ic7300", "text": "n9abc snr?"}))
+                check("send: tx.send", await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: testkit.wait_for(lambda: ("tx.send", {"text": "N9ABC SNR?"}) in eng.log, 5)), True)
+
+                mark = len(eng.log)
+                await rws.send_str(json.dumps({"t": "tx_stop"}))       # STOP TX on the radio's own page
+                check("STOP TX at the radio: disarmed", await armed(False), True)
+                check("STOP TX: tx.halt then DISARM", [x for x in eng.log[mark:] if x[0] in ("tx.halt", "config.set")][:2],
+                      [("tx.halt", {}), ("config.set", DISARM)])
+                await ws.send_str(json.dumps({"t": "js8", "do": "arm", "radio": "ic7300", "minutes": 5}))
+                m = await page_until(ws, lambda m: m.get("t") == "notice" and "STOP TX" in m.get("msg", "")
+                                     and "Can't arm" in m.get("msg", ""))
+                check("STOP TX on: arm refused until Resume", bool(m), True)
+                await rws.send_str(json.dumps({"t": "tx_resume"}))
+                ok = False
+                for _ in range(20):
+                    await ws.send_str(json.dumps({"t": "js8", "do": "arm", "radio": "ic7300", "minutes": 5}))
+                    if await armed(True, 0.5):
+                        ok = True
+                        break
+                check("after Resume: arms again (Resume itself armed nothing)", ok, True)
+                mark = len(eng.log)
+        # the arming page is gone
+        check("the arming page closed: disarmed", await asyncio.get_running_loop().run_in_executor(
+            None, lambda: testkit.wait_for(lambda: ("config.set", DISARM) in eng.log[mark:], 5)), True)
+        check("TX station still up", await up(web_p), True)
+        check("never radio.*", any(str(c).startswith("radio.") for c, _ in eng.log), False)
     finally:
         stop(st, radio)
 
