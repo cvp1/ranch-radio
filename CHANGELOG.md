@@ -7,6 +7,8 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- Band strip: a "Need: DXCC only" switch under the cells narrows "need near you" to DXCC needs (new DXCC, on the band, in the mode), dropping new grids. This browser keeps the choice; the default still counts both.
+
 - Band strip: "need near you" on every band. With `"near": true` in the Propagation add-on's `pskreporter` block, each band shows how many stations you still need (new DXCC or new grid, the Roster's strong levels) that receivers in your grid decoded in the last 15 minutes, from PSKReporter, judged by the logbook's needs index. A band JTDX isn't on gets a count too, and the tooltip names the first five stations and their need. An unknown grid, a missing needs index or PSKReporter failing reads unknown, never zero. The two PSKReporter queries take turns at least 5 minutes apart. Display only.
 
 - `ranch-radio demo`: try Ranch Radio without a radio. It starts a simulated IC-7300 and a station page on this machine (loopback only), with a Roster and Map of made-up stations, prints the address and runs until Ctrl-C. It writes no host file, installs no service and keeps everything in a scratch directory it removes on exit; a simulated radio cannot transmit. The README's first screen points to it.

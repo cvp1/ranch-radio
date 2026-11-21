@@ -16,7 +16,10 @@
 //
 //   need near you  stations that receivers in your grid decoded in the last
 //                  15 minutes (PSKReporter, "near"), judged by the logbook's
-//                  needs index; only the strong levels count, as on the Roster
+//                  needs index; only the strong levels count, as on the Roster.
+//                  A button under the cells (near-dxcc-only, 2026-11-21) narrows
+//                  it to DXCC needs (new DXCC, on the band, in the mode); the
+//                  choice is this browser's (store "bands.near"), default all.
 //
 // From PR 4c (2026-11-19) each cell's band name is a button that tunes the
 // focus radio to that band (its band stack: where it was last left there,
@@ -120,6 +123,8 @@ const bandStrip = (() => {
   // Needed near you (R2): {state, text, title} like the three facts above.
   const NEED_WORD = { dxcc: "new DXCC", dxcc_band: "new DXCC on this band", dxcc_mode: "new DXCC in this mode",
     grid: "new grid", grid_band: "new grid on this band", grid_mode: "new grid in this mode" };
+  const DXCC = ["dxcc", "dxcc_band", "dxcc_mode"];
+  const nearDxcc = () => store.get("bands.near", "all") === "dxcc";
   function nearNeeds(P, k) {
     if (!P || !P.near) return { state: "off", text: "", title: 'Needed near you: not set up ("pskreporter": {"near": true})' };
     const g = P.near_grid || "your grid", w = P.near_window_min;
@@ -129,12 +134,15 @@ const bandStrip = (() => {
       title: "The needs index is not ready (building, or no logbook): who you need is unknown, not zero" };
     const b = P.near_bands[k];
     if (!b) return { state: "none", text: "", title: `Nobody reported decoded near ${g} on ${k} in the last ${w} min` };
-    if (!b.strong) return { state: "none", text: "",
-      title: `${plural(b.heard, "station", "stations")} decoded near ${g} on ${k} in the last ${w} min; none you need for DXCC or a grid` };
-    const top = (b.top || []).map((x) => `${x.call} (${x.grid}, ${x.mode}${x.snr != null ? ` ${x.snr} dB` : ""}): ${NEED_WORD[x.need] || x.need}`);
-    return { state: "ok", text: `${b.strong} need`,
-      title: `${plural(b.strong, "station", "stations")} you need, of ${b.heard} decoded near ${g} on ${k} in the last ${w} min (PSKReporter):\n` +
-             top.join("\n") + (b.strong > top.length ? `\n+${b.strong - top.length} more` : "") };
+    const only = nearDxcc();
+    const n = only ? DXCC.reduce((t, l) => t + ((b.levels || {})[l] || 0), 0) : b.strong;
+    const what = only ? "DXCC" : "DXCC or a grid";
+    if (!n) return { state: "none", text: "",
+      title: `${plural(b.heard, "station", "stations")} decoded near ${g} on ${k} in the last ${w} min; none you need for ${what}` };
+    const top = (b.top || []).filter((x) => !only || DXCC.includes(x.need)).map((x) => `${x.call} (${x.grid}, ${x.mode}${x.snr != null ? ` ${x.snr} dB` : ""}): ${NEED_WORD[x.need] || x.need}`);
+    return { state: "ok", text: `${n} need`,
+      title: `${plural(n, "station", "stations")} you need${only ? " for DXCC" : ""}, of ${b.heard} decoded near ${g} on ${k} in the last ${w} min (PSKReporter):\n` +
+             top.join("\n") + (n > top.length ? `\n+${n - top.length} more` : "") };
   }
 
   // The Roster's strong needs, for the band JTDX decodes on. null: no roster here.
@@ -180,7 +188,7 @@ const bandStrip = (() => {
         const old = api.now() - P.forecast_issued > FORECAST_STALE_S;
         out.push(`Forecast: skywatch, ${old ? "out of date, " : ""}issued ${ago(P.forecast_issued)}; peak is a path's best hour, not the chance now`);
       } else if (f) out.push(f.title);
-      if (n && (n.state === "ok" || n.state === "none")) out.push(`Need: stations decoded near ${P.near_grid}, last ${P.near_window_min} min (PSKReporter), new DXCC or grid`);
+      if (n && (n.state === "ok" || n.state === "none")) out.push(`Need: stations decoded near ${P.near_grid}, last ${P.near_window_min} min (PSKReporter), ${nearDxcc() ? "DXCC only" : "new DXCC or grid"}`);
       else if (n && n.state !== "off") out.push(n.title.replace(/ on \S+ near \S+ is unknown/, " is unknown"));
     }
     if (N && !shown) out.push(`JTDX on ${N.band}: ${N.text}`);
@@ -203,8 +211,12 @@ const bandStrip = (() => {
       </div>`;
     }).join("");
     const ns = notes(P, cells, N, shown);
+    // The DXCC-only switch, once the count has something to narrow.
+    const sw = cells.some((c) => c.n.state === "ok" || c.n.state === "none")
+      ? `<button type="button" class="bs-near-mode" aria-pressed="${nearDxcc()}" title="${nearDxcc()
+          ? "Counting DXCC needs only: click to count new grids too" : "Counting new DXCC and new grids: click to count DXCC only"}">${nearDxcc() ? "Need: DXCC only" : "Need: DXCC + grids"}</button>` : "";
     return `<div class="bs-cells" role="list" aria-label="Bands">${body}</div>` +
-      (ns.length ? `<div class="bs-notes">${ns.map((n) => `<span>${esc(n)}</span>`).join("")}</div>` : "");
+      (ns.length || sw ? `<div class="bs-notes">${ns.map((n) => `<span>${esc(n)}</span>`).join("")}${sw}</div>` : "");
   }
 
   // target: the strip's element; c: {range: the focus radio's caps.freq or null}.
@@ -220,6 +232,11 @@ const bandStrip = (() => {
     if (!target.dataset.tuneBound) {
       target.dataset.tuneBound = "1";
       target.addEventListener("click", (e) => {
+        if (e.target.closest?.(".bs-near-mode")) {          // a display choice: redraw every strip, tune nothing
+          try { store.set("bands.near", nearDxcc() ? "all" : "dxcc"); } catch { /* storage off: stays all */ }
+          for (const [t, d] of drawn) render(t, d.ctx);
+          return;
+        }
         const btn = e.target.closest?.(".bs-tune");
         const t = drawn.get(target)?.ctx?.tune;
         if (btn && target.contains(btn) && typeof t === "function") t(btn.dataset.n);
