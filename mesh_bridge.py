@@ -47,6 +47,10 @@ In (stdin):
     {"cmd": "favorite", "ref": n, "to": "!xxxxxxxx", "fav": bool}
     {"cmd": "trace", "ref": n, "to": "!xxxxxxxx"}
 
+The node's clock: the bridge gives the node this host's time when it
+connects and every hour after (Bridge.clock_loop), as the phone apps do. A
+node without GPS has no clock of its own after a restart.
+
 --feed: also publish what the node hears to an MQTT broker, so a bridge on
 another host can use this node (mesh_feed.py has the topics). --feed-tx lets
 that broker send text through the node too, checked and rate-limited.
@@ -85,6 +89,20 @@ REBOOT_S = 5
 # after a Neighbors save and Bluetooth died without a word (the page still said
 # connected, the next command hung for good); over USB the write itself hung.
 RELINK_S = REBOOT_S + 10.0
+# The node gets this host's time at connect and every CLOCK_EVERY_S after. A
+# node without GPS has no clock of its own: after a restart it takes its time
+# from another node's position packet, right or wrong, and stamps everything
+# it hears with that. Seen live 2026-11-21: a T114 two days up ran 47 minutes
+# fast, so "last heard" on the page ran into the future; nothing corrected
+# it: a phone app sets its node's time, and this node never met one.
+# The firmware (src/gps/RTC.cpp, PositionModule.cpp) ranks a client's time
+# above the mesh's and below its own GPS, and takes a new one only so often
+# (every 30 minutes on 2.7.26, every 12 hours on later ones), so asking again
+# costs nothing. It covers a node that restarted behind a USB-serial chip
+# (the port never drops, so this bridge never reconnects), and drift.
+CLOCK_EVERY_S = 3600.0
+CLOCK_RETRY_S = 60.0          # while the clock could not be set: the host's own is wrong, or the write failed
+TIME_ERROR = 5                # adjtimex(2): the kernel's clock is not synchronised
 UNKNOWN_SNR = -128            # RouteDiscovery's "no SNR for this hop"
 NODE_FIELDS_USER = ("longName", "shortName", "hwModel", "role")
 TCP_PORT = 4403                  # the firmware's API port over Wi-Fi or Ethernet
@@ -230,6 +248,30 @@ def rx_detail(packet, my_num):
             "snr": packet.get("rxSnr"), "rssi": packet.get("rxRssi") or None, "mqtt": bool(packet.get("viaMqtt")),
             "relay": packet.get("relayNode") or None, "ch": packet.get("channel", 0),
             "to_me": packet.get("to") == my_num, "size": size}
+
+
+def adjtimex():
+    """Linux's adjtimex(2) clock state, or None where there is none to ask (a
+    Mac) or the call fails. It only reads: the struct goes in zeroed."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+        buf = ctypes.create_string_buffer(512)      # struct timex is 208 bytes on 64-bit Linux
+        state = ctypes.CDLL(None, use_errno=True).adjtimex(buf)
+    except Exception:
+        return None
+    return state if state >= 0 else None
+
+
+def host_clock_unsynced():
+    """True when this host says its own clock is not set from a time source.
+    That is a Raspberry Pi that booted without a network: it has no clock chip
+    and comes up at the time it was shut down, and a node given that time
+    would trust it over the mesh's. Linux keeps the flag (chrony, ntpd and
+    systemd-timesyncd all clear it). A Mac keeps time through a power cut and
+    has no flag to ask, so what can't be told counts as fine."""
+    return adjtimex() == TIME_ERROR
 
 
 class Bridge:
@@ -409,6 +451,33 @@ class Bridge:
                 except Exception:
                     log.exception("feed node list")
             self.lost.wait(NODES_EVERY_S)
+
+    def clock_loop(self):
+        """Give the node this host's time, now and every CLOCK_EVERY_S (the
+        comment there says why). Never while the host says its own clock is
+        wrong. A change is logged once, not every round; a clock that sets
+        says nothing."""
+        set_time = getattr(self.iface.localNode, "setTime", None)
+        if set_time is None:
+            log.warning("node clock left alone: this meshtastic package cannot set it (too old)")
+            return
+        said = None
+        while not self.lost.is_set():
+            why = None
+            if host_clock_unsynced():
+                why = "this host's own clock is not synchronised"
+            else:
+                try:
+                    set_time(int(time.time()))
+                except Exception as e:
+                    why = f"{type(e).__name__}: {e}"
+            if why != said:
+                if why:
+                    log.warning("node clock not set: %s; trying every %d s", why, CLOCK_RETRY_S)
+                else:
+                    log.warning("node clock set")
+                said = why
+            self.lost.wait(CLOCK_RETRY_S if why else CLOCK_EVERY_S)
 
     def _section(self, where, section):
         node = self.iface.localNode
@@ -844,6 +913,7 @@ def main():
     if args.feed:
         b.feed = start_feed(args, iface, b)
     threading.Thread(target=b.nodes_loop, daemon=True).start()
+    threading.Thread(target=b.clock_loop, daemon=True).start()
 
     def stdin_loop():
         for line in sys.stdin:
