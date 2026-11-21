@@ -19,7 +19,6 @@ Chromium into docs/images/:
 import asyncio
 import json
 import os
-import random
 import shutil
 import socket
 import subprocess

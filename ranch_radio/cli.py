@@ -493,7 +493,7 @@ def _rollback(h, a, home, before, bad, was_up, why):
     st["running"] = before
     st["pending"] = sorted(set(held))          # in use, not restarted: restarted at the next update
     updater.save_state(home, st)
-    tail = (f"every server that was serving is serving again" if not down else
+    tail = ("every server that was serving is serving again" if not down else
             f"STILL NOT SERVING: {', '.join(down)}; check the server's log")
     if held:
         tail += f"; not restarted (in use), restarted at the next update: {', '.join(sorted(set(held)))}"

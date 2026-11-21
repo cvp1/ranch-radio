@@ -133,10 +133,10 @@ async def main():
             check(f"F {hz} inside the arming window: first-use tune", msgs ==
                   [f"ATU tuning for {band} (first use this run)"], str(msgs))
             if tunes:
-                check(f"  ...not before the window ends", tunes[0][0] - t0 >= 2.5,
+                check("  ...not before the window ends", tunes[0][0] - t0 >= 2.5,
                       f"{tunes[0][0] - t0:.2f}s")
             await asyncio.sleep(3.0)
-            check(f"  ...and only once", len(tunes) == 1, str(len(tunes)))
+            check("  ...and only once", len(tunes) == 1, str(len(tunes)))
         await run(["--auto-tune"], early_app, early=True)
 
     async def no_tx(rig, tunes):

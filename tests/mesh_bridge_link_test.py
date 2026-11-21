@@ -88,7 +88,7 @@ for spec, kind, args, kw in (("tcp:192.168.1.60", "tcp", ("192.168.1.60",), {"po
     opened.clear()
     _, link = mesh_bridge.connect(spec)
     check(f"connect {spec}: link", link, kind)
-    check(f"  opened with", opened and opened[0], (kind, args, kw))
+    check("  opened with", opened and opened[0], (kind, args, kw))
 
 # --- the bridge's guard on its own link
 emitted = []

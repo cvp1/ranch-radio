@@ -30,7 +30,6 @@ _os.environ["RANCH_RADIO_OFFLINE"] = "1"      # no test reaches the internet (lo
 
 import asyncio  # noqa: E402
 import shutil  # noqa: E402
-import socket  # noqa: E402
 import struct  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402

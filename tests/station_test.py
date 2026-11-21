@@ -409,7 +409,7 @@ try:
         page.send({"t": "winlink_connect", **msg})
         e = page.wait(lambda e: e.get("t") == "notice" and e.get("level") == "warn", timeout=5)
         check(f"refused with a warning: {label}", bool(e), True)
-        check(f"  nothing armed", (armed_on_radio(G90), armed_on_radio(QMX)), (False, False))
+        check("  nothing armed", (armed_on_radio(G90), armed_on_radio(QMX)), (False, False))
 
     # --- ARDOP moves to the G90
     page.events.clear()

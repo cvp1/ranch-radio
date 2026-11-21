@@ -221,7 +221,7 @@ try:
     for w, h in ((1600, 1000), (1440, 900)):
         size(w, h)
         check(f"{w}x{h}: Mission Control does not scroll", b.wait(f"({FITS}).every(Boolean) && {FITS}"), [True, True])
-        check(f"  the rig bar's STOP TX in view", b.wait(STOP_SEEN), True)
+        check("  the rig bar's STOP TX in view", b.wait(STOP_SEEN), True)
         check("  Messaging and Mesh share a row",
               b.js("(() => { const t = (s) => Math.round(document.querySelector(s).getBoundingClientRect().top);"
                    " return t('.mc-lane-messaging') === t('.mc-lane-mesh'); })()"), True)
