@@ -297,7 +297,8 @@ It needs the logbook sync for the needs index; without it the count reads
 unknown, not zero. It sends PSKReporter only that grid, which your own uploads
 already publish. The two PSKReporter questions take turns, at least 5 minutes
 apart, so each is refreshed every 10. It is display only: nothing answers,
-tunes or transmits.
+tunes or transmits. A switch under the cells, "Need: DXCC only",
+counts DXCC needs alone; each browser keeps its own choice.
 
 ![The Propagation tab: K index, X-ray and solar flux with what they mean, then each band's decodes, regions, best signal and who heard you](docs/images/propagation.png)
 

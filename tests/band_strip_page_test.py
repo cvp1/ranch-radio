@@ -35,7 +35,9 @@ strip's clock is fixed (bandStrip.now) so hours are known. Checks:
             band JTDX is not on, its tooltip naming the stations and needs,
             a band heard with nothing needed, a band nobody reported, and
             the source named once under the cells; the Roster line stays
-            on the Roster's own band
+            on the Roster's own band; the DXCC-only switch narrows the count
+            and tooltip to DXCC needs (a grid-only band reads none), is kept
+            by the browser, tunes nothing, and switches back
   off       Propagation switched off: the strip says its facts are unknown
 
     python3 tests/band_strip_page_test.py [screenshot-dir]
@@ -312,15 +314,18 @@ try:
     top = [{"call": "VK2YYY", "need": "dxcc", "grid": "QF56", "mode": "FT8", "snr": -18},
            {"call": "JA1ZZZ", "need": "dxcc_band", "grid": "PM95", "mode": "FT8", "snr": -5}]
     deliver({"t": "addon", "addon": "propagation", "state": dict(NEAR, near_bands={
-        "15m": {"heard": 3, "strong": 7, "levels": {"dxcc": 1, "dxcc_band": 6}, "top": top},
-        "20m": {"heard": 5, "strong": 0, "levels": {}, "top": []}})})
+        "15m": {"heard": 3, "strong": 7, "levels": {"dxcc": 1, "dxcc_band": 1, "grid": 5},
+                "top": top + [{"call": "N9ABK", "need": "grid", "grid": "AA00", "mode": "FT8", "snr": -9}]},
+        "20m": {"heard": 5, "strong": 0, "levels": {}, "top": []},
+        "30m": {"heard": 2, "strong": 2, "levels": {"grid_band": 2}, "top": []}})})
     b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'ok'")
     f15, f20, f40 = facts("15m"), facts("20m"), facts("40m")
     check("a band JTDX is not on: the count of stations you need", f15["near"][:2], ["ok", "7 need"])
     check("  its tooltip names them, their need, and the rest",
           f15["near"][2].split("\n"),
           ["7 stations you need, of 3 decoded near FN31 on 15m in the last 15 min (PSKReporter):",
-           "VK2YYY (QF56, FT8 -18 dB): new DXCC", "JA1ZZZ (PM95, FT8 -5 dB): new DXCC on this band", "+5 more"])
+           "VK2YYY (QF56, FT8 -18 dB): new DXCC", "JA1ZZZ (PM95, FT8 -5 dB): new DXCC on this band",
+           "N9ABK (AA00, FT8 -9 dB): new grid", "+4 more"])
     check("a band heard with nothing you need: no count, the title says so",
           [f20["near"][0], f20["near"][1], f20["near"][2].endswith("none you need for DXCC or a grid")], ["none", "", True])
     check("a band nobody reported: none, not a zero", [f40["near"][0], f40["near"][1]], ["none", ""])
@@ -328,6 +333,25 @@ try:
                                           for n in b.js(NOTES)), True)
     check("  the other facts unaffected", [f15["fc"][1], f20["you"][0]], ["next: S America 04Z", "ok"])
     shot("near")
+    MODE = "document.querySelector('#mc-bands .bs-near-mode')"
+    check("the switch reads DXCC + grids by default", b.js(f"[{MODE}.textContent, {MODE}.getAttribute('aria-pressed')]"),
+          ["Need: DXCC + grids", "false"])
+    before = rig_freq(G90)
+    b.js(f"{MODE}.click()")
+    b.wait(f"{MODE}.getAttribute('aria-pressed') === 'true'")
+    f15, f30 = facts("15m"), facts("30m")
+    check("DXCC only: the count is the DXCC levels", f15["near"][:2], ["ok", "2 need"])
+    check("  its tooltip names only those, nothing more",
+          f15["near"][2].split("\n"),
+          ["2 stations you need for DXCC, of 3 decoded near FN31 on 15m in the last 15 min (PSKReporter):",
+           "VK2YYY (QF56, FT8 -18 dB): new DXCC", "JA1ZZZ (PM95, FT8 -5 dB): new DXCC on this band"])
+    check("  a band with grid needs only reads none", [f30["near"][0], f30["near"][2].endswith("none you need for DXCC")], ["none", True])
+    check("  the note says so", any(n.endswith("(PSKReporter), DXCC only") for n in b.js(NOTES)), True)
+    check("  kept by this browser", b.js("localStorage.getItem('ic7300.bands.near')"), '"dxcc"')
+    check("  the click tuned nothing", rig_freq(G90), before)
+    b.js(f"{MODE}.click()")
+    b.wait(f"{MODE}.getAttribute('aria-pressed') === 'false'")
+    check("  and back: DXCC + grids", facts("15m")["near"][1], "7 need")
     deliver({"t": "addon", "addon": "propagation", "state": GOOD})
     b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'off'")
 
