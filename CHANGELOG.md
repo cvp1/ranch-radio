@@ -296,6 +296,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- STOP TX survives a restart: each radio's server keeps it in `~/.local/state/radio-remote/stop-tx/<radio>.json` (written atomically before the page is told it worked), so a crash, a reboot or a service restart comes back stopped until a page presses Resume. A state file that can't be read starts the radio with STOP TX on, saying why; one that can't be written still latches, and the page is told a restart would clear it. A hand-run `server.py` without `--stop-state` keeps it in memory, as before. `ranch-radio backup` includes these files.
 - `ranch-radio update` no longer restarts a radio with STOP TX latched (the latch is in memory, so the restart cleared it); it is deferred like a busy one.
 - The radio page shows another client's change made just after its own. For 700 ms after you change a setting the page ignores the server's states for it, so a late echo of your own edit cannot snap the dial back; it used to ignore every state, so a retune from a second page or a phone in that window left this page showing the old frequency until the next change. Now only a value this page had or sent in the window is ignored.
 

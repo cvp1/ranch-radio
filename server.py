@@ -107,6 +107,67 @@ def winlink_mode(text):
 SCOPE_FRAME = 0x01
 
 
+class StopState:
+    """STOP TX across a restart (2026-11-21): the latch, in a small JSON file
+    written atomically (temp, fsync, rename) on every STOP TX and Resume, so a
+    crash, a reboot or a service restart comes back still stopped. Rendered
+    units pass --stop-state; without it (tests, a hand-run server) the latch
+    lives in memory only, as before.
+
+    Loading fails toward stopped: no file means never stopped (a new radio);
+    a file that can't be read or parsed starts the server stopped, saying so,
+    until a page presses Resume (which writes a good file)."""
+
+    def __init__(self, path):
+        self.path = pathlib.Path(os.path.expanduser(path)) if path else None
+
+    def load(self):
+        """The latch to start with ({"at", "by"} or None)."""
+        if self.path is None:
+            return None
+        try:
+            raw = self.path.read_text()
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            return self._bad(f"unreadable ({e.strerror or e})")
+        try:
+            d = json.loads(raw)
+            latch = d["stopped"]
+            if latch is not None and not (isinstance(latch, dict) and isinstance(latch.get("at"), (int, float))
+                                          and isinstance(latch.get("by"), str)):
+                raise ValueError("bad fields")
+        except (ValueError, KeyError, TypeError) as e:
+            return self._bad(f"corrupt ({e})")
+        if latch:
+            log.warning("STOP TX still on from before this start (%s, by %s): nothing keys until Resume",
+                        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(latch["at"])), latch["by"])
+        return latch
+
+    def _bad(self, why):
+        log.error("STOP TX state %s is %s: starting with STOP TX on", self.path, why)
+        return {"at": time.time(), "by": f"this start ({self.path.name} {why})"}
+
+    def save(self, latch):
+        """Write it; raises OSError. Nothing to write without a path."""
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, json.dumps({"stopped": latch}).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, self.path)
+        dfd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+
+
 class Station(TxAudio):
     """Glue between one radio and any number of browser clients."""
 
@@ -142,7 +203,9 @@ class Station(TxAudio):
         # this server keys or tunes (browser, rigctl apps, Winlink lanes,
         # auto-tune) until a page presses Resume. Held here, not in a page, so
         # a reload or a second page sees it. {"at": epoch, "by": who} or None.
-        self.tx_stopped = None
+        # Kept on disk too (StopState), so a restart comes back stopped.
+        self.stop_state = StopState(getattr(args, "stop_state", None))
+        self.tx_stopped = self.stop_state.load()
         # Split emulated for rigctl apps on rigs that can't set VFO B over CAT
         # (G90): the TX frequency is held here and dialled in only while keyed.
         self.emu_split = False
@@ -992,18 +1055,32 @@ class Station(TxAudio):
                 log.exception("STOP TX: %s", name)
                 failed.append(name)
         self._tune_ours_at = None
+        unsaved = ""
+        try:
+            self.stop_state.save(self.tx_stopped)
+        except OSError as e:
+            log.error("STOP TX: could not save %s: %s", self.stop_state.path, e)
+            unsaved = f" It could not be saved ({e.strerror or e}): a restart would clear it."
         self._stop_broadcast()
         self.notice("STOP TX: transmitter released, Winlink stopped and disarmed; nothing keys "
                     "until Resume." + (f" Could not stop: {', '.join(failed)}; check the radio."
-                                       if failed else ""), "warn" if failed else "info")
+                                       if failed else "") + unsaved,
+                    "warn" if failed or unsaved else "info")
 
     async def tx_resume(self, ws=None):
         if self.tx_stopped is None:
             return
         log.warning("STOP TX cleared (Resume) by %s", self._who(ws))
         self.tx_stopped = None
+        unsaved = ""
+        try:
+            self.stop_state.save(None)
+        except OSError as e:    # the safe way round: a restart comes back stopped
+            log.error("Resume: could not save %s: %s", self.stop_state.path, e)
+            unsaved = f" It could not be saved ({e.strerror or e}): after a restart STOP TX is on again."
         self._stop_broadcast()
-        self.notice("Transmit resumed. Nothing was re-armed: start Winlink again from its panel.", "info")
+        self.notice("Transmit resumed. Nothing was re-armed: start Winlink again from its panel." + unsaved,
+                    "warn" if unsaved else "info")
 
     async def _tune_watch(self):
         """F7: a tune we started that runs past --tune-timeout is cut."""
@@ -1679,6 +1756,8 @@ def main():
     p.add_argument("--tune-timeout", type=float, default=20,
                    help="max seconds for an ATU tune this server started (front-panel tunes are never cut)")
     p.add_argument("--tx-timeout", type=int, default=180, help="max seconds per transmission")
+    p.add_argument("--stop-state", metavar="FILE",
+                   help="keep STOP TX here, so a restart comes back stopped (default: memory only)")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     rigctl_sock, rigctl_adopted = systemd_rigctl_socket()

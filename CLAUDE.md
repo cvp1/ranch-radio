@@ -64,7 +64,8 @@ file by hand. Example host files: `examples/hosts/`.
   that changes how or when a radio keys needs a test proving it stays safe
   (`civ_safety_test`, `tx_stop_test`, `tx_state_test`, `winlink_lane_test`).
 - **Receive-only by default.** No callsign, no TX. Every transmission has a time
-  limit. STOP TX latches. The hub's Off survives a restart. Don't loosen any of these.
+  limit. STOP TX latches and, like the hub's Off, survives a restart (an unreadable
+  state file starts stopped). Don't loosen any of these.
 - **Nothing personal in the tree.** `tests/public_hygiene_test.py` is required: no
   real host files, no home paths but `/Users/you` or `/home/you`, no LAN addresses
   but `192.168.1.x`, no logs, captures or certificates. Example callsigns are

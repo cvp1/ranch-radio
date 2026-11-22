@@ -29,6 +29,7 @@ STATION_LABEL = "org.ranch-radio.station"
 STATION_LOG = "~/Library/Logs/ranch-radio-station.log"
 MAC_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 ARDOP_STATE = "~/.local/state/radio-remote/ardop"
+STOP_STATE = "~/.local/state/radio-remote/stop-tx"    # <radio id>.json: the radio's STOP TX
 # The daily update check (ranch-radio update --scheduled). On unless the host
 # file says "updates": false; it applies updates only with "apply": true.
 UPDATE_LABEL = "org.ranch-radio.update"
@@ -829,6 +830,7 @@ def server_args(h, r, pth):
         a += ["--audio-device", r["audio_device"]]
     if r.get("tx_timeout"):
         a += ["--tx-timeout", str(r["tx_timeout"])]
+    a += ["--stop-state", pth(f"{STOP_STATE}/{r['id']}.json")]   # STOP TX survives a restart
     if r.get("tx") is False:                    # receive only (init, until there's a callsign)
         a += ["--no-tx"]
     if r.get("auto_tune"):
