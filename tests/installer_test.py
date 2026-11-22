@@ -2,7 +2,8 @@
 
   - init finds the radio: Linux by /dev/serial/by-id (the QMX by its product),
     macOS by the USB tree (the IC-7300 by the model in its serial number; one
-    CP210x seen through two drivers counts once)
+    CP210x seen through two drivers counts once; a byte in the listing that
+    is not UTF-8 does not stop the search)
   - its host file validates, renders, and is receive-only (--no-tx) until a
     callsign is given
   - start (Linux) enables the radio units, so a radio plugged in later gets
@@ -84,6 +85,11 @@ found = init.find_radios("macos")
 check("mac: one CP210x through two drivers counts once", [f["device"] for f in found], ["/dev/cu.usbserial-21210"])
 check("mac: the IC-7300 recognized by the model in its serial number", found[0]["rig"], "ic7300")
 check("mac: Bluetooth ports are not radios", any("UV-PRO" in f["device"] for f in found), False)
+# Another device's property that is not UTF-8 (a CI Mac, 2026-11-22: a lone 0xe3): the ports are still found.
+(TMP / "ioreg.txt").write_bytes(b'    | |   "USB Product Name" = "Hub \xe3("\n' + IOREG.encode())
+check("mac: a byte that is not UTF-8 in the listing does not stop the search",
+      [f["device"] for f in init.find_radios("macos")], ["/dev/cu.usbserial-21210"])
+(TMP / "ioreg.txt").write_text(IOREG)
 
 # ---------------------------------------------------------------- init: the host file
 for os_name, rig, dev in (("macos", "ic7300", "/dev/cu.usbserial-21210"),

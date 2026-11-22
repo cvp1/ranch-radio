@@ -50,13 +50,17 @@ def _linux_ports():
 def _mac_ports():
     """Serial ports with the nearest USB product name and serial number above
     them in the IOService tree."""
+    # ioreg prints device properties as the devices gave them, and not all of
+    # them give UTF-8: a CI Mac's listing had a lone 0xe3 in it and init died
+    # of a UnicodeDecodeError before it had looked at one port (2026-11-22).
+    # A byte that is not text becomes U+FFFD; the names we read are ASCII.
     src = os.environ.get("RANCH_RADIO_IOREG_FILE")
     if src:
-        text = Path(src).read_text()
+        text = Path(src).read_text(errors="replace")
     else:
         try:
             text = subprocess.run(["ioreg", "-l", "-w0", "-p", "IOService"], capture_output=True,
-                                  text=True, timeout=20).stdout
+                                  text=True, errors="replace", timeout=20).stdout
         except (OSError, subprocess.TimeoutExpired):
             return []
     out, stack = [], []
