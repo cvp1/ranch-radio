@@ -78,6 +78,11 @@ class Addon:
         """None, or why it can't be switched off right now (e.g. a session running)."""
         return
 
+    def degraded(self):
+        """What of it is not working, for /healthz: one short line each, []
+        when all is well. Only asked while it is switched on."""
+        return []
+
     def http(self, app, authorised):
         """Register its HTTP routes, once, before the server starts."""
 
@@ -139,6 +144,19 @@ class Addons:
     def is_on(self, name):
         rec = self.items.get(name)
         return bool(rec and rec["on"] and rec["addon"])
+
+    def degraded(self):
+        """Every switched-on add-on's degraded() lines; one that raises says
+        so in a line of its own (a health answer never fails)."""
+        out = []
+        for name, rec in self.items.items():
+            if not self.is_on(name):
+                continue
+            try:
+                out += [str(x)[:200] for x in rec["addon"].degraded()]
+            except Exception as e:                   # noqa: BLE001
+                out.append(f"{name}: degraded() failed: {type(e).__name__}")
+        return out
 
     def own_snapshot(self, name):
         """For an add-on with its own page: its snapshot, on or off."""

@@ -1283,8 +1283,11 @@ def make_app(station, args):
 
     r = app.router
     r.add_get("/", index)
+    # Degraded: what a switched-on add-on says of itself (a Meshtastic node away
+    # for minutes: addons/mesh.py degraded), so a monitor on "ok" hears of it.
     r.add_get("/healthz", webguard.healthz(
-        "station", lambda: ({"radios": len(station.radios)}, []), authorised))
+        "station", lambda: ({"radios": len(station.radios)},
+                            station.addons.degraded() if station.addons is not None else []), authorised))
     r.add_get("/ws", ws_control)
     r.add_get("/audio", lone_audio)
     r.add_get("/r/{rid}", slash("/r/"))

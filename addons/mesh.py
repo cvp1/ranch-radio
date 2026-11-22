@@ -33,11 +33,16 @@ to the pages as before; another node's carry "node": its id (its label,
 lower-cased), and a page sends "node" to pick which one a command is for
 (none: the first). "mesh_select" answers one page with that node's snapshot.
 
+/healthz (degraded): a node that has been not connected for DOWN_GRACE_S
+is a line there, so a monitor can say so. Seen live 2026-11-22: a node's USB
+link was out for 11 hours overnight and nothing outside the page knew.
+
 Delete this file and the Mesh tab goes away; the radio page runs on.
 """
 
 import json
 import re
+import time
 
 import os
 from pathlib import Path
@@ -48,6 +53,9 @@ from addons import Addon
 HERE = Path(__file__).resolve().parent.parent
 OFF_WHY = "Switched off: the node's port is free for other apps"
 RADIOS_MAX = 4
+# A node counts as down for /healthz once it has been not connected this long:
+# a start, a restart or the node's own reboot takes a Bluetooth link half a minute.
+DOWN_GRACE_S = float(os.environ.get("MESH_DOWN_GRACE_S", "120"))
 _ID = re.compile(r"[^a-z0-9]+")
 
 
@@ -159,6 +167,16 @@ class MeshAddon(Addon):
             return {"id": rid, "label": label, "connected": bool(e and e.connected),
                     "error": (e.error if e else OFF_WHY)}
         return [one("", self.label, self.engine)] + [one(x["id"], x["label"], x["engine"]) for x in self.extra]
+
+    def degraded(self, now=None):
+        """A line for each node not connected for DOWN_GRACE_S or more."""
+        now = time.time() if now is None else now
+        out = []
+        for label, e in [(self.label, self.engine)] + [(x["label"], x["engine"]) for x in self.extra]:
+            if e is not None and not e.connected and now - e.changed >= DOWN_GRACE_S:
+                out.append(f"mesh {label} not connected for {int((now - e.changed) // 60)} min"
+                           + (f": {e.error}" if e.error else ""))
+        return out
 
     async def start(self):
         from mesh import MeshEngine
