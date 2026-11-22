@@ -22,6 +22,10 @@ Config (station.json "mesh", or server.py --mesh-*, both become this):
 NAKs it for a reason it may get over, up to three more times (mesh.py);
 false leaves that to the page's Retry.
 
+/healthz (degraded): a node that has been not connected for DOWN_GRACE_S
+is a line there, so a monitor can say so. Seen live 2026-11-22: a node's USB
+link was out for 11 hours overnight and nothing outside the page knew.
+
 More than one node (mesh-radios, 2026-11-21): "radios" lists the others,
 each with its own bridge, log and engine, e.g. a LongFast monitor beside a
 MediumFast node:
@@ -51,11 +55,15 @@ import logging
 import re
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from addons import Addon
 
+# A node counts as down for /healthz once it has been not connected this long:
+# a start, a restart or the node's own reboot takes a Bluetooth link half a minute.
+DOWN_GRACE_S = float(os.environ.get("MESH_DOWN_GRACE_S", "120"))
 HERE = Path(__file__).resolve().parent.parent
 OFF_WHY = "Switched off: the node's port is free for other apps"
 RADIOS_MAX = 4
@@ -178,6 +186,16 @@ class MeshAddon(Addon):
             return {"id": rid, "label": label, "connected": bool(e and e.connected),
                     "error": (e.error if e else OFF_WHY)}
         return [one("", self.label, self.engine)] + [one(x["id"], x["label"], x["engine"]) for x in self.extra]
+
+    def degraded(self, now=None):
+        """A line for each node not connected for DOWN_GRACE_S or more."""
+        now = time.time() if now is None else now
+        out = []
+        for label, e in [(self.label, self.engine)] + [(x["label"], x["engine"]) for x in self.extra]:
+            if e is not None and not e.connected and now - e.changed >= DOWN_GRACE_S:
+                out.append(f"mesh {label} not connected for {int((now - e.changed) // 60)} min"
+                           + (f": {e.error}" if e.error else ""))
+        return out
 
     async def start(self):
         from mesh import MeshEngine

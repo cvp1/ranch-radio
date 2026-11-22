@@ -332,6 +332,7 @@ class MeshEngine:
         self.trash = mesh_convs.Trash(base and base + "-trash.jsonl")      # deleted, for Undo
         self.proc = None
         self.connected = False
+        self.changed = time.time()    # when connected last changed (addons/mesh.py degraded: how long a node has been away)
         self.error = None
         self.info = None
         self.config = None            # {"sections": schema, "values": the node's settings}
@@ -584,6 +585,8 @@ class MeshEngine:
                     self._send_hears()
 
     def _status(self, connected, error):
+        if bool(connected) != self.connected:
+            self.changed = time.time()    # a bridge retrying says "not connected" each time: only the change counts
         self.connected, self.error = bool(connected), error
         self._reached = self._reached or self.connected
         if self.connected and self._auto_since is None:
