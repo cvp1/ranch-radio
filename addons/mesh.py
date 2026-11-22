@@ -20,6 +20,10 @@ Config (station.json "mesh", or server.py --mesh-*, both become this):
 NAKs it for a reason it may get over, up to three more times (mesh.py);
 false leaves that to the page's Retry.
 
+/healthz (degraded): a node that has been not connected for DOWN_GRACE_S
+is a line there, so a monitor can say so. Seen live 2026-11-22: a node's USB
+link was out for 11 hours overnight and nothing outside the page knew.
+
 More than one node (mesh-radios, 2026-11-21): "radios" lists the others,
 each with its own bridge, log and engine, e.g. a LongFast monitor beside a
 MediumFast node:
@@ -33,29 +37,25 @@ to the pages as before; another node's carry "node": its id (its label,
 lower-cased), and a page sends "node" to pick which one a command is for
 (none: the first). "mesh_select" answers one page with that node's snapshot.
 
-/healthz (degraded): a node that has been not connected for DOWN_GRACE_S
-is a line there, so a monitor can say so. Seen live 2026-11-22: a node's USB
-link was out for 11 hours overnight and nothing outside the page knew.
-
 Delete this file and the Mesh tab goes away; the radio page runs on.
 """
 
 import json
 import re
-import time
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from addons import Addon
 
-HERE = Path(__file__).resolve().parent.parent
-OFF_WHY = "Switched off: the node's port is free for other apps"
-RADIOS_MAX = 4
 # A node counts as down for /healthz once it has been not connected this long:
 # a start, a restart or the node's own reboot takes a Bluetooth link half a minute.
 DOWN_GRACE_S = float(os.environ.get("MESH_DOWN_GRACE_S", "120"))
+HERE = Path(__file__).resolve().parent.parent
+OFF_WHY = "Switched off: the node's port is free for other apps"
+RADIOS_MAX = 4
 _ID = re.compile(r"[^a-z0-9]+")
 
 
