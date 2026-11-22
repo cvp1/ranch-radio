@@ -606,6 +606,8 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mesh-retry-in { margin-right: 6px; font-size: 0.85em; }
 .mesh-replying { display: inline-flex; align-items: center; gap: 6px; }
 .mesh-node.ignored { opacity: .5; }
+.mesh-node.kept .mesh-short, .mesh-node.kept .mesh-long { opacity: .65; }   /* the station's record: the radio no longer lists it */
+.mesh-kept-note { margin: 4px 0; }
 .mesh-reqs { align-items: center; }
 .mesh-req-note { font-size: 11px; }
 .mesh-map { position: relative; height: 42vh; min-height: 240px; overflow: hidden; border-radius: 10px;
