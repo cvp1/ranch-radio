@@ -922,13 +922,13 @@ def main():
     pub.subscribe(b.on_node, "meshtastic.node.updated")
     pub.subscribe(b.on_lost, "meshtastic.connection.lost")
     emit(ev="status", connected=True, error=None)
+    if "," in args.port:              # a list: on a later port, go back to an earlier cable when it returns
+        threading.Thread(target=b.cable_loop, args=(args.port, using), daemon=True).start()
     b.info()
     b.config()
     if args.feed:
         b.feed = start_feed(args, iface, b)
     threading.Thread(target=b.nodes_loop, daemon=True).start()
-    if "," in args.port:
-        threading.Thread(target=b.cable_loop, args=(args.port, using), daemon=True).start()
 
     def stdin_loop():
         for line in sys.stdin:
