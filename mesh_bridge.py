@@ -22,7 +22,12 @@ udev gives Linux a fixed name (/dev/meshtastic); this needs no rule.
 
 In a list, a bridge that had to take a later entry (Bluetooth, the cable
 being out) goes back to an earlier cable when that is plugged in again
-(Bridge.cable_loop).
+(Bridge.cable_loop). Bluetooth after a cable takes a while to answer: the
+firmware turns a node's Bluetooth off while a USB client is attached and
+gives a client that went without saying so 15 minutes (2.7.26:
+PowerFSM.cpp serialEnter, SerialConsole.cpp SERIAL_CONNECTION_TIMEOUT), so
+the node is back on Bluetooth that long after the cable drops, and at once
+after this bridge closes its link itself.
 
 Bluetooth needs the node bonded to this host once (its PIN) and the node's
 single BLE connection free: while a phone app holds it, this bridge can't

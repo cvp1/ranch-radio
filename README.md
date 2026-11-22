@@ -273,6 +273,9 @@ others under `radios`; each runs its own bridge and keeps its own history:
 order: `"usb:1A2B3C4D5E6F7A8B,ble:NODE_A"` is the node on its cable, and over
 Bluetooth while the cable is out (a node with a battery keeps running when a
 hub drops it). The bridge goes back to the cable when it is plugged in again.
+Bluetooth takes over up to 15 minutes after the cable drops, not at once: the
+node keeps its Bluetooth off while it thinks a USB client is still there. Bond
+the node to the host over Bluetooth once, before you need it.
 `usb:SERIAL` names a USB board by its serial number
 (`python -m serial.tools.list_ports -v` shows it as `SER=`), so it is found in
 whichever socket it sits; a Mac's `/dev/cu.usbmodemNNNN` is the socket's name
