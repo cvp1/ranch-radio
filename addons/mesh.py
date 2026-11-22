@@ -24,7 +24,9 @@ false leaves that to the page's Retry.
 
 /healthz (degraded): a node that has been not connected for DOWN_GRACE_S
 is a line there, so a monitor can say so. Seen live 2026-11-22: a node's USB
-link was out for 11 hours overnight and nothing outside the page knew.
+link was out for 11 hours overnight and nothing outside the page knew. So is
+a node connected but with no packet passed on for SILENT_S: the same day, a
+Bluetooth link stayed connected and delivered nothing for five hours.
 
 More than one node (mesh-radios, 2026-11-21): "radios" lists the others,
 each with its own bridge, log and engine, e.g. a LongFast monitor beside a
@@ -64,6 +66,11 @@ from addons import Addon
 # A node counts as down for /healthz once it has been not connected this long:
 # a start, a restart or the node's own reboot takes a Bluetooth link half a minute.
 DOWN_GRACE_S = float(os.environ.get("MESH_DOWN_GRACE_S", "120"))
+# A node that is connected but has passed on no packet for this long counts as
+# degraded too. Seen live 2026-11-22: a Bluetooth link connected and loaded the
+# node's settings, then delivered nothing for five hours while /healthz said ok.
+# Half an hour, as a LongFast monitor can go ten minutes without a packet at night.
+SILENT_S = float(os.environ.get("MESH_SILENT_S", "1800"))
 HERE = Path(__file__).resolve().parent.parent
 OFF_WHY = "Switched off: the node's port is free for other apps"
 RADIOS_MAX = 4
@@ -188,13 +195,22 @@ class MeshAddon(Addon):
         return [one("", self.label, self.engine)] + [one(x["id"], x["label"], x["engine"]) for x in self.extra]
 
     def degraded(self, now=None):
-        """A line for each node not connected for DOWN_GRACE_S or more."""
+        """A line for each node not connected for DOWN_GRACE_S or more, and for
+        each connected one that has passed on no packet for SILENT_S or more
+        (counted from when it connected, or from its last packet)."""
         now = time.time() if now is None else now
         out = []
         for label, e in [(self.label, self.engine)] + [(x["label"], x["engine"]) for x in self.extra]:
-            if e is not None and not e.connected and now - e.changed >= DOWN_GRACE_S:
-                out.append(f"mesh {label} not connected for {int((now - e.changed) // 60)} min"
-                           + (f": {e.error}" if e.error else ""))
+            if e is None:
+                continue
+            if not e.connected:
+                if now - e.changed >= DOWN_GRACE_S:
+                    out.append(f"mesh {label} not connected for {int((now - e.changed) // 60)} min"
+                               + (f": {e.error}" if e.error else ""))
+                continue
+            quiet = now - max(e.changed, getattr(e, "last_rx", None) or 0)
+            if quiet >= SILENT_S:
+                out.append(f"mesh {label} connected but no packets for {int(quiet // 60)} min")
         return out
 
     async def start(self):
