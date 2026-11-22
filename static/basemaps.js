@@ -95,6 +95,10 @@ const basemaps = (() => {
             img.draggable = false;
             img.style.cssText = "position:absolute;left:0;top:0;max-width:none";   // placed by its transform alone
             img.onerror = () => { img.style.visibility = "hidden"; };
+            // The pages send Referrer-Policy: same-origin (webguard.py), which strips the
+            // Referer from cross-site requests; OpenStreetMap refuses tiles without one
+            // (its tile usage policy). A tile sends the station's origin only, never a path.
+            img.referrerPolicy = "strict-origin-when-cross-origin";
             img.src = url(m, tz, ((tx % n) + n) % n, ty);
             tiles.set(k, img);
             host.append(img);

@@ -343,6 +343,8 @@ try:
     b.js("(() => { const s = document.querySelector('#mapbox .bm-pick'); s.value = 'streets'; s.dispatchEvent(new Event('change')); })()")
     check("  Streets picked: OpenStreetMap's tiles and credit, and the night side is shaded again",
           json.loads(b.js(BGJS)), {"host": "tile.openstreetmap.org", "attr": "© OpenStreetMap", "lights": False, "clip": True, "lit": False})
+    check("  every tile sends the station's origin as its referrer (OpenStreetMap refuses tiles without one; the page policy is same-origin)",
+          b.js("[...document.querySelectorAll('#mapbox .bm-tile')].every(i => i.referrerPolicy === 'strict-origin-when-cross-origin')"), True)
     b.js("(() => { const s = document.querySelector('#mapbox .bm-pick'); s.value = 'earth'; s.dispatchEvent(new Event('change')); })()")
     # ---- the wheel (basemaps.wheel, 2026-11-19: the map "would not hold a zoom and kept zooming out")
     LEVEL = "Number(document.querySelector('#mapbox [data-basemap=\"earth\"] .bm-tile').src.split('GoogleMapsCompatible_Level8/')[1].split('/')[0])"
