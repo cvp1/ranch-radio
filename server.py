@@ -178,6 +178,8 @@ class Station(TxAudio):
         self.vara_tail = None            # station_id.VaraLogTail while xara is set up here
         self._lane_refused_warned = {}   # modem -> monotonic time of its last refusal WARNING
         self.codec = None                # codec_level.CodecProfile when --winlink-codec-db is set
+        self.js8_codec_owner = None      # the JS8 bridge's socket holding the codec at the JS8 level
+        self._js8_follow_task = None
         self.addons = None               # addons.Addons: --addons (panel add-ons on this radio's page)
         # Station ID (47 CFR 97.119): which of the modems' IDs went on air,
         # and whether one is owed. Tracked per modem from its log:
@@ -246,6 +248,8 @@ class Station(TxAudio):
             self._band_watch(diff["freq"])
         if diff.keys() & {"freq", "mode", "data", "split", "tx", "tuner"}:
             self._check_hold()
+        if diff.keys() & {"freq", "tx"}:
+            self.js8_codec_watch()
         self._broadcast(json.dumps({"t": "state", "d": diff}))
 
     async def _confirm_unkeyed(self, owner):
@@ -621,7 +625,7 @@ class Station(TxAudio):
                 return
         if not await self._winlink_mode_enter(ws):
             if self.codec is not None:
-                await self.codec.leave()
+                await self.codec.leave("winlink")
             return
         self.winlink_scheme = scheme
         self.id_ledger.new_generation()          # a new session: its keys are its own
@@ -761,7 +765,7 @@ class Station(TxAudio):
             await self.unkey(f"Winlink disarmed{f' ({reason})' if reason else ''}")
         await self._winlink_mode_leave()         # after unkeying, as the codec level
         if self.codec is not None:               # after unkeying: never change level mid-frame
-            err = await self.codec.leave()
+            err = await self.codec.leave("winlink")
             if err:
                 self.notice(f"Could not put the codec's audio level back ({err}); "
                             "check it before voice transmit.", "warn")
@@ -1073,6 +1077,8 @@ class Station(TxAudio):
                 await self.unkey("operator disconnected")
             if self.winlink_owner is ws:
                 await self.winlink_disarm("operator's page closed")
+            if self.js8_codec_owner is ws:
+                await self.js8_codec_release("the JS8 bridge's socket closed")
 
     # A read-only page (auth readonly-lan, no operator session) may send only
     # these: STOP TX always works, whoever presses it (review plan PR 4).
@@ -1209,6 +1215,10 @@ class Station(TxAudio):
                 self.notice("No add-ons on this server.", "warn", ws)
             else:
                 await self.addons.command(ws, m)
+        elif t == "js8_codec":
+            if not isinstance(m.get("on"), bool):
+                raise ValueError("js8_codec: on must be true or false")
+            await self.js8_codec(ws, m["on"])
         elif t in ("codec_get", "codec_step", "codec_save"):
             await self.codec_command(ws, m)
         elif t in ("modules", "modules_check", "module_plan", "module_apply"):
@@ -1648,6 +1658,10 @@ def main():
                    help="codec output level (dB) while this page's own PTT transmits voice, same "
                         "form as --winlink-codec-db (same mixer); restored on unkey. Apps keying "
                         "over rigctl never move it. Unset = voice leaves the codec alone")
+    p.add_argument("--js8-codec-db", type=codec_levels, metavar="DB|TABLE",
+                   help="codec output level (dB) while the station's JS8 bridge holds an arm "
+                        "(jf8call has no level of its own), same form as --winlink-codec-db (same "
+                        "mixer); follows the band, restored on disarm. Unset = JS8 leaves the codec alone")
     p.add_argument("--codec-max-db", type=float, metavar="DB",
                    help="highest level the page may step the codec to (default 0 dB, the codec's "
                         "top): a radio that overdrives below 0 dB gets a ceiling")

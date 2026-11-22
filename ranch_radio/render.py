@@ -97,6 +97,7 @@ RULES = [
     (("radios", "*", "audio_in"), TOKEN), (("radios", "*", "audio_out"), TOKEN),
     (("radios", "*", "audio_device"), TEXT),
     (("radios", "*", "codec_db"), TOKEN), (("radios", "*", "voice_codec_db"), TOKEN),
+    (("radios", "*", "js8_codec_db"), TOKEN),
     (("radios", "*", "codec_mixer"), TOKEN), (("radios", "*", "winlink_mode"), TOKEN),
     (("radios", "*", "rigctl_host"), TOKEN), (("radios", "*", "tls_names", "*"), TOKEN),
     (("radios", "*", "log"), TOKEN), (("radios", "*", "path"), TOKEN), (("radios", "*", "label"), LABEL),
@@ -358,14 +359,19 @@ def validate(h):
         # muted codec keys the radio at 0 W: refuse levels below codec_min_db.
         if r.get("voice_codec_db") and not r.get("codec_mixer") and h["os"] == "linux":
             raise HostError(f"{h['host']}: {r['id']}.voice_codec_db needs codec_mixer (CARD:CONTROL)")
-        if r.get("codec_save") and not (r.get("codec_db") or r.get("voice_codec_db")):
+        if r.get("js8_codec_db") and not r.get("codec_mixer") and h["os"] == "linux":
+            raise HostError(f"{h['host']}: {r['id']}.js8_codec_db needs codec_mixer (CARD:CONTROL)")
+        if r.get("js8_codec_db") and not r.get("lane"):
+            # The codec flags ride with the radio's Winlink lane (render below).
+            raise HostError(f"{h['host']}: {r['id']}.js8_codec_db needs the radio's lane (the codec block)")
+        if r.get("codec_save") and not (r.get("codec_db") or r.get("voice_codec_db") or r.get("js8_codec_db")):
             raise HostError(f"{h['host']}: {r['id']}.codec_save without codec_db: nothing to save")
         lo, hi = r.get("codec_min_db"), r.get("codec_max_db")
         if lo is not None and hi is not None and hi < lo:
             raise HostError(f"{h['host']}: {r['id']}.codec_max_db {hi} is below codec_min_db {lo}")
         if lo is None and hi is None:
             continue
-        for key in ("codec_db", "voice_codec_db"):
+        for key in ("codec_db", "voice_codec_db", "js8_codec_db"):
             for part in str(r.get(key) or "").split(","):
                 try:
                     db = float(part.rpartition("=")[2])
@@ -847,6 +853,8 @@ def server_args(h, r, pth):
             a += ["--winlink-codec-mixer", r["codec_mixer"]]
         if r.get("voice_codec_db"):
             a += ["--voice-codec-db", r["voice_codec_db"]]
+        if r.get("js8_codec_db"):
+            a += ["--js8-codec-db", r["js8_codec_db"]]
         if r.get("codec_min_db") is not None:
             a += ["--codec-min-db", f"{r['codec_min_db']:g}"]
         if r.get("codec_max_db") is not None:
