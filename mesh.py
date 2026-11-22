@@ -148,6 +148,47 @@ def remember_names(book, nodes, now=None, keep=NAMES_KEEP):
     return changed
 
 
+# Every node the radio has listed, kept after the radio drops it. A node's own
+# list is short (80 on an nRF52: the firmware's MAX_NUM_NODES), and the bridge's
+# starts again from it at every connect, so the tab's "N known" fell back to
+# 80-odd however many the station had heard: one node here had 380 names in the
+# book above and 90 nodes listed (2026-11-22). A phone app keeps its own list;
+# so does the station now. The longest unheard go first past the cap.
+KEPT_NODES = int(os.environ.get("MESH_KEPT_NODES", "1000"))
+KEPT_SAVE_S = float(os.environ.get("MESH_KEPT_SAVE_S", "300"))   # the file is written at most this often
+KEPT_FIELDS = ("num", "id", "shortName", "longName", "hwModel", "role", "last_heard", "snr", "hops",
+               "lat", "lon", "alt", "mqtt", "licensed")
+
+
+def kept_record(n):
+    """A node as the station keeps it: what the list and the card show, marked."""
+    return {**{k: n.get(k) for k in KEPT_FIELDS}, "kept": True}
+
+
+def keep_nodes(kept, last, nodes, forget=(), keep=KEPT_NODES):
+    """Fold the radio's node list into kept {id: record}, in place. A node in
+    `last` ({id: node} of the list before this one) that is not in `nodes` has
+    left the radio's list: it is kept as it last was. One that is in `nodes`
+    again leaves kept. Our own node and the ids in `forget` (removed by the
+    operator) are never kept. -> (added {id: record}, dropped [id]): what the
+    pages need; both empty when nothing changed."""
+    now_ids = {n.get("id") for n in nodes or []}
+    added, dropped = {}, []
+    for nid in [k for k in kept if k in now_ids or k in forget]:
+        del kept[nid]
+        dropped.append(nid)
+    for nid, n in last.items():
+        if nid in now_ids or nid in forget or n.get("me") or not NODE_ID.match(str(nid)):
+            continue
+        kept[nid] = added[nid] = kept_record(n)
+    if len(kept) > keep:
+        for nid, _ in sorted(kept.items(), key=lambda x: x[1].get("last_heard") or 0)[:len(kept) - keep]:
+            del kept[nid]
+            if added.pop(nid, None) is None:
+                dropped.append(nid)
+    return added, dropped
+
+
 def hears_us(me, neighbors, traces, messages, now=None):
     """Who hears this node, from what the station already holds; no airtime.
     -> [{"id", "t", "snr", "how"}], newest first. how: "neighbor" (its
@@ -281,6 +322,11 @@ class MeshEngine:
         self.names_path = (os.path.splitext(self.log_path)[0] + "-names.json") if self.log_path else None
         self.names = {}               # node id -> {"short", "long", "hw", "t"}: remember_names()
         base = os.path.splitext(self.log_path)[0] if self.log_path else None
+        self.kept_path = base and base + "-nodes.json"
+        self.kept = {}                # node id -> record: nodes the radio no longer lists (keep_nodes)
+        self._listed = {}             # node id -> node: the radio's list as last sent
+        self._forget = set()          # ids the operator removed: not kept when they leave the list
+        self._kept_timer = None       # the pending write of kept_path
         self.convs = mesh_convs.ConvStore(base and base + "-convs.json")   # archived, muted, pinned, read
         self.trash = mesh_convs.Trash(base and base + "-trash.jsonl")      # deleted, for Undo
         self.proc = None
@@ -335,6 +381,9 @@ class MeshEngine:
                 g["timer"].cancel()
         if self._health_timer is not None:
             self._health_timer.cancel()
+        if self._kept_timer is not None:
+            self._kept_timer.cancel()
+            self._save_kept()
         if self._task:
             self._task.cancel()
         if self.proc and self.proc.returncode is None:
@@ -435,6 +484,15 @@ class MeshEngine:
             self.stats.packet(rx)
             self._send({"rx": rx})
             self._health_soon()
+            rec = self.kept.get(m["from"])
+            if rec is not None:       # heard again, not yet back in the radio's list (that takes its NodeInfo)
+                rec["last_heard"] = int(rx["t"])
+                if rx.get("hops") is not None:
+                    rec["hops"] = rx["hops"]
+                if rx.get("hops") == 0 and rx.get("snr") is not None:
+                    rec["snr"] = rx["snr"]
+                self._send({"kept": {"set": [rec], "drop": []}})
+                self._kept_soon()
         elif ev == "trace":
             rec = self.traces.get(m["to"])
             if rec is None or m["ref"] != self._trace_ref:
@@ -451,6 +509,14 @@ class MeshEngine:
             self._auto_kick()
         elif ev == "nodes":
             self.nodes = m["nodes"]
+            added, dropped = keep_nodes(self.kept, self._listed, self.nodes, self._forget)
+            listed = {n["id"]: n for n in self.nodes if n.get("id")}
+            if added or dropped or listed.keys() != self._listed.keys():
+                self._kept_soon()
+            self._listed = listed
+            self._forget.intersection_update(listed)   # gone from the list: nothing left to hold back
+            if added or dropped:
+                self._send({"kept": {"set": list(added.values()), "drop": dropped}})
             changed = remember_names(self.names, self.nodes)
             if changed:
                 self._save_names()
@@ -743,7 +809,7 @@ class MeshEngine:
                 "hears": self.hears(), "text_max": TEXT_MAX_BYTES, "parts_max": PARTS_MAX,
                 "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend,
                 "health": self.health(), "packets": list(self.stats.log), "names": self.names,
-                "convs": self.convs.view()}
+                "kept": list(self.kept.values()), "convs": self.convs.view()}
 
     def health(self):
         return self.stats.summary(self.nodes)
@@ -1038,12 +1104,21 @@ class MeshEngine:
         self._req_refs.clear()
 
     async def node_action(self, ws, to, do):
+        if do == "remove" and to in self.kept:    # the station's own record: no radio needed
+            del self.kept[to]
+            self._send({"kept": {"set": [], "drop": [to]}})
+            self._kept_soon()
+            log.info("mesh: %s forgotten (the radio no longer listed it)", to)
+            self.station.notice(f"Mesh: {to} forgotten.", "info", ws)
+            return
         if not self._usable(ws):
             return
         why = self._peer_why(to) or (None if do in NODE_ACTIONS else f"Not a node action: {do!r}.")
         if why:
             self.station.notice(why, "warn", ws)
             return
+        if do == "remove":
+            self._forget.add(to)      # removed by hand: it must not come back as a kept node
         await self._write_cmd(ws, f"{NODE_ACTIONS[do]} {to}", {"cmd": "node", "to": to, "do": do})
 
     async def reboot(self, ws):
@@ -1135,11 +1210,52 @@ class MeshEngine:
         except OSError as e:
             log.warning("mesh names %s not written: %s", self.names_path, e)
 
+    def _load_kept(self):
+        """Every node in the file is kept until the radio lists it again: with
+        the node away the page still shows who was heard."""
+        if not self.kept_path:
+            return
+        try:
+            with open(self.kept_path) as f:
+                d = json.load(f)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as e:
+            log.warning("mesh nodes %s not read: %s", self.kept_path, e)
+            return
+        if isinstance(d, dict):
+            self.kept = {k: kept_record(v) for k, v in d.items() if NODE_ID.match(str(k)) and isinstance(v, dict)}
+        log.info("mesh: %d nodes kept from %s", len(self.kept), self.kept_path)
+
+    def _kept_soon(self):
+        if self._kept_timer is None and self.kept_path and not self._closing:
+            self._kept_timer = asyncio.get_running_loop().call_later(KEPT_SAVE_S, self._save_kept)
+
+    def _save_kept(self):
+        """The kept nodes and the radio's own list, in one file: after a
+        restart a node the radio had only in memory is not lost."""
+        self._kept_timer = None
+        if not self.kept_path:
+            return
+        d = {nid: kept_record(n) for nid, n in self._listed.items()
+             if NODE_ID.match(str(nid)) and not n.get("me") and nid not in self._forget}
+        d.update(self.kept)
+        tmp = self.kept_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.kept_path), exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(d, f)
+            os.replace(tmp, self.kept_path)
+        except OSError as e:
+            log.warning("mesh nodes %s not written: %s", self.kept_path, e)
+
     def _load(self):
         if not self.log_path:
             return
         self._load_links()
         self._load_names()
+        self._load_kept()
         recs = []
         try:
             with open(self.log_path) as f:

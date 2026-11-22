@@ -28,6 +28,10 @@ const mesh = (() => {
     queued: ["⋯", "Waiting for the part before it"] };
   let info = null, nodes = [], messages = [], connected = false, linkError = null, textMax = 200;
   let names = {};           // node id -> {short, long, hw}: every name the station has seen (mesh.py remember_names)
+  // Nodes the radio no longer lists, as the station last had them (mesh.py
+  // keep_nodes): the radio's own list is short (80 on many boards), a phone app
+  // keeps every node it has seen, and so does this list. id -> node, "kept": true.
+  let kept = {};
   let partsMax = 9, partBytes = 194; // a long text goes as up to partsMax parts of partBytes (mesh.py split_text)
   let switchedOff = false;  // the Mesh add-on is off: the bridge is stopped and the node's port free
   let view = null;          // channel index, or "dm"
@@ -96,7 +100,12 @@ const mesh = (() => {
     if (r && st) { r.connected = !!st.connected; r.error = st.error || null; renderRadios(); }
   }
 
-  const byId = (id) => nodes.find((n) => n.id === id);
+  const byId = (id) => nodes.find((n) => n.id === id) || kept[id];
+  // The radio's list and the kept nodes, as one: the list, its count, "heard today".
+  const everyNode = () => {
+    const listed = new Set(nodes.map((n) => n.id));
+    return nodes.concat(Object.values(kept).filter((n) => !listed.has(n.id)));
+  };
   // A node that has left the radio's list keeps the name it last had (names).
   const short = (id) => byId(id)?.shortName || names[id]?.short || id || "?";
   const long = (id) => byId(id)?.longName || names[id]?.long || id || "?";
@@ -239,7 +248,7 @@ const mesh = (() => {
   }
   const openConv = () => (view === "dm" ? (dmTo ? convOf("dm", dmTo) : null) : convOf(view));
   let newMark = null;       // {conv, n}: how many were unread when it was opened, for the "New" line
-  const onlineNow = () => nodes.filter((n) => !n.me && n.last_heard && Date.now() / 1000 - n.last_heard < LIVE_S).length;
+  const onlineNow = () => everyNode().filter((n) => !n.me && n.last_heard && Date.now() / 1000 - n.last_heard < LIVE_S).length;
 
   function dmPeers() {
     const last = new Map();
@@ -529,18 +538,20 @@ const mesh = (() => {
   function renderNodes() {
     const q = $("#mesh-find").value.trim().toLowerCase();
     const now = Date.now() / 1000;
-    const list = nodes.filter((n) => !n.me)
+    const every = everyNode();
+    const list = every.filter((n) => !n.me)
       .filter((n) => !recentOnly || q || (n.last_heard && now - n.last_heard < HEARD_RECENT_S) || n.fav)
       .filter((n) => !q || [n.shortName, n.longName, n.id, n.hwModel, n.role].some((s) => String(s || "").toLowerCase().includes(q)))
-      .sort((a, b) => (b.fav - a.fav) || ((b.last_heard || 0) - (a.last_heard || 0)));
+      .sort((a, b) => (!!b.fav - !!a.fav) || ((b.last_heard || 0) - (a.last_heard || 0)));
     const el = $("#mesh-nodes");
-    el.innerHTML = list.length ? "" : `<div class="wl-empty">${nodes.length ? "No nodes heard in the last day" : "No nodes yet"}</div>`;
+    el.innerHTML = list.length ? "" : `<div class="wl-empty">${every.length ? "No nodes heard in the last day" : "No nodes yet"}</div>`;
     for (const n of list) {
       const b = document.createElement("button");
       const live = n.last_heard && now - n.last_heard < LIVE_S;
-      b.className = "mesh-node" + (n.id === selected ? " on" : "") + (n.ignored ? " ignored" : "");
+      b.className = "mesh-node" + (n.id === selected ? " on" : "") + (n.ignored ? " ignored" : "") + (n.kept ? " kept" : "");
       b.dataset.id = n.id;
-      b.title = `${n.longName || ""} ${n.id || ""} · ${n.hwModel || ""}${n.role ? ` · ${n.role}` : ""} — click for details and traceroute`;
+      b.title = `${n.longName || ""} ${n.id || ""} · ${n.hwModel || ""}${n.role ? ` · ${n.role}` : ""} — click for details and traceroute` +
+        (n.kept ? ". Kept by the station: the radio no longer lists it" : "");
       b.innerHTML = `<span class="mesh-short"><span class="mesh-fav${n.fav ? " on" : ""}" title="${n.fav
         ? "Favorite: click to remove" : "Make a favorite (a CLIENT_BASE node always relays for its favorites)"}">${n.fav ? "★" : "☆"}</span>${esc(n.shortName || "?")}</span>` +
         `<span class="mesh-long">${esc(n.longName || n.id)}<span class="mesh-sub">${esc([n.ignored ? "🚫 ignored" : "",
@@ -552,12 +563,14 @@ const mesh = (() => {
       b.onclick = () => select(n.id);
       b.querySelector(".mesh-fav").onclick = (e) => {
         e.stopPropagation();
-        if (connected) tx({ t: "mesh_favorite", to: n.id, fav: !n.fav });
+        if (connected && !n.kept) tx({ t: "mesh_favorite", to: n.id, fav: !n.fav });   // a favorite is the radio's: it must list the node
       };
       el.append(b);
     }
-    const all = nodes.filter((n) => !n.me).length;
-    $("#mesh-count-nodes").textContent = recentOnly && !q ? `${list.length} of ${all}` : `${all} known`;
+    const all = every.filter((n) => !n.me).length, mine = nodes.filter((n) => !n.me).length;
+    const cn = $("#mesh-count-nodes");
+    cn.textContent = recentOnly && !q ? `${list.length} of ${all}` : `${all} known`;
+    cn.title = all > mine ? `${mine} in the radio's own list, ${all - mine} more kept by the station (the radio drops the longest unheard)` : "";
     renderCard();
   }
 
@@ -795,6 +808,9 @@ const mesh = (() => {
       ["key", n.pkc ? "PKI ✓" : ""], ["via", n.mqtt ? "MQTT" : ""],
       ["ignored", n.ignored ? "yes: its packets are dropped" : ""],
       ["traffic", trafficText(n.id)]].filter(([, v]) => v);
+    // A kept node: favorite and ignore are the radio's and need it listed there;
+    // Remove forgets the station's record, with or without the radio.
+    const own = connected && !n.kept;
     const reqs = requests[n.id] || {};
     const busy = Object.values(reqs).some((r) => r.state === "running");
     const reqNote = Object.entries(reqs).filter(([, r]) => r.state !== "done" || Date.now() / 1000 - (r.done_t || 0) < 120)
@@ -807,13 +823,14 @@ const mesh = (() => {
       `<span class="wl-dim">${esc(n.id)} · ${esc(n.hwModel || "")}${n.role ? ` · ${esc(n.role)}` : ""}</span>` +
       `<span class="spacer"></span><button class="chip chip-mini" data-act="close" title="Close">✕</button></div>` +
       `<div class="mesh-card-grid">${fields.map(([k, v]) => `<span>${k} <b>${esc(v)}</b></span>`).join("")}</div>` +
+      (n.kept ? `<div class="wl-dim mesh-kept-note">Kept by the station: the radio no longer lists this node (its own list is short). It goes back in when the radio next hears its name.</div>` : "") +
       `<div class="wl-row"><button class="chip chip-mini" data-act="dm">Message</button>` +
       `<button class="chip chip-mini" data-act="trace"${!connected || tr?.state === "running" ? " disabled" : ""} ` +
       `title="Ask the mesh for the route to this node and back, with each hop's SNR">Traceroute</button>` +
-      `<button class="chip chip-mini" data-act="fav"${connected ? "" : " disabled"}>${n.fav ? "★ Unfavorite" : "☆ Favorite"}</button>` +
-      `<button class="chip chip-mini" data-act="ignore"${connected ? "" : " disabled"} title="${n.ignored
+      `<button class="chip chip-mini" data-act="fav"${own ? "" : " disabled"}>${n.fav ? "★ Unfavorite" : "☆ Favorite"}</button>` +
+      `<button class="chip chip-mini" data-act="ignore"${own ? "" : " disabled"} title="${n.ignored
         ? "Hear this node again" : "Drop this node's packets: it disappears from messages and the map"}">${n.ignored ? "Unignore" : "Ignore"}</button>` +
-      `<button class="chip chip-mini" data-act="remove"${connected ? "" : " disabled"} title="Forget this node; it comes back when it is next heard">Remove</button></div>` +
+      `<button class="chip chip-mini" data-act="remove"${own || n.kept ? "" : " disabled"} title="Forget this node; it comes back when it is next heard">Remove</button></div>` +
       `<div class="wl-row mesh-reqs"><span class="wl-dim">Ask for</span>` +
       REQUESTS.map(([k, label, why]) => `<button class="chip chip-mini" data-req="${k}" title="${esc(why)}"${!connected || busy ? " disabled" : ""}>${label}</button>`).join("") +
       (reqNote ? `<span class="wl-dim mesh-req-note">${esc(reqNote)}</span>` : "") + "</div>" +
@@ -1139,6 +1156,7 @@ const mesh = (() => {
     info = snap.info;
     nodes = snap.nodes || [];
     names = snap.names || {};
+    kept = Object.fromEntries((snap.kept || []).filter((n) => n?.id).map((n) => [n.id, n]));
     convState = snap.convs || { since: Date.now() / 1000, convs: {} };
     messages = snap.messages || [];
     switchedOff = !!snap.off;
@@ -1194,6 +1212,11 @@ const mesh = (() => {
     }
     if (m.config) setConfig(m.config);
     if (m.names) Object.assign(names, m.names);
+    if (m.kept) {
+      for (const n of m.kept.set || []) if (n?.id) kept[n.id] = n;
+      for (const id of m.kept.drop || []) delete kept[id];
+      if (!m.nodes) { renderNodes(); if (selected && !nodes.some((n) => n.id === selected)) renderCard(); }
+    }
     if (m.convs) { convState = m.convs; if (!m.history) { renderTabs(); renderChatHead(); } }
     if (m.history) {                               // after a delete or an undo: the station's whole history
       const inDm = (list) => list.some((x) => x.dm && peerOf(x) === dmTo);
@@ -1258,7 +1281,7 @@ const mesh = (() => {
   // last quarter hour, and the last message someone sent.
   function summary() {
     const now = Date.now() / 1000, me = myId();
-    const others = nodes.filter((n) => n.id !== me && !n.me && n.last_heard);
+    const others = everyNode().filter((n) => n.id !== me && !n.me && n.last_heard);
     const last = [...messages].reverse().find((m) => !m.mine && !isReaction(m) && m.text);
     return { connected, day: others.filter((n) => now - n.last_heard < HEARD_RECENT_S).length,
       live: others.filter((n) => now - n.last_heard < LIVE_S).length,
