@@ -94,7 +94,8 @@ It prints failures per test. The bar is none.
   `~/.config/ranch-radio/hosts/`, outside the checkout), home directories,
   LAN addresses other than the `192.168.1.x` examples, logs, packet captures
   or certificates. `tests/public_hygiene_test.py` checks for these.
-- New dependencies go in `requirements.txt` with a reason in the pull request.
+- New dependencies go in `requirements.txt` with a reason in the pull request,
+  and an exact pin (with what it pulls in) in `constraints.txt`.
 - Keep one concern per pull request; small ones get reviewed fastest.
 
 By contributing you agree your work is released under the repository's MIT

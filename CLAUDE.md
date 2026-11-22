@@ -129,7 +129,9 @@ Test style: a standalone script with a docstring that lists what it covers, a
   Keep that; it is the project's memory.
 - `CHANGELOG.md` Unreleased gets a line for anything an operator would notice.
 - One concern per pull request; CI must be green; merge with a merge commit.
-- New Python dependencies go in `requirements.txt` with a reason in the PR.
+- New Python dependencies go in `requirements.txt` with a reason in the PR,
+  and each one, with what it pulls in, gets an exact pin in `constraints.txt`
+  (`constraints_test` checks).
   Add-ons with heavy dependencies (meshtastic, benlink) get their own venv
   through `doctor --fix`, never the core one.
 - `tests/ci/durations.json` is refreshed from a green CI run

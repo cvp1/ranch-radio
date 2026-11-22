@@ -1,0 +1,26 @@
+# The exact versions every install gets: install.sh, `ranch-radio update`
+# (when it pips into this checkout's .venv) and CI all pass `-c constraints.txt`
+# with requirements.txt, so a fresh install, an updated host and CI resolve
+# the same packages. requirements.txt still says what Ranch Radio needs (its
+# floors); this file says which versions it is tested with.
+#
+# Refresh: in a clean venv, `pip install -r requirements.txt` (no -c), then
+# copy the versions of these packages from `pip freeze`; CI runs them on
+# Python 3.12 and 3.14, Linux and macOS. constraints_test checks each
+# requirement has a pin here that meets its floor.
+
+# aiohttp and what it pulls in
+aiohttp==3.14.5
+aiohappyeyeballs==2.7.1
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+idna==3.20
+multidict==7.1.0
+propcache==0.5.4
+yarl==1.25.1
+
+# sounddevice (macOS) and what it pulls in
+sounddevice==0.5.6
+cffi==2.1.1
+pycparser==3.11

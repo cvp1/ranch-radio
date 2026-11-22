@@ -36,7 +36,7 @@ echo "$PY ($("$PY" -c 'import platform; print(platform.python_version())'))"
 
 say "Packages (.venv)"
 [[ -x .venv/bin/python ]] || "$PY" -m venv .venv
-.venv/bin/python -m pip install -q --disable-pip-version-check -r requirements.txt
+.venv/bin/python -m pip install -q --disable-pip-version-check -r requirements.txt -c constraints.txt
 echo "ok"
 
 say "ranch-radio on your PATH"

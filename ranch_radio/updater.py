@@ -199,6 +199,15 @@ def own_venv(root, h):
         return False
 
 
+def install_args(root):
+    """pip's arguments, the same ones install.sh and CI use: requirements.txt,
+    held to the tested versions in constraints.txt when the checkout has one."""
+    args = ["install", "-q", "--disable-pip-version-check", "-r", str(Path(root) / "requirements.txt")]
+    if (Path(root) / "constraints.txt").exists():
+        args += ["-c", str(Path(root) / "constraints.txt")]
+    return args
+
+
 def requirements(root, h, log=print):
     """Make sure the host's Python has what requirements.txt asks. (ok, why)."""
     missing = unmet(root, h)
@@ -212,8 +221,7 @@ def requirements(root, h, log=print):
     pip = shlex.split(os.environ["RANCH_RADIO_PIP"]) if os.environ.get("RANCH_RADIO_PIP") else \
         [_python(h), "-m", "pip"]
     try:
-        r = subprocess.run(pip + ["install", "-q", "--disable-pip-version-check", "-r",
-                                  str(Path(root) / "requirements.txt")],
+        r = subprocess.run(pip + install_args(root),
                            capture_output=True, text=True, timeout=900)
         err = (r.stderr or r.stdout).strip()[-600:]
     except (OSError, subprocess.TimeoutExpired) as e:
