@@ -260,6 +260,14 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `omarchy-bar` | Bar toggle, tune button and JTDX launcher on Omarchy Linux | Omarchy |
 | `remote-audio` | JTDX on another machine, with the radio's audio over SSH or WebSocket (Linux, set up by hand) | PipeWire |
 
+**Find radios.** The Mesh tab's "Find radios" lists the Meshtastic radios the
+station can reach: USB serial devices and radios advertising on Bluetooth,
+each with the `port` to give it in the host file (`usb:SERIAL`, `ble:NAME`)
+and, for one the station already uses, whose it is. It lists and listens; it
+opens nothing and adds nothing. A node a phone or the station is connected to
+over Bluetooth is not advertising, and a node with a USB client attached has
+its Bluetooth off, so neither shows; a node on Wi-Fi is named as `tcp:HOST`.
+
 **More than one Meshtastic node.** The Mesh tab can show several nodes, for
 example one on MediumFast slot 18 and a LongFast monitor on USB. List the
 others under `radios`; each runs its own bridge and keeps its own history:

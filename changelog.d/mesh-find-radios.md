@@ -1,0 +1,3 @@
+### Added
+
+- **Mesh: Find radios.** A button on the Mesh tab lists the Meshtastic radios the station can reach: USB serial devices (a board with a serial number as `usb:SERIAL`) and radios advertising on Bluetooth with their signal, each with the `port` the host file takes, and whose it is when the station already uses it. It lists and listens for about ten seconds; it opens no port, connects to nothing and sends nothing, and adding a radio stays a host-file edit, which the view spells out. A station here showed half the nodes a phone app did while the roof node that heard the rest sat in Bluetooth reach, unlisted.

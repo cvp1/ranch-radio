@@ -35,10 +35,19 @@ to the pages as before; another node's carry "node": its id (its label,
 lower-cased), and a page sends "node" to pick which one a command is for
 (none: the first). "mesh_select" answers one page with that node's snapshot.
 
+"mesh_scan" (the tab's "Find radios") runs mesh_scan.py under the nodes'
+Python and answers that page with the radios in reach: USB serial devices
+and Meshtastic Bluetooth advertisements, each with the "port" the host file
+takes, plus "using": this station's own nodes and their ports. It lists and
+listens only; nothing is opened, connected or sent. One scan at a time.
+"scan" in the config names another script (the tests' stand-in).
+
 Delete this file and the Mesh tab goes away; the radio page runs on.
 """
 
+import asyncio
 import json
+import logging
 import re
 
 import os
@@ -51,6 +60,9 @@ HERE = Path(__file__).resolve().parent.parent
 OFF_WHY = "Switched off: the node's port is free for other apps"
 RADIOS_MAX = 4
 _ID = re.compile(r"[^a-z0-9]+")
+SCAN_BLE_S = 8.0              # how long a scan listens for Bluetooth advertisements
+SCAN_WAIT_S = float(os.environ.get("MESH_SCAN_WAIT_S", "30"))   # a scan that has not answered by then is stopped
+log = logging.getLogger("mesh")
 
 
 def _flags(opts, where, trace_default):
@@ -99,7 +111,8 @@ class MeshAddon(Addon):
     title = "Meshtastic node"
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel
     routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite",
-              "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel", "mesh_conv", "mesh_select")
+              "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel", "mesh_conv", "mesh_select",
+              "mesh_scan")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -123,6 +136,10 @@ class MeshAddon(Addon):
         self.engine = None
         self._last = None             # the engine before the last switch-off
         self.extra = self._extra(opts.get("radios") or [])
+        self.scan_cmd = [os.path.expanduser(self.args.mesh_python),
+                         os.path.expanduser(opts.get("scan", str(HERE / "mesh_scan.py"))),
+                         f"--ble-seconds={SCAN_BLE_S:g}"]
+        self._scanning = False
 
     def _extra(self, radios):
         """The other nodes: [{"id", "label", "args", "engine", "last"}], checked
@@ -196,6 +213,36 @@ class MeshAddon(Addon):
             snap["radios"] = self.radios()
         return snap
 
+    async def _scan(self, ws):
+        """Run mesh_scan.py and answer this page with what is in reach. A scan
+        that fails still answers, saying why: the page is waiting."""
+        self._scanning = True
+        out = {"usb": [], "ble": [], "errors": {}}
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self.scan_cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL)
+            raw, _ = await asyncio.wait_for(proc.communicate(), SCAN_WAIT_S)
+            d = json.loads(raw)
+            if not isinstance(d, dict):
+                raise ValueError("not a JSON object")
+            for k in ("usb", "ble"):
+                out[k] = [r for r in d.get(k) or [] if isinstance(r, dict)][:50]
+            out["errors"] = {str(k)[:16]: str(v)[:200] for k, v in (d.get("errors") or {}).items()}
+        except TimeoutError:
+            proc.kill()
+            out["errors"]["scan"] = f"no answer in {SCAN_WAIT_S:g} s"
+        except (OSError, ValueError) as e:
+            out["errors"]["scan"] = f"{type(e).__name__}: {e}"[:200]
+        finally:
+            self._scanning = False
+        if out["errors"]:
+            log.warning("mesh: scan for radios: %s", out["errors"])
+        out["using"] = ([{"label": self.label, "port": self.args.mesh_port}]
+                        + [{"label": x["label"], "port": x["args"].mesh_port} for x in self.extra])
+        await self.host._send(ws, json.dumps({"t": "mesh", "scan": out}))
+
     def _pick(self, m, ws):
         """The engine a page's command is for ("node": none or "" is the first), or None (said)."""
         node = m.get("node") or ""
@@ -208,6 +255,13 @@ class MeshAddon(Addon):
         return x["engine"]
 
     async def command(self, ws, verb, m):
+        if verb == "mesh_scan":           # the station's own, whichever node is picked; not awaited: it listens for seconds
+            if self._scanning:
+                self.host.notice("Mesh: a scan for radios is already running.", "info", ws)
+            else:
+                self._scanning = True
+                asyncio.ensure_future(self._scan(ws))
+            return
         e = self._pick(m, ws)
         if e is None:
             return

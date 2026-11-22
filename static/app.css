@@ -699,6 +699,14 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mesh-cfg { display: flex; flex-direction: column; gap: 10px; }
 /* Mesh Health (mesh.js renderHealth) */
 .mesh-health { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mesh-scan { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mesh-scan[hidden] { display: none; }
+.mesh-scan .label { margin-top: 4px; }
+.mesh-scan-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.mesh-scan-row code, .mesh-scan-notes code { user-select: all; }
+.mesh-scan-mine { color: var(--warm); }
+.mesh-scan-err { color: var(--warm); }
+.mesh-scan-notes p { margin: 4px 0; max-width: 70ch; }
 .mesh-health .label { margin-top: 4px; }
 #mesh-health-btn.mesh-health-warn { color: var(--warm); border-color: rgba(var(--warm-rgb), .5); }
 #mesh-health-btn.mesh-health-bad { color: var(--tx); border-color: rgba(var(--tx-rgb), .6); }
