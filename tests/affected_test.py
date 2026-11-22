@@ -165,6 +165,7 @@ check("a test with no longer owner keeps its short stem (addons/uvpro.py -> uvpr
       ("uvpro", True, True, False))
 
 check("README.md picks nothing", affected.select(["README.md"]), {})
+check("CLAUDE.md picks only code_map_test (its map is checked)", affected.select(["CLAUDE.md"]), {"code_map_test": "CLAUDE.md"})
 check("the harness picks everything", len(affected.select(["tests/run_all.sh"])), len(names))
 check("the CI split's timings pick only the split's test",
       affected.select(["tests/ci/durations.json"]), {"ci_shard_test": "tests/ci/durations.json"})

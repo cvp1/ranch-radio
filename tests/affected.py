@@ -40,6 +40,9 @@ HARNESS = ("tests/run_all.sh", "tests/ci/", "requirements.txt", "constraints.txt
 # tests/ci/ prefix. The split cannot change a result; ci_shard_test proves it
 # still places every run exactly once.
 SPLIT_ONLY = {"tests/ci/shard.py": "ci_shard_test", "tests/ci/durations.json": "ci_shard_test"}
+# Docs pick nothing (README.md picks nothing), except the one a test checks:
+# code_map_test holds CLAUDE.md's map to the tree (2026-11-22).
+DOC_CHECKS = {"CLAUDE.md": "code_map_test"}
 PACKAGES = ("addons", "ranch_radio")
 PATH_TOKEN = re.compile(r"[\w./-]+\.(?:py|js|css|html|sh|json|csv|bin|c|swift|qml|conf|rules|plist)\b")
 
@@ -199,6 +202,7 @@ def select(changed):
     idx = _index()
     memo = {}
     picked = {SPLIT_ONLY[c]: c for c in changed if c in SPLIT_ONLY}
+    picked.update({DOC_CHECKS[c]: c for c in changed if c in DOC_CHECKS})
     page_tests = [name for name, _ in all_runs if name.endswith("_page_test")]
     # A changed module that is gone (or new) still names its tests.
     stems = _module_stems() | {s for s in map(_stem, changed) if s}
