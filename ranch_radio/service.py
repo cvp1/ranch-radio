@@ -43,13 +43,14 @@ async def main(url):
     st, wl, cf = h.get("state") or {}, h.get("winlink") or {}, h.get("config") or {}
     print(json.dumps({"up": True, "tx": bool(st.get("tx")), "armed": bool(wl.get("armed")),
                       "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0),
-                      "stopped": bool(cf.get("tx_stopped"))}))
+                      "stopped": bool(cf.get("tx_stopped")), "stop_saved": bool(cf.get("stop_saved"))}))
 asyncio.run(main(sys.argv[1]))
 """
 
 # Sent just before a manual stop or restart: STOP TX latches the radio, so
-# nothing keys between the idle check and the service manager's stop (the
-# latch dies with the process; a restarted radio starts unlatched).
+# nothing keys between the idle check and the service manager's stop. Marked
+# shutdown, so the radio doesn't save it: a restarted radio starts as it was
+# (stopped only if the operator had pressed STOP TX).
 TXSTOP_SCRIPT = r"""
 import asyncio, json, ssl, sys
 import aiohttp
@@ -59,7 +60,7 @@ async def main(url, why):
         async with aiohttp.ClientSession() as s:
             async with s.ws_connect(url, ssl=ctx, timeout=5) as ws:
                 await ws.receive(timeout=5)
-                await ws.send_str(json.dumps({"t": "tx_stop", "why": why}))
+                await ws.send_str(json.dumps({"t": "tx_stop", "why": why, "shutdown": True}))
                 while True:
                     m = json.loads((await ws.receive(timeout=5)).data)
                     if m.get("t") == "tx_stop" and m.get("stopped"):
@@ -131,7 +132,7 @@ def idle(h, r=None, drop_rigctl=False):
         return False, f"{name} is transmitting"
     if st.get("armed") or st.get("session"):
         return False, f"{name} is in a Winlink session"
-    if st.get("stopped"):              # the latch is in memory: a restart would clear it
+    if st.get("stopped") and not st.get("stop_saved"):     # in memory only: a restart would clear it
         return False, f"{name} has STOP TX latched; a restart would clear it"
     n = int(st.get("rigctl") or 0)
     if n and not drop_rigctl:
@@ -412,8 +413,9 @@ def roll_back(h, agents, home=None, check_idle=idle, held=None, restored=()):
 # By hand, from `ranch-radio status|stop|restart`. Stricter than the update's
 # idle(): a server the service manager says is running but that does not
 # answer is NOT taken as idle (it may be keyed and hung), and restart refuses
-# a radio whose STOP TX is latched (the latch lives in the process; a restart
-# would quietly clear it). No --force: transmitting and Winlink are never
+# a radio whose STOP TX is latched only in memory (a server without
+# --stop-state: a restart would quietly clear it). A saved latch restarts
+# stopped, so it doesn't hold a restart back (2026-11-21). No --force: transmitting and Winlink are never
 # overridden here; the service manager is the operator's own escape hatch
 # (review plan PR 2, panel 2026-11-21).
 
@@ -460,7 +462,7 @@ def stoppable(h, key, r, restarting=False, drop_rigctl=False):
         return False, f"{name} is transmitting"
     if st.get("armed") or st.get("session"):
         return False, f"{name} is in a Winlink session"
-    if restarting and st.get("stopped"):
+    if restarting and st.get("stopped") and not st.get("stop_saved"):
         return False, f"{name} has STOP TX latched; a restart would clear it (resume TX first, or stop it instead)"
     n = int(st.get("rigctl") or 0)
     if n and not drop_rigctl:
