@@ -20,7 +20,7 @@ A run is picked when a changed file is
     (station_page_test, with no station_page module, is still station's);
   - under static/ (a page asset): every *_page_test, plus the above.
 A change to the harness itself (tests/run_all.sh, tests/ci/, requirements.txt,
-install.sh, .github/) picks every run, except the CI split's own files
+constraints.txt, install.sh, .github/) picks every run, except the CI split's own files
 (tests/ci/shard.py, tests/ci/durations.json): they decide which shard a run
 lands on, never whether it passes, so they pick ci_shard_test alone. Deleted
 files count as changed.
@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-HARNESS = ("tests/run_all.sh", "tests/ci/", "requirements.txt", "install.sh", ".github/")
+HARNESS = ("tests/run_all.sh", "tests/ci/", "requirements.txt", "constraints.txt", "install.sh", ".github/")
 # 2026-11-20: a durations refresh picked all 136 runs through the
 # tests/ci/ prefix. The split cannot change a result; ci_shard_test proves it
 # still places every run exactly once.

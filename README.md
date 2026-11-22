@@ -129,7 +129,7 @@ needed:
 
 ```sh
 git clone https://github.com/cvp1/ranch-radio.git ~/ranch-radio
-cd ~/ranch-radio && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cd ~/ranch-radio && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -c constraints.txt
 ./ranch-radio demo
 ```
 
@@ -194,7 +194,8 @@ ranch-radio radios            # this station's radios, one line each
 any time:
 
 - **Packages first.** It checks that the host's Python has what
-  `requirements.txt` asks for, and installs it into the checkout's `.venv`. If
+  `requirements.txt` asks for, and installs it into the checkout's `.venv`
+  (at the tested versions in `constraints.txt`). If
   the host runs another Python (a system one), it stops and says what to
   install, and the code goes back where it was. Nothing restarts.
 - **Radios in use are left alone.** A radio that is transmitting, in a
