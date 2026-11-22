@@ -45,8 +45,8 @@ RULES = {
     "bt_addr": (str, re.compile(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}")),
     "tnc": (str, re.compile(r"bt:[0-9A-F]{2}(:[0-9A-F]{2}){5}|/dev/[A-Za-z0-9._-]+|tcp:[A-Za-z0-9.-]+:[0-9]{1,5}"
                             r"|direwolf")),
-    "node_link": (str, re.compile(r"(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)"
-                                  r"(,(/dev/[A-Za-z0-9._-]+|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)){0,3}")),
+    "node_link": (str, re.compile(r"(/dev/[A-Za-z0-9._-]+|usb:[A-Za-z0-9]{1,40}|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)"
+                                  r"(,(/dev/[A-Za-z0-9._-]+|usb:[A-Za-z0-9]{1,40}|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)){0,3}")),
     "audio_name": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")),
     "http_url": (str, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]{0,200})?")),
     "origin_list": (list, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")),
@@ -189,7 +189,8 @@ MANIFESTS = {
         "os": ["macos", "linux"],
         "template": {"any": {"port": ASK, "keys": []}},
         "rules": {"port": "node_link"},
-        "ask": {"port": "the node: a serial device (/dev/meshtastic), ble:NODE_NAME, or tcp:HOST "
+        "ask": {"port": "the node: a serial device (/dev/meshtastic), usb:SERIAL (a USB board by its "
+                        "serial number, whichever socket it is in), ble:NODE_NAME, or tcp:HOST "
                         "for a node on Wi-Fi (port 4403; no login, so a trusted LAN only); "
                         "several, comma-separated, are tried in order"},
         "needs": [

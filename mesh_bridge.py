@@ -10,8 +10,24 @@ server starts it again.
     mesh_bridge.py /dev/meshtastic [--key NAME=PATH ...]
     mesh_bridge.py ble:NODEM_7720 [--key NAME=PATH ...]   (Bluetooth: name or address)
     mesh_bridge.py tcp:192.168.1.60 [--key NAME=PATH ...]   (Wi-Fi/Ethernet: HOST[:PORT], port 4403)
+    mesh_bridge.py usb:1A2B3C4D5E6F7A8B [--key NAME=PATH ...]   (USB, by the board's serial number)
     mesh_bridge.py /dev/meshtastic,ble:NODEA_fd78,ble:NODEB_2560   (first that answers)
     mesh_bridge.py ble:NODEM_7720 --feed mqtt://BROKER/PREFIX --feed-cred FILE [--feed-tx]
+
+usb:SERIAL is the node on a cable whichever socket it is in: a Mac names a
+USB serial device after the socket (/dev/cu.usbmodem1101), so a node moved
+to another one, or to a hub, is gone from the path the host file named.
+udev gives Linux a fixed name (/dev/meshtastic); this needs no rule.
+`python -m serial.tools.list_ports -v` shows the number (SER=).
+
+In a list, a bridge that had to take a later entry (Bluetooth, the cable
+being out) goes back to an earlier cable when that is plugged in again
+(Bridge.cable_loop). Bluetooth after a cable takes a while to answer: the
+firmware turns a node's Bluetooth off while a USB client is attached and
+gives a client that went without saying so 15 minutes (2.7.26:
+PowerFSM.cpp serialEnter, SerialConsole.cpp SERIAL_CONNECTION_TIMEOUT), so
+the node is back on Bluetooth that long after the cable drops, and at once
+after this bridge closes its link itself.
 
 Bluetooth needs the node bonded to this host once (its PIN) and the node's
 single BLE connection free: while a phone app holds it, this bridge can't
@@ -108,6 +124,13 @@ NODE_FIELDS_USER = ("longName", "shortName", "hwModel", "role")
 TCP_PORT = 4403                  # the firmware's API port over Wi-Fi or Ethernet
 LINK_NAMES = {"serial": "USB", "ble": "Bluetooth", "tcp": "Wi-Fi"}
 CLOSE_WAIT_S = 3.0               # longest we wait for the node link to close
+# A bridge on a later port of its list looks for an earlier cable this often,
+# and moves when it has been there twice running (a cable being plugged in
+# shows up and goes once or twice before it stays). Seen live 2026-11-22: a
+# node's USB link was out for 11 hours with the node itself up on its battery
+# and its Bluetooth in reach; a list with ble: after the cable covers that,
+# and this brings the bridge back to the cable afterwards.
+CABLE_AGAIN_S = 30.0
 ROLES = {0: "DISABLED", 1: "PRIMARY", 2: "SECONDARY"}
 # The node DB's telemetry, by the short names the page uses.
 ENV_FIELDS = (("temp", "temperature"), ("humidity", "relativeHumidity"),
@@ -431,6 +454,21 @@ class Bridge:
             return
         emit(ev="status", connected=False, error="connection to the node lost")
         self.lost.set()
+
+    def cable_loop(self, spec, using):
+        """On `using`, a later port of the list `spec`: leave it for an
+        earlier cable once that is back (CABLE_AGAIN_S says how sure). The
+        server starts the bridge again and the list is tried from the top."""
+        seen = 0
+        while not self.lost.wait(CABLE_AGAIN_S):
+            try:
+                cable = earlier_cable(spec, using)
+            except ValueError:
+                return
+            seen = seen + 1 if cable else 0
+            if seen >= 2 and not self.closing:
+                emit(ev="status", connected=False, error=f"{cable} is plugged in again; moving to it")
+                self.lost.set()
 
     def nodes_loop(self):
         while not self.lost.is_set():
@@ -796,21 +834,64 @@ def tcp_target(spec):
     return host, port
 
 
+def usb_ports():
+    """The host's serial ports as pyserial lists them ([] without pyserial,
+    which the meshtastic package brings)."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return []
+    return list_ports.comports()
+
+
+def usb_device(serial, ports=None):
+    """'1A2B3C4D5E6F7A8B' -> the serial device of the USB board with that
+    serial number, or None when it is not plugged in. Letter case is not
+    told apart. A Mac shows one board as /dev/cu.* and /dev/tty.*: the cu
+    one, which opens without waiting for a carrier."""
+    want = serial.strip().lower()
+    if not want:
+        return None
+    found = [p.device for p in (usb_ports() if ports is None else ports)
+             if (getattr(p, "serial_number", None) or "").strip().lower() == want]
+    return min(found, key=lambda d: (not d.startswith("/dev/cu."), d)) if found else None
+
+
 def candidates(spec):
     """'/dev/meshtastic,tcp:192.168.1.60,ble:NODEA_fd78' -> the ports to try, in
     order. A serial device that isn't there is skipped without a try, so a
-    laptop uses its node on the cable when plugged in and Bluetooth when not.
-    A tcp: entry that isn't HOST[:PORT] is a ValueError: a typo in the host
-    file is said, not quietly skipped."""
+    laptop uses its node on the cable when plugged in and Bluetooth when not;
+    usb:SERIAL becomes that board's device, or is skipped the same way.
+    A tcp: entry that isn't HOST[:PORT], or a usb: entry with no number, is a
+    ValueError: a typo in the host file is said, not quietly skipped."""
     out = []
     for p in (x.strip() for x in spec.split(",")):
         if p.startswith("tcp:"):
             if tcp_target(p) is None:
                 raise ValueError(f"{p!r} is not tcp:HOST or tcp:HOST:PORT")
             out.append(p)
+        elif p.startswith("usb:"):
+            if not p[4:].strip():
+                raise ValueError(f"{p!r} is not usb:SERIAL (the board's USB serial number)")
+            dev = usb_device(p[4:])
+            if dev:
+                out.append(dev)
         elif p and (p.startswith("ble:") or os.path.exists(p)):
             out.append(p)
     return out
+
+
+def earlier_cable(spec, using):
+    """The cable port that is there now and comes before `using` (the port
+    in use) in the list `spec`, or None. Only cables count: a device file
+    being there is a fact, while Bluetooth or Wi-Fi would have to be tried,
+    and trying means dropping the link that works."""
+    for p in candidates(spec):
+        if p == using:
+            return None
+        if not p.startswith(("ble:", "tcp:")):
+            return p
+    return None
 
 
 def connect(port):
@@ -865,6 +946,7 @@ def start_feed(args, iface, b):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("port", help="serial device of the node, e.g. /dev/meshtastic, "
+                                "usb:SERIAL for the USB board with that serial number, "
                                 "ble:NAME_OR_ADDRESS for Bluetooth, e.g. ble:NODEM_7720, "
                                 "or tcp:HOST[:PORT] for Wi-Fi, e.g. tcp:192.168.1.60; "
                                 "comma-separate several to try in order")
@@ -887,7 +969,7 @@ def main():
         return 2                  # before the meshtastic imports: checked on any Python
     from pubsub import pub
     keys = read_keys(args.key)
-    iface, link, errors = None, None, []
+    iface, link, errors, using = None, None, [], None
     for port in ports:                        # first node that answers wins
         try:
             iface, link = connect(port)
@@ -899,6 +981,7 @@ def main():
             close(iface)
             iface = None
             continue
+        using = port
         break
     if iface is None:
         emit(ev="status", connected=False, error="; ".join(errors) or f"none of {args.port} is present")
@@ -908,6 +991,8 @@ def main():
     pub.subscribe(b.on_node, "meshtastic.node.updated")
     pub.subscribe(b.on_lost, "meshtastic.connection.lost")
     emit(ev="status", connected=True, error=None)
+    if "," in args.port:              # a list: on a later port, go back to an earlier cable when it returns
+        threading.Thread(target=b.cable_loop, args=(args.port, using), daemon=True).start()
     b.info()
     b.config()
     if args.feed:

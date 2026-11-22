@@ -5,6 +5,17 @@
     a tcp target
   - a comma list keeps its order (serial, tcp, ble), a serial device that
     isn't plugged in is left out, and a malformed tcp: entry is refused
+  - usb:SERIAL is the device of the USB board with that serial number,
+    whatever its case, the /dev/cu.* one where a board shows twice; a board
+    that isn't plugged in is left out of a list like a missing device, and
+    usb: with no number is refused
+  - earlier_cable: the cable that is there now and comes before the port in
+    use; nothing when the port in use is first, when the cable is out, or
+    when only Bluetooth or Wi-Fi come before it
+  - cable_loop, on Bluetooth with the cable out: nothing while it stays out,
+    nothing when it shows once and goes, and after two looks running the
+    bridge says the cable is back and lets go of its link; it ends quietly
+    when the link is lost first
   - connect() opens the right interface for each kind and names its link
   - the bridge says which link it used (info's "link")
   - power saving (which turns Bluetooth and Wi-Fi off on an ESP32 node) is
@@ -80,6 +91,82 @@ try:
 except ValueError as e:
     check("a malformed tcp: entry is refused", "tcp:192.168.1.60:http" in str(e), True)
 
+# --- usb:SERIAL
+P = SimpleNamespace
+plugged = [P(device="/dev/tty.usbmodem1101", serial_number="1A2B3C4D5E6F7A8B"),
+           P(device="/dev/cu.usbmodem1101", serial_number="1A2B3C4D5E6F7A8B"),
+           P(device="/dev/cu.SLAB_USBtoUART", serial_number="RIG 0001"), P(device="/dev/cu.debug", serial_number=None)]
+check("usb:SERIAL is that board's device, the cu one", mesh_bridge.usb_device("1A2B3C4D5E6F7A8B", plugged), "/dev/cu.usbmodem1101")
+check("  whatever the case", mesh_bridge.usb_device(" 1a2b3c4d5e6f7a8b ", plugged), "/dev/cu.usbmodem1101")
+check("  a board that is not plugged in: none", mesh_bridge.usb_device("FFFF", plugged), None)
+check("  no number matches no board (a port without one is not it)", mesh_bridge.usb_device("", plugged), None)
+there = []                                  # what pyserial lists: the cable is out to begin with
+mesh_bridge.usb_ports = lambda: there
+LIST = "usb:1A2B3C4D5E6F7A8B,ble:NODEA_fd78"
+check("in a list, a board that is out is left out", mesh_bridge.candidates(LIST), ["ble:NODEA_fd78"])
+there[:] = plugged
+check("  and plugged in it is first, as its device", mesh_bridge.candidates(LIST), ["/dev/cu.usbmodem1101", "ble:NODEA_fd78"])
+try:
+    mesh_bridge.candidates("usb:,ble:NODEA_fd78")
+    check("usb: with no number is refused", "accepted", "ValueError")
+except ValueError as e:
+    check("usb: with no number is refused", "usb:SERIAL" in str(e), True)
+
+# --- earlier_cable
+check("on Bluetooth with the cable in: the cable", mesh_bridge.earlier_cable(LIST, "ble:NODEA_fd78"), "/dev/cu.usbmodem1101")
+check("  on the cable already: nothing", mesh_bridge.earlier_cable(LIST, "/dev/cu.usbmodem1101"), None)
+there[:] = []
+check("  with the cable out: nothing", mesh_bridge.earlier_cable(LIST, "ble:NODEA_fd78"), None)
+there[:] = plugged
+check("only Bluetooth and Wi-Fi before the port in use: nothing (they would have to be tried)",
+      mesh_bridge.earlier_cable("tcp:192.168.1.60,ble:NODEA_fd78,usb:1A2B3C4D5E6F7A8B", "/dev/cu.usbmodem1101"), None)
+with tempfile.NamedTemporaryFile() as dev:
+    check("a device path counts as a cable too", mesh_bridge.earlier_cable(f"{dev.name},ble:NODEA_fd78", "ble:NODEA_fd78"), dev.name)
+
+# --- cable_loop
+import threading  # noqa: E402
+import time  # noqa: E402
+said = []
+mesh_bridge.emit = lambda **d: said.append(d)
+mesh_bridge.CABLE_AGAIN_S = 0.05
+iface0 = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=1), nodesByNum={}, nodes={})
+
+
+def loop():
+    b = mesh_bridge.Bridge(iface0, {}, "ble")
+    t = threading.Thread(target=b.cable_loop, args=(LIST, "ble:NODEA_fd78"), daemon=True)
+    t.start()
+    return b, t
+
+
+there[:] = []
+b, t = loop()
+time.sleep(0.4)                              # several looks with the cable out
+check("cable out: the bridge stays on Bluetooth", (b.lost.is_set(), said), (False, []))
+looks = {"n": 0}
+
+
+def once():
+    looks["n"] += 1
+    return plugged if looks["n"] == 1 else []
+
+
+mesh_bridge.usb_ports = once                 # there for one look, gone at the next
+time.sleep(0.4)
+check("  the cable shows once and goes: still on Bluetooth", (b.lost.is_set(), said, looks["n"] >= 3), (False, [], True))
+mesh_bridge.usb_ports = lambda: plugged
+t.join(5)
+check("  there two looks running: the bridge lets go of its link", (b.lost.is_set(), t.is_alive()), (True, False))
+check("  saying the cable is back", [(d["ev"], d["connected"], "/dev/cu.usbmodem1101 is plugged in again" in d["error"]) for d in said],
+      [("status", False, True)])
+said.clear()
+mesh_bridge.usb_ports = lambda: []
+b, t = loop()
+b.lost.set()                                 # the link went first
+t.join(5)
+check("the link lost first: the loop ends, saying nothing", (t.is_alive(), said), (False, []))
+mesh_bridge.usb_ports = lambda: there
+
 # --- connect
 for spec, kind, args, kw in (("tcp:192.168.1.60", "tcp", ("192.168.1.60",), {"portNumber": 4403}),
                              ("tcp:192.168.1.60:4404", "tcp", ("192.168.1.60",), {"portNumber": 4404}),
@@ -138,6 +225,8 @@ check("  with a status line saying why", bool(lines and lines[0].get("ev") == "s
 from ranch_radio import manifest  # noqa: E402
 for v, ok in (("tcp:192.168.1.60", True), ("tcp:192.168.1.60:4403", True),
               ("tcp:meshnode.local,/dev/meshtastic,ble:NODEA_fd78", True), ("/dev/meshtastic", True),
+              ("usb:1A2B3C4D5E6F7A8B", True), ("usb:1A2B3C4D5E6F7A8B,ble:NODEA_fd78", True),
+              ("usb:", False), ("usb:1A2B;reboot", False),
               ("tcp:192.168.1.60;reboot", False), ("tcp:", False), ("tcp:a b", False)):
     check(f"page rule node_link {v!r}", manifest.check_ask("node_link", v) is None, ok)
 check("the mesh module asks for its port with node_link", manifest.MANIFESTS["mesh"]["rules"]["port"],
