@@ -1248,7 +1248,11 @@ const mesh = (() => {
   // {"t": "addon", "addon": "mesh", "on", "error", "snapshot"}: switched on or off
   function power(m) {
     if (m.snapshot) { hello(m.snapshot, { mesh: true }); }
-    else { switchedOff = !m.on; connected = false; linkError = m.error || null; renderHead(); }
+    else {
+      switchedOff = !m.on; connected = false; linkError = m.error || null; renderHead();
+      for (const r of radios) { r.connected = false; r.error = m.error || null; }   // switched off: every node is
+      renderRadios();
+    }
     if (m.error) { linkError = m.error; renderHead(); }
     renderCompose();
     renderNodes();
@@ -1264,5 +1268,11 @@ const mesh = (() => {
       live: others.filter((n) => now - n.last_heard < LIVE_S).length,
       last: last ? { who: short(last.from), text: last.text, t: last.t } : null };
   }
-  return { hello, event, power, summary, connected: () => connected, _nodes: () => nodes };
+  // For the bar and Mission Control (station.js): Mesh is up while any of its
+  // nodes is, and "down" names the ones that are not.
+  function radioLinks() {
+    if (radios.length < 2) return { up: connected, down: [] };
+    return { up: radios.some((r) => r.connected), down: radios.filter((r) => !r.connected).map((r) => r.label) };
+  }
+  return { hello, event, power, summary, radioLinks, connected: () => connected, _nodes: () => nodes };
 })();

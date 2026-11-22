@@ -64,7 +64,8 @@ log = logging.getLogger("mesh")
 
 MESSAGES_KEEP = 300
 TEXT_MAX_BYTES = 200          # Meshtastic's payload is 233 bytes; apps cap text near 200
-RESTART_S = (5.0, 15.0, 60.0)  # wait before restarting the bridge, growing while it can't reach the node
+# wait before restarting the bridge, growing while it can't reach the node
+RESTART_S = tuple(float(x) for x in os.environ.get("MESH_RESTART_S", "5,15,60").split(","))
 COMPACT_AT = 4 * MESSAGES_KEEP  # log records before the file is rewritten to the kept messages
 NODE_ID = re.compile(r"^![0-9a-f]{8}$")
 # The bridge's longest line: the node list is one JSON line (~450 bytes a
