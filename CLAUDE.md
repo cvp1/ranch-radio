@@ -19,7 +19,7 @@ page at 7300). Changes reach a radio only when the operator runs
 | Layer | Files | Role |
 |---|---|---|
 | Rig control | `radio.py` `rigs.py` `civ.py` `qmx.py` `hamlib_rig.py` `sim.py` | state model, rig profiles (`rigs.PROFILES`), CAT backends, the simulator |
-| Radio server | `server.py` (`Station`) `rigctl_server.py` `audio.py` `tx_audio.py` `codec_level.py` `station_id.py` `modem_status.py` `webguard.py` | one process per radio: its page, WebSocket, audio, rigctl port, the Winlink lane and TX gates, the modems' status from their logs |
+| Radio server | `server.py` (`Station`) `rigctl_server.py` `audio.py` `tx_audio.py` `codec_level.py` `station_id.py` `modem_status.py` `webguard.py` `logcap.py` | one process per radio: its page, WebSocket, audio, rigctl port, the Winlink lane and TX gates, the modems' status from their logs |
 | Station | `station.py` (`Station`) | one per host, both OSes: the page, Pat (sessions arm a radio's lane over its WebSocket: `RemoteLane`), Mesh, packet tab, add-ons, Modules; Linux adds a shared rigctl port |
 | Packet | `tnc_hub.py` `ax25*.py` `aprs*.py` `digi.py` `igate*.py` `bt_rfcomm.py` `direwolf_tnc.py` | the APRS/Winlink packet hub and its TNCs |
 | Winlink | `winlink.py` `pat_config.py` `listen_plan.py` | runs Pat; the lane and codec level above are core |

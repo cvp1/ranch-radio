@@ -41,6 +41,7 @@ import modem_status
 import rigctl_server
 import rigs
 import station_id
+import logcap
 import webguard
 from audio import DEFAULT_DEVICE, AudioBridge
 from tx_audio import TxAudio
@@ -1263,6 +1264,14 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
 
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_control)
+
+    def health():
+        st = station.radio.state
+        facts = {"rig_connected": bool(st.get("connected")), "tx": bool(st.get("tx")),
+                 "tx_stopped": station.tx_stopped is not None, "winlink_armed": bool(station.winlink_armed),
+                 "rigctl_clients": int(station.rigctl_clients or 0)}
+        return facts, ([] if facts["rig_connected"] else ["rig not connected"])
+    app.router.add_get("/healthz", webguard.healthz("radio", health, authorised))
     if station.addons is not None:
         station.addons.add_routes(app, authorised)      # Winlink's mailbox under /winlink/api/
     if station.audio is not None:
@@ -1280,6 +1289,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
     async def on_startup(app):
         await station.radio.start()
         app["safety"] = asyncio.create_task(station.safety_loop())
+        app["logcap"] = logcap.start()              # the launchd console log stays bounded
         app["rigctl"] = None
         if args.rigctl_port:
             try:
@@ -1352,6 +1362,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
         if app.get("winlink_vara_rigctl"):
             app["winlink_vara_rigctl"].close()
         app["safety"].cancel()
+        app["logcap"].cancel()
         # Release only a transmission an app or browser started here; the
         # radio driver's stop() also unkeys anything it keyed. A transmission
         # made at the radio (front panel, mic) is never cut (2026-10-13).

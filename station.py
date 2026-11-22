@@ -48,6 +48,7 @@ from urllib.parse import urlsplit
 import aiohttp
 from aiohttp import WSMsgType, web
 
+import logcap
 import webguard
 import winlink
 from server import band_of, tls_context
@@ -1257,6 +1258,8 @@ def make_app(station, args):
 
     r = app.router
     r.add_get("/", index)
+    r.add_get("/healthz", webguard.healthz(
+        "station", lambda: ({"radios": len(station.radios)}, []), authorised))
     r.add_get("/ws", ws_control)
     r.add_get("/audio", lone_audio)
     r.add_get("/r/{rid}", slash("/r/"))
@@ -1281,6 +1284,7 @@ def make_app(station, args):
         http["s"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=3),
                                           auto_decompress=False)
         await station.start()
+        app["logcap"] = logcap.start()              # the launchd console log stays bounded
 
     async def on_shutdown(app):
         closes = [ws.close() for ws in list(sockets) if not ws.closed]
@@ -1289,6 +1293,7 @@ def make_app(station, args):
         await station.stop()
 
     async def on_cleanup(app):
+        app["logcap"].cancel()
         await http["s"].close()
 
     app.on_startup.append(on_startup)

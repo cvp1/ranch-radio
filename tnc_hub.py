@@ -121,6 +121,7 @@ import ax25
 import digi
 import igate
 import igate_watch
+import logcap
 import webguard
 from ax25 import U_DISC, U_DM, U_FRMR, U_SABM, U_UA, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
 from ax25_link import CONNECTED, CONNECTING, DISCONNECTED, Link, TxRefused
@@ -1664,6 +1665,12 @@ def make_web(hub):
 
     app.router.add_get("/", index)
     app.router.add_get("/api/status", status)
+
+    def health():
+        st = hub.status()
+        facts = {"radio_up": bool(st["radio"]["up"]), "tx_enabled": bool(st["tx"]["enabled"])}
+        return facts, ([] if facts["radio_up"] else ["radio not connected"])
+    app.router.add_get("/healthz", webguard.healthz("hub", health))
     app.router.add_post("/api/inbound", inbound)
     app.router.add_post("/api/inbound/close", inbound_close)
     app.router.add_post("/api/tx", set_tx)
@@ -1894,6 +1901,7 @@ async def amain(args):
 
     # The page first (so the backfill can be watched), then the APRS store and
     # its backfill, then the radio and the client ports.
+    tasks.append(logcap.start())                    # the launchd console log stays bounded
     runner = None
     if args.http_port:
         runner = web.AppRunner(make_web(hub), access_log=None)
