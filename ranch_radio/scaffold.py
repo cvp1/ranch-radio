@@ -240,7 +240,7 @@ Now add, by hand:
     }},
 
 3. README.md, the Modules table: one row.
-4. CHANGELOG.md, under Unreleased.
+4. changelog.d/<branch>.md: an ### Added entry (never CHANGELOG.md itself).
 
 Then: python3 tests/{name}_addon_test.py   (passes once 1 and 2 are in)
       ranch-radio add {name} --apply && ranch-radio update --apply

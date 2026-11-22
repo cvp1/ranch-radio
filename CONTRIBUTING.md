@@ -8,6 +8,9 @@ directly except the maintainer's own tooling.
 1. Branch from the latest `main`, one branch per change:
    `git switch main && git pull && git switch -c short-description`
 2. Make the change, with a test when it changes behavior (see `tests/`).
+   An operator-visible change gets its changelog line in `changelog.d/<branch>.md`,
+   not in `CHANGELOG.md` (see `changelog.d/README.md`): parallel pull requests then never
+   conflict over it.
 3. Run the tests locally (below), push your branch, and open a pull request.
    Say in a few lines what changed, why, and how you tested it. Mark it a
    draft until it's ready.
