@@ -61,6 +61,8 @@ class Js8call(Addon):
             self.emit({"event": "frame", "radio": msg["radio"], "frame": msg["frame"]})
         elif msg.get("t") == "js8_status":
             self.emit({"event": "status", "radio": msg["radio"], "status": msg["status"]})
+        elif msg.get("t") == "js8_spectrum":
+            self.emit({"event": "spectrum", "radio": msg["radio"], "hz": msg["hz"], "row": msg["row"]})
 
     async def command(self, ws, verb, m):
         b = self._js8()

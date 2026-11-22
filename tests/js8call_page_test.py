@@ -18,6 +18,11 @@ browser: no server, the page's own CSS and script, a stub add-on registry.
     this radio, and sends the add-on nothing; armed, every band button is
     disabled saying why and a click tunes nothing; a page with no tuning
     disables them
+  - waterfall: above the send panel, waiting for audio until a row; a row is
+    drawn (the strong bin bright, the floor dark) without re-rendering the
+    tab; another radio's row is not; a station heard just now is labelled at
+    its offset, a click on it picks it; a click elsewhere puts that offset in
+    Options and marks it, sending nothing; clearing the offset clears the mark
   - activity: one row per audio offset, sorted, the latest text there
   - messages: complete decodes, newest first, from and to
   - heard: newest first; a later frame from a station moves it to the top
@@ -152,6 +157,34 @@ try:
           ["800", "1200"])
     check("not to you: not marked", b.js("document.querySelector('#j .js8-activity tr[data-bin=\"1500\"]').classList.contains('to-me')"), False)
     check("a new frame: its station moves to the top of heard", b.js(f"({TEXTS})('.js8-heard td.call')"), ["K1ABC", "W1AW", "N9ABC"])
+
+    # ------------------------------------------------------------ waterfall
+    check("waterfall: shown above the send panel, waiting for audio",
+          b.js(f"[!!({Q})('.js8-wf'), ({Q})('.js8-wf').nextElementSibling.classList.contains('js8-sendpanel'), ({Q})('.js8-wf-note').hidden]"),
+          [True, True, False])
+    row = [0] * 300
+    row[150] = 60
+    n_render = b.js("document.querySelector('#j .js8-head') && (window.__head = document.querySelector('#j .js8-head'), 1)")
+    setup("__impl.js8call.event({event: 'spectrum', radio: 'ic7300', hz: 10, row: %s})" % json.dumps(row))
+    check("waterfall: a row drawn, the note gone", b.js(f"[({Q})('.js8-wf-canvas').dataset.rows, ({Q})('.js8-wf-note').hidden]"), ["1", True])
+    px = "(x) => Array.from(document.querySelector('#j .js8-wf-canvas').getContext('2d').getImageData(x, 0, 1, 1).data.slice(0, 3))"
+    check("waterfall: the strong bin is bright, the floor dark", b.js(f"[({px})(150), ({px})(40)]"), [[255, 250, 240], [4, 6, 10]])
+    check("waterfall: a row redraws only the waterfall, not the tab", b.js("document.querySelector('#j .js8-head') === window.__head"), True)
+    setup("__impl.js8call.event({event: 'spectrum', radio: 'other', hz: 10, row: %s})" % json.dumps(row))
+    check("waterfall: another radio's row is not drawn here", b.js(f"({Q})('.js8-wf-canvas').dataset.rows"), "1")
+    setup("__impl.js8call.event({event: 'frame', radio: 'ic7300', frame: {kind: 'frame', utc: new Date().toISOString().slice(0, 19) + 'Z', snr: -4, freq_hz: 799.0, submode: 'Normal', text: 'K1ABC: N0CALL SNR? '}})")
+    check("waterfall: a station heard just now labelled at its offset (old ones not)",
+          b.js(f"[({TEXTS})('.js8-wf-call'), ({Q})('.js8-wf-call').style.left.slice(0, 5)]"), [["K1ABC"], "26.63"])
+    setup(f"({Q})('.js8-wf-call').click()")
+    check("waterfall: a click on a label picks the station", b.js(f"({Q})('.js8-to .call')?.textContent"), "K1ABC")
+    setup(f"({Q})('.js8-to .js8-clear').click()")
+    setup("""(() => { const c = document.querySelector('#j .js8-wf-canvas'), r = c.getBoundingClientRect();
+      c.dispatchEvent(new MouseEvent('click', {bubbles: true, clientX: r.left + r.width * 0.4, clientY: r.top + 10})); })()""")
+    check("waterfall: a click elsewhere puts that offset in Options, opened", b.js(f"[({Q})('.js8-offset').value, ({Q})('.js8-opts').open]"), ["1200", True])
+    check("waterfall: your TX offset marked", b.js(f"[({Q})('.js8-wf-tx').hidden, ({Q})('.js8-wf-tx').style.left]"), [False, "40%"])
+    check("waterfall: a click sends nothing", b.js("__sent.length"), 0)
+    setup(f"({Q})('.js8-offset').value = ''; ({Q})('.js8-offset').dispatchEvent(new Event('input')); ({Q})('.js8-opts').open = false")
+    check("waterfall: offset cleared, the mark gone", b.js(f"({Q})('.js8-wf-tx').hidden"), True)
 
     # ------------------------------------------------------------ sending
     check("disarmed: Arm shown; HB, CQ, queries and the box shown but disabled",
