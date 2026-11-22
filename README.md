@@ -269,6 +269,15 @@ others under `radios`; each runs its own bridge and keeps its own history:
          "radios": [{"label": "LF", "port": "/dev/cu.usbmodem1,/dev/cu.usbmodem2"}]}
 ```
 
+**A node that stays reachable.** A node's `port` can be a list, tried in
+order: `"usb:1A2B3C4D5E6F7A8B,ble:NODE_A"` is the node on its cable, and over
+Bluetooth while the cable is out (a node with a battery keeps running when a
+hub drops it). The bridge goes back to the cable when it is plugged in again.
+`usb:SERIAL` names a USB board by its serial number
+(`python -m serial.tools.list_ports -v` shows it as `SER=`), so it is found in
+whichever socket it sits; a Mac's `/dev/cu.usbmodemNNNN` is the socket's name
+and changes with it.
+
 A switcher beside "Mesh" picks which node the tab shows and which one a
 message goes out on; another node's new messages count on its button. An
 extra node takes the first one's keys unless it names its own, never its

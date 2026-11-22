@@ -1,0 +1,3 @@
+### Added
+
+- **Mesh: a node on USB by its serial number, and back to the cable after Bluetooth.** A node's `port` takes `usb:SERIAL`: the USB board with that serial number, in whichever socket it sits (a Mac names a USB serial device after the socket, so a node moved to another one was gone from the path in the host file). And in a list such as `usb:SERIAL,ble:NODE_A`, a bridge that had to take Bluetooth because the cable was out now goes back to the cable once it has been plugged in for a minute. A node here kept running on its battery for 11 hours while its USB link was out, with Bluetooth in reach and no second port listed.

@@ -11,8 +11,10 @@ across restarts like any add-on's.
 
 Config (station.json "mesh", or server.py --mesh-*, both become this):
     {"port": "/dev/meshtastic", "keys": ["HomeNet=~/.config/ranch-radio/keys/..."],
-     (port: a serial device, ble:NAME, or tcp:HOST[:PORT] for a node on Wi-Fi;
-      comma-separate several to try in order)
+     (port: a serial device, usb:SERIAL (a USB board by its serial number),
+      ble:NAME, or tcp:HOST[:PORT] for a node on Wi-Fi; comma-separate several
+      to try in order: mesh_bridge.py goes back to an earlier cable when it
+      is plugged in again)
      "python": "...", "bridge": "...", "log": "...",
      "feed": "mqtt://BROKER/PREFIX", "feed_cred": "FILE", "feed_tx": false}
 "feed" also publishes the node's traffic to an MQTT broker (mesh_feed.py).
@@ -102,7 +104,7 @@ class MeshAddon(Addon):
     def __init__(self, host, opts):
         super().__init__(host, opts)
         if not opts.get("port"):
-            raise ValueError("mesh needs a \"port\" (the node: a serial device, ble:NAME or tcp:HOST)")
+            raise ValueError("mesh needs a \"port\" (the node: a serial device, usb:SERIAL, ble:NAME or tcp:HOST)")
         trace, resend, per_hour = _flags(opts, "mesh", False)
         self.label = str(opts.get("label") or "Mesh")[:24]
         self.args = SimpleNamespace(
