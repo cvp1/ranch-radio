@@ -64,10 +64,11 @@ const navGroups = (() => {
     return a;
   }
 
-  // The collapsed group's dot: on the air beats connected beats off.
+  // The collapsed group's dot: on the air beats part-down (Mesh with one
+  // node of several not connected) beats connected beats off.
   function dotOf(members) {
     const dots = members.map((m) => m.dot || "");
-    return dots.includes("tx") ? "tx" : dots.includes("ok") ? "ok" : dots.includes("off") ? "off" : "";
+    return dots.includes("tx") ? "tx" : dots.includes("warn") ? "warn" : dots.includes("ok") ? "ok" : dots.includes("off") ? "off" : "";
   }
 
   // The group whose menu is open, if any. Kept here, not in the DOM: the pages

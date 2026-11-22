@@ -22,6 +22,9 @@ $FAKE_MESH_NODES_PAD adds that many far nodes to the node list (a long line).
 $FAKE_MESH_BURST=1 also "hears" 30 position packets from !0000dead (hop limit
 7, 2 hops, relayed by a node ending in fe: RDG) and 5 texts from !0000beef
 heard directly (the Health view's chatty node, hop limit and main relay).
+$FAKE_MESH_ABSENT names a file: while it holds a port's file name, the bridge
+for that port finds no node, as the real one does for a cable that is out
+(not connected, "none of PORT is present", exit 2).
 Each start appends a line to $FAKE_MESH_STARTS (restart counting) and every
 command received goes to $FAKE_MESH_LOG.
 """
@@ -80,6 +83,13 @@ def main():
                 key_ok = open(path).read().strip() == FAKE_KEY
             except OSError:
                 key_ok = None
+    try:
+        absent = open(os.environ.get("FAKE_MESH_ABSENT") or os.devnull).read().split()
+    except OSError:
+        absent = []
+    if os.path.basename(args.port) in absent:
+        emit(ev="status", connected=False, error=f"none of {args.port} is present")
+        return 2
     emit(ev="status", connected=True, error=None)
     me = dict(ME)
     if os.environ.get("FAKE_MESH_PORT_NAMES"):     # two fake nodes told apart on a page (mesh_radios_page_test)

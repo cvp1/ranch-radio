@@ -13,6 +13,17 @@ function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
 const station = (() => {
   let radios = [], sharedPort = 0, packet = { present: false, configured: false };
   let cfg = {}, meshOn = false, meshConnected = false, wlOn = false, wlArmed = false;
+  // Mesh is up while any of its nodes is; meshDown names the ones that are not.
+  // Every node's status event used to set meshConnected, whichever node sent
+  // it: with two nodes, one whose cable was out overnight (2026-11-22) said
+  // "not connected" each minute its bridge retried, and the bar and Mission
+  // Control showed Mesh down while the other node carried on.
+  let meshDown = [];
+  function meshLinks() {
+    const l = mesh.radioLinks();
+    meshConnected = l.up;
+    meshDown = l.up ? l.down : [];
+  }
   let meshUnread = 0;
   const frames = {};              // radio id -> iframe (kept while the radio is connected)
   const live = {};                // radio id -> {ws, S}: each radio's own state, read only
@@ -41,8 +52,9 @@ const station = (() => {
       title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` });
     if (packet.configured) items.push({ id: "packet", label: "Packet", group: "messaging", dot: packet.present ? "ok" : "off",
       off: !packet.present, title: `${packetName()} packet hub: APRS and the Winlink packet link` });
-    if (meshOn) items.push({ id: "mesh", label: "Mesh", short: "Meshtastic", group: "mesh", title: "Meshtastic node",
-      dot: meshConnected ? "ok" : "off", badge: meshUnread || "", off: !meshConnected });
+    if (meshOn) items.push({ id: "mesh", label: "Mesh", short: "Meshtastic", group: "mesh",
+      title: meshDown.length ? `Meshtastic: ${meshDown.join(", ")} not connected` : "Meshtastic node",
+      dot: !meshConnected ? "off" : meshDown.length ? "warn" : "ok", badge: meshUnread || "", off: !meshConnected });
     for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
     const end = modules.enabled() ? [{ id: "modules", label: "Modules", title: "Every module: what's on, what it needs, add or remove" }] : [];
     const nav = $("#st-nav");
@@ -1235,10 +1247,11 @@ const station = (() => {
   function meshCard() {
     const m = mesh.summary();
     if (!meshConnected) return { title: "Mesh", icon: "mesh", state: "off", tag: "not connected", lines: ["Meshtastic node not connected"], href: "#/mesh" };
-    return { title: "Mesh", icon: "mesh", state: "ok", tag: meshUnread ? `${meshUnread} new` : "",
+    const down = meshDown.length ? `${meshDown.join(", ")} not connected` : "";
+    return { title: "Mesh", icon: "mesh", state: down ? "warn" : "ok", tag: down || (meshUnread ? `${meshUnread} new` : ""),
       big: `${m.day} <small>heard today · ${m.live} in 15 min</small>`,
       lines: [m.last ? `<span class="mc-who">${esc(m.last.who)}</span> ${esc(m.last.text.slice(0, 80))}` +
-        ` <span class="mc-dim">${esc(ago(m.last.t))}</span>` : "No messages yet"], href: "#/mesh" };
+        ` <span class="mc-dim">${esc(ago(m.last.t))}</span>` : "No messages yet", ...(down ? [esc(down)] : [])], href: "#/mesh" };
   }
 
   // What is transmitting now: HF radios (with Release TX), a Winlink
@@ -1373,6 +1386,7 @@ const station = (() => {
     if (meshOn) {
       put("mesh", meshCard());
       if (!meshConnected) offline.push(["Mesh", "#/mesh"]);
+      for (const label of meshDown) offline.push([`Mesh · ${label}`, "#/mesh"]);
     }
     for (const d of addons.list()) {
       const c = addons.card(d.name);
@@ -1505,10 +1519,10 @@ const station = (() => {
         showIdentity(cfg);
         wlOn = !!cfg.winlink;
         meshOn = !!cfg.mesh;
-        meshConnected = !!m.mesh?.status?.connected;
         wlArmed = !!m.winlink?.armed;
         winlink.hello(m.winlink, cfg);
         mesh.hello(m.mesh, cfg);
+        meshLinks();
         addons.hello(cfg.addons, m.addons);
         for (const n of ["roster", "map"]) spotsTake(n, m.addons?.[n]);
         modules.hello(cfg);
@@ -1524,7 +1538,7 @@ const station = (() => {
       } else if (m.t === "mesh") {
         mesh.event(m);
         homeChanged();
-        if (m.status) { meshConnected = !!m.status.connected; renderNav(); renderCards(); }
+        if (m.status || m.select) { meshLinks(); renderNav(); renderCards(); }
         if (m.msg && !m.msg.mine && !m.msg.emoji && route() !== "mesh") { meshUnread++; renderNav(); renderCards(); }
         if (m.msg && !m.msg.mine && !m.msg.emoji) wall.note(`Mesh: a message from ${mesh.summary().last?.who || "a node"}`);
       } else if (m.t === "addon" && m.addon === "winlink") {
@@ -1532,7 +1546,7 @@ const station = (() => {
         if ("on" in m) modules.addonChanged();
       } else if (m.t === "addon" && m.addon === "mesh") {
         mesh.power(m);                    // Mesh's page is its own tab
-        meshConnected = mesh.connected();
+        meshLinks();
         renderNav(); renderCards();
         if ("on" in m) modules.addonChanged();
       } else if (m.t === "addon") {
