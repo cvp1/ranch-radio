@@ -100,7 +100,7 @@ writes the first three and prints the other two:
 5. `ranch_radio/manifest.py` — a `MANIFESTS` entry (`family: addon`, `block: ("addons", NAME)`,
    a template, `ASK` fields with `rules`, `needs`).
 
-Then the README's Modules table, and `CHANGELOG.md` under Unreleased. An add-on that
+Then the README's Modules table, and a `changelog.d/<branch>.md` fragment. An add-on that
 owns a device runs in one process only (`addons/__init__.py`). Groups are
 `radios`, `messaging`, `mesh`, `tools` (`static/nav.js`).
 
@@ -128,7 +128,9 @@ Test style: a standalone script with a docstring that lists what it covers, a
 
 - Comments carry the **why**, often with the date and host it was learned on.
   Keep that; it is the project's memory.
-- `CHANGELOG.md` Unreleased gets a line for anything an operator would notice.
+- Anything an operator would notice gets a changelog line, in `changelog.d/<branch>.md`, never
+  `CHANGELOG.md` itself (parallel PRs all editing its top conflicted and re-ran CI; see
+  `changelog.d/README.md`). `tools/changelog_fold.py --apply` folds the fragments in.
 - One concern per pull request; CI must be green; merge with a merge commit.
 - New Python dependencies go in `requirements.txt` with a reason in the PR,
   and each one, with what it pulls in, gets an exact pin in `constraints.txt`

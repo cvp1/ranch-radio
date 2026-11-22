@@ -99,7 +99,7 @@ print([n for n in h.notices if isinstance(n, tuple) and n[0] == "send"])
 
     s = scaffold.snippets("rotator", "Rotator", "Point the beam")
     check("the snippets carry both entries", ('"name": "rotator", "kind": "addon"' in s,
-                                              '"block": ("addons", "rotator")' in s, "README.md" in s, "CHANGELOG.md" in s),
+                                              '"block": ("addons", "rotator")' in s, "README.md" in s, "changelog.d/" in s),
           (True, True, True, True))
 
     cli = subprocess.run([sys.executable, str(ROOT / "ranch-radio"), "new-addon", "--help"], capture_output=True, text=True,
