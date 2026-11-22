@@ -333,6 +333,7 @@ class MeshEngine:
         self.proc = None
         self.connected = False
         self.changed = time.time()    # when connected last changed (addons/mesh.py degraded: how long a node has been away)
+        self.last_rx = None           # when the bridge last passed on a packet (addons/mesh.py degraded: a silent link)
         self.error = None
         self.info = None
         self.config = None            # {"sections": schema, "values": the node's settings}
@@ -483,6 +484,7 @@ class MeshEngine:
                 self.station.notice(f"Mesh: {what} not saved: {m.get('error')}", "warn", ws)
         elif ev == "rx":
             rx = {"from": m["from"], "t": time.time(), **{k: m.get(k) for k in RX_FIELDS}}
+            self.last_rx = rx["t"]
             self.stats.packet(rx)
             self._send({"rx": rx})
             self._health_soon()
