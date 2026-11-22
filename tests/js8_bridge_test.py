@@ -30,7 +30,6 @@
 """
 import asyncio
 import json
-import os
 import sys
 import time
 from pathlib import Path

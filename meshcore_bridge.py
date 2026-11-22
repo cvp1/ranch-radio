@@ -301,7 +301,6 @@ class Bridge:
 
     async def hello(self):
         await self.mc.commands.set_time(int(time.time()))
-        si = dict(self.mc.self_info or {})
         dev = await self.mc.commands.send_device_query()
         d = self.device = dev.payload if dev.type == self.E.DEVICE_INFO else {}
         self.emit_info()

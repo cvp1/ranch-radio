@@ -15,7 +15,6 @@ more). Stand-in Chromes, one real start; nothing transmits, no page is served.
     python3 tests/cdp_browser_test.py
 """
 import glob
-import json
 import os
 import shutil
 import stat
