@@ -1,0 +1,3 @@
+### Fixed
+
+- **Mesh: the station sets the node's clock.** A node without GPS has no clock of its own after a restart and takes its time from another node's position packet, right or wrong; one here, two days up, ran 47 minutes fast, so "last heard" on the Mesh tab ran into the future. A phone app sets its node's time; a node on a station may never meet a phone. The bridge now gives the node the station's time when it connects and every hour after. The node still prefers its own GPS. A Linux station whose own clock is not yet synchronised (a Raspberry Pi that booted without a network) leaves the node alone, says so once in the log, and sets it when its clock is right.

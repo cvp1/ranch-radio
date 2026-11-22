@@ -274,6 +274,11 @@ message goes out on; another node's new messages count on its button. An
 extra node takes the first one's keys unless it names its own, never its
 MQTT feed, and has auto traceroute off unless its entry says `"auto_trace": true`.
 
+**The node's clock.** The station gives each node its own time when it
+connects and every hour after, as the phone apps do: a node without GPS has
+no clock of its own after a restart. Keep the station's clock right (NTP); a
+Linux station that says its clock is not synchronised leaves the node alone.
+
 Three more modules are services a host gets from its host file rather than
 switches: `station` (every radio on one page, Linux), `audio` (pinned
 PipeWire sound card names, Linux) and `updates` (the daily check, below).
