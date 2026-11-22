@@ -3,7 +3,8 @@
   - a good block loads, on, in the messaging group, with no error, and starts
   - no bridge on the station: not ready, and it says how to set JS8 up
   - a bridge: ready, each radio's frames, heard and status, with its name
-  - relay: a bridge push reaches the pages as {"t": "addon", "addon": "js8call"}
+  - relay: a bridge push reaches the pages as {"t": "addon", "addon": "js8call"};
+    a waterfall row (to listeners only) reaches them once, as its spectrum event
   - stop takes its listener off the bridge; a failing listener never stops a push
   - commands: arm, send, hb and disarm go to the bridge with only radio,
     minutes, text, offset and speed; a refusal or a malformed request comes back to that page as a
@@ -86,6 +87,11 @@ check("relay: a frame and a status reach the pages as the add-on's",
       [(m["event"], m["radio"]) for m in relayed], [("frame", "ic7300"), ("status", "ic7300")])
 check("relay: the bridge's own broadcast still goes out", [m["t"] for m in host.pushed if m["t"] != "addon"],
       ["js8", "js8_status"])
+n = len(host.pushed)
+host.js8._listeners({"t": "js8_spectrum", "radio": "ic7300", "hz": 10, "row": [0] * 300})
+check("relay: a waterfall row reaches the pages as the add-on's spectrum event, once",
+      [(m.get("t"), m.get("event"), m.get("hz"), len(m.get("row") or [])) for m in host.pushed[n:]],
+      [("addon", "spectrum", 10, 300)])
 asyncio.run(reg.stop())
 check("stop takes its listener off", [fn for fn in host.js8.listeners if getattr(fn, "__self__", None) is not None], [])
 

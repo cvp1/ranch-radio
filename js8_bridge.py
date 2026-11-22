@@ -7,6 +7,12 @@ station's pages:
     {"t": "js8", "radio": ID, "frame": {...}}        each decoded frame
     {"t": "js8_status", "radio": ID, "status": {...}} engine up/down, rig, TX state
 
+and to its listeners only (the JS8 tab's add-on relays it as its own event):
+
+    {"t": "js8_spectrum", "radio": ID, "hz": 10, "row": [0..60, ...]}
+                           the engine's audio spectrum, 0-3000 Hz in 10 Hz bins, dB
+                           above the row's floor, SPEC_EVERY_S apart: the waterfall
+
 Pages ({"t": "js8", "do": VERB, "radio": ID}, or the JS8 tab through its
 add-on):
 
@@ -49,6 +55,7 @@ import asyncio
 import collections
 import json
 import logging
+import math
 import re
 import time
 
@@ -71,6 +78,10 @@ MAX_SEND = 160               # characters of one message a page may send
 OFFSET_HZ = (400, 2600)      # audio offsets a page may pick to transmit on
 SPEEDS = ("normal", "fast", "turbo", "slow")   # not ultra: stock JS8Call may not decode it
 SEND_OK = re.compile(r"^[\x20-\x7e]+$")   # printable ASCII; jf8call packs it (varicode/JSC)
+SPEC_EVERY_S = 0.25           # waterfall rows to the tab: 4 a second (the engine sends ~18)
+SPEC_HZ = 10                  # one waterfall bin
+SPEC_TOP_HZ = 3000            # the passband JS8 lives in
+SPEC_RANGE_DB = 60            # a row's values: dB above its floor, 0..this
 ARM = {"txEnabled": True, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
 DISARM = {"txEnabled": False, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
 STATUS_KEYS = ("radio_connected", "radio_freq_khz", "radio_mode", "submode_name", "callsign", "grid",
@@ -105,6 +116,35 @@ def frame_of(event, data):
         if not isinstance(f[k], (int, float)) or isinstance(f[k], bool):
             f[k] = None
     return f
+
+
+def spectrum_row(data):
+    """jf8call's spectrum event (linear FFT magnitudes, hz_per_bin) -> one
+    waterfall row: 0-SPEC_TOP_HZ in SPEC_HZ bins (the strongest bin in each),
+    dB above the row's floor (its 25th percentile), 0..SPEC_RANGE_DB. None if
+    the event isn't one."""
+    bins, hz = data.get("bins"), data.get("hz_per_bin")
+    if not isinstance(bins, list) or not bins or isinstance(hz, bool) or not isinstance(hz, (int, float)) \
+            or not math.isfinite(hz) or hz <= 0:
+        return None
+    n = SPEC_TOP_HZ // SPEC_HZ
+    peak = [None] * n
+    for i, v in enumerate(bins):
+        k = int(i * hz // SPEC_HZ)
+        if k >= n:
+            break
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+            return None
+        if peak[k] is None or v > peak[k]:
+            peak[k] = v
+    if peak[0] is None:
+        return None
+    for k in range(1, n):            # an engine bin wider than SPEC_HZ: carry it across
+        if peak[k] is None:
+            peak[k] = peak[k - 1]
+    db = [20 * math.log10(v + 1e-9) for v in peak]
+    floor = sorted(db)[n // 4]
+    return [max(0, min(SPEC_RANGE_DB, round(d - floor))) for d in db]
 
 
 class CodecHold:
@@ -206,8 +246,10 @@ class CodecHold:
 class Engine:
     """One radio's engine, seen from the station."""
 
-    def __init__(self, rid, port, push, radio=None, codec=None):
+    def __init__(self, rid, port, push, radio=None, codec=None, quiet=None):
         self.rid, self.port, self.push = rid, port, push
+        self.quiet = quiet or (lambda msg: None)   # to the bridge's listeners only (the waterfall)
+        self._spec_at = 0.0
         self.codec = codec                   # CodecHold, or None: the codec is left alone
         self.radio = radio or (lambda: {})   # the radio server's word: {"present", "tx_allowed", "tx_stopped", "tx"}
         self.armed = None                    # {"by": page, "until": monotonic, "until_utc": epoch} while it may send
@@ -482,6 +524,13 @@ class Engine:
                     q = data.get("queue_size")
                     self.queue = q if isinstance(q, int) and not isinstance(q, bool) and q >= 0 else 0
                     self.pushview()
+                elif m.get("type") == "event" and m.get("event") == "spectrum":
+                    now = time.monotonic()
+                    if now - self._spec_at >= SPEC_EVERY_S:
+                        row = spectrum_row(data)
+                        if row is not None:
+                            self._spec_at = now
+                            self.quiet({"t": "js8_spectrum", "radio": self.rid, "hz": SPEC_HZ, "row": row})
                 elif m.get("type") == "event" and m.get("event") in ("message.frame", "message.decoded"):
                     f = frame_of(m["event"], data)
                     self.frames.append(f)
@@ -548,7 +597,7 @@ class Js8Bridge:
         by_id = {r.id: r for r in station.radios}
         self.engines = {rid: Engine(rid, port, self._push, lambda rid=rid: self._radio(rid),
                                     CodecHold(lambda rid=rid: self._radio_url(rid))
-                                    if getattr(by_id[rid], "web", None) else None)
+                                    if getattr(by_id[rid], "web", None) else None, self._listeners)
                         for rid, port in block["radios"].items()}
         self.listeners = []          # callables given each push (the JS8 tab's add-on); one failing is logged
         self._safety = None
@@ -562,6 +611,13 @@ class Js8Bridge:
         r = next(r for r in self.station.radios if r.id == rid)
         tok = getattr(self.station, "token", None)
         return f"http://127.0.0.1:{r.web}/ws" + (f"?token={tok}" if tok else "")
+
+    def _listeners(self, msg):
+        for fn in list(self.listeners):
+            try:
+                fn(msg)
+            except Exception as e:
+                log.error("js8 listener %s: %s: %s", getattr(fn, "__qualname__", fn), type(e).__name__, e)
 
     def _push(self, msg):
         self.station._broadcast(json.dumps(msg))

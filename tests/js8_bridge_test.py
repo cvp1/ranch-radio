@@ -23,6 +23,10 @@
   - the allowlist: across everything here the bridge sent only status.get,
     config.set (ARM or DISARM exactly), tx.send {text, tx_freq_hz?, submode?},
     tx.hb and tx.halt
+  - waterfall: spectrum_row turns the engine's linear FFT into 300 bins of
+    10 Hz, dB above the floor (a tone at 1500 Hz on top); a coarser FFT is
+    carried across; malformed ones are no row; a burst becomes one row per
+    SPEC_EVERY_S, to listeners only
   - malformed engine messages (not JSON, a list, data not an object) don't stop it
   - the engine restarts: the bridge says disconnected, then reconnects by itself
 
@@ -185,6 +189,38 @@ async def main():
     check("pushes a js8_status", bool(statuses) and statuses[-1]["status"]["connected"], True)
     check("disarmed: nothing unsafe", e.view()["unsafe"], [])
     check("status keys are the allowlist", "ws_port" in e.view(), False)
+
+    # ------------------------------------------------------------ the waterfall
+    # spectrum_row: linear magnitudes at 1.5 Hz a bin (a 12 kHz, 8192-point FFT).
+    HZ = 12000 / 8192
+    tone = [1.0] * 4096
+    for i in range(int(1497 / HZ), int(1503 / HZ) + 1):
+        tone[i] = 1000.0                      # +60 dB at 1500 Hz
+    row = js8_bridge.spectrum_row({"bins": tone, "hz_per_bin": HZ})
+    check("waterfall: 300 bins, 0-3000 Hz", len(row), 300)
+    check("waterfall: the tone's bin at the top, the floor at 0", (row[150], max(row[:140] + row[160:])), (60, 0))
+    wide = js8_bridge.spectrum_row({"bins": [1.0, 10.0] * 100, "hz_per_bin": 25.0})
+    check("waterfall: a coarser engine FFT is carried across the gaps", (len(wide), wide[3], wide[4]), (300, 20, 20))
+    for name, bad in (("no bins", {"hz_per_bin": 1.5}), ("a zero bin width", {"bins": [1.0], "hz_per_bin": 0}),
+                      ("a negative magnitude", {"bins": [1.0, -1.0], "hz_per_bin": 1.5}),
+                      ("a string", {"bins": [1.0, "x"], "hz_per_bin": 1.5}), ("NaN width", {"bins": [1.0], "hz_per_bin": float("nan")})):
+        check(f"waterfall: {name}: not a row", js8_bridge.spectrum_row(bad), None)
+    heard = []
+    br.listeners.append(heard.append)
+    pushed_before = len(st.pushed)
+    for _ in range(10):                       # a burst faster than SPEC_EVERY_S
+        await eng.push({"type": "event", "event": "spectrum", "data": {"bins": tone, "hz_per_bin": HZ}})
+    await until(lambda: any(m["t"] == "js8_spectrum" for m in heard))
+    await asyncio.sleep(0.15)
+    rows = [m for m in heard if m["t"] == "js8_spectrum"]
+    check("waterfall: a burst of 10 becomes 1 row (at most 4 a second)", len(rows), 1)
+    check("waterfall: the row as spectrum_row makes it", (rows[0]["radio"], rows[0]["hz"], rows[0]["row"][150]), ("ic7300", 10, 60))
+    check("waterfall: to listeners only, never broadcast to every page by the bridge",
+          [m["t"] for m in st.pushed[pushed_before:] if m["t"] == "js8_spectrum"], [])
+    await asyncio.sleep(js8_bridge.SPEC_EVERY_S)
+    await eng.push({"type": "event", "event": "spectrum", "data": {"bins": tone, "hz_per_bin": HZ}})
+    check("waterfall: after SPEC_EVERY_S, the next row", await until(lambda: len([m for m in heard if m["t"] == "js8_spectrum"]) == 2), True)
+    br.listeners.remove(heard.append)
 
     # ------------------------------------------------------------ frames
     await eng.push({"type": "event", "event": "message.frame",

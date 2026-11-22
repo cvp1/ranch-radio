@@ -11,6 +11,11 @@
 //                   the right, Transmit:
 //                   pick 5/10/30 min and Arm TX, or the time left and Disarm;
 //                   when it can't arm, why
+//   1b waterfall    the engine's audio, 0-3000 Hz, newest row on top (the
+//                   station relays ~4 rows a second); the stations heard in
+//                   the last WF_LABEL_MS labelled at their offsets (a click on
+//                   one picks it); your TX offset marked; a click elsewhere
+//                   puts that offset in Options (sends nothing)
 //   2 send panel    To: everyone, or the station picked by clicking its call
 //                   in any list below; Quick: HB, CQ; Ask <call>: SNR?
 //                   GRID? INFO? STATUS? HEARING?; Message: a line of text
@@ -42,7 +47,21 @@
                  ["20", 14_078_000], ["17", 18_104_000], ["15", 21_078_000], ["12", 24_922_000],
                  ["10", 28_078_000], ["6", 50_318_000]];
   const SPEEDS = [["", "As set"], ["normal", "Normal"], ["fast", "Fast"], ["turbo", "Turbo"], ["slow", "Slow"]];
-  let body = null, api = null, snap = { ready: false }, pick = null, tx = null, ticker = null, to = null;
+  let body = null, api = null, snap = { ready: false }, pick = null, tx = null, ticker = null, to = null, wf = null;
+  const WF_ROWS = 160, WF_TOP_HZ = 3000, WF_LABEL_MS = 3 * 60 * 1000, WF_RANGE = 60;
+  // The radio page's waterfall colours (mission.js LUT): dark blue to white.
+  const WF_LUT = (() => {
+    const stops = [[0, [4, 6, 10]], [0.22, [10, 30, 72]], [0.42, [14, 96, 140]], [0.58, [32, 200, 180]],
+      [0.74, [245, 215, 80]], [0.88, [255, 120, 60]], [1, [255, 250, 240]]];
+    const lut = new Uint8ClampedArray(256 * 3);
+    for (let i = 0; i < 256; i++) {
+      const t = i / 255;
+      let k = 1; while (k < stops.length - 1 && stops[k][0] < t) k++;
+      const [t0, c0] = stops[k - 1], [t1, c1] = stops[k], u = (t - t0) / (t1 - t0);
+      for (let j = 0; j < 3; j++) lut[i * 3 + j] = c0[j] + (c1[j] - c0[j]) * u;
+    }
+    return lut;
+  })();
   let armMins = 10, speed = "";
   const grids = {};                               // call -> grid, from messages that carried one
 
@@ -182,6 +201,85 @@
     return box;
   }
 
+  // ---------- 1b waterfall: built once and kept, so its history survives a re-render
+
+  function wfPanel() {
+    if (wf) return wf;
+    const panel = el("section", "panel js8-wf");
+    const head = el("div", "js8-panel-head");
+    head.append(el("h3", null, "Waterfall"),
+                el("span", "js8-sub", "The engine's audio, 0-3000 Hz. Click a quiet spot to send there; click a call to talk to it."));
+    const wrap = el("div", "js8-wf-wrap");
+    const canvas = el("canvas", "js8-wf-canvas");
+    canvas.width = WF_TOP_HZ / 10; canvas.height = WF_ROWS;
+    const labels = el("div", "js8-wf-labels");
+    const mark = el("div", "js8-wf-tx");
+    const scale = el("div", "js8-wf-scale");
+    for (const hz of [500, 1000, 1500, 2000, 2500]) {
+      const t = el("span", null, String(hz));
+      t.style.left = `${hz / WF_TOP_HZ * 100}%`;
+      scale.appendChild(t);
+    }
+    const note = el("div", "js8-wf-note", "Waiting for the engine's audio");
+    wrap.append(canvas, labels, mark, note);
+    panel.append(head, wrap, scale);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#04060a"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    canvas.onclick = (e) => {
+      const r = canvas.getBoundingClientRect();
+      const hz = Math.round((e.clientX - r.left) / r.width * WF_TOP_HZ / 10) * 10;
+      const t = sendPanel();
+      t.offset.value = Math.max(400, Math.min(2600, hz));
+      t.opts.open = true;
+      wfMarks();
+    };
+    wf = { panel, canvas, ctx, labels, mark, note, rows: 0, radio: null, at: 0 };
+    return wf;
+  }
+
+  function wfRow(radio, row) {
+    const w = wfPanel();
+    if (w.radio !== radio) {                 // another radio picked: its own history
+      w.radio = radio; w.rows = 0;
+      w.ctx.fillStyle = "#04060a"; w.ctx.fillRect(0, 0, w.canvas.width, w.canvas.height);
+    }
+    const n = Math.min(row.length, w.canvas.width);
+    w.ctx.drawImage(w.canvas, 0, 0, w.canvas.width, WF_ROWS - 1, 0, 1, w.canvas.width, WF_ROWS - 1);
+    const img = w.ctx.createImageData(w.canvas.width, 1);
+    for (let i = 0; i < n; i++) {
+      const v = (Math.max(0, Math.min(WF_RANGE, Number(row[i]) || 0)) / WF_RANGE * 255) | 0;
+      img.data[i * 4] = WF_LUT[v * 3]; img.data[i * 4 + 1] = WF_LUT[v * 3 + 1];
+      img.data[i * 4 + 2] = WF_LUT[v * 3 + 2]; img.data[i * 4 + 3] = 255;
+    }
+    w.ctx.putImageData(img, 0, 0);
+    w.rows++; w.at = Date.now();
+    w.canvas.dataset.rows = w.rows;
+    w.note.hidden = true;
+  }
+
+  // Labels and the TX mark: who was heard where lately, and where you'd send.
+  function wfMarks() {
+    const w = wfPanel(), r = cur();
+    w.labels.replaceChildren();
+    const now = Date.now();
+    for (const h of ((r && r.heard) || [])) {
+      if (typeof h.freq_hz !== "number" || h.freq_hz < 0 || h.freq_hz > WF_TOP_HZ || now - Date.parse(h.utc) > WF_LABEL_MS) continue;
+      const b = el("button", "js8-wf-call" + (h.call === to ? " sel" : ""), h.call);
+      b.style.left = `${h.freq_hz / WF_TOP_HZ * 100}%`;
+      b.dataset.call = h.call;
+      b.title = `${h.call} at ${Math.round(h.freq_hz)} Hz, ${snr(h.snr)} dB: click to talk to it`;
+      b.onclick = (e) => { e.stopPropagation(); pickTo(h.call); };
+      w.labels.appendChild(b);
+    }
+    const off = tx && tx.offset.value !== "" ? Number(tx.offset.value) : NaN;
+    w.mark.hidden = !Number.isFinite(off);
+    if (Number.isFinite(off)) {
+      w.mark.style.left = `${off / WF_TOP_HZ * 100}%`;
+      w.mark.title = `You send at ${off} Hz`;
+    }
+    if (w.at && now - w.at > 5000) { w.note.hidden = false; w.note.textContent = "No audio from the engine in 5 s"; }
+  }
+
   // ---------- 2 send panel: built once, updated in place, so a frame
   // arriving mid-typing keeps the text and the focus.
 
@@ -252,6 +350,7 @@
       speedSeg.appendChild(c);
       return c;
     });
+    offset.oninput = () => wfMarks();
     opts.append(field("Offset", offset, el("span", "js8-hint", "Hz, 400-2600. Blank keeps the engine's. Pick a quiet spot in Band activity.")),
                 field("Speed", speedSeg, el("span", "js8-hint", "Normal is what most stations use.")));
     panel.appendChild(opts);
@@ -436,6 +535,7 @@
         root.querySelector(".js8-head").replaceWith(statusCard(r));
         root.querySelector(".js8-grid").replaceWith(panes(r));
         updateSend(r);
+        wfMarks();
         return;
       }
     }
@@ -461,8 +561,10 @@
     const r = cur();
     if (r) {
       root.appendChild(statusCard(r));
+      root.appendChild(wfPanel().panel);
       root.appendChild(sendPanel().panel);
       updateSend(r);
+      wfMarks();
       root.appendChild(panes(r));
     }
     body.appendChild(root);
@@ -492,6 +594,11 @@
     event(m) {
       const r = radios()[m.radio];
       if (!r) return;
+      if (m.event === "spectrum" && Array.isArray(m.row)) {
+        // ~4 a second: draw the row only, never the whole tab.
+        if (m.radio === pick && body && body.isConnected !== false) wfRow(m.radio, m.row);
+        return;
+      }
       if (m.event === "frame" && m.frame) {
         r.frames = (r.frames || []).concat([m.frame]).slice(-300);
         upsertHeard(r, m.frame);
