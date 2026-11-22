@@ -20,6 +20,8 @@
 .js8call .js8-status.down { color: var(--muted); }
 .js8call .js8-status.unsafe { padding: 6px 10px; border-radius: 8px; background: var(--tx); color: #fff; font-weight: 600; }
 .js8call .js8-me { display: inline-flex; align-items: baseline; gap: 6px; font: 600 13px var(--mono); }
+.js8call .js8-bands { display: flex; align-items: center; gap: 8px; flex-basis: 100%; flex-wrap: wrap; }
+.js8call .js8-bands .seg .chip { font: 600 12px var(--mono); }
 .js8call .js8-armbox { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .js8call .js8-armrow { display: flex; align-items: center; gap: 8px; }
 .js8call .js8-arm { color: var(--warm); border-color: rgba(var(--warm-rgb), .6) !important; background: rgba(var(--warm-rgb), .12) !important; height: 32px; padding: 0 16px; }
