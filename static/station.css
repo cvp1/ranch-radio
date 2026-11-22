@@ -38,6 +38,13 @@ body.station { overflow: hidden; height: 100vh; display: flex; flex-direction: c
   text-decoration: none; font: 600 13px var(--sans); white-space: nowrap; }
 .st-mi small { font: 500 10.5px var(--mono); color: var(--dim); }
 .st-mi .st-badge { margin-left: auto; }
+/* The open section's members, one click each (nav.js, 2026-11-22): a row under
+   the header, shown only when the open view is in a group of several. It
+   scrolls sideways on a narrow window rather than wrapping. */
+.st-subnav { flex: none; display: flex; gap: 4px; padding: 4px 16px; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); background: rgba(0,0,0,.15); }
+.st-subnav[hidden] { display: none; }
+.st-subnav .st-tab { padding: 4px 11px; font-size: 12.5px; }
 .st-mi:hover { color: var(--text); background: rgba(255,255,255,.05); }
 .st-mi.on { color: var(--accent); background: rgba(var(--accent-rgb), .12); }
 .st-mi.off { opacity: .55; }

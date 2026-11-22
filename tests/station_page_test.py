@@ -193,6 +193,7 @@ try:
     b.js("location.hash = '#/home'")
     b.wait(f"{TABS}[1].querySelector('span').textContent === 'Radios'")
     check("  Radios now opens the radio last used", b.js(f"{TABS}[1].getAttribute('href')"), "#/qmx")
+    check("  on Mission Control there is no section row", b.js("document.querySelector('#st-subnav').hidden"), True)
     b.js(f"{TABS}[1].click()")
     b.wait("location.hash === '#/qmx'")
     check("QMX tab: its page in a frame", bool(b.wait(f"{FRAME}?.src.includes('/r/qmx/')")), True)
@@ -217,6 +218,30 @@ try:
     check("  its pill comes back when it is not Connected", b.js(f"{SHOWN}('#conn')"), True)
     b.js(f"{FRAME}.contentDocument.querySelector('#conn').className = 'pill pill-ok'")
     check("  the tab is marked", b.js(f"{TABS}.find((t) => t.classList.contains('on'))?.querySelector('span').textContent"), "Radios · QMX")
+    # The open section's row (nav.js, 2026-11-22): its members one click each.
+    SUB = "[...document.querySelectorAll('#st-subnav .st-tab')]"
+    check("  the section's row: both radios, QMX marked",
+          b.wait(f"({VISIBLE})('#st-subnav .st-tab') && [{SUB}.map((t) => t.querySelector('span').textContent), "
+                 f"{SUB}.find((t) => t.classList.contains('on'))?.querySelector('span').textContent]", 5),
+          [["G90", "QMX"], "QMX"])
+    # A redraw replaces the tab under the pointer, so a click straddling one
+    # went nowhere (48 redraws in 10 s on a live Mission Control). The bar and
+    # the row are redrawn only when what they show changes; the station's own
+    # status (two radios polling) changes nothing on them.
+    b.js("window.__navN = 0; const o = new MutationObserver(() => window.__navN++); "
+         "o.observe(document.querySelector('#st-nav'), {childList: true}); "
+         "o.observe(document.querySelector('#st-subnav'), {childList: true}); "
+         f"window.__tab = {TABS}[1]; window.__title = {TABS}[0].title;")
+    time.sleep(4)
+    check("  four seconds of radio status: the bar is not redrawn, its tabs are the same elements",
+          b.js(f"[window.__navN, {TABS}[1] === window.__tab]"), [0, True])
+    b.js("window.dispatchEvent(new HashChangeEvent('hashchange'))")
+    check("  a redraw request that changes nothing changes nothing, and titles do not collect notes",
+          b.js(f"[window.__navN, {TABS}[0].title === window.__title]"), [0, True])
+    b.js(f"{SUB}.find((t) => t.textContent.startsWith('G90')).click()")
+    check("  one click in the row opens the other radio", bool(b.wait(f"{FRAME}?.src.includes('/r/g90/') && location.hash === '#/g90'", 10)), True)
+    b.js(f"{SUB}.find((t) => t.textContent.startsWith('QMX')).click()")
+    b.wait(f"{FRAME}?.src.includes('/r/qmx/')")
     shot("qmx")
     b.js(f"{CHEV}.click()")
     b.wait(f"!{MENU}.hidden")

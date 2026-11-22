@@ -17,6 +17,18 @@
 // A group with one member is just that member's tab, so a station with only a
 // radio and Winlink looks as it always did.
 //
+// The open view's group also gets a row of its members under the bar (sub:
+// an element the page gives, the station page's #st-subnav; 2026-11-22: "it is
+// difficult to move between options under each section, tools specifically"):
+// one click from Map to Roster, without the chevron. The bar itself is still
+// the same items in the same places.
+//
+// render() draws only when something drawn changed. The pages call it on every
+// status change and add-on event (several a second: the JS8 waterfall), and a
+// redraw replaces the tab under the pointer, so a click whose press and
+// release straddled one went nowhere (measured 2026-11-22: 48 redraws in 10 s
+// on Mission Control).
+//
 // An add-on names its group in addons/<name>.py (Addon.group); the server
 // lists it in config.addons. Uses common.js ($, esc).
 
@@ -105,9 +117,16 @@ const navGroups = (() => {
   // in the order wanted within each group; first/end: ungrouped tabs before and
   // after the groups (Mission Control, Modules). tuck: an item that is off leaves the
   // bar unless it is the open view. Returns the labels it tucked away.
-  function render(nav, { view, first = [], items = [], end = [], tuck = true }) {
+  // The last drawing of each bar: what it was drawn from, and what it tucked.
+  const drawn = new WeakMap();
+
+  function render(nav, { view, first = [], items = [], end = [], tuck = true, sub = null }) {
+    const key = JSON.stringify([view, first, items, end, tuck, last]);
+    const was = drawn.get(nav);
+    if (was && was.key === key) return was.tucked.slice();
     nav.innerHTML = "";
     const tucked = [];
+    let row = null;                       // the open view's group, for the sub row
     for (const it of first) nav.append(tab(it, view));
     for (const g of GROUPS) {
       const members = items.filter((it) => groupOf(it) === g.id).filter((it) => {
@@ -117,7 +136,7 @@ const navGroups = (() => {
       if (!members.length) continue;
       if (members.length === 1) { nav.append(tab(members[0], view)); continue; }
       const open = members.find((m) => m.id === view);
-      if (open) remember(g.id, open.id);
+      if (open) { remember(g.id, open.id); row = { g, members }; }
       const to = open || members.find((m) => m.id === last[g.id]) || members[0];
       const badge = members.reduce((n, m) => n + (parseInt(m.badge, 10) || 0), 0);
       const names = members.map((m) => m.short || m.label);
@@ -149,8 +168,19 @@ const navGroups = (() => {
       nav.append(split);
     }
     for (const it of end) nav.append(tab(it, view));
+    if (sub) {
+      sub.innerHTML = "";
+      sub.hidden = !row;
+      if (row) {
+        sub.setAttribute("aria-label", row.g.label);
+        sub.dataset.group = row.g.id;
+        for (const m of row.members) sub.append(tab(m, view, m.short || m.label));
+      }
+    }
     applyMenus();
-    return tucked;
+    // Keyed after drawing: remember() above may have changed `last`.
+    drawn.set(nav, { key: JSON.stringify([view, first, items, end, tuck, last]), tucked });
+    return tucked.slice();
   }
 
   // Order anything (overview cards) by group: radios first, tools last.
