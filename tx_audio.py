@@ -8,7 +8,11 @@ transmit paths hard to follow in one class; behaviour is unchanged.
     and, on a rig that has one, the SSB audio source switched to USB (IC-7300
     DATA OFF MOD, QMX SS), both set after the page owns PTT and before it
     keys, and put back after the unkey (_voice_restore, called from unkey).
-  - codec_*: the TX level row (Winlink / Voice, step, save) and its broadcasts.
+  - codec_*: the TX level row (Winlink / Voice / JS8, step, save) and its broadcasts.
+  - js8_codec: the station's JS8 bridge holding the codec at the JS8 level
+    (--js8-codec-db) while an arm lasts, on a socket of its own; the level
+    follows the band when the dial moves, never mid-transmission, and goes
+    back when the bridge lets go or its socket closes.
 
 Apps keying over rigctl use Station.key() and never reach this code.
 """
@@ -25,6 +29,7 @@ import codec_level
 
 log = logging.getLogger("server")
 
+JS8_RELEASE_WAIT_S = 3.0    # a disarm halts the frame: wait this long at most for the unkey
 VOICE_PREP_S = 5.0          # page voice: codec level + audio source before keying
 # Amateur bands (US) the page's PTT may key on: HF and 6 m as server.HAM_BANDS,
 # plus 2 m to 23 cm for VHF/UHF rigs.
@@ -190,6 +195,84 @@ class TxAudio:
             await ws.send_str(json.dumps({"t": "codec", **snap}))
         else:
             self._codec_broadcast(use)
+
+    # --- JS8: the station's bridge holds the codec while an arm lasts
+
+    async def js8_codec(self, ws, on):
+        """{"t": "js8_codec", "on": bool} from the station's JS8 bridge.
+        Answers that socket {"t": "js8_codec", "on", "ok", "why", "db", "band"}:
+        on and ok, the codec is at the JS8 level for the radio's band and this
+        socket holds it; ok false with configured false, there is no JS8
+        level here (the codec is left alone, as before)."""
+        codec, why, configured = self.codec, None, True
+        if not on:
+            if self.js8_codec_owner is ws:
+                why = await self.js8_codec_release("the bridge let go")
+        elif codec is None or not codec.has("js8"):
+            why, configured = "no JS8 level is configured on this radio (--js8-codec-db)", False
+        elif self.js8_codec_owner is not None and self.js8_codec_owner is not ws:
+            why = "another JS8 bridge holds the codec"
+        elif self.js8_codec_owner is not ws and (self.radio.state.get("tx") or self.ptt_owner is not None):
+            why = "the radio is transmitting; the level is never changed mid-transmission"
+        elif self.js8_codec_owner is not ws:
+            f = self.radio.state.get("freq")
+            try:
+                await codec.enter(self.band_of(f) if f else None, use="js8")
+            except codec_level.CodecError as e:
+                why = str(e)
+                log.warning("js8: codec level not set: %s", e)
+            else:
+                self.js8_codec_owner = ws
+                self._codec_broadcast("js8")
+        held = self.js8_codec_owner is ws
+        await ws.send_str(json.dumps({"t": "js8_codec", "on": held, "ok": why is None, "why": why,
+                                      "configured": configured,
+                                      "db": codec.current if codec is not None else None,
+                                      "band": (codec.applied or (None,))[0] if held else None}))
+
+    async def js8_codec_release(self, why):
+        """The JS8 level ends: the codec back to where it was. Returns an
+        error text, or None."""
+        self.js8_codec_owner = None
+        if self._js8_follow_task and not self._js8_follow_task.done():
+            self._js8_follow_task.cancel()
+        if self.codec is None or self.codec.use != "js8":
+            return None
+        end = time.monotonic() + JS8_RELEASE_WAIT_S
+        while self.radio.state.get("tx") and time.monotonic() < end:
+            await asyncio.sleep(0.05)              # the halted frame unkeys first (bounded)
+        err = await self.codec.leave("js8")
+        log.info("js8: codec released (%s)%s", why, f": {err}" if err else "")
+        if err:
+            self.notice(f"Could not put the codec's level back after JS8 ({err}); check it before "
+                        "JTDX or voice transmit.", "warn")
+        self._codec_broadcast("js8")
+        return err
+
+    def js8_codec_watch(self):
+        """The dial or the transmitter changed: while JS8 holds the codec,
+        set the new band's level once the radio is not transmitting."""
+        if self.js8_codec_owner is None or self.codec is None or self.codec.use != "js8":
+            return
+        if self._js8_follow_task and not self._js8_follow_task.done():
+            return
+        self._js8_follow_task = asyncio.ensure_future(self._js8_follow())
+
+    async def _js8_follow(self):
+        try:
+            while self.radio.state.get("tx") or self.ptt_owner is not None:
+                await asyncio.sleep(0.1)           # never change the level mid-frame
+            f = self.radio.state.get("freq")
+            if self.js8_codec_owner is None or not f:
+                return
+            before = self.codec.applied
+            err = await self.codec.follow(self.band_of(f), "js8")
+            if err:
+                self.notice(f"JS8: could not set the codec level for the new band ({err}).", "warn")
+            elif self.codec.applied != before:
+                self._codec_broadcast("js8")
+        except asyncio.CancelledError:
+            pass
 
     # --- what a page transmission did (mac-shack, 2026-10-18: "hard to tell")
 

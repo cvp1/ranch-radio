@@ -10,6 +10,11 @@ and a fake jf8call engine; the test is a page.
     tx.send; STOP TX pressed on the radio's own page -> tx.halt and
     config.set DISARM, and arm refused until Resume; the arming page closing
     -> disarmed
+  - the codec's JS8 level (--js8-codec-db): arming sets the band's level
+    (and the status says it), the dial moving to another band moves it,
+    disarm puts the level back; with the codec held by another socket the arm
+    is refused before the engine is armed; freed, it arms; the arming page
+    closing puts the level back
   - a js8 block naming a radio the station lacks: the station runs on, and
     hello says js8 is not loaded, and why
 
@@ -88,14 +93,14 @@ async def serve(app):
     return runner, port
 
 
-def start(js8_block, no_tx=True):
+def start(js8_block, no_tx=True, radio_extra=()):
     tmp = Path(tempfile.mkdtemp(prefix="js8-station-"))
     web_p, radio_web, rig = testkit.free_port(), testkit.free_port(), testkit.free_port()
     START["radio_web"] = radio_web
     radio = subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", "ic7300", "--no-audio",
                               *(["--no-tx"] if no_tx else []),
                               "--host", "127.0.0.1", "--listen", str(radio_web),
-                              "--rigctl-host", "127.0.0.1", "--rigctl-port", str(rig)],
+                              "--rigctl-host", "127.0.0.1", "--rigctl-port", str(rig), *radio_extra],
                              cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     cfg = {"name": "test", "radios": [{"id": "ic7300", "name": "IC-7300", "web": radio_web, "rigctl": rig}],
            "addons_state": str(tmp / "addons.json"), "js8": js8_block}
@@ -241,6 +246,74 @@ async def main():
     finally:
         stop(st, radio)
 
+    # ---------------------------------------------- the codec's JS8 level (--js8-codec-db)
+    web_p, radio, st = start({"radios": {"ic7300": eport}}, no_tx=False,
+                             radio_extra=("--js8-codec-db", "default=-40,20m=-50"))
+    try:
+        check("codec station up", await up(web_p), True)
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(f"http://127.0.0.1:{web_p}/ws") as ws, \
+                    s.ws_connect(f"http://127.0.0.1:{START['radio_web']}/ws") as rws:
+                await ws.receive(timeout=10)
+                await rws.receive(timeout=10)
+
+                async def level():
+                    await rws.send_str(json.dumps({"t": "codec_get", "use": "js8"}))
+                    m = await page_until(rws, lambda m: m.get("t") == "codec" and m.get("use") == "js8")
+                    return (m or {}).get("current")
+
+                async def level_is(want, timeout=8):
+                    end = time.monotonic() + timeout
+                    while time.monotonic() < end:
+                        if await level() == want:
+                            return True
+                        await asyncio.sleep(0.1)
+                    return False
+
+                async def arm_until(timeout=10):
+                    end = time.monotonic() + timeout
+                    while time.monotonic() < end:
+                        await ws.send_str(json.dumps({"t": "js8", "do": "arm", "radio": "ic7300", "minutes": 5}))
+                        m = await page_until(ws, lambda m: (m.get("t") == "js8_status" and (m.get("status") or {}).get("armed"))
+                                             or (m.get("t") == "notice" and "Can't arm" in m.get("msg", "")), 1)
+                        if m and m.get("t") == "js8_status":
+                            return True, m["status"]
+                        if m and "reachable" not in m.get("msg", "") and "isn't connected" not in m.get("msg", ""):
+                            return False, m.get("msg")
+                        await asyncio.sleep(0.25)
+                    return False, "timed out"
+
+                await rws.send_str(json.dumps({"t": "set", "k": "freq", "v": 14_078_000}))
+                check("codec: before the arm, its own level", await level_is(0.0), True)
+                ok, got = await arm_until()
+                check("codec: arm", ok, True)
+                check("codec: armed at 20 m's JS8 level", await level_is(-50.0), True)
+                st_ = await page_until(ws, lambda m: m.get("t") == "js8_status" and (m.get("status") or {}).get("codec_db") == -50.0, 3)
+                check("codec: the status says the level", bool(st_) or (got or {}).get("codec_db") == -50.0, True)
+                await rws.send_str(json.dumps({"t": "set", "k": "freq", "v": 7_078_000}))
+                check("codec: the dial to 40 m while armed: the level follows (default)", await level_is(-40.0), True)
+                await ws.send_str(json.dumps({"t": "js8", "do": "disarm", "radio": "ic7300"}))
+                check("codec: disarm puts the level back", await level_is(0.0), True)
+
+                # Another holder (a second bridge's socket): the arm is refused, the engine never armed.
+                await rws.send_str(json.dumps({"t": "js8_codec", "on": True}))
+                held = await page_until(rws, lambda m: m.get("t") == "js8_codec")
+                check("codec: another socket holds it", (held or {}).get("ok"), True)
+                mark = len(eng.log)
+                ok, got = await arm_until()
+                check("codec: arm refused, says the level wasn't set",
+                      (ok, "codec level wasn't set" in str(got)), (False, True))
+                check("codec: refused before the engine was armed", ("config.set", ARM) in eng.log[mark:], False)
+                await rws.send_str(json.dumps({"t": "js8_codec", "on": False}))
+                await page_until(rws, lambda m: m.get("t") == "js8_codec")
+                ok, _ = await arm_until()
+                check("codec: freed, it arms", ok, True)
+                check("codec: at the JS8 level again", await level_is(-40.0), True)
+        check("codec: the arming page closed: the level back", await asyncio.get_running_loop().run_in_executor(
+            None, lambda: asyncio.run(_level_is(START["radio_web"], 0.0))), True)
+    finally:
+        stop(st, radio)
+
     web_p, radio, st = start({"radios": {"g90": eport}})
     try:
         check("a broken js8 block: the station runs on", await up(web_p), True)
@@ -251,6 +324,18 @@ async def main():
     finally:
         stop(st, radio)
     await runner.cleanup()
+
+
+async def _level_is(radio_web, want, timeout=8):
+    async with aiohttp.ClientSession() as s, s.ws_connect(f"http://127.0.0.1:{radio_web}/ws") as r:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            await r.send_str(json.dumps({"t": "codec_get", "use": "js8"}))
+            m = await page_until(r, lambda m: m.get("t") == "codec" and m.get("use") == "js8", 2)
+            if (m or {}).get("current") == want:
+                return True
+            await asyncio.sleep(0.2)
+    return False
 
 
 asyncio.run(main())

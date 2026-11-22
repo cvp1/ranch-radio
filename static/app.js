@@ -1483,12 +1483,13 @@ function tickTx() {
 
 // ============================================================ transmit level
 
-// The codec's transmit level per band, for Winlink (while armed) and Voice
-// (while this page's PTT is held). Steps apply live when that use holds the
+// The codec's transmit level per band, for Winlink (while armed), Voice
+// (while this page's PTT is held) and JS8 (while the station's JS8 tab is
+// armed: jf8call has no level of its own). Steps apply live when that use holds the
 // codec on this band; Save writes the band's level into the host file.
 const txLevel = {
   cfg: null, use: null, snap: {}, band: null,
-  LABEL: { winlink: "Winlink", voice: "Voice" },
+  LABEL: { winlink: "Winlink", voice: "Voice", js8: "JS8" },
 
   config(c) {
     this.cfg = c && c.uses && c.uses.length ? c : null;

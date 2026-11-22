@@ -12,6 +12,13 @@ one number or a per-band table, "default=-38,80m=-38,40m=-44,20m=-50". The
 band is the session's target frequency (the connect URL's freq=). A level the operator changes by hand during a
 session is logged on disarm, never kept: the table stays the only source.
 
+JS8 (--js8-codec-db, same table form) is the third: jf8call writes
+full-scale audio and has no level of its own, so the station's JS8 bridge
+holds the codec at this level while an arm lasts (the radio server's
+js8_codec request, on a socket of its own), and it follows the band if the
+dial moves to another one meanwhile. Disarming, or that socket closing, puts
+back the level from before: JTDX's, which never moves.
+
 Voice from the page (--voice-codec-db, same table form) is the second use:
 set when the page's own PTT keys, restored when it unkeys. Apps keying over
 rigctl (JTDX) never touch it, so their own level stays theirs. One use holds
@@ -239,15 +246,16 @@ def parse_levels(text, bands):
     return levels
 
 
-USES = ("winlink", "voice")
-LABEL = {"winlink": "Winlink", "voice": "voice"}
+USES = ("winlink", "voice", "js8")
+LABEL = {"winlink": "Winlink", "voice": "voice", "js8": "JS8"}
 MAX_DB = 0.0                  # a codec's top: the level apps get between uses
 
 
 def make(args, saver=None):
     """The codec profile for these server arguments (None: leave the codec alone)."""
     voice = getattr(args, "voice_codec_db", None)
-    if args.winlink_codec_db is None and voice is None:
+    js8 = getattr(args, "js8_codec_db", None)
+    if args.winlink_codec_db is None and voice is None and js8 is None:
         return None
     if args.winlink_codec_mixer:
         mixer = (CoreAudioLevel if MACOS else AlsaLevel)(args.winlink_codec_mixer)
@@ -257,7 +265,7 @@ def make(args, saver=None):
         mixer = CoreAudioLevel(args.audio_device)
     else:
         mixer = AlsaLevel(alsa_spec(args.audio_device))
-    return CodecProfile(mixer, args.winlink_codec_db, voice=voice,
+    return CodecProfile(mixer, args.winlink_codec_db, voice=voice, js8=js8,
                         min_db=getattr(args, "codec_min_db", None),
                         max_db=getattr(args, "codec_max_db", None), saver=saver)
 
@@ -274,9 +282,10 @@ class CodecProfile:
     """The codec at a use's level (Winlink while armed, voice while the page
     keys), the codec's own level otherwise."""
 
-    def __init__(self, mixer, levels, voice=None, min_db=None, saver=None, max_db=None):
+    def __init__(self, mixer, levels, voice=None, min_db=None, saver=None, max_db=None, js8=None):
         self.mixer = mixer
-        self.tables = {u: t for u, t in (("winlink", _table(levels)), ("voice", _table(voice))) if t}
+        self.tables = {u: t for u, t in (("winlink", _table(levels)), ("voice", _table(voice)),
+                                         ("js8", _table(js8))) if t}
         self.stored = {u: dict(t) for u, t in self.tables.items()}   # as in the host file
         self.min_db = None if min_db is None else float(min_db)
         self.max_db = MAX_DB if max_db is None else min(MAX_DB, float(max_db))
@@ -356,6 +365,26 @@ class CodecProfile:
         self.saved, self.applied, self.use = None, None, None
         self.current = before
         log.info("codec: restored %g dB", before)
+        return None
+
+    async def follow(self, band, use):
+        """The dial moved to `band` while `use` holds the codec: set that
+        band's level (a no-op on the same band, or when another use, or
+        none, holds it). Returns an error text, or None; on an error the
+        codec keeps the old band's level, still held, and the next band
+        change or leave() tries again."""
+        if self.saved is None or self.use != use or not self.applied or self.applied[0] == band:
+            return None
+        db = self.level_for(band, use)
+        try:
+            await self.mixer.set(db)
+        except CodecError as e:
+            log.error("codec: %s: could not follow to %s (%g dB): %s", LABEL[use], band or "band unknown", db, e)
+            return str(e)
+        old = self.applied
+        self.applied, self.current = (band, db), db
+        log.info("codec: %s followed the dial %s -> %s: %g dB (was %g dB)",
+                 LABEL[use], old[0] or "band unknown", band or "band unknown", db, old[1])
         return None
 
     # --- the page's level control

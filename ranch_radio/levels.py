@@ -3,7 +3,7 @@
     save(repo, host, radio_id, use, table) -> [written paths]
 
 The host file stays the one source of the levels: the page's Save edits the
-radio's "codec_db" (Winlink) or "voice_codec_db" (voice) string in place,
+radio's "codec_db" (Winlink), "voice_codec_db" (voice) or "js8_codec_db" (JS8) string in place,
 leaving the rest of the hand-formatted file as it was, checks the result
 (render.validate, including codec_min_db), and installs that radio's unit so
 `ranch-radio drift` stays clean. The running server already holds the new
@@ -27,7 +27,7 @@ from pathlib import Path
 
 from . import hostlock, paths, render
 
-KEYS = {"winlink": "codec_db", "voice": "voice_codec_db"}
+KEYS = {"winlink": "codec_db", "voice": "voice_codec_db", "js8": "js8_codec_db"}
 
 
 def table_text(table):

@@ -32,6 +32,13 @@ config.set with ARM or DISARM exactly, tx.send {"text", "tx_freq_hz"?,
 "submode"?}, tx.hb, tx.halt. Never radio.* (PTT, tune, connect), and of what
 a page writes only the text, a bounded offset and a named speed.
 
+The codec level: jf8call writes full-scale audio and has no TX level, so
+while an arm lasts the bridge holds the radio server's codec at its JS8
+level (--js8-codec-db, per band; CodecHold, a socket of its own). Arming
+waits for it and is refused if a configured level can't be set; disarming
+lets go, and the server puts the level from before back (JTDX's). A radio
+with no JS8 level leaves the codec alone, as before.
+
 Every key-up still goes through the radio's own rigctl port, so the radio
 server's gates (STOP TX latch, --no-tx, --tx-timeout, keepalive unkey) hold
 whatever the engine does. What went out on air is the radio server's state
@@ -100,11 +107,94 @@ def frame_of(event, data):
     return f
 
 
+class CodecHold:
+    """The radio server's codec at the JS8 level while an arm lasts: its own
+    socket to the radio's server ({"t": "js8_codec", "on": ...}). The server
+    puts the level back if this socket closes, so a station that dies holding
+    it leaves nothing behind."""
+
+    OFF_WAIT_S = 6                 # the server waits up to 3 s for the unkey, then restores
+
+    def __init__(self, url):
+        self.url = url                   # a callable: the radio's /ws URL now
+        self._s = self._ws = self._reader = self._reply = None
+        self.held = False
+        self.db = None
+
+    async def on(self):
+        """(ok, why, configured). configured false: no JS8 level on that radio."""
+        if self.held and self._ws is not None and not self._ws.closed:
+            return True, None, True
+        await self.off()
+        try:
+            self._s = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=5))
+            self._ws = await self._s.ws_connect(self.url(), heartbeat=5, max_msg_size=1 << 22)
+            m = await self._ask(True)
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError) as e:
+            await self.off(send=False)
+            return False, f"the radio's server didn't answer ({type(e).__name__})", True
+        if not m.get("ok") or not m.get("on"):
+            await self.off(send=False)
+            return False, _text(m.get("why")) or "the radio's server refused", m.get("configured", True) is not False
+        self.held, self.db = True, m.get("db")
+        log.info("js8: codec at the JS8 level: %s dB for %s", self.db, m.get("band") or "band unknown")
+        return True, None, True
+
+    async def _ask(self, on):
+        self._reply = asyncio.get_running_loop().create_future()
+        if self._reader is None:
+            self._reader = asyncio.ensure_future(self._read(self._ws))
+        await self._ws.send_str(json.dumps({"t": "js8_codec", "on": on}))
+        return await asyncio.wait_for(asyncio.shield(self._reply), REPLY_S if on else self.OFF_WAIT_S)
+
+    async def _read(self, ws):
+        try:
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue                 # the scope's frames
+                try:
+                    m = json.loads(msg.data)
+                except ValueError:
+                    continue
+                if not isinstance(m, dict):
+                    continue
+                if m.get("t") == "js8_codec" and self._reply is not None and not self._reply.done():
+                    self._reply.set_result(m)
+                elif m.get("t") == "codec" and m.get("use") == "js8" and self.held:
+                    self.db = m.get("current")
+        finally:
+            if ws is self._ws:
+                self.held = False            # the server let go when the socket closed
+            if self._reply is not None and not self._reply.done():
+                self._reply.set_exception(ConnectionError("closed"))
+
+    async def off(self, send=True):
+        ws, s, reader, held = self._ws, self._s, self._reader, self.held
+        self._ws = self._s = self._reader = None
+        self.held, self.db = False, None
+        if ws is not None and not ws.closed:
+            if send and held:
+                self._ws = ws
+                try:
+                    await self._ask(False)       # the level is back when this answers
+                except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ConnectionError, RuntimeError) as e:
+                    log.warning("js8: codec release not confirmed (%s); closing its socket restores it",
+                                type(e).__name__)
+                self._ws = None
+            await ws.close()
+        if reader is not None:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        if s is not None:
+            await s.close()
+
+
 class Engine:
     """One radio's engine, seen from the station."""
 
-    def __init__(self, rid, port, push, radio=None):
+    def __init__(self, rid, port, push, radio=None, codec=None):
         self.rid, self.port, self.push = rid, port, push
+        self.codec = codec                   # CodecHold, or None: the codec is left alone
         self.radio = radio or (lambda: {})   # the radio server's word: {"present", "tx_allowed", "tx_stopped", "tx"}
         self.armed = None                    # {"by": page, "until": monotonic, "until_utc": epoch} while it may send
         self.queue = 0                       # frames the engine says it has queued
@@ -129,6 +219,7 @@ class Engine:
         unsafe = [k for k in UNSAFE_KEYS if self.status.get(k) and not (k == "tx_enabled" and self.armed)]
         r = self.radio() or {}
         return {"connected": self.connected, "error": self.error, "unsafe": unsafe,
+                "codec_db": self.codec.db if self.codec is not None and self.codec.held else None,
                 "armed": bool(self.armed), "armed_until": self.armed and self.armed["until_utc"],
                 "queue": self.queue, "radio_tx": bool(r.get("tx")), "why_not": self.why_not(),
                 **{k: self.status.get(k) for k in STATUS_KEYS}}
@@ -187,6 +278,18 @@ class Engine:
         seconds = max(60, min(int(seconds), ARM_MAX_S))
         rec = {"by": page, "until": time.monotonic() + seconds, "until_utc": time.time() + seconds}
         self.armed = rec
+        if self.codec is not None:
+            # The JS8 level first: armed at JTDX's level, jf8call's full-scale
+            # audio would overdrive the radio (2026-11-21: 0 dB gave ALC
+            # far over; -50 dB gave ~94 W, ALC 0 on 20 m).
+            cok, cwhy, configured = await self.codec.on()
+            if self.armed is not rec:
+                await self.codec.off()
+                return "JS8 was disarmed while arming."
+            if not cok and configured:
+                self.armed = None
+                self.pushview()
+                return f"Can't arm JS8: the codec level wasn't set ({cwhy})."
         ok, got = await self._call("config.set", ARM)
         if ok:
             ok, got = await self._call("status.get")
@@ -219,6 +322,8 @@ class Engine:
             if ok and isinstance(got, dict):
                 self._status(got)
             self._redisarmed = time.monotonic()
+        if self.codec is not None and self.armed is None:
+            await self.codec.off()               # after the halt and disarm: the level goes back
         if was:
             log.warning("js8 %s: disarmed: %s", self.rid, why)
             self.push({"t": "notice", "level": "warn", "msg": f"JS8 {self.rid} disarmed: {why}."})
@@ -389,6 +494,8 @@ class Engine:
                     # A restarted engine comes up disarmed (js8_engine.py); one that
                     # didn't restart is disarmed by safety() when it is back.
                     self.armed = None
+                    if self.codec is not None:
+                        await self.codec.off()
                     log.warning("js8 %s: disarmed: the engine went away", self.rid)
                     self.push({"t": "notice", "msg": f"JS8 {self.rid} disarmed: the engine went away.",
                                "level": "warn"})
@@ -405,6 +512,8 @@ class Engine:
     async def stop(self):
         if self.armed or any(self.status.get(k) for k in UNSAFE_KEYS):
             await self.disarm("the station is stopping")
+        if self.codec is not None:
+            await self.codec.off()
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -419,7 +528,13 @@ class Js8Bridge:
         if unknown:
             raise ValueError(f"js8.radios names no radio on this station: {unknown}")
         self.station = station
-        self.engines = {rid: Engine(rid, port, self._push, lambda rid=rid: self._radio(rid))
+        # A radio with a page of its own (every station radio) gets the codec
+        # hold; the radio's server answers "not configured" when it has no
+        # JS8 level, and the codec is left alone.
+        by_id = {r.id: r for r in station.radios}
+        self.engines = {rid: Engine(rid, port, self._push, lambda rid=rid: self._radio(rid),
+                                    CodecHold(lambda rid=rid: self._radio_url(rid))
+                                    if getattr(by_id[rid], "web", None) else None)
                         for rid, port in block["radios"].items()}
         self.listeners = []          # callables given each push (the JS8 tab's add-on); one failing is logged
         self._safety = None
@@ -428,6 +543,11 @@ class Js8Bridge:
         """What the radio's own server says (station.RadioWatch); {} when unknown."""
         fn = getattr(self.station, "radio_tx_state", None)
         return fn(rid) if fn else {}
+
+    def _radio_url(self, rid):
+        r = next(r for r in self.station.radios if r.id == rid)
+        tok = getattr(self.station, "token", None)
+        return f"http://127.0.0.1:{r.web}/ws" + (f"?token={tok}" if tok else "")
 
     def _push(self, msg):
         self.station._broadcast(json.dumps(msg))
