@@ -2,6 +2,7 @@ certs/
 __pycache__/
 .venv/
 server.log
+server.log.[0-9]*
 ardop/build/
 js8/build/
 packet-logs/

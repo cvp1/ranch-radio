@@ -67,5 +67,12 @@ p = subprocess.run([sys.executable, "-c", CHILD, str(ROOT), str(cap)], capture_o
 check("a pipe: nothing rotated", "rotated ['" in p.stderr, False)
 check("  and the child still ran", p.returncode, 0)
 
+# The radio's console log is <repo>/server.log on a Mac: its copies must not
+# show up in the checkout as untracked files (2026-11-21).
+ign = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "server.log", "server.log.1", "server.log.3"],
+                     capture_output=True, text=True)
+check("the checkout ignores server.log and its copies", ign.stdout.split(),
+      ["server.log", "server.log.1", "server.log.3"])
+
 print(f"\n{'ALL PASS' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)
