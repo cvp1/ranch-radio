@@ -1591,7 +1591,10 @@ const station = (() => {
       },
       // An add-on's api.tune({band}) (UX plan PR 4c, 2026-11-19): the focus
       // radio, through tuneFocus.
-      tune: ({ band } = {}) => tuneFocus({ band }),
+      // An exact dial (the JS8 tab, 2026-11-21) is for the radio it names:
+      // the focus radio must be that one, or nothing is sent.
+      tune: ({ band, freq = null, mode = null, data = null, radio = null } = {}) =>
+        freq == null ? tuneFocus({ band }) : tuneFocus({ freq, mode, data }, radio || focusId()),
     });
     // A resize can cross Operate's 1100 px (the tab comes or goes, the route
     // goes home) or its 1500 px (station.css re-places the panes by itself).

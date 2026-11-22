@@ -27,6 +27,8 @@
 // put its radio on a band ("20m", "70cm" or "20"): the station tunes the focus
 // radio through station.tuneFocus, a radio's own page uses its band stack
 // (app.js bandStack); each refuses as its page does (locked, Winlink armed).
+// api.tune({band, freq, mode?, data?, radio?}) asks for an exact dial inside
+// that band: the station's focus radio only, and only if it is `radio`.
 // An add-on never sends a radio a set itself. api.canTune(): the page has a
 // way to tune (a radio page inside the station's frame has none).
 // Uses common.js ($, esc, toast) and the page's send().
@@ -45,11 +47,22 @@ const addons = (() => {
     send: (verb, extra = {}) => send({ t: "addon", addon: name, do: verb, ...extra }),
     changed: () => host.changed(),
     canTune: () => typeof host.tune === "function",
-    tune({ band } = {}) {
+    tune({ band, freq, mode, data, radio } = {}) {
       const s = String(band ?? "");
       const b = BANDS.find((x) => x.n === s || (x.label || `${x.n}m`) === s);
       if (!b || typeof host.tune !== "function") return Promise.resolve({ ok: false, why: b ? "no tuning here" : "no such band" });
-      return Promise.resolve(host.tune({ band: b.n }));
+      if (freq == null) return Promise.resolve(host.tune({ band: b.n }));
+      // An exact dial (the JS8 tab's calling frequencies, 2026-11-21): only
+      // inside the band it names, so an add-on can't name 20 m and land
+      // elsewhere; mode a plain name, data a boolean, radio the id it is
+      // aimed at (the station refuses if that isn't the focus radio).
+      const f = Number(freq);
+      if (!Number.isFinite(f) || f < b.lo || f > b.hi) return Promise.resolve({ ok: false, why: `not in the ${b.label || b.n + " m"} band` });
+      const o = { band: b.n, freq: Math.round(f) };
+      if (typeof mode === "string" && /^[A-Z]{2,4}$/.test(mode)) o.mode = mode;
+      if (typeof data === "boolean") o.data = data;
+      if (typeof radio === "string" && radio) o.radio = radio;
+      return Promise.resolve(host.tune(o));
     },
   });
 

@@ -5,7 +5,10 @@
 //
 //   1 status card   what the radio is doing, in one word (Listening, TX
 //                   armed, ON AIR, STOP TX, Engine down, UNSAFE), the
-//                   frequency, your call and grid; on the right, Transmit:
+//                   frequency, your call and grid, the JS8 bands (a click
+//                   retunes, USB data, through the station's padlock; with
+//                   auto-tune the ATU tunes the band; not while armed); on
+//                   the right, Transmit:
 //                   pick 5/10/30 min and Arm TX, or the time left and Disarm;
 //                   when it can't arm, why
 //   2 send panel    To: everyone, or the station picked by clicking its call
@@ -34,6 +37,10 @@
   const MAX_SEND = 160, ARM_MINUTES = [5, 10, 30];
   const QUERIES = [["SNR?", "How strong am I?"], ["GRID?", "Where are you?"], ["INFO?", "Your station info"],
                    ["STATUS?", "Your status"], ["HEARING?", "Who do you hear?"]];
+  // JS8Call's own default dial frequencies (Hz), the ones stock stations sit on.
+  const DIALS = [["160", 1_842_000], ["80", 3_578_000], ["40", 7_078_000], ["30", 10_130_000],
+                 ["20", 14_078_000], ["17", 18_104_000], ["15", 21_078_000], ["12", 24_922_000],
+                 ["10", 28_078_000], ["6", 50_318_000]];
   const SPEEDS = [["", "As set"], ["normal", "Normal"], ["fast", "Fast"], ["turbo", "Turbo"], ["slow", "Slow"]];
   let body = null, api = null, snap = { ready: false }, pick = null, tx = null, ticker = null, to = null;
   let armMins = 10, speed = "";
@@ -103,10 +110,44 @@
       const me = el("div", "js8-me");
       me.append(el("span", "label", "You"), el("b", null, s.callsign || "no call set"), el("span", null, s.grid || ""));
       info.appendChild(me);
+      info.appendChild(bandRow(s));
     }
     card.appendChild(info);
     card.appendChild(armBlock(s));
     return card;
+  }
+
+  // The JS8 calling frequencies, one button each. A click retunes the radio
+  // through the station's own path (api.tune: the padlock, the focus radio,
+  // the radio server's refusals), USB with data on, as FT8's band cells do;
+  // with auto-tune on, the radio server tunes the ATU on the new band (a
+  // short carrier). Not while armed: the arm was given for the band it's on.
+  function bandRow(s) {
+    const row = el("div", "js8-bands");
+    row.appendChild(el("span", "label", "Band"));
+    const seg = el("div", "seg");
+    const khz = typeof s.radio_freq_khz === "number" ? s.radio_freq_khz : null;
+    const can = !!(api && api.canTune && api.canTune());
+    for (const [band, f] of DIALS) {
+      const on = khz !== null && Math.abs(khz * 1000 - f) < 1000;
+      const c = el("button", "chip" + (on ? " on" : ""), `${band} m`);
+      c.dataset.band = band;
+      c.disabled = !!s.armed || !can;
+      c.title = s.armed ? "Disarm first: a band change isn't made while JS8 is armed"
+        : !can ? "No tuning from this page"
+        : `${(f / 1e6).toFixed(3)} MHz USB, data on. With auto-tune on, the ATU tunes the new band: a short carrier.`;
+      c.onclick = () => {
+        if (!api || !pick || s.armed) return;
+        Promise.resolve(api.tune({ band, freq: f, mode: "USB", data: true, radio: pick })).then((res) => {
+          // The station says its own refusals (a toast, or the padlock); this
+          // says only the ones it never sees.
+          if (res && !res.ok && /not in the|no tuning|exact dials/.test(res.why || "")) toast(`Not retuned: ${res.why}`, "warn");
+        });
+      };
+      seg.appendChild(c);
+    }
+    row.appendChild(seg);
+    return row;
   }
 
   function armBlock(s) {
