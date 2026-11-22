@@ -36,6 +36,11 @@ each radio frame, a radio's own page) keeps each `set` sent. Checks:
             action is refused, nothing sent, the dial never moves, the tuner
             never tunes; on the IC-7610's own page an add-on's api.tune is refused
             by the radio server. Positive control: disarmed, it moves
+  exact     api.tune with an exact dial (the JS8 tab's bands): locked, refused,
+            nothing sent; a dial outside the band it names, or aimed at a
+            radio that isn't the focus, refused, nothing sent; unlocked, the
+            IC-7300 lands on 14,078,000 Hz USB with data on; on the IC-7610
+            (auto-tune) a band change that way brings its ATU tune
 STOP TX and Release TX are untouched.
 
     python3 tests/tune_actions_page_test.py [screenshot-dir]
@@ -647,6 +652,46 @@ try:
     click(".pg-open .pg-tune[data-band=\"15m\"]")
     check("  positive control: disarmed, the same api.tune moves the dial (15m)",
           testkit.wait_for(lambda: 21_000_000 <= (dial(AT)[0] or 0) <= 21_450_000, 10, 0.2), True)
+
+    # ------------------------------------------------- an exact dial (JS8)
+    print("\n# api.tune with an exact dial (the JS8 tab's bands, 2026-11-21)", flush=True)
+    b.goto(f"http://127.0.0.1:{WEB}/?j=1#/home")     # off the radio's own page: focus is the station's storage
+    check("focus on the IC-7300", focus_on("ic7300"), True)
+    # A probe in the Propagation add-on's place: its api is any add-on's.
+    b.js("addons.register('propagation', {mount(_b, a) { window.__tapi = a; }}), true")
+    check("  the probe has the station's api", b.js("typeof window.__tapi?.tune === 'function' && __tapi.canTune()"), True)
+    JS8_20 = "{band: '20', freq: 14078000, mode: 'USB', data: true, radio: 'ic7300'}"
+    b.js("store.set('locked', true), true")
+    before = dial(IC)[:3]
+    reset()
+    check("  locked: refused as locked", b.js(f"__tapi.tune({JS8_20}).then((r) => r.why)"), "locked")
+    quiet()
+    check("  locked: nothing sent, the dial unchanged", (sets(), dial(IC)[:3]), ([], before))
+    b.js("store.set('locked', false), true")
+    check("  out of the band it names: refused in the page",
+          b.js("__tapi.tune({band: '20', freq: 7078000, mode: 'USB', data: true, radio: 'ic7300'}).then((r) => r.why)"),
+          "not in the 20 m band")
+    check("  aimed at a radio that isn't the focus: refused",
+          b.js("__tapi.tune({band: '20', freq: 14078000, radio: 'ic7610'}).then((r) => [r.ok, r.why])"),
+          [False, "The focus radio changed: nothing sent."])
+    quiet()
+    check("  neither sent anything, the dial unchanged", (sets(), dial(IC)[:3]), ([], before))
+    check("  unlocked: reaches the radio, 14,078,000 Hz USB with data on",
+          [b.js(f"__tapi.tune({JS8_20}).then((r) => r.ok)"), dial_is(IC, 14_078_000, "USB"), dial(IC)[2]], [True, True, True])
+    check("focus on the IC-7610 (auto-tune on)", focus_on("ic7610"), True)
+    b.js("addons.register('propagation', {mount(_b, a) { window.__tapi = a; }}), true")
+    watcher = Other(AT)
+
+    def tuner_idle():
+        st = [m for m in list(watcher.msgs) if m.get("t") in ("hello", "state") and "tuner" in (m.get("state") or m.get("d") or {})]
+        return bool(st) and (st[-1].get("state") or st[-1].get("d"))["tuner"] != 2
+    check("  the earlier 15 m tune is over first", testkit.wait_for(tuner_idle, 30, 0.2), True)
+    watcher.msgs.clear()
+    b.js("document.querySelectorAll('#toasts .toast').forEach((t) => t.remove()), true")
+    check("  a band change there brings its ATU tune, as FT8's does",
+          [b.js("__tapi.tune({band: '40', freq: 7078000, mode: 'USB', data: true, radio: 'ic7610'}).then((r) => r.ok || r.why)"),
+           dial_is(AT, 7_078_000, "USB"), testkit.wait_for(watcher.tuned, 15, 0.2)], [True, True, True])
+    watcher.close()
 
     b.goto(f"http://127.0.0.1:{WEB}/?z=1#/home")
     b.wait("!!document.querySelector('#rig-bar .rb-stop-btn')", 15)

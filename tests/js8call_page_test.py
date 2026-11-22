@@ -13,6 +13,11 @@ browser: no server, the page's own CSS and script, a stub add-on registry.
     INFO? STATUS? HEARING? and addresses the message box; offset and speed
     go with a send; Send and Enter send the text (and clear the box); Disarm sends disarm; a frame arriving while typing
     keeps the text and the focus; ON AIR when the radio's server says keyed
+  - bands: the JS8 calling frequencies, the one the radio is on marked; a
+    click asks the page (api.tune) for that exact dial, USB with data on, on
+    this radio, and sends the add-on nothing; armed, every band button is
+    disabled saying why and a click tunes nothing; a page with no tuning
+    disables them
   - activity: one row per audio offset, sorted, the latest text there
   - messages: complete decodes, newest first, from and to
   - heard: newest first; a later frame from a station moves it to the top
@@ -108,7 +113,7 @@ try:
       document.body.innerHTML = '<div class="addon-body" id="j"></div>';
     })()""" % json.dumps(css))
     setup((ROOT / "static/addons/js8call.js").read_text())
-    setup("window.__sent = []; __impl.js8call.mount(document.getElementById('j'), {send: (v, x) => __sent.push([v, x])}); __impl.js8call.hello({ready: false, why: 'JS8 is not set up here'})")
+    setup("window.__sent = []; window.__tuned = []; __impl.js8call.mount(document.getElementById('j'), {send: (v, x) => __sent.push([v, x]), canTune: () => window.__canTune !== false, tune: (o) => { __tuned.push(o); return Promise.resolve({ok: true}); }}); __impl.js8call.hello({ready: false, why: 'JS8 is not set up here'})")
     check("not set up: says why", b.js(f"({Q})('.js8-status').textContent"), "JS8 is not set up here")
 
     setup("__impl.js8call.hello(" + json.dumps(SNAP) + ")")
@@ -117,6 +122,16 @@ try:
           b.js(f"[({Q})('.js8-state').textContent, ({Q})('.js8-status').textContent]"), ["Listening", "14.078 MHz DATA-U · Normal"])
     check("status card: your call and grid", b.js(f"({Q})('.js8-me').textContent"), "YouN0CALLFN31")
     check("send panel: says to arm first", b.js(f"({Q})('.js8-gate').textContent"), "Arm TX above to send")
+    check("bands: the JS8 dials, the one it's on marked",
+          b.js(f"[({TEXTS})('.js8-bands .chip'), ({Q})('.js8-bands .chip.on').dataset.band]"),
+          [["160 m", "80 m", "40 m", "30 m", "20 m", "17 m", "15 m", "12 m", "10 m", "6 m"], "20"])
+    check("bands: the title says the dial, data, and the ATU carrier",
+          b.js(f"({Q})('.js8-bands [data-band=\"40\"]').title"),
+          "7.078 MHz USB, data on. With auto-tune on, the ATU tunes the new band: a short carrier.")
+    setup(f"({Q})('.js8-bands [data-band=\"40\"]').click()")
+    check("bands: a click asks the page to tune the exact dial, USB data, on this radio",
+          b.js("__tuned.at(-1)"), {"band": "40", "freq": 7078000, "mode": "USB", "data": True, "radio": "ic7300"})
+    check("bands: it sends nothing to the add-on itself", b.js("__sent.length"), 0)
     check("lists: each says what it is", b.js(f"({TEXTS})('.js8-pane h3')"), ["Band activity", "Messages", "Stations heard"])
     check("activity: one row per offset, sorted",
           b.js("[...document.querySelectorAll('#j .js8-activity tbody tr')].map((r) => r.dataset.bin)"),
@@ -157,6 +172,12 @@ try:
     check("armed: Arm gone, Disarm shown, HB/CQ/box enabled",
           b.js(f"[!!({Q})('.js8-arm'), !!({Q})('.js8-disarm'), ({Q})('.js8-hb').disabled, ({Q})('.js8-cq').disabled, ({Q})('.js8-text').disabled]"),
           [False, True, False, False, False])
+    check("armed: the band buttons are disabled, saying why",
+          b.js(f"[[...document.querySelectorAll('#j .js8-bands .chip')].every((x) => x.disabled), ({Q})('.js8-bands .chip').title]"),
+          [True, "Disarm first: a band change isn't made while JS8 is armed"])
+    n = b.js("__tuned.length")
+    setup(f"({Q})('.js8-bands [data-band=\"80\"]').click()")
+    check("armed: a click on a band tunes nothing", b.js("__tuned.length"), n)
     check("armed: the gate says so", b.js(f"({Q})('.js8-gate').textContent.startsWith('Armed')"), True)
     check("armed: HB keeps its own tooltip", b.js(f"({Q})('.js8-hb').title.startsWith('Heartbeat:')"), True)
     check("armed, no station picked: queries disabled", b.js("[...document.querySelectorAll('#j .js8-q')].every((x) => x.disabled)"), True)
@@ -217,6 +238,10 @@ try:
         setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: " + json.dumps(STATUS) + "})")
         b.screenshot(os.path.join(SHOTS, "js8call-disarmed.png"))
 
+    setup("window.__canTune = false; __impl.js8call.event({event: 'status', radio: 'ic7300', status: " + json.dumps(STATUS) + "})")
+    check("no tuning on this page: band buttons disabled, saying so",
+          b.js(f"[({Q})('.js8-bands .chip').disabled, ({Q})('.js8-bands .chip').title]"), [True, "No tuning from this page"])
+    setup("window.__canTune = true")
     setup("__impl.js8call.event({event: 'status', radio: 'ic7300', status: {connected: false, error: 'engine not reachable on 127.0.0.1:4537 (ClientConnectorError)', unsafe: []}})")
     check("engine down: says so, and why", b.js(f"({Q})('.js8-status').textContent"),
           "Engine not connected: engine not reachable on 127.0.0.1:4537 (ClientConnectorError)")
