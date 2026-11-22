@@ -137,14 +137,6 @@ def _mac_port(ioreg_text, vid, pid):
                         return m.group(2).strip('"')
                     break
     return None
-    for block in re.split(r"(?m)^\+-o ", out)[1:]:      # one block per device, children inside
-        v = re.search(r'"idVendor" = (\d+)', block)
-        p = re.search(r'"idProduct" = (\d+)', block)
-        if v and p and (int(v.group(1)), int(p.group(1))) == (vid, pid):
-            m = re.search(r'"IOCalloutDevice" = "([^"]+)"', block)
-            if m:
-                return m.group(1)
-    return None
 
 
 def bcd(v):

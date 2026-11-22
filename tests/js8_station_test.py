@@ -17,7 +17,6 @@ and a fake jf8call engine; the test is a page.
 """
 import asyncio
 import json
-import os
 import signal
 import subprocess
 import sys

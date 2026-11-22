@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import catalog, doctor, manifest, modules, paths, render, service, updater
+from . import backup, catalog, doctor, manifest, modules, paths, render, service, updater
 from .render import Artifact, HostError, artifacts, load, same
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -377,6 +377,105 @@ def _show_service(lines):
         print(("  ok   " if rc == 0 else f"  FAIL ({rc}) ") + line + (f"\n         {err}" if err else ""))
 
 
+def log_targets(h, home=None):
+    """[(name, module, kind, where)] for every service the host file renders:
+    a Mac agent's console file (its StandardErrorPath, where launchd puts both
+    streams), a Linux unit's journal. From render, so it names what install
+    wrote, not a guess."""
+    out = []
+    for art in artifacts(h, home):
+        if art.fmt == "plist":
+            c = art.content
+            files = list(dict.fromkeys(x for x in (c.get("StandardErrorPath"), c.get("StandardOutPath")) if x))
+            out.append((c["Label"], art.module, "file", files))
+        elif art.fmt == "systemd" and art.path.endswith(".service"):
+            out.append((Path(art.path).name, art.module, "journal", [Path(art.path).name]))
+    return out
+
+
+def cmd_logs(a):
+    h = load_host(a.host or this_host())
+    targets = log_targets(h, a.home)
+    if not a.service:
+        w = max([len(t[0]) for t in targets] + [7])
+        for name, module, kind, where in targets:
+            print(f"{name:{w}}  {module:12} {', '.join(where) or '(none)'}")
+        print("\nranch-radio logs NAME [-f] [-n LINES]   (NAME: a name above, or its module)")
+        return 0
+    hit = [t for t in targets if a.service in (t[0], t[1])] or [t for t in targets if a.service in t[0]]
+    if len(hit) != 1:
+        names = ", ".join(t[0] for t in hit) if hit else "none"
+        print(f"ranch-radio: {a.service!r} matches {names}; `ranch-radio logs` lists them")
+        return 2
+    name, _, kind, where = hit[0]
+    if kind == "journal":
+        argv = [os.environ.get("RANCH_RADIO_JOURNALCTL", "journalctl"), "--user", "-u", where[0], "-n", str(a.lines),
+                "--no-pager"] + (["-f"] if a.follow else [])
+    else:
+        argv = [os.environ.get("RANCH_RADIO_TAIL", "tail"), "-n", str(a.lines)] + (["-F"] if a.follow else []) + where[:1]
+    try:
+        return subprocess.call(argv)
+    except KeyboardInterrupt:
+        return 0
+    except OSError as e:
+        print(f"ranch-radio: {argv[0]}: {e}")
+        return 1
+
+
+def cmd_status(a):
+    h = load_host(a.host or this_host())
+    rows = service.status(h)
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for x in rows:
+        if not x["active"]:
+            state = "stopped"
+        elif not x.get("up"):
+            state = f"running, not answering ({x.get('why', '?')})"
+        else:
+            bits = [b for b, on in (("TRANSMITTING", x.get("tx")), ("Winlink session", x.get("armed") or x.get("session")),
+                                    ("STOP TX latched", x.get("stopped")),
+                                    (f"{x.get('rigctl')} rigctl client(s)", x.get("rigctl"))) if on]
+            state = "up" + (": " + ", ".join(bits) if bits else ", idle")
+        print(f"{x['key']:12} {x['name']:20} {state}")
+    return 0
+
+
+def _lifecycle(a, action):
+    h = load_host(a.host or this_host())
+    _guard(h, a)
+    keys = a.names or list(service.servers(h))
+    done, refused = service.lifecycle(h, keys, action, drop_rigctl=a.drop_rigctl)
+    _show_service(done)
+    for why in refused:
+        print(f"not {action}ed: {why}" if action == "restart" else f"not stopped: {why}")
+    bad = [x for x in done if x[1]]
+    return 1 if refused or bad else 0
+
+
+def cmd_stop(a):
+    return _lifecycle(a, "stop")
+
+
+def cmd_restart(a):
+    return _lifecycle(a, "restart")
+
+
+def cmd_backup(a):
+    name = a.host or this_host()
+    h = load_host(name)
+    out = a.out or f"ranch-radio-{h['host']}-{time.strftime('%Y-%m-%d-%H%M')}.tar.gz"
+    m = backup.backup(h, host_path(name), out, a.home)
+    ok, problems = backup.verify(out)
+    for f in m["files"]:
+        print(f"  {f['name']:40} {f['bytes']:>10} bytes")
+    for why in m["left_out"]:
+        print(f"  not in it: {why}")
+    print(f"{out}: {len(m['files'])} file(s), mode 600" + ("" if ok else f"; DOES NOT VERIFY: {'; '.join(problems)}"))
+    return 0 if ok else 1
+
+
 def cmd_start(a):
     h = load_host(a.host or this_host())
     _guard(h, a)
@@ -493,7 +592,7 @@ def _rollback(h, a, home, before, bad, was_up, why):
     st["running"] = before
     st["pending"] = sorted(set(held))          # in use, not restarted: restarted at the next update
     updater.save_state(home, st)
-    tail = (f"every server that was serving is serving again" if not down else
+    tail = ("every server that was serving is serving again" if not down else
             f"STILL NOT SERVING: {', '.join(down)}; check the server's log")
     if held:
         tail += f"; not restarted (in use), restarted at the next update: {', '.join(sorted(set(held)))}"
@@ -815,6 +914,27 @@ def main(argv=None):
     dm.add_argument("--port", type=int, default=0, help="the station page's port (default: a free one)")
     w = sub.add_parser("where", help="the host file this machine uses (exit 1 if none)")
     w.add_argument("host", nargs="?")
+    sx = sub.add_parser("status", help="each server: running, answering, transmitting, latched, rigctl clients")
+    sx.add_argument("--host", help="default: this machine")
+    sx.add_argument("--json", action="store_true")
+    for name, what in (("stop", "stop servers (default all) that are idle: never one transmitting or in Winlink"),
+                       ("restart", "restart idle servers (default all); never one transmitting, in Winlink "
+                                   "or with STOP TX latched")):
+        c = sub.add_parser(name, help=what)
+        c.add_argument("names", nargs="*", help="radio ids or 'station' (default: all)")
+        c.add_argument("--host", help="default: this machine")
+        c.add_argument("--drop-rigctl", action="store_true", help="go ahead even with JTDX/WSJT-X connected")
+        c.add_argument("--home", help=argparse.SUPPRESS)
+    bk = sub.add_parser("backup", help="one archive (mode 600) of this host's file, state and databases; read-only")
+    bk.add_argument("out", nargs="?", help="default: ranch-radio-<host>-<date>.tar.gz here")
+    bk.add_argument("--host", help="default: this machine")
+    bk.add_argument("--home", help=argparse.SUPPRESS)
+    lg = sub.add_parser("logs", help="where each service logs, or one service's log (tail; -f follows)")
+    lg.add_argument("service", nargs="?", help="a name from the list, or its module")
+    lg.add_argument("-f", "--follow", action="store_true")
+    lg.add_argument("-n", "--lines", type=int, default=50)
+    lg.add_argument("--host", help="default: this machine")
+    lg.add_argument("--home", help=argparse.SUPPRESS)
     st = sub.add_parser("start", help="enable and start everything the host file renders (after install)")
     st.add_argument("host", nargs="?")
     st.add_argument("--home", help=argparse.SUPPRESS)
@@ -856,4 +976,6 @@ def main(argv=None):
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
             "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
-            "logsync": cmd_logsync, "demo": cmd_demo}[a.cmd](a) or 0
+            "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs, "status": cmd_status,
+            "stop": cmd_stop, "restart": cmd_restart,
+            "backup": cmd_backup}[a.cmd](a) or 0

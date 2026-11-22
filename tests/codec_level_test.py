@@ -35,7 +35,6 @@ os.environ["CODEC_LEVEL_BACKEND"] = "alsa"   # the fake amixer, never CoreAudio;
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import codec_level  # noqa: E402
-import testkit  # noqa: E402
 from testkit import wait_for  # noqa: E402
 
 import winlink_test_lib as L  # noqa: E402

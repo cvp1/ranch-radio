@@ -390,7 +390,7 @@ def own_page(p):
     b.goto(f"http://127.0.0.1:{p['web']}/?o={time.monotonic_ns()}#/propagation")
     b.wait("document.querySelector('#conn b')?.textContent === 'Connected' && !!document.querySelector('.panel.addon-propagation')", 20)
     deliver({"t": "addon", "addon": "propagation", "state": PROP})
-    return bool(b.wait(f"!!document.querySelector('.pg-open .pg-tune[data-band=\"15m\"]')", 10))
+    return bool(b.wait("!!document.querySelector('.pg-open .pg-tune[data-band=\"15m\"]')", 10))
 
 
 procs = []

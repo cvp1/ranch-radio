@@ -48,6 +48,7 @@ from urllib.parse import urlsplit
 import aiohttp
 from aiohttp import WSMsgType, web
 
+import logcap
 import webguard
 import winlink
 from server import band_of, tls_context
@@ -150,7 +151,7 @@ class RemoteLane:
         try:
             self.ws = await self.http.ws_connect(f"http://127.0.0.1:{self.radio.web}/ws"
                                                  + (f"?token={st.token}" if st.token else ""),
-                                                 heartbeat=5)
+                                                 heartbeat=5, headers=st.auth.bearer_headers())
             hello = json.loads((await self.ws.receive(timeout=5)).data)
             wl = hello.get("winlink") or {}
             self._take(wl)
@@ -280,7 +281,7 @@ class RadioWatch:
             try:
                 async with aiohttp.ClientSession() as s, \
                         s.ws_connect(f"http://127.0.0.1:{self.radio.web}/ws" + (f"?token={st.token}" if st.token else ""),
-                                     heartbeat=5) as ws:
+                                     heartbeat=5, headers=st.auth.bearer_headers()) as ws:
                     hello = json.loads((await ws.receive(timeout=5)).data)
                     self._take(hello.get("winlink") or {}, first=True)
                     cfg = hello.get("config") or {}
@@ -437,6 +438,9 @@ class Station:
     def __init__(self, cfg, args):
         self.cfg, self.args = cfg, args
         self.token = args.token
+        a = cfg.get("auth") or {}
+        # Fails closed at start (a missing or open token file): webguard.AuthPolicy.
+        self.auth = webguard.AuthPolicy.from_config(a.get("mode"), a.get("token_file"))
         self.radios = [Radio(r) for r in cfg.get("radios", [])]
         self.clients = set()
         self.ardop = Ardop(self, cfg.get("winlink", {}))
@@ -735,6 +739,7 @@ class Station:
     async def handle(self, ws):
         self.clients.add(ws)
         await ws.send_str(json.dumps({"t": "hello", "config": self.config(), **self.radios_info(),
+                                      "role": getattr(ws, "rr_role", "operator"),
                                       "winlink": (self.addons.own_snapshot("winlink")
                                                   if self.addons and self.addons.get("winlink") else None),
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
@@ -766,10 +771,23 @@ class Station:
                     await lane._close()
                 await self.winlink.abort("operator's page closed")
 
+    # What a read-only page (auth readonly-lan) may send the station: nothing
+    # that changes anything. Everything else is refused (Winlink, JS8 arm and
+    # send, Mesh sends, add-ons, Modules, logbook corrections). STOP TX is
+    # each radio's own socket (/r/<id>/ws), which a read-only page keeps.
+    READONLY_OK = frozenset({"ping", "page_log"})
+
     async def _command(self, ws, m):
         t = m["t"]
         if not isinstance(t, str):     # a non-string type closed the page's socket (2026-11-19)
             raise TypeError("the message type must be a string")
+        if getattr(ws, "rr_expiry", None) and time.time() >= ws.rr_expiry:
+            ws.rr_role = "readonly"
+        if (getattr(ws, "rr_role", "operator") == "readonly" and t not in self.READONLY_OK
+                and not (t == "logsync" and m.get("do") == "lookup")):
+            log.info("refused %r from a read-only page", t)
+            self.notice("Read-only: unlock to operate.", "warn", ws)
+            return
         if t in ("winlink_connect", "winlink_stop", "winlink_prompt"):
             if self.addons and self.addons.route(t):
                 await self.addons.command(ws, m)          # the Winlink add-on (on, or says it's off)
@@ -1122,8 +1140,11 @@ def cross_site_guard(allow_hosts=()):
 
 def make_app(station, args):
     allow = webguard.allowed_names(args)
-    app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[cross_site_guard(allow)])
+    app = web.Application(client_max_size=64 * 1024 * 1024,
+                          middlewares=[cross_site_guard(allow),
+                                       webguard.auth_guard(station.auth, {"/packet/api/tx": webguard.tx_off_only})])
     webguard.add_security_headers(app)
+    webguard.add_auth_routes(app, station.auth)
     sockets = set()
 
     def authorised(request):
@@ -1138,6 +1159,8 @@ def make_app(station, args):
         if not authorised(request):
             await ws.close(code=4401, message=b"token required")
             return ws
+        ws.rr_role = request.get("rr_role", "operator")
+        ws.rr_expiry = station.auth.session_expiry(request) or None
         sockets.add(ws)
         try:
             await station.handle(ws)
@@ -1157,8 +1180,11 @@ def make_app(station, args):
             await ws.prepare(request)
             sockets.add(ws)
             try:
+                # The browser's cookie goes up, so the radio (which keys, and so
+                # decides who may) sees the operator's session (review plan PR 4).
+                fwd = {"Cookie": request.headers["Cookie"]} if "Cookie" in request.headers else {}
                 async with http["s"].ws_connect(url.replace("http", "ws", 1), heartbeat=5,
-                                                max_msg_size=1 << 20) as up:
+                                                max_msg_size=1 << 20, headers=fwd) as up:
                     async def down():
                         async for m in up:
                             if m.type == WSMsgType.TEXT:
@@ -1257,6 +1283,8 @@ def make_app(station, args):
 
     r = app.router
     r.add_get("/", index)
+    r.add_get("/healthz", webguard.healthz(
+        "station", lambda: ({"radios": len(station.radios)}, []), authorised))
     r.add_get("/ws", ws_control)
     r.add_get("/audio", lone_audio)
     r.add_get("/r/{rid}", slash("/r/"))
@@ -1281,6 +1309,7 @@ def make_app(station, args):
         http["s"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=3),
                                           auto_decompress=False)
         await station.start()
+        app["logcap"] = logcap.start()              # the launchd console log stays bounded
 
     async def on_shutdown(app):
         closes = [ws.close() for ws in list(sockets) if not ws.closed]
@@ -1289,6 +1318,7 @@ def make_app(station, args):
         await station.stop()
 
     async def on_cleanup(app):
+        app["logcap"].cancel()
         await http["s"].close()
 
     app.on_startup.append(on_startup)

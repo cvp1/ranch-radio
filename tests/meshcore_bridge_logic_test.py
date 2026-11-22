@@ -14,7 +14,6 @@
 
     python3 tests/meshcore_bridge_logic_test.py
 """
-import asyncio
 import json
 import os
 import subprocess

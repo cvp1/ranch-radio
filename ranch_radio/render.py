@@ -128,6 +128,7 @@ RULES = [
     (("station", "tls_names", "*"), TOKEN), (("station", "label"), LABEL), (("station", "path"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
     (("updates", "at"), CLOCK), (("updates", "label"), LABEL),
+    (("auth", "mode"), TOKEN), (("auth", "token_file"), TOKEN),
     (("logsync", "udp", "group"), TOKEN), (("logsync", "udp", "bind"), TOKEN), (("logsync", "udp", "iface"), TOKEN),
     (("logsync", "udp", "relay"), TOKEN), (("logsync", "forward", "*"), TOKEN), (("logsync", "call"), CALL),
     (("logsync", "ledger"), TOKEN), (("logsync", "wavelog", "url"), TOKEN), (("logsync", "wavelog", "key_file"), TOKEN),
@@ -337,6 +338,17 @@ def validate(h):
                 if p in ports:
                     raise HostError(f"{h['host']}: port {p} is both {ports[p]} and {r['id']}.{k}")
                 ports[p] = f"{r['id']}.{k}"
+    au = h.get("auth")
+    if au is not None:
+        # The page's operator/read-only split (webguard.AuthPolicy). The token
+        # itself never goes in a rendered file or on a command line: only
+        # the path of the file holding it.
+        if not isinstance(au, dict) or set(au) - {"mode", "token_file"}:
+            raise HostError(f"{h['host']}: auth takes mode and token_file")
+        if au.get("mode", "open") not in ("open", "readonly-lan"):
+            raise HostError(f"{h['host']}: auth.mode is open or readonly-lan, not {au.get('mode')!r}")
+        if au.get("mode") == "readonly-lan" and not au.get("token_file"):
+            raise HostError(f"{h['host']}: auth.mode readonly-lan needs auth.token_file (a file only you can read)")
     st = h.get("station") or {}
     st_rigctl = st.get("rigctl_port")
     if st_rigctl and st_rigctl > 0 and st_rigctl in ports:
@@ -770,6 +782,7 @@ def hub_argv(h, py, repo, pth):
             argv += [flag, str(ap[k])]
     if ig and ig.get("observe", mode != "off"):
         argv += ["--igate-observe"]      # read APRS-IS for our own calls (receive only)
+    argv += auth_args(h, pth)
     return argv
 
 
@@ -844,7 +857,17 @@ def server_args(h, r, pth):
         a += ["--winlink-ardop-log", pth(logs + f"/{r['id']}" if linux else logs)]
         if r.get("winlink_mode"):
             a += ["--winlink-mode", r["winlink_mode"]]
+    a += auth_args(h, pth)
     return a
+
+
+def auth_args(h, pth):
+    """--auth-mode/--auth-token-file for the radio server and the hub (the
+    station reads the same from station.json). Nothing when open."""
+    au = h.get("auth") or {}
+    if au.get("mode", "open") == "open":
+        return []
+    return ["--auth-mode", au["mode"], "--auth-token-file", pth(au["token_file"])]
 
 
 # ---------------------------------------------------------------- systemd
@@ -1094,6 +1117,9 @@ def station_json(h):
     if h.get("addons"):
         d["addons"] = h["addons"]
     d["host_file"] = h["host"]                  # the station page's Modules tab
+    au = h.get("auth") or {}
+    if au.get("mode", "open") != "open":
+        d["auth"] = {"mode": au["mode"], "token_file": au["token_file"]}
     return d
 
 

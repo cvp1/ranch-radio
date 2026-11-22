@@ -13,6 +13,69 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # Fast checks first (~30 s): the linter, every page script parses, nothing
+  # personal in the tree, and the pages stay runnable under webguard.CSP.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: ruff (pyproject.toml)
+        run: pip install -q ruff==0.17.6 && ruff check --output-format github .
+      - name: Page scripts parse (node --check)
+        run: python tests/js_syntax_test.py
+      - name: Public hygiene
+        run: python tests/public_hygiene_test.py
+      - name: Pages under the CSP
+        run: python tests/xss_hygiene_test.py
+  # The documented minimum (README, install.sh: Python 3.12+): the TX safety
+  # tests and the ops units on 3.12, so nothing newer slips in unnoticed.
+  py312:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: System packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libhamlib-utils
+      - name: Python packages
+        run: python -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+      - name: Safety and ops tests
+        shell: bash
+        run: bash tests/ci/run_list.sh civ_safety_test tx_stop_test tx_state_test winlink_lane_test webguard_test security_headers_test hostfile_safety_test modules_test modules_apply_test inventory_test scaffold_test tx_level_test codec_level_test update_test installer_test affected_test
+  # macOS is half the hosts (launchd, CoreAudio): Darwin rendering, the
+  # installer and update paths, and the audio import. No real launchctl
+  # bootstrap: it needs a GUI session a runner does not have (service.py).
+  # Every process starts ~35 s slow on the runner, so the TX tests stay on
+  # Linux (shards, py312), where they run at speed.
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      # The runner's host name is a 60-character id that does not resolve:
+      # socket.getfqdn() (webguard, at import) waits ~70 s on it, so servers
+      # "did not start" in time, and the host-file rules refuse it as a
+      # host name (installer_test). A short one that resolves (2026-11-21).
+      - name: A short host name that resolves
+        run: |
+          sudo scutil --set HostName mac-ci
+          sudo scutil --set LocalHostName mac-ci
+          sudo scutil --set ComputerName mac-ci
+          echo "127.0.0.1 mac-ci mac-ci.local" | sudo tee -a /etc/hosts
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: python -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+      - name: macOS tests
+        shell: bash
+        run: bash tests/ci/run_list.sh mac_station_test station_audio_test installer_test update_test hostfile_safety_test modules_test modules_apply_test inventory_test scaffold_test webguard_test security_headers_test
   # The suite split four ways by measured duration (tests/ci/shard.py), each
   # shard on its own runner, so the serial-only tests never share ports.
   shard:
@@ -62,16 +125,20 @@ jobs:
       - name: Logs of failed tests
         if: failure()
         run: bash tests/ci/failed_logs.sh "$RUNNER_TEMP/suite.txt" "$RUNNER_TEMP/rr-suite"
-  # The one required check: green only when every shard passed and every
-  # run reported a time. Warns (never fails) on a run that got much slower,
+  # The one required check: green only when lint, py312, macos and every
+  # shard passed, and every run reported a time. Warns (never fails) on a run that got much slower,
   # a new run over 90 s, or shards that drifted apart (tests/ci/shard.py).
   tests:
-    needs: shard
+    needs: [lint, py312, macos, shard]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: test "${{ needs.shard.result }}" = success
+      - run: |
+          test "${{ needs.lint.result }}" = success
+          test "${{ needs.py312.result }}" = success
+          test "${{ needs.macos.result }}" = success
+          test "${{ needs.shard.result }}" = success
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:

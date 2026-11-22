@@ -41,6 +41,7 @@ import modem_status
 import rigctl_server
 import rigs
 import station_id
+import logcap
 import webguard
 from audio import DEFAULT_DEVICE, AudioBridge
 from tx_audio import TxAudio
@@ -1044,7 +1045,9 @@ class Station(TxAudio):
                                                   "modem": self.modem.snapshot(),
                                                   "modems": list(self.hf_modems)},
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
-                                      "addons": self.addons.snapshot() if self.addons else {}}))
+                                      "addons": self.addons.snapshot() if self.addons else {},
+                                      "role": getattr(ws, "rr_role", "operator")}))
+        watch = asyncio.ensure_future(self._session_watch(ws)) if getattr(ws, "rr_expiry", None) else None
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -1056,17 +1059,51 @@ class Station(TxAudio):
                         # not stop this loop: aiohttp reads the heartbeat's pong
                         # here, and closed the socket after ~7.5 s (review
                         # 2026-10-18, Sol). One chain per page keeps their order.
-                        self._chain(ws, m)
-                    else:
+                        if not await self._readonly_refused(ws, m):
+                            self._chain(ws, m)
+                    elif not await self._readonly_refused(ws, m):
                         await self._command(ws, m)
                 except (ValueError, KeyError, TypeError) as e:
                     self.notice(f"Rejected: {e}", "warn", ws)
         finally:
+            if watch is not None:
+                watch.cancel()
             self.clients.discard(ws)
             if self.ptt_owner is ws:
                 await self.unkey("operator disconnected")
             if self.winlink_owner is ws:
                 await self.winlink_disarm("operator's page closed")
+
+    # A read-only page (auth readonly-lan, no operator session) may send only
+    # these: STOP TX always works, whoever presses it (review plan PR 4).
+    READONLY_OK = frozenset({"tx_stop", "ping", "page_log", "codec_get"})
+
+    async def _readonly_refused(self, ws, m):
+        """True when ws is read-only and m is not allowed: refused, said, and a
+        set echoed back so the page shows the radio's real value."""
+        if getattr(ws, "rr_expiry", None) and time.time() >= ws.rr_expiry:
+            ws.rr_role = "readonly"                     # the session ended while the page stayed open
+        if getattr(ws, "rr_role", "operator") != "readonly":
+            return False
+        t = m.get("t") if isinstance(m, dict) else None
+        if t in self.READONLY_OK:
+            return False
+        log.info("refused %r from a read-only page %s", t, self._who(ws))
+        self.notice("Read-only: unlock to operate (only STOP TX works here).", "warn", ws)
+        if t == "set" and isinstance(m.get("k"), str):
+            await self._confirm(ws, m["k"])
+        return True
+
+    async def _session_watch(self, ws):
+        """At the operator session's end, a page still open becomes read-only,
+        and lets go of what it held: its PTT unkeys, its Winlink lane disarms."""
+        await asyncio.sleep(max(0, ws.rr_expiry - time.time()))
+        ws.rr_role = "readonly"
+        if self.ptt_owner is ws:
+            await self.unkey("operator session ended")
+        if self.winlink_owner is ws:
+            await self.winlink_disarm("operator session ended")
+        self.notice("Your operator session ended: read-only until you unlock again.", "warn", ws)
 
     def _addon_message(self, m):
         t = m.get("t") if isinstance(m, dict) else None
@@ -1205,8 +1242,17 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
     # A page from elsewhere, open in a browser on the LAN, must not reach the
     # radio (PTT, codec Save, add-ons): unknown Host names and cross-site
     # Origins are refused, as on the station (modules plan M0, 2026-10-21).
-    app = web.Application(middlewares=[webguard.cross_site_guard(webguard.allowed_names(args), log)])
+    auth = webguard.AuthPolicy.from_config(getattr(args, "auth_mode", None), getattr(args, "auth_token_file", None))
+    app = web.Application(middlewares=[webguard.cross_site_guard(webguard.allowed_names(args), log),
+                                       webguard.auth_guard(auth)])
     webguard.add_security_headers(app)
+    webguard.add_auth_routes(app, auth)
+    app["auth"] = auth
+
+    def take_role(ws, request):
+        ws.rr_role = request.get("rr_role", "operator")
+        exp = auth.session_expiry(request)
+        ws.rr_expiry = exp if exp else None
 
     def authorised(request):
         return not args.token or secrets.compare_digest(
@@ -1224,6 +1270,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
         if not authorised(request):
             await ws.close(code=4401, message=b"token required")
             return ws
+        take_role(ws, request)
         sockets.add(ws)
         try:
             await station.handle(ws)
@@ -1237,6 +1284,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
         if not authorised(request):
             await ws.close(code=4401, message=b"token required")
             return ws
+        take_role(ws, request)
         q = station.audio.subscribe()
         sockets.add(ws)
 
@@ -1248,6 +1296,8 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
         try:
             async for msg in ws:
                 # Microphone audio: only forwarded while this client holds PTT.
+                if msg.type == WSMsgType.BINARY and ws.rr_role == "readonly":
+                    continue                    # a read-only page listens; its microphone never reaches the radio
                 if msg.type == WSMsgType.BINARY:
                     station.voice_rx_bytes = getattr(station, "voice_rx_bytes", 0) + len(msg.data)
                     station.voice_audio(msg.data)
@@ -1263,6 +1313,14 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
 
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_control)
+
+    def health():
+        st = station.radio.state
+        facts = {"rig_connected": bool(st.get("connected")), "tx": bool(st.get("tx")),
+                 "tx_stopped": station.tx_stopped is not None, "winlink_armed": bool(station.winlink_armed),
+                 "rigctl_clients": int(station.rigctl_clients or 0)}
+        return facts, ([] if facts["rig_connected"] else ["rig not connected"])
+    app.router.add_get("/healthz", webguard.healthz("radio", health, authorised))
     if station.addons is not None:
         station.addons.add_routes(app, authorised)      # Winlink's mailbox under /winlink/api/
     if station.audio is not None:
@@ -1280,6 +1338,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
     async def on_startup(app):
         await station.radio.start()
         app["safety"] = asyncio.create_task(station.safety_loop())
+        app["logcap"] = logcap.start()              # the launchd console log stays bounded
         app["rigctl"] = None
         if args.rigctl_port:
             try:
@@ -1352,6 +1411,7 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
         if app.get("winlink_vara_rigctl"):
             app["winlink_vara_rigctl"].close()
         app["safety"].cancel()
+        app["logcap"].cancel()
         # Release only a transmission an app or browser started here; the
         # radio driver's stop() also unkeys anything it keyed. A transmission
         # made at the radio (front panel, mic) is never cut (2026-10-13).
@@ -1542,6 +1602,9 @@ def main():
     p.add_argument("--no-tx", action="store_true", help="receive-only: refuse to key the radio")
     p.add_argument("--auto-tune", action="store_true",
                    help="tune the ATU once per band after a band change (needs transmit allowed; it transmits)")
+    p.add_argument("--auth-mode", choices=webguard.AUTH_MODES, default="open",
+                   help="open (any LAN page operates) or readonly-lan (watch and STOP TX without the operator's session)")
+    p.add_argument("--auth-token-file", help="the operator token, in a file only you can read (readonly-lan)")
     p.add_argument("--rigctl-port", type=int, default=4532,
                    help="rigctld-compatible port for JTDX/WSJT-X/fldigi (Hamlib NET rigctl); 0 = off")
     p.add_argument("--rigctl-trace", action="store_true",
