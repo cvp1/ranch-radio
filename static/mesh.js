@@ -961,13 +961,87 @@ const mesh = (() => {
     renderCfg();
   }
 
-  // Settings and Health each take the place of the conversation and node list.
+  // ---------- find radios: what this host can reach by USB and Bluetooth
+  // (mesh_scan.py through the add-on's "mesh_scan"). Asked for, never on its
+  // own; it lists and listens, and adding one stays a host-file edit. Seen
+  // live 2026-11-22: the roof node that heard twice what the station's did
+  // was in Bluetooth reach all along, and nothing on the page said so.
+  let scanOpen = false, scan = null, scanning = null;   // scan: the last answer; scanning: the timer while one runs
+  const SCAN_GIVE_UP_MS = 45000;
+  const scanBtn = document.createElement("button");
+  scanBtn.type = "button";
+  scanBtn.className = "chip chip-mini";
+  scanBtn.id = "mesh-scan-btn";
+  scanBtn.textContent = "Find radios";
+  scanBtn.title = "The Meshtastic radios this station can reach by USB or Bluetooth, and how to add one";
+  $("#mesh-cfg-btn").before(scanBtn);
+  const scanBox = document.createElement("div");
+  scanBox.className = "mesh-scan";
+  scanBox.id = "mesh-scan";
+  scanBox.hidden = true;
+  $("#mesh-health").after(scanBox);
+  // The station's node whose port names this radio, if any: "this station's LF".
+  function scanMine(r) {
+    const want = [r.port, r.device].filter(Boolean).map((x) => String(x).toLowerCase());
+    return (scan?.using || []).find((u) => String(u.port || "").split(",").some((p) => want.includes(p.trim().toLowerCase())))?.label;
+  }
+  function renderScan() {
+    if (!scanOpen) return;
+    const row = (r, what) => {
+      const mine = scanMine(r);
+      return `<div class="mesh-scan-row"><b>${esc(r.name || r.device || "?")}</b><span class="wl-dim">${esc(what)}</span>` +
+        (r.port ? `<code>${esc(r.port)}</code>` : `<span class="wl-dim">no port to give: the host file refuses a character in its name</span>`) +
+        (mine ? `<span class="mesh-scan-mine">this station's ${esc(mine)}</span>` : "") + `</div>`;
+    };
+    const errs = Object.entries(scan?.errors || {});
+    const none = (what) => `<div class="wl-dim">${what}</div>`;
+    scanBox.innerHTML = `<div class="wl-row"><button type="button" class="chip chip-mini" id="mesh-scan-go"${scanning ? " disabled" : ""}>` +
+      `${scanning ? "Looking…" : scan ? "Look again" : "Look"}</button>` +
+      `<span class="wl-dim">Lists USB serial devices and listens about 10 s for Meshtastic radios on Bluetooth. It opens nothing, connects to nothing and sends nothing.</span></div>` +
+      (scan ? `<div class="label">Bluetooth</div>` +
+        (scan.ble?.length ? scan.ble.map((r) => row(r, r.rssi != null ? `${r.rssi} dBm` : "")).join("") : none(errs.some(([k]) => k === "ble") ? "Not looked at (below)." : "None advertising now.")) +
+        `<div class="label">USB</div>` +
+        (scan.usb?.length ? scan.usb.map((r) => row(r, [r.maker, r.device].filter(Boolean).join(" · "))).join("") : none(errs.some(([k]) => k === "usb") ? "Not looked at (below)." : "No USB serial device.")) +
+        errs.map(([k, v]) => `<div class="mesh-scan-err">${esc(k)}: ${esc(v)}</div>`).join("") : "") +
+      `<div class="wl-dim mesh-scan-notes">` +
+      `<p>USB lists every serial device, a transceiver's CAT cable included: only opening one tells a node from the rest, and this opens none. Pick by name.</p>` +
+      `<p>Not listed: a node this station or a phone is connected to over Bluetooth (it stops advertising), a node with a USB client attached (its Bluetooth is off), and a node on Wi-Fi (name it as <code>tcp:HOST</code>).</p>` +
+      `<p>To add one, list it in the host file under mesh <code>"radios"</code>, for example <code>{"label": "Roof", "port": "ble:NAME"}</code>, ` +
+      `and apply it with <code>ranch-radio install --apply</code>. A Bluetooth node must be bonded to this host first (its PIN), and its one Bluetooth connection is then the station's: a phone can't connect while the station holds it.</p></div>`;
+    $("#mesh-scan-go").onclick = runScan;
+  }
+  function runScan() {
+    if (scanning) return;
+    scanning = setTimeout(() => {            // no answer (a read-only page, the add-on switched off): stop waiting
+      scanning = null;
+      scan = { usb: [], ble: [], errors: { scan: "no answer from the station" }, using: [] };
+      renderScan();
+    }, SCAN_GIVE_UP_MS);
+    send({ t: "mesh_scan" });                // the station's own: not for one node
+    renderScan();
+  }
+  function scanAnswer(d) {
+    clearTimeout(scanning);
+    scanning = null;
+    scan = d;
+    renderScan();
+  }
+  scanBtn.onclick = () => {
+    scanOpen = !scanOpen;
+    cfgOpen = healthOpen = false;
+    showViews();
+    if (scanOpen) { renderScan(); if (!scan) runScan(); }
+  };
+
+  // Settings, Health and Find radios each take the place of the conversation and node list.
   function showViews() {
     on($("#mesh-cfg-btn"), cfgOpen);
     on($("#mesh-health-btn"), healthOpen);
+    on(scanBtn, scanOpen);
     $("#mesh-cfg").hidden = !cfgOpen;
     $("#mesh-health").hidden = !healthOpen;
-    $("#mesh-main").hidden = cfgOpen || healthOpen;
+    scanBox.hidden = !scanOpen;
+    $("#mesh-main").hidden = cfgOpen || healthOpen || scanOpen;
   }
   // On a phone the header's key, stats and buttons fold behind ⋯ (UX plan PR
   // 5b, 2026-11-19; app.css shows it at 700 px and under). It opens and shuts
@@ -985,13 +1059,13 @@ const mesh = (() => {
   }
   $("#mesh-cfg-btn").onclick = () => {
     cfgOpen = !cfgOpen;
-    healthOpen = false;
+    healthOpen = scanOpen = false;
     showViews();
     if (cfgOpen) renderCfg();
   };
   $("#mesh-health-btn").onclick = () => {
     healthOpen = !healthOpen;
-    cfgOpen = false;
+    cfgOpen = scanOpen = false;
     showViews();
     if (healthOpen) renderHealth();
   };
@@ -1167,6 +1241,7 @@ const mesh = (() => {
   }
 
   function event(m) {
+    if (m.scan) { scanAnswer(m.scan); return; }    // the station's answer to "Find radios": no node's own
     if (m.select) {                                // a node's snapshot, asked for by this page
       if ((m.node || "") === cur) hello({ ...m.select, __selected: true }, lastCfg);
       return;

@@ -269,6 +269,14 @@ others under `radios`; each runs its own bridge and keeps its own history:
          "radios": [{"label": "LF", "port": "/dev/cu.usbmodem1,/dev/cu.usbmodem2"}]}
 ```
 
+**Find radios.** The Mesh tab's "Find radios" lists the Meshtastic radios the
+station can reach: USB serial devices and radios advertising on Bluetooth,
+each with the `port` to give it in the host file (`usb:SERIAL`, `ble:NAME`)
+and, for one the station already uses, whose it is. It lists and listens; it
+opens nothing and adds nothing. A node a phone or the station is connected to
+over Bluetooth is not advertising, and a node with a USB client attached has
+its Bluetooth off, so neither shows; a node on Wi-Fi is named as `tcp:HOST`.
+
 A switcher beside "Mesh" picks which node the tab shows and which one a
 message goes out on; another node's new messages count on its button. An
 extra node takes the first one's keys unless it names its own, never its
