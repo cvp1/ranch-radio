@@ -129,8 +129,22 @@ class CodecHold:
         try:
             self._s = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=5))
             self._ws = await self._s.ws_connect(self.url(), heartbeat=5, max_msg_size=1 << 22)
+            hello = {}
+            while hello.get("t") != "hello":       # a scope frame can come first
+                msg = await self._ws.receive(timeout=REPLY_S)
+                if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    raise ConnectionError("the radio's server closed the socket")
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    hello = json.loads(msg.data)
+            uses = ((hello.get("config") or {}).get("codec") or {}).get("uses") or []
+            if "js8" not in uses:
+                # No JS8 level here, or a radio server older than the station
+                # (update restarts only idle radios): the codec is left alone,
+                # as before, rather than an arm refused for want of an answer.
+                await self.off(send=False)
+                return False, "no JS8 level on this radio", False
             m = await self._ask(True)
-        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError) as e:
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError, ConnectionError, ValueError) as e:
             await self.off(send=False)
             return False, f"the radio's server didn't answer ({type(e).__name__})", True
         if not m.get("ok") or not m.get("on"):

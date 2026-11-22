@@ -17,6 +17,10 @@ bridge holds the codec at --js8-codec-db while an arm lasts.
   - a radio with no --js8-codec-db: refused, configured false, untouched
   - a malformed request (on not a boolean): rejected
 
+  the bridge's CodecHold against a radio server older than the station (its
+  hello lists no js8 use, it never answers js8_codec): not configured at once,
+  nothing sent, so an arm goes on with the codec left alone
+
     python3 tests/js8_codec_test.py
 """
 import asyncio
@@ -239,5 +243,44 @@ async def server():
 
 
 asyncio.run(server())
+
+
+# ------------------------------------------------ the bridge's side: an older radio server
+async def old_server():
+    """A radio server older than the station (update restarts only idle
+    radios): its hello lists no js8 use and it never answers js8_codec."""
+    import js8_bridge
+    from aiohttp import web
+    got = []
+
+    async def ws_h(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.send_bytes(b"\x01scope")                 # a scope frame first, as a real server may
+        await ws.send_str(json.dumps({"t": "hello", "config": {"codec": {"uses": ["winlink", "voice"]}}}))
+        async for m in ws:
+            if m.type == aiohttp.WSMsgType.TEXT:
+                got.append(json.loads(m.data).get("t"))
+        return ws
+    app = web.Application()
+    app.router.add_get("/ws", ws_h)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = testkit.free_port()
+    await web.TCPSite(runner, "127.0.0.1", port).start()
+    try:
+        hold = js8_bridge.CodecHold(lambda: f"http://127.0.0.1:{port}/ws")
+        t0 = time.monotonic()
+        ok, why, configured = await hold.on()
+        check("an older radio server: not configured, so the arm goes on with the codec left alone",
+              (ok, configured, hold.held), (False, False, False))
+        check("  answered from its hello, without waiting out a request", time.monotonic() - t0 < 2, True)
+        await asyncio.sleep(0.3)
+        check("  it was never sent js8_codec", "js8_codec" in got, False)
+    finally:
+        await runner.cleanup()
+
+
+asyncio.run(old_server())
 print(f"\n{fails} failure(s)" if fails else "\nall ok")
 sys.exit(1 if fails else 0)
