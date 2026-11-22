@@ -284,10 +284,14 @@ class WavelogCat:
         import aiohttp
         from aiohttp import WSMsgType
         tok = self.station.token
+        # The station's own credential: under auth readonly-lan a click from the
+        # operator's Wavelog (Origin-pinned above) still tunes (review plan PR 4).
+        auth = getattr(self.station, "auth", None)
+        auth_headers = auth.bearer_headers() if auth is not None else {}
         url = f"http://127.0.0.1:{radio.web}/ws" + (f"?token={tok}" if tok else "")
         want = sets[0][1]
         try:
-            async with aiohttp.ClientSession() as s, s.ws_connect(url, heartbeat=5) as ws:
+            async with aiohttp.ClientSession() as s, s.ws_connect(url, heartbeat=5, headers=auth_headers) as ws:
                 hello = {}
                 while hello.get("t") != "hello":         # a scope frame can come first
                     msg = await ws.receive(timeout=QSY_TIMEOUT_S)

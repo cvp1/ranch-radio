@@ -187,14 +187,14 @@ try:
     b.js(f"{CHEV}.click()")
     b.wait(f"!{MENU}.hidden")
     b.js(f"{MI}.find((t) => t.textContent.startsWith('QMX')).click()")
-    b.wait(f"location.hash === '#/qmx'")
+    b.wait("location.hash === '#/qmx'")
     check("  a member in the menu opens it and the menu closes",
           bool(b.wait(f"{MENU}.hidden && {TABS}[1].querySelector('span').textContent === 'Radios · QMX'", 5)), True)
     b.js("location.hash = '#/home'")
     b.wait(f"{TABS}[1].querySelector('span').textContent === 'Radios'")
     check("  Radios now opens the radio last used", b.js(f"{TABS}[1].getAttribute('href')"), "#/qmx")
     b.js(f"{TABS}[1].click()")
-    b.wait(f"location.hash === '#/qmx'")
+    b.wait("location.hash === '#/qmx'")
     check("QMX tab: its page in a frame", bool(b.wait(f"{FRAME}?.src.includes('/r/qmx/')")), True)
     check("  connected", b.wait(f"{FRAME}.contentDocument?.querySelector('#conn b')?.textContent === 'Connected' && 'yes'"), "yes")
     check("  the radio page's own brand is hidden",

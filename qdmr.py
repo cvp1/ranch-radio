@@ -529,7 +529,7 @@ def model_problems(model):
     for key, entries in (("channels", chans), ("zones", zones), ("contacts", contacts), ("groupLists", groups)):
         if len(entries) > MAX[key]:
             out.append(f"{len(entries)} {key}: the radio holds {MAX[key]}")
-    ch_ids, z_ids = ids("channels", chans), ids("zones", zones)
+    ch_ids, _z_ids = ids("channels", chans), ids("zones", zones)   # zones: checked for bad or duplicate ids
     ct_ids, g_ids = ids("contacts", contacts), ids("groupLists", groups)
     for kind, c in chans:
         name("channels", c)

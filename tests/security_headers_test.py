@@ -8,7 +8,6 @@ inline script or eval.
     python3 tests/security_headers_test.py
 """
 import asyncio
-import os
 import pathlib
 import sys
 import tempfile

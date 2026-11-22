@@ -121,6 +121,7 @@ import ax25
 import digi
 import igate
 import igate_watch
+import logcap
 import webguard
 from ax25 import U_DISC, U_DM, U_FRMR, U_SABM, U_UA, U_UI, Frame, FrameError, KissDecoder, kiss_wrap
 from ax25_link import CONNECTED, CONNECTING, DISCONNECTED, Link, TxRefused
@@ -1548,8 +1549,12 @@ def cross_site_guard(allow_hosts=()):
 
 
 def make_web(hub):
-    app = web.Application(middlewares=[cross_site_guard(getattr(hub.args, "allow_host", []))])
+    auth = webguard.AuthPolicy.from_config(getattr(hub.args, "auth_mode", None), getattr(hub.args, "auth_token_file", None))
+    # Read-only (auth readonly-lan): watching, and Off, which only stops (review plan PR 4).
+    app = web.Application(middlewares=[cross_site_guard(getattr(hub.args, "allow_host", [])),
+                                       webguard.auth_guard(auth, {"/api/tx": webguard.tx_off_only})])
     webguard.add_security_headers(app)
+    webguard.add_auth_routes(app, auth)
 
     async def index(_):
         return web.FileResponse(HERE / "static" / "packet.html", headers={"Cache-Control": "no-cache"})
@@ -1664,6 +1669,12 @@ def make_web(hub):
 
     app.router.add_get("/", index)
     app.router.add_get("/api/status", status)
+
+    def health():
+        st = hub.status()
+        facts = {"radio_up": bool(st["radio"]["up"]), "tx_enabled": bool(st["tx"]["enabled"])}
+        return facts, ([] if facts["radio_up"] else ["radio not connected"])
+    app.router.add_get("/healthz", webguard.healthz("hub", health))
     app.router.add_post("/api/inbound", inbound)
     app.router.add_post("/api/inbound/close", inbound_close)
     app.router.add_post("/api/tx", set_tx)
@@ -1894,6 +1905,7 @@ async def amain(args):
 
     # The page first (so the backfill can be watched), then the APRS store and
     # its backfill, then the radio and the client ports.
+    tasks.append(logcap.start())                    # the launchd console log stays bounded
     runner = None
     if args.http_port:
         runner = web.AppRunner(make_web(hub), access_log=None)
@@ -2003,6 +2015,9 @@ def parse_args(argv=None):
     p.add_argument("--ack-airtime-reserve-s", type=float, default=3.0)
     p.add_argument("--aprs-txdelay-ms", type=int, default=300, help="the radio's key-up delay, for airtime")
     p.add_argument("--log-dir", default=str(HERE / "packet-logs"))
+    p.add_argument("--auth-mode", choices=webguard.AUTH_MODES, default="open",
+                   help="open, or readonly-lan: the page watches and turns transmit Off without the operator's session")
+    p.add_argument("--auth-token-file", help="the operator token, in a file only you can read (readonly-lan)")
     p.add_argument("--aprs-db", help="APRS store (default: <log-dir>/aprs.db)")
     p.add_argument("--no-aprs", action="store_true", help="no APRS store, API or backfill")
     p.add_argument("--igate-watch-min", type=int, default=igate_watch.MIN_IGATES,

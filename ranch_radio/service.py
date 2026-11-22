@@ -40,10 +40,33 @@ async def main(url):
                 h = json.loads((await ws.receive(timeout=5)).data)
     except Exception as e:
         print(json.dumps({"up": False, "why": type(e).__name__})); return
-    st, wl = h.get("state") or {}, h.get("winlink") or {}
+    st, wl, cf = h.get("state") or {}, h.get("winlink") or {}, h.get("config") or {}
     print(json.dumps({"up": True, "tx": bool(st.get("tx")), "armed": bool(wl.get("armed")),
-                      "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0)}))
+                      "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0),
+                      "stopped": bool(cf.get("tx_stopped"))}))
 asyncio.run(main(sys.argv[1]))
+"""
+
+# Sent just before a manual stop or restart: STOP TX latches the radio, so
+# nothing keys between the idle check and the service manager's stop (the
+# latch dies with the process; a restarted radio starts unlatched).
+TXSTOP_SCRIPT = r"""
+import asyncio, json, ssl, sys
+import aiohttp
+async def main(url, why):
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(url, ssl=ctx, timeout=5) as ws:
+                await ws.receive(timeout=5)
+                await ws.send_str(json.dumps({"t": "tx_stop", "why": why}))
+                while True:
+                    m = json.loads((await ws.receive(timeout=5)).data)
+                    if m.get("t") == "tx_stop" and m.get("stopped"):
+                        print(json.dumps({"stopped": True})); return
+    except Exception as e:
+        print(json.dumps({"stopped": False, "why": type(e).__name__}))
+asyncio.run(main(sys.argv[1], sys.argv[2]))
 """
 
 
@@ -108,6 +131,8 @@ def idle(h, r=None, drop_rigctl=False):
         return False, f"{name} is transmitting"
     if st.get("armed") or st.get("session"):
         return False, f"{name} is in a Winlink session"
+    if st.get("stopped"):              # the latch is in memory: a restart would clear it
+        return False, f"{name} has STOP TX latched; a restart would clear it"
     n = int(st.get("rigctl") or 0)
     if n and not drop_rigctl:
         return False, (f"{name} has {n} rigctl client{'s' if n != 1 else ''} connected (JTDX, WSJT-X...): "
@@ -381,3 +406,124 @@ def roll_back(h, agents, home=None, check_idle=idle, held=None, restored=()):
             continue
         run([sc, "--user", "try-restart", unit], out)
     return out, deferred
+
+
+# ---------------------------------------------------------------- status, stop, restart
+# By hand, from `ranch-radio status|stop|restart`. Stricter than the update's
+# idle(): a server the service manager says is running but that does not
+# answer is NOT taken as idle (it may be keyed and hung), and restart refuses
+# a radio whose STOP TX is latched (the latch lives in the process; a restart
+# would quietly clear it). No --force: transmitting and Winlink are never
+# overridden here; the service manager is the operator's own escape hatch
+# (review plan PR 2, panel 2026-11-21).
+
+def _unit_names(h, key):
+    if key == "station":
+        return ["station.service"]
+    return [f"{key}-remote.socket", f"{key}-remote.service"]     # the socket would start it again
+
+
+def _label(h, key):
+    if key == "station":
+        return (h.get("station") or {}).get("label", render.STATION_LABEL)
+    return next(r["label"] for r in h["radios"] if r["id"] == key)
+
+
+def active(h, key):
+    """Does the service manager have it running? (Mac: loaded; Linux: active)."""
+    if h["os"] == "macos":
+        return _loaded(_label(h, key))
+    unit = _unit_names(h, key)[-1]
+    return run([_cmd("systemctl"), "--user", "is-active", "--quiet", unit], []) == 0
+
+
+def status(h):
+    """One row per server: {key, name, active, up, tx, armed, session, rigctl, stopped, why}."""
+    rows = []
+    for key, r in servers(h).items():
+        on = active(h, key)
+        st = probe(h, r) if on else {"up": False, "why": "not running"}
+        rows.append({"key": key, "name": r["name"] if r else "the station", "active": on, **st})
+    return rows
+
+
+def stoppable(h, key, r, restarting=False, drop_rigctl=False):
+    """(ok, why) for a manual stop/restart of server key."""
+    name = r["name"] if r else "the station"
+    if not active(h, key):
+        return True, "not running"
+    st = probe(h, r)
+    if not st.get("up"):
+        return False, (f"{name} is running but not answering ({st.get('why', '?')}): it can't be shown idle, "
+                       "so it is left alone (the service manager can still stop it)")
+    if st.get("tx"):
+        return False, f"{name} is transmitting"
+    if st.get("armed") or st.get("session"):
+        return False, f"{name} is in a Winlink session"
+    if restarting and st.get("stopped"):
+        return False, f"{name} has STOP TX latched; a restart would clear it (resume TX first, or stop it instead)"
+    n = int(st.get("rigctl") or 0)
+    if n and not drop_rigctl:
+        return False, (f"{name} has {n} rigctl client{'s' if n != 1 else ''} connected (JTDX, WSJT-X...) "
+                       "(--drop-rigctl to go ahead)")
+    return True, "idle"
+
+
+def _admit_stop(h, r, why):
+    """STOP TX on a radio just before it goes down. True when latched."""
+    if r is None:
+        return True                                     # the station keys nothing itself
+    stand_in = os.environ.get("RANCH_RADIO_TXSTOP")
+    argv = (shlex.split(stand_in) if stand_in else
+            [os.path.expanduser(h["python"]), "-c", TXSTOP_SCRIPT]) + [_url(h, r), why]
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+        return bool(json.loads(p.stdout.strip().splitlines()[-1]).get("stopped"))
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return False
+
+
+def _down(h, key, out):
+    if h["os"] == "macos":
+        _mac_down(_label(h, key), out)
+    else:
+        run([_cmd("systemctl"), "--user", "stop"] + _unit_names(h, key), out)
+
+
+def _up(h, key, out):
+    if h["os"] == "macos":
+        label = _label(h, key)
+        _mac_up(label, f"{render.AGENTS}/{label}.plist", out)
+    else:
+        sc = _cmd("systemctl")
+        units = _unit_names(h, key)
+        run([sc, "--user", "reset-failed"] + units, out)
+        run([sc, "--user", "start"] + units, out)
+
+
+def lifecycle(h, keys, action, drop_rigctl=False):
+    """stop or restart each server in keys. Returns (done, refused)."""
+    out, refused = [], []
+    known = servers(h)
+    for key in keys:
+        if key not in known:
+            refused.append(f"{key}: not a server on {h['host']} (one of: {', '.join(known)})")
+            continue
+        r = known[key]
+        ok, why = stoppable(h, key, r, restarting=action == "restart", drop_rigctl=drop_rigctl)
+        if not ok:
+            refused.append(f"{key}: {why}")
+            continue
+        if why != "not running" and not _admit_stop(h, r, f"ranch-radio {action}"):
+            refused.append(f"{key}: STOP TX before the {action} was not confirmed; left alone")
+            continue
+        if action == "stop":
+            if why == "not running":
+                out.append((f"{key}: already stopped", 0, ""))
+                continue
+            _down(h, key, out)
+        else:
+            if why != "not running":
+                _down(h, key, out)
+            _up(h, key, out)
+    return out, refused

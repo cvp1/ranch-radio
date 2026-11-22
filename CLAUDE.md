@@ -19,7 +19,7 @@ page at 7300). Changes reach a radio only when the operator runs
 | Layer | Files | Role |
 |---|---|---|
 | Rig control | `radio.py` `rigs.py` `civ.py` `qmx.py` `hamlib_rig.py` `sim.py` | state model, rig profiles (`rigs.PROFILES`), CAT backends, the simulator |
-| Radio server | `server.py` (`Station`) `rigctl_server.py` `audio.py` `tx_audio.py` `codec_level.py` `station_id.py` `modem_status.py` `webguard.py` | one process per radio: its page, WebSocket, audio, rigctl port, the Winlink lane and TX gates, the modems' status from their logs |
+| Radio server | `server.py` (`Station`) `rigctl_server.py` `audio.py` `tx_audio.py` `codec_level.py` `station_id.py` `modem_status.py` `webguard.py` `logcap.py` | one process per radio: its page, WebSocket, audio, rigctl port, the Winlink lane and TX gates, the modems' status from their logs |
 | Station | `station.py` (`Station`) | one per host, both OSes: the page, Pat (sessions arm a radio's lane over its WebSocket: `RemoteLane`), Mesh, packet tab, add-ons, Modules; Linux adds a shared rigctl port |
 | Packet | `tnc_hub.py` `ax25*.py` `aprs*.py` `digi.py` `igate*.py` `bt_rfcomm.py` `direwolf_tnc.py` | the APRS/Winlink packet hub and its TNCs |
 | Winlink | `winlink.py` `pat_config.py` `listen_plan.py` | runs Pat; the lane and codec level above are core |
@@ -27,7 +27,7 @@ page at 7300). Changes reach a radio only when the operator runs
 | Logbook sync | `logsync.py` `logsync_config.py` `logsync_udp.py` `logsync_ledger.py` `logsync_adif.py` | the station's JTDX -> Wavelog/QRZ/LoTW uploads and pulls; the Logbook tab shows its status |
 | Wavelog CAT | `wavelog_cat.py` | the station's radio frequency/mode to Wavelog, and Wavelog's spot clicks back (`/wavelog/qsy/`, Origin-pinned); replaces WaveLogGate |
 | Add-ons | `addons/<name>.py` + `static/addons/<name>.js` | switchable modules; contract in `addons/__init__.py` |
-| Ops | `ranch_radio/` | the `ranch-radio` CLI: host file, render, doctor, install, drift, update, add/remove, init |
+| Ops | `ranch_radio/` | the `ranch-radio` CLI: host file, render, doctor, install, drift, update, add/remove, init, status/stop/restart (idle only), logs, backup |
 | Web | `static/` | `index.html` (radio page), `station.html`, `packet.html`; `nav.js` groups, `addons.js` registry, `modules.js` |
 | Tests | `tests/` | 110+ standalone scripts, `tests/run_all.sh` runs them |
 
@@ -73,6 +73,11 @@ file by hand. Example host files: `examples/hosts/`.
   failures show as "not loaded" with the reason; the radio runs on.
 - **Headless pages, CORS and Host checks** live in `webguard.py`. Every new HTTP
   route goes through `authorised`.
+- **Operator or read-only** (`webguard.AuthPolicy`, host file `auth`): every
+  WebSocket command a read-only page may send is in a `READONLY_OK` set
+  (server.py, station.py), and every mutating HTTP route is closed to it by
+  `auth_guard`. A new command is operator-only unless it only stops. A
+  connection this host makes to its own radio sends `auth.bearer_headers()`.
 - **Pages run under `webguard.CSP`**: no inline `<script>`, no `on*=` attributes,
   no `eval` (`tests/xss_hygiene_test.py`). Text from the air goes through `esc()`
   or `textContent`. A page test that evals inside a frame calls
@@ -105,6 +110,7 @@ python3 tests/affected.py                  # which runs your change touches (vs 
 python3 tests/affected.py --run            # run just those
 python3 tests/<name>_test.py               # one test, directly
 python3 tests/public_hygiene_test.py       # required, seconds
+uvx ruff check .                           # the linter CI runs (pyproject.toml)
 bash tests/run_all.sh --full               # everything, serial, ~30 min (CI runs it)
 RR_SHARD=2/4 bash tests/run_all.sh         # one CI shard
 bash tests/flake_hunt.sh                   # the suite at CI's CPU budget (Docker)

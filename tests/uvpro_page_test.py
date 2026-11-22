@@ -333,7 +333,7 @@ try:
             "(() => { const p = document.querySelector('#view-addon-uvpro .panel.addon'), g = p.parentElement;"
             " return p.getBoundingClientRect().width > 0.9 * (g.clientWidth - 44); })()"), True)
         check("station: channels listed",
-              b.wait(f"document.querySelectorAll('#view-addon-uvpro .uv-mem tbody tr[data-id]:not(.uv-vfo)').length"), 4)
+              b.wait("document.querySelectorAll('#view-addon-uvpro .uv-mem tbody tr[data-id]:not(.uv-vfo)').length"), 4)
     finally:
         stop(station)
 
