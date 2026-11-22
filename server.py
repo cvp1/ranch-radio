@@ -263,6 +263,7 @@ class Station(TxAudio):
     def config(self):
         return {"name": self.radio.name, "tx_allowed": not self.args.no_tx,
                 "auto_tune": self.auto_tune, "tx_stopped": self.tx_stopped,
+                "stop_saved": self.stop_state.path is not None,    # STOP TX survives a restart
                 # No Winlink panel or Modules tab here: both are the station's.
                 "winlink": False,
                 "mesh": bool(self.addons and self.addons.get("mesh")),
@@ -1026,11 +1027,16 @@ class Station(TxAudio):
     def _stop_broadcast(self):
         self._broadcast(json.dumps({"t": "tx_stop", "stopped": self.tx_stopped}))
 
-    async def tx_stop(self, ws=None, why="STOP TX pressed"):
+    async def tx_stop(self, ws=None, why="STOP TX pressed", shutdown=False):
         """Stop every transmission this server started or could start, and
         refuse every new one until tx_resume. Order: latch (nothing new keys),
         unkey (the carrier ends first), then undo what would key again.
-        Each step runs whatever the one before it did."""
+        Each step runs whatever the one before it did.
+
+        shutdown: `ranch-radio stop|restart` holding the radio still while it
+        goes down. Latched the same, but not saved: what the file held (the
+        operator's STOP TX, or none) is what the next start gets, so a
+        routine restart doesn't come back stopped."""
         again = self.tx_stopped is not None
         self.tx_stopped = {"at": time.time(), "by": self._who(ws)}
         log.warning("STOP TX by %s%s", self.tx_stopped["by"], " (again)" if again else "")
@@ -1057,7 +1063,8 @@ class Station(TxAudio):
         self._tune_ours_at = None
         unsaved = ""
         try:
-            self.stop_state.save(self.tx_stopped)
+            if not shutdown:
+                self.stop_state.save(self.tx_stopped)
         except OSError as e:
             log.error("STOP TX: could not save %s: %s", self.stop_state.path, e)
             unsaved = f" It could not be saved ({e.strerror or e}): a restart would clear it."
@@ -1255,7 +1262,7 @@ class Station(TxAudio):
                 self.app_set(k, v)
                 await self.radio.set(k, v)
         elif t == "tx_stop":
-            await self.tx_stop(ws)
+            await self.tx_stop(ws, shutdown=m.get("shutdown") is True)
         elif t == "tx_resume":
             await self.tx_resume(ws)
         elif t == "sim_panel" and self.args.sim:

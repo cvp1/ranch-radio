@@ -6,13 +6,17 @@ Stand-ins for systemctl, the probe and the STOP TX call (Linux host file):
   - rigctl clients refuse unless --drop-rigctl
   - an idle radio: STOP TX first, then its socket and service stop
   - STOP TX not confirmed: left alone
-  - restart refuses a radio with STOP TX latched (stop does not)
+  - restart refuses a radio with STOP TX latched in memory only (stop does
+    not); a latch the radio saves (--stop-state) restarts
   - a stopped radio: stop says so, restart starts it
 Then the real thing: a simulated radio (server.py --sim, never hardware), the
 real probe and STOP TX call, systemctl a stand-in. PTT on over rigctl: stop
 refuses and systemctl is never called. PTT off: stop latches STOP TX on the
 radio (its /healthz says so) and only then stops the units; restart now
-refuses (latched). `status --json` reports it all.
+refuses (latched, not saved). `status --json` reports it all.
+Then with --stop-state: the stop's own STOP TX isn't saved (killed and
+started again, it keys); a page's STOP TX is, a restart goes ahead, and the
+radio comes back stopped; update's idle() lets it restart too.
 
     python3 tests/cli_lifecycle_test.py
 """
@@ -144,6 +148,13 @@ check("restart refuses a radio with STOP TX latched", (rc, "latched" in out), (1
 check("  nothing stopped or started", [c for c in calls() if " is-active " not in c], [])
 check("  stop is still allowed (it can't transmit stopped)", rr("stop", "g90")[0], 0)
 
+running()
+state({"up": True, "stopped": True, "stop_saved": True})
+rc, out = rr("restart", "g90")
+check("a latch the radio saves: restart goes ahead", rc, 0)
+check("  stopped, then started", [c.split()[2] for c in calls() if c.split()[2] in ("stop", "start")],
+      ["stop", "start"])
+
 ACTIVE.write_text("")
 rc, out = rr("restart", "g90")
 check("restart a stopped radio: started, socket and service",
@@ -212,6 +223,68 @@ finally:
         srv.wait(10)
     except subprocess.TimeoutExpired:
         srv.kill()
+
+# ---------------------------------------------------------------- the real thing, STOP TX saved
+SAVED = TMP / "stop-tx" / "g90.json"
+PAGE_STOP = """import asyncio, json, sys, aiohttp
+async def main():
+    async with aiohttp.ClientSession() as s, s.ws_connect(sys.argv[1]) as ws:
+        await ws.receive(timeout=5)
+        await ws.send_str(json.dumps({"t": "tx_stop"}))
+        while not json.loads((await ws.receive(timeout=5)).data).get("stopped"):
+            pass
+asyncio.run(main())
+"""
+
+
+def start_saved():
+    return subprocess.Popen([sys.executable, "server.py", "--sim", "--rig", "g90", "--no-audio", "--host",
+                             "127.0.0.1", "--listen", str(web), "--rigctl-port", str(rig), "--stop-state",
+                             str(SAVED)], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+
+def kill(p):
+    p.kill()
+    p.wait(10)
+    testkit.wait_for(lambda: not health(), 10, 0.1)
+
+
+def saved():
+    return json.loads(SAVED.read_text()).get("stopped") if SAVED.exists() else None
+
+
+srv = start_saved()
+try:
+    check("saved: the simulated radio is up", testkit.wait_for(lambda: health().get("rig_connected"), 60, 0.2), True)
+    running()
+    rc, out = rr("stop", "g90", "--drop-rigctl", env=REAL)
+    check("stop: STOP TX latched before the units stopped", (rc, health().get("tx_stopped")), (0, True))
+    check("  but not saved: it was the stop's, not the operator's", saved(), None)
+    kill(srv)
+    srv = start_saved()
+    testkit.wait_for(lambda: health().get("rig_connected"), 60, 0.2)
+    check("  started again: not stopped (a routine restart keys)", health().get("tx_stopped"), False)
+    subprocess.run([sys.executable, "-c", PAGE_STOP, f"ws://127.0.0.1:{web}/ws"], timeout=30, check=True)
+    check("a page's STOP TX is saved", bool(saved()), True)
+    running()                                       # the stand-in stopped nothing real
+    g = next(x for x in json.loads(rr("status", "--json", env=REAL)[1]) if x["key"] == "g90")
+    check("  status: latched, and saved", (g.get("stopped"), g.get("stop_saved")), (True, True))
+    sys.path.insert(0, str(ROOT))
+    from ranch_radio import service
+    check("  update's idle() lets it restart", service.idle(h, G90, drop_rigctl=True)[0], True)
+    before = saved()
+    running()
+    rc, out = rr("restart", "g90", "--drop-rigctl", env=REAL)
+    check("  restart goes ahead", (rc, [c.split()[2] for c in calls() if c.split()[2] in ("stop", "start")]),
+          (0, ["stop", "start"]))
+    check("  the operator's latch on disk is untouched", saved(), before)
+    kill(srv)
+    srv = start_saved()
+    testkit.wait_for(lambda: health().get("rig_connected"), 60, 0.2)
+    check("  and the radio comes back stopped", health().get("tx_stopped"), True)
+finally:
+    srv.kill()
+    srv.wait(10)
 
 print(f"\n{'ALL PASS' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)
