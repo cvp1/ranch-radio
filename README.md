@@ -516,10 +516,11 @@ still there.
   crash.
 - **STOP TX.** An always-visible switch on the radio page ends the radio's
   transmission and any tune, aborts Winlink, and latches until a page
-  presses Resume (it doesn't survive a server restart). The packet hub has
-  its own **Off**, which does survive a restart: it is written to disk before
-  the page is told it worked, and an unreadable state file starts the hub
-  with transmit off.
+  presses Resume. It survives a restart, a crash or a reboot: it is written
+  to disk (`~/.local/state/radio-remote/stop-tx/<radio>.json`) before the
+  page is told it worked, and an unreadable state file starts the radio with
+  STOP TX on. The packet hub has its own **Off**, which survives a restart
+  the same way.
 - **Off-channel holds.** Before Winlink retunes a UV-PRO the packet hub is
   asked to hold APRS, and the retune is refused if it can't; the hold is
   released only after the radio is verified back on its channel, survives a
