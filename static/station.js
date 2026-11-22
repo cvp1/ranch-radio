@@ -53,12 +53,13 @@ const station = (() => {
     // Map on, a window 1100 px or wider).
     navOperate = !!layoutPlan("operate");
     if (navOperate) first.push({ id: "operate", label: LAYOUTS.operate.label, title: LAYOUTS.operate.title });
-    const tucked = navGroups.render(nav, { view, first, items, end });
-    if (tucked.length) {
-      nav.firstChild.title += `\nOff or not connected: ${tucked.join(", ")} (their cards are here)`;
-      const mods = nav.querySelector('a[href="#/modules"]');
-      if (mods) mods.title += `\nOff or not connected: ${tucked.join(", ")}`;
-    }
+    const tucked = navGroups.render(nav, { view, first, items, end, sub: $("#st-subnav") });
+    // Set, not appended: render() skips a redraw that would change nothing, and
+    // the tabs it keeps would otherwise collect one note per call.
+    const off = tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : "";
+    nav.firstChild.title = first[0].title + (off && `${off} (their cards are here)`);
+    const mods = nav.querySelector('a[href="#/modules"]');
+    if (mods) mods.title = end[0].title + off;
     renderBottom(view, [...first, ...items, ...end]);
   }
 
@@ -70,6 +71,12 @@ const station = (() => {
     const bar = $("#st-bottom"), more = $("#st-more");
     if (!bar || !more) return;
     if (renderBottom.view !== view) { more.hidden = true; renderBottom.view = view; }   // a new route closes More
+    // Drawn only when something on it changed (as the top bar, nav.js): a
+    // redraw replaces the button under a thumb. The focus is in the key: the
+    // Radio button points at the focus radio.
+    const key = JSON.stringify([view, all, focusId(), present().map((r) => r.id)]);
+    if (renderBottom.key === key) return;
+    renderBottom.key = key;
     const byGroup = (g) => all.filter((it) => it.group === g);
     const msgs = byGroup("messaging"), mesh = byGroup("mesh");
     const pick = (list) => list.find((it) => it.id === view) || list.find((it) => !it.off) || list[0];
@@ -1584,7 +1591,9 @@ const station = (() => {
         queued = true;
         requestAnimationFrame(() => {
           queued = false;
-          renderNav(); renderCards();
+          // Cards through homeChanged: at most three draws a second, and none off
+          // Mission Control (an add-on event can come several times a second).
+          renderNav(); homeChanged();
           if (LAYOUTS[route()]) { relayout(); operateStrip(); }   // an add-on on or off; the strip's data (PR 2b)
           else if (route() === "wall") relayout();                // the Map on or off (PR 5a)
         });

@@ -53,14 +53,13 @@
         dot: connected ? "ok" : "off", off: !connected, badge: view === "mesh" ? "" : meshUnread() || "" });
     }
     for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
-    const tucked = navGroups.render(nav, { view, items, tuck: on("modules") });
-    if (on("modules")) {
-      nav.append(Object.assign(document.createElement("a"), {
-        href: "#/modules", className: "st-tab" + (view === "modules" ? " on" : ""),
-        title: "Every module: what's on, what it needs, add or remove" +
-          (tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : ""),
-        innerHTML: "<span>Modules</span>" }));
-    }
+    // Modules is the bar's last tab (end), so render() can skip a redraw that
+    // would change nothing (nav.js); its title names what was tucked away.
+    const MODS = "Every module: what's on, what it needs, add or remove";
+    const end = on("modules") ? [{ id: "modules", label: "Modules", title: MODS }] : [];
+    const tucked = navGroups.render(nav, { view, items, end, tuck: on("modules") });
+    const mods = nav.querySelector('a[href="#/modules"]');
+    if (mods) mods.title = MODS + (tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : "");
   }
 
   // Re-render when a panel appears, Winlink arms, the node connects or a
