@@ -12,6 +12,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Added
 
+- `ranch-radio status [--json]`, `stop [NAME...]`, `restart [NAME...]`: each server running, answering, transmitting, in Winlink, latched, with rigctl clients; stop and restart only an idle one. Never one transmitting or in a Winlink session (no `--force`), never one the service manager runs that doesn't answer, and restart never a radio with STOP TX latched. Just before the stop, STOP TX latches the radio so nothing keys in between. On Linux the radio's socket stops with it.
 - `ranch-radio logs [NAME] [-f] [-n LINES]`: where every service this host runs logs (from render: a Mac agent's console file, a Linux unit's journal), or one service's log.
 - `GET /healthz` on the radio server, the station and the packet hub: `{ok, role, uptime_s, pid, degraded}` plus the role's facts (a radio: rig connected, TX, STOP TX latched, Winlink armed, rigctl clients). Guarded like every route (Host check, and the token when set). Readiness only: restarts still decide on the WebSocket probe.
 - A Mac's console logs stay bounded: the radio server, the station and the hub copy their launchd log to `.1` (keeping 3) and truncate it past 20 MB (`RANCH_RADIO_LOG_MAX_MB`, `RANCH_RADIO_LOG_KEEP`). `server.log` grew without limit before.
@@ -289,6 +290,7 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ### Fixed
 
+- `ranch-radio update` no longer restarts a radio with STOP TX latched (the latch is in memory, so the restart cleared it); it is deferred like a busy one.
 - The radio page shows another client's change made just after its own. For 700 ms after you change a setting the page ignores the server's states for it, so a late echo of your own edit cannot snap the dial back; it used to ignore every state, so a retune from a second page or a phone in that window left this page showing the old frequency until the next change. Now only a value this page had or sent in the window is ignored.
 
 - The P2P directory's listing requests survive a flood. One station sending a few hundred P2PDIR messages used to push every other station's request out of view (only the newest 50 were read), and Dismiss cleared only those 50. Now up to 2,000 are read, one Dismiss archives all of a station's messages, an internet sender's flood is one card, and the panel says when a bound left anything out. When a station's newest minute holds messages that disagree (a remove and a listing, say), the request is shown but Publish is refused: Pat dates messages to the minute and orders a tie arbitrarily, so nothing says which came last. Dates with different time-zone offsets now order by the instant.
