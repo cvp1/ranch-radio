@@ -62,6 +62,16 @@ In (stdin):
     {"cmd": "set", "ref": n, "section": str, "values": {field: value}}
     {"cmd": "favorite", "ref": n, "to": "!xxxxxxxx", "fav": bool}
     {"cmd": "trace", "ref": n, "to": "!xxxxxxxx"}
+    {"cmd": "remote_get", "ref": n, "to": "!xxxxxxxx", "section": str}
+    {"cmd": "remote_set", "ref": n, "to": "!xxxxxxxx", "section": str, "values": {field: value}}
+    {"cmd": "remote_reboot", "ref": n, "to": "!xxxxxxxx"}
+        Remote admin, to a node that lists this node's public key as an admin
+        key: PKI-encrypted, one job at a time, SETTINGS sections only (not the
+        owner). remote_get answers {"ev": "remote_config", "ref", "to",
+        "section", "values"} then "done"; remote_set reads the section,
+        changes the named fields, writes, re-reads after the node restarts,
+        and is ok only if the re-read matches. Admin packets never go to the
+        --feed broker.
 
 The node's clock: the bridge gives the node this host's time when it
 connects and every hour after (Bridge.clock_loop), as the phone apps do. A
@@ -98,6 +108,13 @@ NODES_EVERY_S = 5.0
 TRACE_TIMEOUT_S = 90.0        # a traceroute over several hops on LongFast can take a minute
 REQUEST_TIMEOUT_S = 90.0      # a position/telemetry/user request: the same mesh, the same wait
 REQUEST_KINDS = ("position", "telemetry", "env", "nodeinfo", "neighbors")
+# Remote admin (remote_get / remote_set / remote_reboot): each step is one
+# PKI-encrypted admin round trip over the mesh to a node that lists this
+# node's public key as an admin key. A set re-reads the section after the
+# far node restarts, which on an ESP32 handheld takes 20-40 s.
+REMOTE_STEP_S = 60.0
+REMOTE_READBACK_TRIES = 3
+REMOTE_READBACK_WAIT_S = 20.0
 REBOOT_S = 5
 # After a write that restarts the node (Reboot, any settings section but the
 # owner), this bridge exits RELINK_S later and the server starts a new one.
@@ -311,6 +328,7 @@ class Bridge:
         self.feed_dirty = False       # a packet changed lastHeard/SNR: the feed's node list is stale
         self.neighbors = {}           # node id -> {"t", "neighbors": [{"id", "snr"}]} from NEIGHBORINFO_APP
         self.neighbors_dirty = False
+        self.remote_lock = threading.Lock()   # one remote admin job at a time
 
     # --- node -> server
 
@@ -389,14 +407,17 @@ class Bridge:
     def on_receive(self, packet, interface):
         if self.note_heard(packet):
             self.nodes_dirty = True   # the page's node list and the feed's are both stale now
+        d = packet.get("decoded") or {}
+        port = d.get("portnum")
         if self.feed is not None:
             self.feed_dirty = True
             try:
-                self.feed.publish_packet(packet)
+                # An admin answer carries a session passkey and a node's
+                # settings: it is between this node and that one, never the broker's.
+                if port != "ADMIN_APP":
+                    self.feed.publish_packet(packet)
             except Exception:
                 log.exception("feed packet")
-        d = packet.get("decoded") or {}
-        port = d.get("portnum")
         if packet.get("from") != self.my_num and packet.get("fromId"):
             emit(ev="rx", **{"from": packet["fromId"]}, port=port or "ENCRYPTED", **rx_detail(packet, self.my_num))
         if port == "TEXT_MESSAGE_APP":
@@ -791,6 +812,171 @@ class Bridge:
         t.daemon = True
         t.start()
 
+    # --- remote admin: another node that trusts this node's public key
+
+    def _remote_spec(self, section):
+        """The SETTINGS entry for a section remote admin may touch. The owner
+        section is not one: it travels as a separate admin message, and the
+        allow-list is what keeps keys and passwords out of reach."""
+        spec = next((s for s in SETTINGS if s[0] == section), None)
+        if spec is None or spec[2] == "owner":
+            raise ValueError(f"not a remote setting: {section}")
+        return spec
+
+    def _admin_round_trip(self, num, msg, want_response):
+        """Send one AdminMessage to node num, PKI-encrypted, and wait for its
+        answer: (decoded admin dict or None for a plain ACK, error or None).
+        Bounded by REMOTE_STEP_S. The library's own remote helpers block on a
+        flag shared with every other request and print to stdout, so they are
+        not used here."""
+        from meshtastic.protobuf import portnums_pb2
+        done, out = threading.Event(), {}
+
+        def on_response(p):
+            d = p.get("decoded") or {}
+            if d.get("portnum") == "ROUTING_APP":
+                reason = (d.get("routing") or {}).get("errorReason", "NONE")
+                if reason != "NONE":
+                    out["error"] = reason
+                elif want_response:
+                    return            # the ACK of a request: its answer is still to come
+            else:
+                out["admin"] = d.get("admin")
+            done.set()
+
+        self.iface.sendData(msg, destinationId=num, portNum=portnums_pb2.PortNum.ADMIN_APP,
+                            wantAck=True, wantResponse=want_response, onResponse=on_response,
+                            onResponseAckPermitted=True, channelIndex=0, pkiEncrypted=True)
+        if not done.wait(REMOTE_STEP_S):
+            return None, "no reply"
+        return out.get("admin"), out.get("error")
+
+    def _remote_fetch(self, num, spec):
+        """(section protobuf, session passkey) read fresh from node num. The
+        passkey (valid a few minutes) must ride on any write that follows."""
+        from meshtastic.protobuf import admin_pb2
+        a = admin_pb2.AdminMessage()
+        if spec[2] == "config":
+            a.get_config_request = admin_pb2.AdminMessage.ConfigType.Value(spec[0].upper() + "_CONFIG")
+        else:
+            a.get_module_config_request = self.iface.localNode.moduleConfig.DESCRIPTOR.fields_by_name[spec[0]].index
+        admin, err = self._admin_round_trip(num, a, want_response=True)
+        if err:
+            raise RuntimeError(err)
+        raw = (admin or {}).get("raw")
+        if raw is None:
+            raise RuntimeError("the node answered without its settings")
+        resp = raw.get_config_response if spec[2] == "config" else raw.get_module_config_response
+        if resp.WhichOneof("payload_variant") != spec[0]:
+            raise RuntimeError(f"the node answered with {resp.WhichOneof('payload_variant')!r}, not {spec[0]!r}")
+        return getattr(resp, spec[0]), raw.session_passkey
+
+    @staticmethod
+    def _plain_values(msg, spec):
+        """The allow-listed fields of a section, enums by name."""
+        vals = {}
+        for name, _label, _extra in spec[3]:
+            d = msg.DESCRIPTOR.fields_by_name.get(name)
+            if d is None or d.type not in _TYPES:
+                continue
+            v = getattr(msg, name)
+            if d.type == 14:
+                v = d.enum_type.values_by_number[v].name if v in d.enum_type.values_by_number else str(v)
+            elif d.type == 2:
+                v = round(v, 6)
+            vals[name] = v
+        return vals
+
+    def _remote_job(self, m, work):
+        """Run one remote admin job on its own thread, one at a time: the
+        mesh is slow and a node's session passkey is per sender."""
+        num = int(str(m["to"])[1:], 16)
+        if not self.remote_lock.acquire(blocking=False):
+            emit(ev="done", ref=m.get("ref"), ok=False, error="another remote admin job is running")
+            return
+
+        def run():
+            try:
+                work(num)
+            except BaseException as e:            # our_exit() in the library raises SystemExit
+                emit(ev="done", ref=m.get("ref"), ok=False, error=f"{type(e).__name__}: {e}")
+            finally:
+                self.remote_lock.release()
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def remote_get(self, m):
+        """One section of a remote node's settings, allow-listed fields only."""
+        ref, to, spec = m.get("ref"), m["to"], self._remote_spec(m["section"])
+
+        def work(num):
+            msg, _ = self._remote_fetch(num, spec)
+            emit(ev="remote_config", ref=ref, to=to, section=spec[0], values=self._plain_values(msg, spec))
+            emit(ev="done", ref=ref, ok=True, error=None)
+
+        self._remote_job(m, work)
+
+    def remote_set(self, m):
+        """Write allow-listed fields of one section on a remote node: read the
+        section fresh (a set sends the whole section, so anything not read
+        first would be zeroed), change only the named fields, write it with
+        the session passkey, then read it back after the node restarts. ok
+        only when the read-back matches: an ACK is not adoption."""
+        ref, to, spec, values = m.get("ref"), m["to"], self._remote_spec(m["section"]), m["values"]
+        if not isinstance(values, dict) or not values or not set(values) <= {f[0] for f in spec[3]}:
+            raise ValueError(f"not a setting: {spec[0]} {sorted(values) if isinstance(values, dict) else values}")
+        if spec[0] == "power" and values.get("is_power_saving") is True:
+            raise ValueError("power saving turns Wi-Fi and Bluetooth off on an ESP32 node; set it over USB")
+
+        def work(num):
+            from meshtastic.protobuf import admin_pb2
+            msg, passkey = self._remote_fetch(num, spec)
+            for name, v in values.items():
+                d = msg.DESCRIPTOR.fields_by_name[name]
+                setattr(msg, name, d.enum_type.values_by_name[v].number if d.type == 14 else v)
+            a = admin_pb2.AdminMessage(session_passkey=passkey)
+            getattr(a.set_config if spec[2] == "config" else a.set_module_config, spec[0]).CopyFrom(msg)
+            _, err = self._admin_round_trip(num, a, want_response=False)
+            if err:
+                raise RuntimeError(f"write refused: {err}")
+            want = self._plain_values(msg, spec)
+            got, last = None, "no read-back"
+            for _ in range(REMOTE_READBACK_TRIES):
+                time.sleep(REMOTE_READBACK_WAIT_S)
+                try:
+                    back, _ = self._remote_fetch(num, spec)
+                except RuntimeError as e:
+                    last = f"read-back: {e}"
+                    continue
+                got = self._plain_values(back, spec)
+                break
+            if got is None:
+                raise RuntimeError(f"written and acknowledged, but {last}")
+            emit(ev="remote_config", ref=ref, to=to, section=spec[0], values=got)
+            wrong = {k: got.get(k) for k in values if got.get(k) != want.get(k)}
+            if wrong:
+                raise RuntimeError(f"acknowledged, but the node reads back {wrong}")
+            emit(ev="done", ref=ref, ok=True, error=None)
+
+        self._remote_job(m, work)
+
+    def remote_reboot(self, m):
+        """Reboot a remote node: a fresh session passkey first (from its
+        device section), then the reboot, acknowledged."""
+        ref = m.get("ref")
+
+        def work(num):
+            from meshtastic.protobuf import admin_pb2
+            _, passkey = self._remote_fetch(num, self._remote_spec("device"))
+            _, err = self._admin_round_trip(num, admin_pb2.AdminMessage(session_passkey=passkey,
+                                                                        reboot_seconds=REBOOT_S),
+                                            want_response=False)
+            if err:
+                raise RuntimeError(f"reboot refused: {err}")
+            emit(ev="done", ref=ref, ok=True, error=None)
+
+        self._remote_job(m, work)
+
     def favorite(self, m):
         ref, to, fav = m.get("ref"), m["to"], bool(m["fav"])
         try:
@@ -1022,6 +1208,12 @@ def main():
                     b.node_action(m)
                 elif cmd == "reboot":
                     b.reboot(m)
+                elif cmd == "remote_get":
+                    b.remote_get(m)
+                elif cmd == "remote_set":
+                    b.remote_set(m)
+                elif cmd == "remote_reboot":
+                    b.remote_reboot(m)
             except (KeyError, TypeError, ValueError) as e:
                 emit(ev="done", ref=m.get("ref"), ok=False, error=f"bad command: {e}")
         b.closing = True              # server closed our stdin: exit

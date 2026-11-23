@@ -16,7 +16,9 @@ also an "rx" (activity). !0000cafe replies to the first message (reply_id
 1001); "react to me" gets a 👍 reaction from !0000beef. NeighborInfo: BASE
 hears RDG; on the first start only, RDG hears us (7.25 dB) too. "request" to !0000beef answers (a position request moves it, a
 telemetry one fills its air_tx, a neighbours one says it hears us at 4.0 dB); to anyone else, "no reply". "node" ignore /
-unignore / remove change the node list; "reboot" is done.
+unignore / remove change the node list; "reboot" is done. Remote admin
+(remote_get / remote_set / remote_reboot): !0000beef trusts us and answers
+(LoRa hop 7, US, plus whatever was set); anyone else refuses.
 $FAKE_MESH_PORT_NAMES=1 names the node after its port's file name.
 $FAKE_MESH_NODES_PAD adds that many far nodes to the node list (a long line).
 $FAKE_MESH_BURST=1 also "hears" 30 position packets from !0000dead (hop limit
@@ -193,6 +195,17 @@ def main():
                 emit(ev="nodes", nodes=nodes)
                 emit(ev="req", ref=m["ref"], to=m["to"], kind=m["kind"], ok=True, error=None)
             threading.Thread(target=answer).start()
+            continue
+        if m.get("cmd") in ("remote_get", "remote_set", "remote_reboot"):
+            # Remote admin: !0000beef trusts us (its LoRa section is hop 7, US);
+            # anyone else answers as a node that does not list our key.
+            if m["to"] != "!0000beef":
+                emit(ev="done", ref=m["ref"], ok=False, error="RuntimeError: ADMIN_PUBLIC_KEY_UNAUTHORIZED")
+                continue
+            if m["cmd"] != "remote_reboot":
+                far = {"region": "US", "hop_limit": 7, **(m.get("values") or {})}
+                emit(ev="remote_config", ref=m["ref"], to=m["to"], section=m["section"], values=far)
+            emit(ev="done", ref=m["ref"], ok=True, error=None)
             continue
         if m.get("cmd") == "node":
             if m["do"] == "remove":

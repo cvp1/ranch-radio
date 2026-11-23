@@ -475,9 +475,22 @@ class MeshEngine:
             self._send({"config": self.config})
             if self._self_nb is None:
                 self._self_nb = asyncio.get_running_loop().call_later(SELF_NEIGHBORS_FIRST_S, self._self_neighbors)
+        elif ev == "remote_config":
+            # Another node's settings, read over the mesh by remote admin: to
+            # the page that asked only, never kept as this node's config.
+            ws, _what = self._writes.get(m.get("ref"), (None, "?"))
+            if ws is not None:
+                self._send({"remote_config": {k: m.get(k) for k in ("to", "section", "values")}}, ws)
+            log.info("mesh: remote %s settings of %s read", m.get("section"), m.get("to"))
         elif ev == "done":
             ws, what = self._writes.pop(m["ref"], (None, "?"))
-            if m["ok"]:
+            if what.startswith("reading "):        # a remote read: nothing was saved either way
+                if m["ok"]:
+                    log.info("mesh: %s done", what)
+                else:
+                    log.warning("mesh: %s failed: %s", what, m.get("error"))
+                    self.station.notice(f"Mesh: {what} failed: {m.get('error')}", "warn", ws)
+            elif m["ok"]:
                 log.info("mesh: %s written to the node", what)
                 self.station.notice(f"Mesh: {what} saved to the node.", "info", ws)
             else:
@@ -1153,6 +1166,48 @@ class MeshEngine:
         if not self._usable(ws):
             return
         await self._write_cmd(ws, "reboot", {"cmd": "reboot"})
+
+    # Remote admin: another node that lists this node's public key as an
+    # admin key. The bridge reads the section fresh, writes only the named
+    # fields and reports done only once the far node reads them back.
+
+    def _remote_target(self, ws, to):
+        if not self._usable(ws):
+            return False
+        if not NODE_ID.match(str(to)):
+            self.station.notice(f"Not a node id: {to!r}.", "warn", ws)
+            return False
+        if to == ((self.info or {}).get("me") or {}).get("id"):
+            self.station.notice("That is this node: use its own settings.", "warn", ws)
+            return False
+        return True
+
+    async def remote_get(self, ws, to, section):
+        if not self._remote_target(ws, to):
+            return
+        if section == "owner" or not any(s["name"] == section for s in (self.config or {}).get("sections", [])):
+            self.station.notice(f"Not a remote settings section: {section!r}.", "warn", ws)
+            return
+        await self._write_cmd(ws, f"reading {section} settings of {to}",
+                              {"cmd": "remote_get", "to": to, "section": section})
+
+    async def remote_set(self, ws, to, section, values):
+        if not self._remote_target(ws, to):
+            return
+        why = "The owner name is set on the node itself." if section == "owner" else self.check_settings(section, values)
+        if why:
+            self.station.notice(why, "warn", ws)
+            return
+        spec = next(s for s in self.config["sections"] if s["name"] == section)
+        types = {f["name"]: f["type"] for f in spec["fields"]}
+        values = {k: int(v) if types[k] == "int" else v for k, v in values.items()}
+        await self._write_cmd(ws, f"{spec['label']} settings on {to}",
+                              {"cmd": "remote_set", "to": to, "section": section, "values": values})
+
+    async def remote_reboot(self, ws, to):
+        if not self._remote_target(ws, to):
+            return
+        await self._write_cmd(ws, f"reboot of {to}", {"cmd": "remote_reboot", "to": to})
 
     def _end_trace(self, why):
         rec = next((r for r in self.traces.values() if r["state"] == "running"), None)
