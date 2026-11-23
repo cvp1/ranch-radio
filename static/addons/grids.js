@@ -255,7 +255,9 @@
       if (!snap.ready) return { state: "off", lines: [] };
       const l48 = target(), st = status(pick.mode, pick.band);
       const miss = [...l48].filter((g) => !done(st[g])).length, n = missingOnAir();
-      return { state: "on", lines: [`${miss} Lower-48 missing (${pick.mode}, ${pick.band})`, ...(n ? [`${n} on the air now`] : [])] };
+      // The mode and band only when narrowed (2026-11-23): "(All, All)" read as noise.
+      const scope = [pick.mode, pick.band].filter((x) => x && x !== "All").join(" ");
+      return { state: "on", lines: [`${miss} Lower-48 squares missing${scope ? ` on ${esc(scope)}` : ""}`, ...(n ? [`${n} on the air now`] : [])] };
     },
   });
 })();

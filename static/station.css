@@ -199,20 +199,19 @@ a.rb-tag { text-decoration: none; }
   .rb-lvl { min-width: 0; }
 }
 
-/* Mission Control (the home view): a clock, the on-air line and what needs
-   you, then every radio and service live, in lanes named like the tab bar's
-   groups. Radios get instruments (static/mission.js). */
+/* The Shack (the home view; Mission Control until 2026-11-23): the on-air
+   line and what needs you, then every radio and service live, in lanes named
+   like the tab bar's groups. Radios get instruments (static/mission.js).
+   One accent rule (2026-11-23): a card is neutral until it has news; colour
+   means transmitting (red), needs you (warm) or the radio's frequency and a
+   need (accent). Lane colours, a stripe and a pulsing dot on every card, and
+   the grid-paper background made everything equally loud. */
 #view-home { --mc-glow: var(--accent-rgb);
-  background:
-    radial-gradient(1200px 500px at 15% -10%, rgba(var(--accent-rgb),.07), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, rgba(255,181,71,.045), transparent 60%),
-    linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px) 0 0 / 100% 32px,
-    linear-gradient(90deg, rgba(255,255,255,.022) 1px, transparent 1px) 0 0 / 32px 100%; }
+  background: radial-gradient(1200px 500px at 15% -10%, rgba(var(--accent-rgb),.05), transparent 60%); }
 .st-dot.warn { background: var(--warm); box-shadow: 0 0 6px var(--warm); }
-.mc-card .st-dot.ok { animation: mc-breathe 3.2s ease-in-out infinite var(--sync, 0s); }
-@keyframes mc-breathe { 50% { box-shadow: 0 0 2px var(--ok); opacity: .75; } }
+.mc-card .st-dot.ok { display: none; }          /* fine is the default: no dot for it */
 
-.mc-band { display: grid; grid-template-columns: auto 1fr auto; gap: 14px 26px; align-items: center;
+.mc-band { display: grid; grid-template-columns: 1fr auto; gap: 10px 26px; align-items: center;
   margin: 10px 20px 4px; padding: 10px 18px; border-radius: 16px; position: relative; overflow: hidden;
   border: 1px solid rgba(var(--accent-rgb), .2);
   background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(0,0,0,.25));
@@ -221,12 +220,6 @@ a.rb-tag { text-decoration: none; }
   background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), .7), transparent); }
 .mc-band:has(.mc-air.tx) { border-color: rgba(255,77,94,.6); background: linear-gradient(180deg, rgba(255,77,94,.12), rgba(0,0,0,.3)); }
 .mc-band:has(.mc-air.tx)::before { background: linear-gradient(90deg, transparent, #ff4d5e, transparent); }
-.mc-clock { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 6px;
-  padding-right: 24px; border-right: 1px solid var(--line); }
-.mc-utc { font: 600 30px/1 var(--mono); color: var(--text); letter-spacing: .02em; font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 18px rgba(var(--accent-rgb), .35); }
-.mc-clock small { font: 700 10px var(--mono); letter-spacing: .12em; color: rgba(var(--accent-rgb), .8); }
-.mc-local { grid-column: 1 / -1; margin-top: 4px; font: 500 11.5px var(--mono); color: var(--muted); }
 .mc-air { display: flex; flex-direction: column; gap: 6px; font-size: 15px; color: var(--muted); min-width: 0; }
 .mc-air b { color: var(--text); }
 .mc-air.tx b { color: #ff4d5e; letter-spacing: .06em; }
@@ -241,7 +234,7 @@ a.rb-tag { text-decoration: none; }
   background: rgba(255,77,94,.18); color: #ffd0d5; font: 700 12px var(--mono); cursor: pointer; }
 .mc-air-row button:hover { background: #ff4d5e; color: #fff; }
 .mc-needs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.mc-need { padding: 5px 11px; border-radius: 999px; font: 600 12px var(--sans); text-decoration: none;
+.mc-need { padding: 5px 12px; border-radius: 999px; font: 600 13px var(--sans); text-decoration: none;
   border: 1px solid var(--line-hi, var(--line)); color: var(--text); background: rgba(255,255,255,.03);
   transition: transform .15s, border-color .15s; }
 .mc-need:hover { transform: translateY(-1px); border-color: rgba(var(--accent-rgb), .55); }
@@ -249,7 +242,7 @@ a.rb-tag { text-decoration: none; }
   box-shadow: 0 0 14px -4px rgba(var(--accent-rgb), .6); }
 .mc-need.warn { border-color: rgba(var(--warm-rgb), .55); color: var(--warm); background: rgba(var(--warm-rgb), .1); }
 .mc-need.off { color: var(--dim); }
-.mc-clear { color: var(--ok); font: 600 12.5px var(--sans); opacity: .8; }
+.mc-clear { color: var(--muted); font: 500 13px var(--sans); }
 
 /* The band strip (static/bands.js, UX plan PR 3a, 2026-11-19): a cell per
    band, three facts each. A fact not set up takes no room; one that is
@@ -258,7 +251,7 @@ a.rb-tag { text-decoration: none; }
 .bs-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 6px; }
 .bs-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 7px 9px 8px; border-radius: 10px;
   border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.025);
-  font: 500 11.5px/1.3 var(--sans); color: var(--muted); }
+  font: 500 12.5px/1.3 var(--sans); color: var(--muted); }
 .bs-cell.bs-decoding { border-color: rgba(var(--accent-rgb), .5); background: rgba(var(--accent-rgb), .06); }
 .bs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .bs-band { font: 700 14px var(--mono); color: var(--text); }
@@ -280,12 +273,30 @@ a.rb-tag { text-decoration: none; }
   font: inherit; color: var(--dim); cursor: pointer; }
 .bs-near-mode[aria-pressed="true"] { color: var(--accent); border-color: currentColor; }
 .bs-needs[data-state="wait"], .bs-needs[data-state="none"] { color: var(--dim); font-weight: 500; }
-.bs-notes { display: flex; flex-wrap: wrap; gap: 3px 16px; margin: 6px 2px 0; font: 500 11px var(--mono); color: var(--dim); }
+.bs-notes { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 16px; margin: 6px 2px 0; font: 500 11.5px var(--mono); color: var(--dim); }
+/* The Shack's compact strip (2026-11-23, bands.js ctx.compact): a quiet band
+   (every source answered, nothing there) is just its name, and the legend
+   folds behind Key; a note that something is unknown stays in the open. */
+#mc-bands .bs-cells { display: flex; flex-wrap: wrap; }
+#mc-bands .bs-cell { flex: 1 1 112px; }
+#mc-bands .bs-cell.bs-quiet { flex: 0 0 auto; padding: 7px 10px; background: transparent; border-color: rgba(255,255,255,.05); }
+#mc-bands .bs-quiet .bs-band { color: var(--dim); font-weight: 600; }
+#mc-bands .bs-quiet .bs-fact, #mc-bands .bs-quiet .bs-needs { display: none; }
+.bs-key { display: contents; }
+.bs-key summary { cursor: pointer; color: var(--dim); list-style: none; }
+.bs-key summary::-webkit-details-marker { display: none; }
+.bs-key summary::before { content: "▸ "; }
+.bs-key[open] summary::before { content: "▾ "; }
+.bs-key summary:hover, .bs-key summary:focus-visible { color: var(--text); }
+.bs-key[open] > span { flex-basis: 100%; }
 /* A phone: one row that scrolls sideways, so the bands stay a strip. */
 @media (max-width: 620px) {
   .bs-cells { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 132px; overflow-x: auto;
     scroll-snap-type: x proximity; padding-bottom: 4px; align-items: start; }   /* a quiet band stays short */
   .bs-cell { scroll-snap-align: start; }
+  #mc-bands .bs-cells { flex-wrap: nowrap; overflow-x: auto; }
+  #mc-bands .bs-cell { flex: 0 0 132px; }
+  #mc-bands .bs-cell.bs-quiet { flex: 0 0 auto; }
 }
 
 /* Lanes flow in rows (UX plan PR 3b, 2026-11-19): Radios and Tools take a row
@@ -293,26 +304,22 @@ a.rb-tag { text-decoration: none; }
    set by station.js). Stacked full-width lanes left most of each row empty
    and pushed Tools off a 900 px screen. */
 .mc-lanes { display: flex; flex-wrap: wrap; gap: 0 20px; padding: 0 20px; }
-.mc-lane { flex: 1 1 100%; min-width: 0; --lane: var(--accent-rgb); }
+.mc-lane { flex: 1 1 100%; min-width: 0; --lane: 148,163,184; }      /* one neutral for every lane */
 .mc-lane-messaging, .mc-lane-mesh { flex: var(--cards, 1) 1 0; }
-.mc-lane-messaging { --lane: 255,181,71; }
-.mc-lane-mesh { --lane: 167,139,250; }
-.mc-lane-tools { --lane: 96,165,250; }
-.mc-lane-name { display: flex; align-items: center; gap: 10px; margin: 8px 2px 0;
-  font: 700 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: rgba(var(--lane), .85); }
-.mc-lane-name::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(var(--lane), .35), transparent); }
+.mc-lane-name { display: flex; align-items: center; gap: 10px; margin: 10px 2px 0;
+  font: 600 11.5px var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.mc-lane-name::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 /* auto-fit: a lane's cards share its row, no empty tracks beside them (PR 3b). */
 .mc-lane .st-cards { padding: 6px 0 2px; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 /* A card sharing a row with a tall one (the wide radio card) keeps its own height. */
 .mc-lane .st-cards { align-items: start; }
 
-.mc-card { position: relative; overflow: hidden; cursor: default; gap: 6px; padding: 10px 14px;
-  border-color: rgba(255,255,255,.07);
-  background: linear-gradient(160deg, rgba(var(--lane), .07), rgba(255,255,255,.015) 40%, rgba(0,0,0,.2));
+.mc-card { position: relative; overflow: hidden; cursor: default; gap: 6px; padding: 12px 16px;
+  border-color: rgba(255,255,255,.07); font-size: 14px; color: #b8c2d0;
+  background: linear-gradient(160deg, rgba(255,255,255,.03), rgba(0,0,0,.2));
   box-shadow: 0 8px 28px -18px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.04);
   transition: transform .18s, border-color .18s, box-shadow .18s; }
-.mc-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: rgba(var(--lane), .55); }
-.mc-card.off::before { background: rgba(255,255,255,.08); }
+.mc-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: transparent; }
 .mc-card.tx::before { background: #ff4d5e; }
 .mc-card.warn::before { background: var(--warm); }
 .mc-card[data-href] { cursor: pointer; }
@@ -322,21 +329,29 @@ a.rb-tag { text-decoration: none; }
 @keyframes mc-onair { 50% { box-shadow: 0 0 30px -6px rgba(255,77,94,.55), inset 0 0 0 1px rgba(255,77,94,.25); } }
 .st-card.warn { border-color: rgba(var(--warm-rgb), .45); }
 .mc-wide { grid-column: span 2; }
-@media (max-width: 620px) { .mc-wide { grid-column: auto; } .mc-band { grid-template-columns: 1fr; } .mc-clock { border: 0; } }
+@media (max-width: 620px) { .mc-wide { grid-column: auto; } .mc-band { grid-template-columns: 1fr; } }
 .mc-card .st-card-head b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-ico { width: 18px; height: 18px; flex: none; color: rgba(var(--lane), .9); }
+.mc-ico { width: 18px; height: 18px; flex: none; color: var(--muted); }
 .mc-card.off .mc-ico { color: var(--dim); }
 .mc-card.tx .mc-ico { color: #ff4d5e; }
-.mc-tag { padding: 1px 7px; border-radius: 6px; font: 700 10px var(--mono); letter-spacing: .05em; text-transform: uppercase;
-  color: rgba(var(--lane), .95); background: rgba(var(--lane), .12); white-space: nowrap; }
+.mc-tag { padding: 1px 8px; border-radius: 6px; font: 600 12px var(--sans); white-space: nowrap;
+  color: var(--accent); background: rgba(var(--accent-rgb), .1); }
 .mc-tag.off { color: var(--muted); background: rgba(255,255,255,.06); }
-.mc-tag.tx { color: #fff; background: #ff4d5e; }
+.mc-tag.tx { color: #fff; background: #ff4d5e; font: 700 11px var(--mono); letter-spacing: .06em; }
 .mc-tag.warn { color: var(--warm); background: rgba(var(--warm-rgb), .14); }
 .mc-key { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: 5px; text-align: center;
-  font: 600 10.5px var(--mono); color: var(--dim); border: 1px solid var(--line); background: rgba(0,0,0,.25); }
+  font: 600 10.5px var(--mono); color: var(--dim); border: 1px solid var(--line); background: rgba(0,0,0,.25);
+  visibility: hidden; }
+/* The number key shows on the card under the pointer or keyboard focus
+   (2026-11-23); nine badges at once were noise. The card's title names it too. */
+.mc-card:hover .mc-key, .mc-card:focus-visible .mc-key { visibility: visible; }
+/* A card line is one line (2026-11-23): long text ends in an ellipsis rather
+   than wrapping the card, and a card shows at most two. */
+.mc-card .st-card-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-card .st-card-line ~ .st-card-line ~ .st-card-line { display: none; }
 .mc-big { font: 600 24px var(--mono); color: var(--text); line-height: 1.15; font-variant-numeric: tabular-nums; }
 .mc-wide .mc-big { font-size: 26px; }
-.mc-big small { margin-left: 6px; font: 500 12.5px var(--sans); color: var(--muted); }
+.mc-big small { margin-left: 6px; font: 500 13.5px var(--sans); color: var(--muted); }
 .mc-card.tx .mc-f { color: #ff4d5e; text-shadow: 0 0 20px rgba(255,77,94,.5); }
 .mc-card.ok .mc-f { color: var(--accent); text-shadow: 0 0 22px rgba(var(--accent-rgb), .35); }
 .mc-scope-slot { height: 64px; border-radius: 8px; overflow: hidden; background: var(--deep);
@@ -372,8 +387,8 @@ a.rb-tag { text-decoration: none; }
 .mc-hot { color: var(--accent); font-weight: 600; }
 .mc-who { color: var(--text); font-weight: 600; }
 .mc-dim { color: var(--dim); }
-#view-home .st-help { padding: 2px 22px; font-size: 12px; }
-.mc-keys { padding-bottom: 8px; }
+#view-home .st-help { padding: 6px 22px; font-size: 12.5px; }
+#view-home .st-help:empty { display: none; }
 
 /* Now and Log (static/station.js renderNow, UX plan PR 3b, 2026-11-19): one
    row under the band strip. A Now entry is a button: the Roster's Reply. */
@@ -381,41 +396,42 @@ a.rb-tag { text-decoration: none; }
 .mc-now[hidden] { display: none; }
 .mc-now-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
 .mc-now-name { font: 700 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: rgba(var(--accent-rgb), .85); }
-.mc-now-empty { color: var(--dim); font: 500 12px var(--sans); }
+.mc-now-empty { color: var(--dim); font: 500 13px var(--sans); }
 .mc-now-item { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
   border: 1px solid rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .08); color: var(--text);
-  font: 500 12px var(--sans); }
+  font: 500 13px var(--sans); }
 .mc-now-item b { font: 700 12.5px var(--mono); }
 .mc-now-item span { color: var(--accent); font-weight: 600; }
 .mc-now-item small { color: var(--dim); font: 500 11px var(--mono); }
 .mc-now-item.me { border-color: var(--warm); }
 .mc-now-item:hover, .mc-now-item:focus-visible { border-color: var(--accent); background: rgba(var(--accent-rgb), .18); outline: none; }
 .mc-log { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 5px 12px; border-radius: 10px;
-  border: 1px solid var(--line); background: rgba(255,255,255,.025); color: var(--muted); font: 500 12px var(--sans);
+  border: 1px solid var(--line); background: rgba(255,255,255,.025); color: var(--muted); font: 500 13px var(--sans);
   text-decoration: none; }
 .mc-log b { color: var(--text); font: 600 13px var(--mono); }
 .mc-log[href]:hover { border-color: rgba(var(--accent-rgb), .5); color: var(--text); }
 
-/* A phone: one column, in the order bands, on air and needs, Now, radios,
-   then the rest (PR 3b). The Now row and the lanes box give up their own
+/* A phone: one column, in the order on air and needs, Now, radios, bands,
+   then the rest (PR 3b; the bands moved below the radios 2026-11-23: on a
+   phone the first screen is for "is anything on the air, does anything need
+   me", and the strip scrolls sideways anyway). The Now row and the lanes box give up their own
    boxes so their parts can take those places. */
 @media (max-width: 620px) {
   #view-home:not([hidden]) { display: flex; flex-direction: column; }
   #view-home > .mc-now:not([hidden]), #view-home > .mc-lanes { display: contents; }
   #view-home > * { order: 6; }
   #view-home > *, #view-home .mc-now-list, #view-home .mc-lane, #view-home .mc-log { flex-shrink: 0; }   /* the view scrolls; nothing squeezes */
-  #view-home > #mc-bands { order: 1; }
-  #view-home > .mc-band { order: 2; }
+  #view-home > .mc-band { order: 1; }
   /* Now stays one row that scrolls sideways, like the band strip above it. */
-  #view-home .mc-now-list { order: 3; margin: 8px 20px 0; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+  #view-home .mc-now-list { order: 2; margin: 8px 20px 0; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
   .mc-now-item { flex: none; }
   #view-home .mc-lane { order: 5; padding: 0 20px; }
-  #view-home .mc-lane-radios { order: 4; }
+  #view-home .mc-lane-radios { order: 3; }
+  #view-home > #mc-bands { order: 4; }
   #view-home .mc-log { order: 5; margin: 8px 20px 0; align-self: flex-start; }
   #view-home > .st-help { order: 7; }
 }
-.mc-keys kbd { font: 600 11px var(--mono); padding: 0 4px; border-radius: 4px; border: 1px solid var(--line); }
-@media (hover: none) { .mc-key, .mc-keys { display: none; } }
+@media (hover: none) { .mc-key { display: none; } }
 @media (prefers-reduced-motion: reduce) {
   .mc-card, .mc-card .st-dot, .mc-air .st-dot, .mc-need { animation: none !important; transition: none !important; }
 }

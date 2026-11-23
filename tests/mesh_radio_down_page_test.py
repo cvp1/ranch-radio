@@ -3,7 +3,7 @@ in headless Chromium: station.py with two tests/fake_mesh_bridge.py nodes,
 one of which finds no node, as a real bridge does for a cable that is out.
 
 Seen live 2026-11-22: a node's USB cable was out overnight; its bridge said
-"not connected" each minute it retried, and the bar and Mission Control showed
+"not connected" each minute it retried, and the bar and the Shack showed
 all of Mesh down while the other node carried on.
 
   - both nodes up: the Mesh tab's dot is green, the card says nothing is down
@@ -143,16 +143,17 @@ try:
     absent(MARK_A, MARK_B)
     b.js(GONE_LF)
     b.js(GONE_MF18)
-    b.wait(f"{CARD_DOT} === 'off'")
-    # An off tab leaves the bar unless it is the one shown (nav.js tucks it); its card stays.
-    check("both down: Mesh is off (its tab leaves the bar, its card says so)", b.js(f"[!{TAB}, {CARD_DOT}, {TAG}]"),
-          [True, "off", "not connected"])
+    b.wait(f"!{CARD}")
+    # An off tab leaves the bar unless it is the one shown (nav.js tucks it);
+    # its card leaves the Shack too (2026-11-23): the Offline chip names it.
+    check("both down: Mesh is off (its tab and its card leave, the Offline chip names it)", b.js(f"[!{TAB}, !{CARD}]"),
+          [True, True])
     check("  Offline lists Mesh once", b.js(NEEDS), "Offline: Mesh")
 
     absent()
     b.wait(f"{TAB} && {DOT} === 'ok'")
     b.js('send({ t: "addon", addon: "mesh", do: "power", on: false })')
-    check("switched off: off", b.wait(f"!{TAB} && {CARD_DOT} === 'off' && 'off'"), "off")
+    check("switched off: off", b.wait(f"!{TAB} && !{CARD} && 'off'"), "off")
     b.js('send({ t: "addon", addon: "mesh", do: "power", on: true })')
     check("  on again: green", b.wait(f"{TAB} && {DOT} === 'ok' && {CARD_DOT} === 'ok' && 'ok'"), "ok")
 finally:

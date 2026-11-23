@@ -23,7 +23,7 @@
   const ALERTS = { off: -1, dxcc: 0, band: 1, grid: 5, any: 7 };   // indexes into RANK: "grid" takes grid_mode too
 
   // Strong needs on the decoding band (UX plan PR 3a, 2026-11-19): one filter
-  // for this tab's Mission Control card and the band strip (via data()). A
+  // for this tab's Shack card and the band strip (via data()). A
   // row keeps the band and mode it arrived on and outlives a band change
   // (logsync_roster.py Roster.add), so only rows on the roster's current band
   // and mode count, and only fresh ones: KEEP_S there is 120 s, and a snapshot
@@ -44,7 +44,7 @@
   function take(s) { snap = s; snapAt = Date.now(); }
 
   // A Reply to one decode: the only way this page asks JTDX to answer a
-  // station. A row click here and a click in Mission Control's Now row (UX
+  // station. A row click here and a click in the Shack's Now row (UX
   // plan PR 3b, 2026-11-19, through window.roster) both come through it, so
   // the two send the same message and JTDX's outcome comes back the same way
   // (addons/roster.py's notice, a toast). It sends nothing else.
@@ -139,7 +139,7 @@
     },
     off() { snap = {}; if (body) body.innerHTML = ""; },
     // UX plan 5.3: the snapshot plus the strong-needs counts (null: unknown),
-    // and the first five of those rows for Mission Control's Now row (PR 3b),
+    // and the first five of those rows for the Shack's Now row (PR 3b),
     // in the server's order (to you, then need, then signal), each with its
     // need's name and the click's tooltip as this tab gives them.
     data() {

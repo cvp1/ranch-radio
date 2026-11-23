@@ -148,7 +148,7 @@ try:
     b.wait("document.querySelector('#conn b')?.textContent === 'Connected' && matchMedia('(width: 390px)').matches", 20)
     bar = b.wait("(() => { const n = document.querySelector('#st-bottom'); if (!n || getComputedStyle(n).display === 'none') return null; "
                  "return [...n.querySelectorAll('.st-btab')].map((a) => a.firstChild.textContent.trim()); })()", 10)
-    check("a bottom tab bar: Home, Radio, Messages, Mesh, More", bar, ["Home", "Radio", "Messages", "Mesh", "More"])
+    check("a bottom tab bar: Shack, Radio, Messages, Mesh, More", bar, ["Shack", "Radio", "Messages", "Mesh", "More"])
     r = b.js(f"{ONSCREEN}('#st-bottom')") or {}
     check("  pinned to the bottom, inside the screen", (r.get("inside"), r.get("bottom")), (True, 844))
     check("  it leaves room for the home indicator (safe-area padding)",
@@ -167,7 +167,7 @@ try:
     b.js("[...document.querySelectorAll('#st-bottom a')].find((a) => a.textContent.trim() === 'More').click()")
     more = b.wait("(() => { const m = document.querySelector('#st-more'); return m && !m.hidden && "
                   "[...m.querySelectorAll('a')].map((a) => a.textContent.trim()); })()", 5)
-    check("More opens the rest of the station's tabs", bool(more) and "Mission Control" in more, True)
+    check("More opens the rest of the station's tabs", bool(more) and "Shack" in more, True)
     shot("station")
 finally:
     for p in (station, radio):

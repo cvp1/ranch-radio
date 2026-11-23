@@ -1373,7 +1373,7 @@ const winlink = (() => {
   // message, and what an API call would show the operator.
   const _current = () => (current ? { box: current.box, mid: current.mid } : null);
   const _api = (path, opts) => api(path, opts).then((r) => `HTTP ${r.status}`, (e) => e.message);
-  // For Mission Control (station.js): the state line as this panel shows it,
+  // For the Shack (station.js): the state line as this panel shows it,
   // and the mailbox counts (Pat's lists; null when Pat can't be read).
   function summary() {
     const el = $("#wl-state");

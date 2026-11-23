@@ -1378,7 +1378,7 @@ const mesh = (() => {
     renderNodes();
   }
 
-  // For Mission Control (station.js): nodes heard in the last day and the
+  // For the Shack (station.js): nodes heard in the last day and the
   // last quarter hour, and the last message someone sent.
   function summary() {
     const now = Date.now() / 1000, me = myId();
@@ -1388,7 +1388,7 @@ const mesh = (() => {
       live: others.filter((n) => now - n.last_heard < LIVE_S).length,
       last: last ? { who: short(last.from), text: last.text, t: last.t } : null };
   }
-  // For the bar and Mission Control (station.js): Mesh is up while any of its
+  // For the bar and the Shack (station.js): Mesh is up while any of its
   // nodes is, and "down" names the ones that are not.
   function radioLinks() {
     if (radios.length < 2) return { up: connected, down: [] };

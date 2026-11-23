@@ -41,9 +41,9 @@ const station = (() => {
   // ---------- navigation
 
   function renderNav() {
-    // Grouped (nav.js): Mission Control, then Radios, Messaging, Mesh, Tools, then
+    // Grouped (nav.js): the Shack, then Radios, Messaging, Mesh, Tools, then
     // Modules. A service or add-on that is off or not connected leaves the bar
-    // (it got crowded): its Mission Control card stays, and opening it from there
+    // (it got crowded): its Shack card stays, and opening it from there
     // works. Its tab stays while it is the open view.
     const view = route();
     const items = present().map((r) => ({ id: r.id, label: r.name, group: "radios", dot: "ok", sub: portsOf(r),
@@ -58,9 +58,10 @@ const station = (() => {
     for (const d of addons.list()) items.push({ id: d.name, label: d.label, group: d.group, ...(addons.tab(d.name) || {}) });
     const end = modules.enabled() ? [{ id: "modules", label: "Modules", title: "Every module: what's on, what it needs, add or remove" }] : [];
     const nav = $("#st-nav");
-    // Off or disconnected members leave the bar (nav.js tucks them); Mission Control
-    // and, when there is one, the Modules tab name them.
-    const first = [{ id: "home", label: "Mission Control", title: "Mission Control: what is on the air, what needs you, every radio and service (key 0)" }];
+    // Off or disconnected members leave the bar (nav.js tucks them); the Shack
+    // and, when there is one, the Modules tab name them. The Shack was named
+    // Mission Control until 2026-11-23; the route stays #/home.
+    const first = [{ id: "home", label: "Shack", title: "Shack: what is on the air, what needs you, every radio and service (key 0)" }];
     // Operate (PR 2b): only where it can be shown (a radio, the Roster or the
     // Map on, a window 1100 px or wider).
     navOperate = !!layoutPlan("operate");
@@ -69,7 +70,7 @@ const station = (() => {
     // Set, not appended: render() skips a redraw that would change nothing, and
     // the tabs it keeps would otherwise collect one note per call.
     const off = tucked.length ? `\nOff or not connected: ${tucked.join(", ")}` : "";
-    nav.firstChild.title = first[0].title + (off && `${off} (their cards are here)`);
+    nav.firstChild.title = first[0].title + (off && `${off} (named on the Shack)`);
     const mods = nav.querySelector('a[href="#/modules"]');
     if (mods) mods.title = end[0].title + off;
     renderBottom(view, [...first, ...items, ...end]);
@@ -94,7 +95,7 @@ const station = (() => {
     const pick = (list) => list.find((it) => it.id === view) || list.find((it) => !it.off) || list[0];
     const radio = present().length ? (present().find((r) => r.id === focusId()) || present()[0]) : null;
     const tabs = [
-      { label: "Home", href: "#/home", on: view === "home" },
+      { label: "Shack", href: "#/home", on: view === "home" },
       { label: "Radio", href: radio ? `#/${radio.id}` : "", focus: true, on: !!radios.find((r) => r.id === view) },
       { label: "Messages", href: pick(msgs) ? `#/${pick(msgs).id}` : "", on: msgs.some((it) => it.id === view),
         badge: msgs.reduce((n, m) => n + (parseInt(m.badge, 10) || 0), 0) },
@@ -182,7 +183,7 @@ const station = (() => {
       $(`#view-${r}`).hidden = false;
       if (r === "mesh") { meshUnread = 0; }
       if (r === "modules") modules.shown();
-      document.title = `${r === "home" ? "Mission Control" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
+      document.title = `${r === "home" ? "Shack" : r[0].toUpperCase() + r.slice(1)} · ${cfg.name || "Station"}`;
     }
     if (r !== "wall") prepareFocus();     // the wall builds no frame; leaving it builds the focus one (PR 1c)
     hostFrames();
@@ -470,7 +471,7 @@ const station = (() => {
   // ---------- the rig bar (UX plan PR 1a, 2026-11-19; replaces the radio
   // strip of 2026-10-18, which Winlink, Mesh and Packet needed because they hid
   // whether an HF radio was transmitting). Every configured HF radio, on every
-  // view, Mission Control and the radios' own tabs included: name and state
+  // view, the Shack and the radios' own tabs included: name and state
   // dot, frequency, mode, band, S-meter (on the air: watts, red), ON AIR with
   // Release TX. It sends the Release TX the strip always had ({t: "set", k:
   // "tx", v: false}), STOP TX (PR 1b) and, from PR 1d (2026-11-19), a typed
@@ -492,7 +493,7 @@ const station = (() => {
         w.binaryType = "arraybuffer";
         l.ws = w;
         w.onmessage = (e) => {
-          // A scope frame: Mission Control's mini spectrum (drawn only while shown).
+          // A scope frame: the Shack's mini spectrum (drawn only while shown).
           if (typeof e.data !== "string") { mission.scopeOf(r.id).push(e.data); return; }
           const m = JSON.parse(e.data);
           if (m.t === "state") { tickerState(r, l.S, m.d); Object.assign(l.S, m.d); }
@@ -1139,7 +1140,7 @@ const station = (() => {
     if (Number.isFinite(next)) stopTimer = setTimeout(renderBar, Math.max(0, next) + 50);
   }
 
-  // ---------- Mission Control (the home view)
+  // ---------- the Shack (the home view)
   //
   // One look: what is on the air (with Release TX), what needs you (unread
   // mail and messages, an outbox waiting, a listen window asking if you're
@@ -1152,7 +1153,7 @@ const station = (() => {
   let wlCounts = null, wlCountsAt = 0, wlCountsBusy = false;
   let homeQueued = false, homeLast = 0;
 
-  // Redraw Mission Control at most ~3 times a second (an S-meter moves often).
+  // Redraw the Shack at most ~3 times a second (an S-meter moves often).
   function homeChanged() {
     if (!home() || homeQueued) return;
     homeQueued = true;
@@ -1182,6 +1183,12 @@ const station = (() => {
     if (sc.freq !== S.freq) { sc.freq = S.freq || 0; sc.dirty = true; }
   }
 
+  // A tag that says nothing the card's look doesn't (2026-11-23): its state
+  // word (on, off, ok, idle, quiet, linked, syncing) or a zero count ("0
+  // joined"). Seven pills in capitals on one screen made every card shout;
+  // a tag now appears only when it is news: ON AIR, held, a count.
+  const quietTag = (t) => !t || /^(on|off|ok|idle|quiet|linked|syncing)$/i.test(t) || /^0\b/.test(t);
+
   // {title, full (the long title, on hover), icon, wide, state ok|off|tx|warn, tag, big, sub, meter: {pct, text, tx, scale},
   //  scope: radio id, lines: [html], href}
   function card(c) {
@@ -1191,13 +1198,14 @@ const station = (() => {
       el.dataset.href = c.href;
       el.tabIndex = 0;
       el.setAttribute("role", "link");
-      el.title = `Open ${c.full || c.title}`;
       keyed.push(c.href);
       if (keyed.length <= 9) el.dataset.key = keyed.length;
+      el.title = `Open ${c.full || c.title}${el.dataset.key ? ` (key ${el.dataset.key})` : ""}`;
     }
     const dot = { ok: "ok", tx: "tx", warn: "warn" }[c.state] || "off";
+    const tag = quietTag(c.tag) ? "" : c.tag;
     el.innerHTML = `<div class="st-card-head">${mission.icon(c.icon)}<i class="st-dot ${dot}"></i><b${c.full ? ` title="${esc(c.full)}"` : ""}>${esc(c.title)}</b>` +
-      (c.tag ? `<span class="mc-tag ${c.state}">${esc(c.tag)}</span>` : "") +
+      (tag ? `<span class="mc-tag ${c.state}">${esc(tag)}</span>` : "") +
       (el.dataset.key ? `<kbd class="mc-key">${el.dataset.key}</kbd>` : "") + `</div>` +
       (c.big ? `<div class="mc-big">${c.big}${c.sub ? ` <small>${c.sub}</small>` : ""}</div>` : "") +
       (c.scope ? `<div class="mc-scope-slot" data-scope="${esc(c.scope)}"></div>` : "") +
@@ -1212,10 +1220,9 @@ const station = (() => {
   function radioCard(r) {
     const S = live[r.id]?.S || {};
     const ports = `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
-    if (!r.present) return { title: r.name, icon: "radio", state: "off", tag: "not connected", lines: [`${ports} when plugged in`] };
     const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? "VARA HF" : "ARDOP")).join(" and ")}` : "";
     // Its ports and lane on one line (UX plan PR 3b, 2026-11-19): two lines
-    // under the trace were the card's dead space, and Mission Control has to
+    // under the trace were the card's dead space, and the Shack has to
     // fit one screen.
     const line = [ports, lane].filter(Boolean).join(" · ");
     if (!S.freq) return { title: r.name, icon: "radio", wide: true, state: "ok", big: "…", lines: [line], href: `#/${r.id}` };
@@ -1250,7 +1257,7 @@ const station = (() => {
     const down = meshDown.length ? `${meshDown.join(", ")} not connected` : "";
     return { title: "Mesh", icon: "mesh", state: down ? "warn" : "ok", tag: down || (meshUnread ? `${meshUnread} new` : ""),
       big: `${m.day} <small>heard today · ${m.live} in 15 min</small>`,
-      lines: [m.last ? `<span class="mc-who">${esc(m.last.who)}</span> ${esc(m.last.text.slice(0, 80))}` +
+      lines: [m.last ? `<span class="mc-who">${esc(m.last.who)}</span> ${esc(m.last.text.slice(0, 60))}` +
         ` <span class="mc-dim">${esc(ago(m.last.t))}</span>` : "No messages yet", ...(down ? [esc(down)] : [])], href: "#/mesh" };
   }
 
@@ -1343,7 +1350,7 @@ const station = (() => {
       : `<span class="mc-now-name">Now</span>` + c.now.map((r) => `<button type="button" class="mc-now-item${r.to_me ? " me" : ""}" data-key="${esc(r.key)}" data-call="${esc(r.call)}"` +
           ` data-need="${esc(r.need)}" title="${esc(r.tip)}"><b>${esc(r.call)}</b> <span>${esc(r.label)}</span>` +
           `<small>${esc(r.entity || "")}${r.entity ? " · " : ""}${esc(String(r.snr))} dB</small></button>`).join("");
-    // Redrawn only when it changes: Mission Control redraws ~3 times a
+    // Redrawn only when it changes: the Shack redraws ~3 times a
     // second, and a button replaced between press and release loses its click.
     const box = el.querySelector(".mc-now-list");
     if (html !== nowHtml) { box.innerHTML = html; nowHtml = html; }
@@ -1370,32 +1377,33 @@ const station = (() => {
     const lanes = navGroups.GROUPS.map((g) => ({ ...g, cards: [] }));
     const put = (group, c) => lanes[navGroups.rank(group)].cards.push(c);
     const offline = [];
+    // Off or not connected: named once, in the needs row's Offline chip, not
+    // also drawn as a dimmed card (2026-11-23). A greyed card per absent
+    // radio or module was the same fact twice, and took a card's room.
     for (const r of radios) {
-      put("radios", radioCard(r));
-      if (!r.present) offline.push([r.name, "#/home"]);
+      if (r.present) put("radios", radioCard(r));
+      else offline.push([r.name, "#/home"]);
     }
     if (wlOn) put("messaging", winlinkCard());
     // A short name on the card; the host file's full title on hover (2026-11-19).
     const packetTitle = packet.title || `Packet (${packetName()})`;
-    if (packet.configured) {
-      put("messaging", { title: `Packet · ${packetName()}`, full: packetTitle, icon: "packet", state: packet.present ? "ok" : "off", tag: packet.present ? "" : "not running",
-        lines: [packet.present ? "APRS and the Winlink packet link" : "The packet hub is not running"],
-        href: packet.present ? "#/packet" : null });
-      if (!packet.present) offline.push([packetName(), "#/home"]);
-    }
+    if (packet.configured && packet.present) {
+      put("messaging", { title: `Packet · ${packetName()}`, full: packetTitle, icon: "packet", state: "ok",
+        lines: ["APRS and the Winlink packet link"], href: "#/packet" });
+    } else if (packet.configured) offline.push([packetName(), "#/home"]);
     if (meshOn) {
-      put("mesh", meshCard());
-      if (!meshConnected) offline.push(["Mesh", "#/mesh"]);
+      if (meshConnected) put("mesh", meshCard());
+      else offline.push(["Mesh", "#/mesh"]);
       for (const label of meshDown) offline.push([`Mesh · ${label}`, "#/mesh"]);
     }
     for (const d of addons.list()) {
       const c = addons.card(d.name);
       if (!c) continue;
       const known = ["ok", "off", "tx"].includes(c.state);
+      const t = addons.tab(d.name);
+      if (c.state === "off" && t?.off) { offline.push([d.label, `#/${d.name}`]); continue; }
       put(d.group, { title: d.label, icon: mission.KIND[d.name] || (d.group === "radios" ? "handheld" : "dot"), state: known ? c.state : "ok", tag: known ? (c.state === "off" ? "off" : "") : c.state,
         lines: c.lines, href: `#/${d.name}` });
-      const t = addons.tab(d.name);
-      if (c.state === "off" && t?.off) offline.push([d.label, `#/${d.name}`]);
     }
     el.innerHTML = "";
     for (const g of lanes) {
@@ -1418,7 +1426,10 @@ const station = (() => {
     // bands the focus radio covers. From PR 4c (2026-11-19) a cell's band
     // button tunes the focus radio to that band through tuneFocus.
     const fr = present().find((x) => x.id === focusId());
-    bandStrip.render($("#mc-bands"), { range: live[fr?.id]?.cfg?.caps?.freq || null, radio: fr?.name || "",
+    // compact (2026-11-23): bands where every source answered "nothing" shrink
+    // to their name, and the strip's key folds behind a toggle; Operate and the
+    // wall keep the full strip.
+    bandStrip.render($("#mc-bands"), { compact: true, range: live[fr?.id]?.cfg?.caps?.freq || null, radio: fr?.name || "",
       autoTune: !!live[fr?.id]?.cfg?.auto_tune, tune: (band) => tuneFocus({ band }) });
     // The view is redrawn often: every pulse starts at the same point of one
     // 3.2 s clock (its periods divide it), so a redraw never restarts one.
@@ -1431,9 +1442,9 @@ const station = (() => {
     $("#st-help").innerHTML = !p.length
       ? `No HF radio is connected. Plug one in: its page and rigctl port appear here by themselves.`
       : (sp > 0
-          ? `Apps that don't care which radio: rigctl <code>${sp}</code> (now the ${esc(p.find((r) => r.shared)?.name || "?")}). ` +
-            `An app set up for one radio: use that radio's own port, which never changes.`
-          : `An app set up for a radio: use that radio's own port, which never changes.`);
+          ? `Apps that don't care which radio: rigctl <code>${sp}</code> (now the ${esc(p.find((r) => r.shared)?.name || "?")}).`
+          // Each radio's own port is on its card (2026-11-23): no line for it here.
+          : "");
   }
 
   // A card opens its tab: a click (not on a link inside it), Enter, or its key.
@@ -1490,7 +1501,7 @@ const station = (() => {
     viaOptions();
     renderCards();
     // A station of one radio opens on that radio (a Mac with one rig: the page
-    // is the radio's, as it always was); every other station opens on Mission Control.
+    // is the radio's, as it always was); every other station opens on the Shack.
     if (!landed && !location.hash && present().length === 1) location.hash = `#/${present()[0].id}`;
     landed = true;
     show();
@@ -1575,13 +1586,11 @@ const station = (() => {
 
   function clock() {
     const now = new Date();
-    $("#utc").textContent = now.toISOString().slice(11, 19) + " UTC";
-    const c = $("#mc-clock");
-    if (c && home()) {
-      c.querySelector(".mc-utc").textContent = now.toISOString().slice(11, 19);
-      c.querySelector(".mc-local").textContent =
-        `${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} local · ${now.toISOString().slice(0, 10)}`;
-    }
+    const u = $("#utc");
+    u.textContent = now.toISOString().slice(11, 19) + " UTC";
+    // Local time and the date on hover (2026-11-23): the Shack's own large
+    // clock, which carried them, is gone; this one is on every view.
+    u.title = `${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} local · ${now.toISOString().slice(0, 10)} UTC`;
   }
 
   function start() {
@@ -1606,7 +1615,7 @@ const station = (() => {
         requestAnimationFrame(() => {
           queued = false;
           // Cards through homeChanged: at most three draws a second, and none off
-          // Mission Control (an add-on event can come several times a second).
+          // the Shack (an add-on event can come several times a second).
           renderNav(); homeChanged();
           if (LAYOUTS[route()]) { relayout(); operateStrip(); }   // an add-on on or off; the strip's data (PR 2b)
           else if (route() === "wall") relayout();                // the Map on or off (PR 5a)

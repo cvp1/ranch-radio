@@ -24,7 +24,7 @@
 //   - A screen wake lock, only in a secure context, only while the wall is
 //     shown and the page visible; a refusal is said in the footer, released
 //     on exit.
-// station.js calls show(on) from its show(), mount() after Mission Control
+// station.js calls show(on) from its show(), mount() after the Shack
 // moves the scopes into its cards, and note() for the ticker. Uses common.js
 // ($, esc, fmtFreq, bandOf), mission.js and bands.js.
 
@@ -114,7 +114,7 @@ const wall = (() => {
   });
 
   // ---------- drawing
-  // The focus radio's MiniScope, back in the wall's slot (Mission Control's
+  // The focus radio's MiniScope, back in the wall's slot (the Shack's
   // redraw moves it into its card).
   function mount() {
     if (!on) return;

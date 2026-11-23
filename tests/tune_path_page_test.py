@@ -341,7 +341,7 @@ try:
     type_enter("14.1")
     # Two right answers (2026-11-19): Enter says the focus changed, or the bar
     # redrew for the new focus first and closed the entry (PR 1d closes an open
-    # entry on a focus change), so Enter reached nothing. Mission Control's
+    # entry on a focus change), so Enter reached nothing. the Shack's
     # redraws (PR 3b) make the second likelier. Either way nothing is sent,
     # which the next check proves.
     check("6. focus changed while open: Enter says so, or the entry closed",

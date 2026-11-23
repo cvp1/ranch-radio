@@ -102,9 +102,9 @@ try:
         b.goto(f"http://127.0.0.1:{WEB}/?v=tabs")
         b.wait("document.querySelector('#conn')?.textContent.includes('Connected')")
         check("tab bar shown", bool(b.wait(f"({VISIBLE})('#st-nav')")), True)
-        check("tabs: Mission Control, the radio and Winlink",
+        check("tabs: Shack, the radio and Winlink",
               b.js("[...document.querySelectorAll('#st-nav .st-tab')].map((a) => a.querySelector('span').textContent.trim())"),
-              ["Mission Control", "IC-7300", "Winlink"])
+              ["Shack", "IC-7300", "Winlink"])
         check("radio tab first: Winlink panel not shown", b.js(f"({VISIBLE})('#winlink')"), False)
         check("radio tab first: the radio's page shown", b.js(f"({VISIBLE})('#view-radio')"), True)
         b.js("document.querySelector('#st-nav a[href=\"#/winlink\"]').click()")

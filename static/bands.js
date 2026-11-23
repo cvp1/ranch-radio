@@ -1,6 +1,6 @@
 "use strict";
 
-// Mission Control's band strip (UX plan PR 3a, 2026-11-19): one cell per
+// The Shack's band strip (UX plan PR 3a, 2026-11-19): one cell per
 // amateur band at or below 54 MHz that the focus radio covers (its
 // config.caps.freq), each with three facts kept apart, each with its own
 // source, window and unknown states, never merged into one "open/closed":
@@ -29,7 +29,7 @@
 //
 // Reads addons.data("propagation") and addons.data("roster") (UX plan 5.3).
 // station.js calls render(el, {range, radio, autoTune, tune}) whenever
-// Mission Control redraws, and for Operate's strip (PR 2b); each strip keeps
+// the Shack redraws, and for Operate's strip (PR 2b); each strip keeps
 // its own ctx; the strip also redraws itself when the UTC hour
 // turns, with or without an event, since a window "now to 05Z" ends on the
 // hour and the next one starts. Uses common.js (BANDS, esc, regionName,
@@ -37,10 +37,10 @@
 
 const bandStrip = (() => {
   // Each element it draws into: its context and the HTML last written. Two
-  // now (UX plan PR 2b, 2026-11-19): Mission Control's and Operate's; one
+  // now (UX plan PR 2b, 2026-11-19): the Shack's and Operate's; one
   // shared "last HTML" would leave the second blank when both say the same.
   const drawn = new Map();
-  let ctx = {}, lastHour = null;
+  let ctx = {}, lastHour = null, keyOpen = false;
   const FORECAST_STALE_S = 36 * 3600;          // skywatch issues one a day (propagation.js)
 
   const key = (b) => b.label || `${b.n}m`;
@@ -174,26 +174,40 @@ const bandStrip = (() => {
 
   // One line for each fact whose state is the same on every band (not set
   // up, waiting, failed): said once here, not eleven times in the cells.
+  // Each note is {t, key}: key marks a legend line (what a fact means, its
+  // source answering), which the Shack's compact strip folds behind "Key";
+  // a note that something is unknown, off or failing is never folded.
   function notes(P, cells, N, shown) {
     const out = [];
+    const legend = (t) => out.push({ t, key: true });
     const h = cells[0]?.h, y = cells[0]?.y, f = cells[0]?.f, n = cells[0]?.n;
     if (!P) out.push("Propagation is off: heard here, hears you and the forecast are unknown");
     else {
-      if (h && (h.state === "ok" || h.state === "none")) out.push(`Heard here: decodes, last ${P.window_min} min`);
+      if (h && (h.state === "ok" || h.state === "none")) legend(`Heard here: decodes, last ${P.window_min} min`);
       else if (h) out.push(h.title.replace(/ on \S+ is unknown/, " is unknown"));
       if (P.pskreporter && P.psk_error) out.push(`${P.psk_error}: who hears you is unknown${cells.some((c) => c.y.state === "stale") ? " (✓ last known, stale)" : ""}`);
-      else if (y && y.state !== "off" && y.state !== "wait") out.push(`✓ hears you: PSKReporter reports of ${P.pskreporter}, last ${P.window_min} min`);
+      else if (y && y.state !== "off" && y.state !== "wait") legend(`✓ hears you: PSKReporter reports of ${P.pskreporter}, last ${P.window_min} min`);
       else if (y) out.push(y.title);
       if (f && (f.state === "ok" || f.state === "none")) {
         const old = api.now() - P.forecast_issued > FORECAST_STALE_S;
-        out.push(`Forecast: skywatch, ${old ? "out of date, " : ""}issued ${ago(P.forecast_issued)}; peak is a path's best hour, not the chance now`);
+        const t = `Forecast: skywatch, ${old ? "out of date, " : ""}issued ${ago(P.forecast_issued)}; peak is a path's best hour, not the chance now`;
+        if (old) out.push(t); else legend(t);
       } else if (f) out.push(f.title);
-      if (n && (n.state === "ok" || n.state === "none")) out.push(`Need: stations decoded near ${P.near_grid}, last ${P.near_window_min} min (PSKReporter), ${nearDxcc() ? "DXCC only" : "new DXCC or grid"}`);
+      if (n && (n.state === "ok" || n.state === "none")) legend(`Need: stations decoded near ${P.near_grid}, last ${P.near_window_min} min (PSKReporter), ${nearDxcc() ? "DXCC only" : "new DXCC or grid"}`);
       else if (n && n.state !== "off") out.push(n.title.replace(/ on \S+ near \S+ is unknown/, " is unknown"));
     }
     if (N && !shown) out.push(`JTDX on ${N.band}: ${N.text}`);
-    return out;
+    return out.map((o) => (typeof o === "string" ? { t: o, key: false } : o));
   }
+
+  // A band where every source answered and said nothing (no decodes, nobody
+  // reported you, no forecast window, nobody you need), and JTDX is not on
+  // it. On the Shack's compact strip (2026-11-23) it shrinks to its name:
+  // eight cells reading "no decodes" were most of what the strip showed. A
+  // fact that is unknown (waiting, failed, stale) keeps the cell open, so
+  // unknown is never drawn as nothing.
+  const QUIET = new Set(["none", "off"]);
+  const quiet = (c, dec) => !dec && [c.h, c.y, c.f, c.n].every((f) => QUIET.has(f.state));
 
   function html() {
     const P = addons.data("propagation"), N = needs(), now = api.now();
@@ -204,7 +218,8 @@ const bandStrip = (() => {
     const shown = N && cells.some((c) => c.k === N.band);
     const body = cells.map((c) => {
       const dec = N && c.k === N.band;
-      return `<div class="bs-cell${dec ? " bs-decoding" : ""}" data-band="${esc(c.k)}">
+      const q = ctx.compact && quiet(c, dec);
+      return `<div class="bs-cell${dec ? " bs-decoding" : ""}${q ? " bs-quiet" : ""}" data-band="${esc(c.k)}"${q ? ` title="${esc(`${c.k}: quiet. ${c.h.title}`)}"` : ""}>
         <div class="bs-head">${bandEl(c)}${fact("bs-you", c.y)}</div>
         ${fact("bs-heard", c.h)}${fact("bs-fc", c.f)}${fact("bs-near", c.n)}
         ${dec ? `<div class="bs-needs" data-state="${N.state}" title="${esc(N.title)}">${esc(N.text)}</div>` : ""}
@@ -215,11 +230,17 @@ const bandStrip = (() => {
     const sw = cells.some((c) => c.n.state === "ok" || c.n.state === "none")
       ? `<button type="button" class="bs-near-mode" aria-pressed="${nearDxcc()}" title="${nearDxcc()
           ? "Counting DXCC needs only: click to count new grids too" : "Counting new DXCC and new grids: click to count DXCC only"}">${nearDxcc() ? "Need: DXCC only" : "Need: DXCC + grids"}</button>` : "";
+    const span = (n) => `<span>${esc(n.t)}</span>`;
+    const shownNs = ctx.compact ? ns.filter((n) => !n.key) : ns, keyNs = ctx.compact ? ns.filter((n) => n.key) : [];
+    // The key is a <details>: open it once and it stays open across redraws
+    // only if the HTML is unchanged, so its state is kept here (keyOpen).
+    const keyBox = keyNs.length ? `<details class="bs-key"${keyOpen ? " open" : ""}><summary>Key</summary>${keyNs.map(span).join("")}</details>` : "";
     return `<div class="bs-cells" role="list" aria-label="Bands">${body}</div>` +
-      (ns.length || sw ? `<div class="bs-notes">${ns.map((n) => `<span>${esc(n)}</span>`).join("")}${sw}</div>` : "");
+      (ns.length || sw ? `<div class="bs-notes">${shownNs.map(span).join("")}${sw}${keyBox}</div>` : "");
   }
 
-  // target: the strip's element; c: {range: the focus radio's caps.freq or null}.
+  // target: the strip's element; c: {range: the focus radio's caps.freq or
+  // null, compact: the Shack's short form (quiet bands shrink, the key folds)}.
   function render(target, c = {}) {
     if (!target) return;
     const d = drawn.get(target) || { html: "" };
@@ -227,10 +248,12 @@ const bandStrip = (() => {
     drawn.set(target, d);
     ctx = c;
     // One listener per strip, reading that strip's newest ctx at click time
-    // (Mission Control's and Operate's each have their own): a click tunes
+    // (the Shack's and Operate's each have their own): a click tunes
     // whatever radio has focus then (tuneFocus reads it again).
     if (!target.dataset.tuneBound) {
       target.dataset.tuneBound = "1";
+      // The compact strip's Key: remembered so a redraw doesn't close it.
+      target.addEventListener("toggle", (e) => { if (e.target.matches?.(".bs-key")) keyOpen = e.target.open; }, true);
       target.addEventListener("click", (e) => {
         if (e.target.closest?.(".bs-near-mode")) {          // a display choice: redraw every strip, tune nothing
           try { store.set("bands.near", nearDxcc() ? "all" : "dxcc"); } catch { /* storage off: stays all */ }
@@ -248,7 +271,7 @@ const bandStrip = (() => {
     target.hidden = !here;
     if (!here) { d.html = ""; target.innerHTML = ""; return; }
     const h = html();
-    if (h === d.html) return;              // Mission Control redraws often (S-meters)
+    if (h === d.html) return;              // the Shack redraws often (S-meters)
     d.html = h;
     target.innerHTML = h;
   }

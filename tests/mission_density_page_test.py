@@ -1,4 +1,4 @@
-"""Mission Control on one screen (UX plan PR 3b, 2026-11-19), driven in
+"""The Shack on one screen (UX plan PR 3b, 2026-11-19), driven in
 headless Chromium.
 
 station_page_test's fixture (two simulated radios, fake Pat and ARDOP, the
@@ -19,8 +19,8 @@ station's socket delivers it (no logbook sync runs here). No network. Checks:
   log       the Log tile shows the needs summary's numbers and links to the
             Logbook tab
   stop      the rig bar's STOP TX stays in view at every size
-  phone     at 390 px the order is bands, on air and needs, Now, radios, the
-            rest
+  phone     at 390 px the order is on air and needs, Now, radios, bands, the
+            rest (bands below the radios from 2026-11-23)
 
     python3 tests/mission_density_page_test.py [screenshot-dir]
 """
@@ -135,7 +135,7 @@ with open(os.path.join(TMP, "station.json"), "w") as f:
 
 NOW = "[...document.querySelectorAll('#mc-now .mc-now-item')]"
 SENT = "window.__sent.map((d) => JSON.parse(d)).filter((m) => m.do === 'reply')"
-# Mission Control's scroll box is the view itself (station.css .st-view).
+# the Shack's scroll box is the view itself (station.css .st-view).
 FITS = ("(() => { const v = document.querySelector('#view-home'), s = document.scrollingElement;"
         " return [v.scrollHeight <= v.clientHeight, s.scrollHeight <= s.clientHeight]; })()")
 STOP_SEEN = ("(() => { const e = document.querySelector('#rig-bar .rb-stop-btn'); if (!e) return false;"
@@ -220,7 +220,7 @@ try:
                  " && c.clientWidth === c.parentElement.clientWidth); })()"), True)
     for w, h in ((1600, 1000), (1440, 900)):
         size(w, h)
-        check(f"{w}x{h}: Mission Control does not scroll", b.wait(f"({FITS}).every(Boolean) && {FITS}"), [True, True])
+        check(f"{w}x{h}: the Shack does not scroll", b.wait(f"({FITS}).every(Boolean) && {FITS}"), [True, True])
         check("  the rig bar's STOP TX in view", b.wait(STOP_SEEN), True)
         check("  Messaging and Mesh share a row",
               b.js("(() => { const t = (s) => Math.round(document.querySelector(s).getBoundingClientRect().top);"
@@ -239,7 +239,7 @@ try:
           {"t": "addon", "addon": "roster", "do": "reply", "key": STRONG[0]["key"], "call": "N9ABC"})
     check("  JTDX's outcome shows, as for the Roster (no sync here: why not)",
           b.wait("[...document.querySelectorAll('.toast')].some((t) => /roster can't answer/.test(t.textContent))"), True)
-    check("  Mission Control stays open", b.js("location.hash"), "#/home")
+    check("  the Shack stays open", b.js("location.hash"), "#/home")
     b.js("location.hash = '#/roster'")
     b.wait("!!document.querySelector('.rs-row[data-call=\"N9ABC\"]') && "
            "!document.querySelector('.rs-row[data-call=\"N9ABC\"]').closest('[hidden]')")
@@ -259,8 +259,8 @@ try:
                    " tools: at('.mc-lane-tools') };"
                    " return Object.values(o).every((v) => v !== null) && o; })()")
     ranked = sorted(order, key=lambda k: (order[k], k)) if order else []
-    check("bands, on air and needs, Now, radios, the rest (top to bottom)",
-          bool(order) and order["bands"] < order["air"] <= order["needs"] < order["now"] < order["radios"]
+    check("on air and needs, Now, radios, bands, the rest (top to bottom)",
+          bool(order) and order["air"] <= order["needs"] < order["now"] < order["radios"] < order["bands"]
           < min(order["log"], order["messaging"], order["tools"]) or ranked, True)
     check("  STOP TX in view", b.wait(STOP_SEEN), True)
     check("  nothing wider than the screen",

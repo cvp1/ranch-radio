@@ -70,7 +70,7 @@
 
   const NAMES = { wavelog: "Wavelog", qrz: "QRZ", lotw: "LoTW" };
   // One destination's counts from the sync's status: done, waiting, held, and
-  // the reason it is stopped (the strip and the Mission Control card).
+  // the reason it is stopped (the strip and the Shack card).
   function tally(s, d) {
     const c = (s.counts || {})[d] || {};
     return { done: (c.sent || 0) + (c.accepted || 0) + (c.confirmed || 0) + (c.submitted || 0),
@@ -239,6 +239,14 @@
     seen.observe(body);
   }
 
+  // A QSO's time ("YYYY-MM-DD HH:MM:SS", UTC, logsync._when) for the card:
+  // "22:24Z" today, the date otherwise; anything else as given.
+  function shortWhen(t) {
+    const m = /^(\d{4}-\d\d-\d\d) (\d\d:\d\d)/.exec(t || "");
+    if (!m) return t || "";
+    return m[1] === new Date().toISOString().slice(0, 10) ? `${m[2]}Z` : m[1];
+  }
+
   addons.register("logbook", {
     mount(b) { body = b; render(); },
     hello(s) { snap = s || {}; render(); },
@@ -248,8 +256,10 @@
     },
     off() { snap = {}; render(); },
     tab() { return { dot: target() ? "ok" : "off", title: target() || "Your logbook" }; },
-    // Mission Control (2026-11-19, UX plan PR 0.4): the sync's state and counts and
-    // the latest QSO, from the status it already sends; the logbook's address last.
+    // The Shack's card (2026-11-19, UX plan PR 0.4): the sync's state and counts and
+    // the latest QSO, from the status it already sends. The logbook's address
+    // only while there is nothing else to say (2026-11-23): under the counts it
+    // was a raw URL wrapping the card, and the tab has it.
     card() {
       const url = target(), s = snap.logsync;
       const link = url ? `<a class="mc-dim" href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>` : "";
@@ -265,8 +275,7 @@
       const q = (s.recent || [])[0];
       return { state: stopped ? "held" : "syncing",              // a tag on the card (station.js)
                lines: [dests.join(" · ") || "No destinations",
-                       q ? `Last: <b>${esc(q.call)}</b> ${esc(q.band)} ${esc(q.mode)} <span class="mc-dim">${esc(q.time)}</span>` : "No QSOs yet",
-                       link] };
+                       q ? `Last: <b>${esc(q.call)}</b> ${esc(q.band)} ${esc(q.mode)} <span class="mc-dim">${esc(shortWhen(q.time))}</span>` : "No QSOs yet"] };
     },
   });
 })();

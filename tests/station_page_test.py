@@ -3,12 +3,12 @@
 Two simulated radios (G90, QMX), station.py in front with fake
 Pat and mesh bridge, and a packet hub that is configured but not running.
 Checks:
-  - the navigation: Mission Control, one tab per connected radio with its rigctl
+  - the navigation: the Shack, one tab per connected radio with its rigctl
     ports (one carries the shared port), Winlink, Mesh, and
     Packet off the tab bar while the hub is down (its card stays)
   - the brand: the station's name and its callsign (Winlink's MyCall here);
     the packet card's short name, its full title on hover
-  - Mission Control: a card per radio and service in lanes named like the
+  - the Shack: a card per radio and service in lanes named like the
     tab bar's groups, names the shared port; a radio's card live (frequency,
     S-meter, signal trace, its mini spectrum from scope frames; on the air:
     power), an icon on every card, the UTC clock, the on-air line with Release TX, what needs
@@ -137,17 +137,17 @@ try:
     b.goto(f"http://127.0.0.1:{WEB}/")
     b.wait(f"({TEXT})('#conn b') === 'Connected'")
     b.wait(f"{TABS}.length >= 4")
-    check("nav, grouped: Mission Control, Radios, Winlink, Mesh (Packet's hub is down: no tab)",
-          [x.split()[0] for x in tabs()], ["Mission", "Radios", "Winlink", "Mesh"])
+    check("nav, grouped: Shack, Radios, Winlink, Mesh (Packet's hub is down: no tab)",
+          [x.split()[0] for x in tabs()], ["Shack", "Radios", "Winlink", "Mesh"])
     check("  Radios is a closed group with both radios in its title",
           b.js(f"(() => {{ const t = {TABS}[1]; return [t.classList.contains('st-group-tab'), t.title]; }})()"),
           [True, "Radios: G90, QMX"])
-    check("  the Mission Control tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
-    check("mission control: a card per radio and service, in the bar's group order",
+    check("  the Shack tab names it", "Packet" in (b.js(f"{TABS}[0].title") or ""), True)
+    check("the Shack: a card per radio and service that is up, in the bar's group order",
           b.js("[...document.querySelectorAll('.st-card b')].map((e) => e.textContent)"),
-          ["G90", "QMX", "Winlink", "Packet · UV-PRO", "Mesh"])
-    check("  the packet card's short name; its full title on hover",
-          b.js("[...document.querySelectorAll('.st-card b')].find((x) => x.textContent.startsWith('Packet')).title"), "Packet (UV-PRO)")
+          ["G90", "QMX", "Winlink", "Mesh"])
+    check("  the packet hub down: no dimmed card (it is in the Offline chip)",
+          b.js("[...document.querySelectorAll('.st-card b')].some((x) => x.textContent.startsWith('Packet'))"), False)
     check("  names the shared port", str(SHARED) in b.js(f"({TEXT})('#st-help')"), True)
     # A group is one split button (UX plan PR 2a, 2026-11-19): its label opens
     # the member last used, its chevron a menu of every member. Nothing
@@ -158,8 +158,8 @@ try:
     check("opening Radios opens its first radio; the group stays one button, named for it",
           b.wait(f"{TABS}.length === {home_count} && {TABS}[1].querySelector('span').textContent === 'Radios · G90' && "
                  f"{TABS}.map((t) => t.querySelector('span').textContent)"),
-          ["Mission Control", "Radios · G90", "Winlink", "Mesh"])
-    check("  the bar has as many tabs on a radio as on Mission Control", b.js(f"{TABS}.length"), home_count)
+          ["Shack", "Radios · G90", "Winlink", "Mesh"])
+    check("  the bar has as many tabs on a radio as on the Shack", b.js(f"{TABS}.length"), home_count)
     MENU = "document.querySelector('#st-nav .st-menu[data-group=\"radios\"]')"
     CHEV = "document.querySelector('#st-nav .st-chev[data-group=\"radios\"]')"
     MI = f"[...{MENU}.querySelectorAll('.st-mi')]"
@@ -193,7 +193,7 @@ try:
     b.js("location.hash = '#/home'")
     b.wait(f"{TABS}[1].querySelector('span').textContent === 'Radios'")
     check("  Radios now opens the radio last used", b.js(f"{TABS}[1].getAttribute('href')"), "#/qmx")
-    check("  on Mission Control there is no section row", b.js("document.querySelector('#st-subnav').hidden"), True)
+    check("  on the Shack there is no section row", b.js("document.querySelector('#st-subnav').hidden"), True)
     b.js(f"{TABS}[1].click()")
     b.wait("location.hash === '#/qmx'")
     check("QMX tab: its page in a frame", bool(b.wait(f"{FRAME}?.src.includes('/r/qmx/')")), True)
@@ -225,7 +225,7 @@ try:
                  f"{SUB}.find((t) => t.classList.contains('on'))?.querySelector('span').textContent]", 5),
           [["G90", "QMX"], "QMX"])
     # A redraw replaces the tab under the pointer, so a click straddling one
-    # went nowhere (48 redraws in 10 s on a live Mission Control). The bar and
+    # went nowhere (48 redraws in 10 s on a live the Shack). The bar and
     # the row are redrawn only when what they show changes; the station's own
     # status (two radios polling) changes nothing on them.
     b.js("window.__navN = 0; const o = new MutationObserver(() => window.__navN++); "
@@ -292,7 +292,7 @@ try:
     check("  the dot comes back", b.wait(f"!{MESH_TAB}.classList.contains('off') && 'ok'"), "ok")
 
     # The rig bar (UX plan PR 1a, 2026-11-19; was the radio strip, hidden on
-    # radio tabs and Mission Control): every HF radio on every view.
+    # radio tabs and the Shack): every HF radio on every view.
     # tests/rigbar_page_test.py covers it in depth.
     BAR = "[...document.querySelectorAll('#rig-bar .rb-rig')]"
     b.js("location.hash = '#/winlink'")
@@ -306,16 +306,19 @@ try:
               bool(b.wait(f"location.hash === '#/{view}' && !document.querySelector('#rig-bar').hidden && "
                           "document.querySelector('#rig-bar').offsetParent !== null")), True)
 
-    # Mission Control: live cards, what is on the air, what needs you, keys.
+    # The Shack: live cards, what is on the air, what needs you, keys.
     CARD = "[...document.querySelectorAll('#st-cards .mc-card')].find((c) => c.querySelector('b').textContent === '{}')"
-    check("mission control: lanes named like the tab bar's groups",
+    check("the Shack: lanes named like the tab bar's groups",
           b.js("[...document.querySelectorAll('.mc-lane-name')].map((e) => e.textContent)"), ["Radios", "Messaging", "Mesh"])
     check("  a radio's card: its frequency live",
           bool(b.wait(f"/\\d+\\.\\d{{3}}\\.\\d{{3}}/.test({CARD.format('G90')}?.querySelector('.mc-f')?.textContent || '')")), True)
     check("  and its S-meter", bool(b.wait(f"/^S\\d/.test({CARD.format('G90')}?.querySelector('.mc-meter span')?.textContent || '')")), True)
     check("  every card has its icon", b.js("[...document.querySelectorAll('#st-cards .mc-card')]"
                                           ".every((c) => c.querySelector('.st-card-head svg.mc-ico'))"), True)
-    check("  the clock: UTC to the second", bool(b.wait("/^\\d\\d:\\d\\d:\\d\\d$/.test(document.querySelector('#mc-clock .mc-utc').textContent)")), True)
+    check("  no second clock: the header's UTC, local time on its hover",
+          [b.js("!!document.querySelector('#mc-clock')"),
+           bool(b.wait("/^\\d\\d:\\d\\d:\\d\\d UTC$/.test(document.querySelector('#utc').textContent) && "
+                       "/ local · \\d{4}-\\d\\d-\\d\\d UTC$/.test(document.querySelector('#utc').title)"))], [False, True])
     check("  a radio's card is double width, with its signal trace",
           bool(b.wait(f"{CARD.format('G90')}?.classList.contains('mc-wide') && "
                       f"!!{CARD.format('G90')}.querySelector('.mc-trace-slot canvas.mc-trace')")), True)

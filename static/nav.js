@@ -27,7 +27,7 @@
 // status change and add-on event (several a second: the JS8 waterfall), and a
 // redraw replaces the tab under the pointer, so a click whose press and
 // release straddled one went nowhere (measured 2026-11-22: 48 redraws in 10 s
-// on Mission Control).
+// on the Shack).
 //
 // An add-on names its group in addons/<name>.py (Addon.group); the server
 // lists it in config.addons. Uses common.js ($, esc).
@@ -116,7 +116,7 @@ const navGroups = (() => {
 
   // Draw the bar. items: [{id, label, short?, group, dot, off, badge, title, sub}]
   // in the order wanted within each group; first/end: ungrouped tabs before and
-  // after the groups (Mission Control, Modules). tuck: an item that is off leaves the
+  // after the groups (the Shack, Modules). tuck: an item that is off leaves the
   // bar unless it is the open view. Returns the labels it tucked away.
   // The last drawing of each bar: what it was drawn from, and what it tucked.
   const drawn = new WeakMap();
