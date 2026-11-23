@@ -19,7 +19,8 @@ package. This side:
   - with auto_trace on (off by default: it transmits), traces a node by
     itself when it is heard over relays and has no trace yet or its hop
     count changed since its last one (auto_trace_candidates); queued behind
-    TRACE_GAP_S, capped per hour, one per node per AUTO_TRACE_REPEAT_S
+    TRACE_GAP_S, capped per hour, one per node per AUTO_TRACE_REPEAT_S; the
+    Mesh page's switch turns it off and on while running (set_auto_trace)
   - replies and emoji reactions (mesh_send reply_to / emoji), checked
     against a message it holds
   - asks its own node for its neighbours now and then (SELF_NEIGHBORS_S;
@@ -814,6 +815,7 @@ class MeshEngine:
                 "requests": self.requests, "neighbors": self.neighbors,
                 "hears": self.hears(), "text_max": TEXT_MAX_BYTES, "parts_max": PARTS_MAX,
                 "part_bytes": TEXT_MAX_BYTES - PART_PREFIX_BYTES, "auto_resend": self.auto_resend,
+                "auto_trace": self.auto_trace, "auto_trace_per_hour": self.auto_per_hour,
                 "health": self.health(), "packets": list(self.stats.log), "names": self.names,
                 "kept": list(self.kept.values()), "convs": self.convs.view()}
 
@@ -1024,8 +1026,8 @@ class MeshEngine:
 
     def _auto_fire(self):
         self._auto_timer = None
-        if (self._closing or not self.connected or self.proc is None or self.proc.returncode is not None
-                or self._auto_since is None):
+        if (self._closing or not self.auto_trace or not self.connected or self.proc is None
+                or self.proc.returncode is not None or self._auto_since is None):
             return
         now = time.time()
         if auto_trace_wait(now, self._trace_t, self._trace_ref is not None,
@@ -1043,6 +1045,26 @@ class MeshEngine:
                 self._auto_sent.append(now)
                 asyncio.ensure_future(self._start_trace(nid, auto=True))
                 return
+
+    def set_auto_trace(self, on):
+        """The page's switch: automatic traceroutes on or off, now. Off drops
+        the queue and the armed timer, so nothing more goes out by itself; on
+        looks at the nodes heard since connecting. Every page hears the new
+        state. -> whether it changed."""
+        on = bool(on)
+        if on == self.auto_trace:
+            return False
+        self.auto_trace = on
+        if not on:
+            if self._auto_timer is not None:
+                self._auto_timer.cancel()
+                self._auto_timer = None
+            self._auto_queue.clear()
+        log.info("mesh: automatic traceroutes %s", "on" if on else "off: this node sends only what a page asks")
+        self._send({"auto_trace": on})
+        if on:
+            self._auto_enqueue()
+        return True
 
     def _peer_why(self, to, kind=None):
         if not NODE_ID.match(str(to)):

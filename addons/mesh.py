@@ -41,6 +41,15 @@ to the pages as before; another node's carry "node": its id (its label,
 lower-cased), and a page sends "node" to pick which one a command is for
 (none: the first). "mesh_select" answers one page with that node's snapshot.
 
+"mesh_auto" {"on": true|false} (the tab's "Auto-trace" switch) turns the
+picked node's automatic traceroutes on or off now, and the choice is kept
+across restarts in AUTO_FILE beside the add-on state file, over the host
+file's "auto_trace". The station's only on-air sending of its own is that
+(asking its own node for its neighbours is answered inside the node; "Find
+radios" only listens), so off leaves a node sending only what a page or the
+feed asks. A kept file that cannot be read counts as off for every node:
+the quiet side.
+
 "mesh_scan" (the tab's "Find radios") runs mesh_scan.py under the nodes'
 Python and answers that page with the radios in reach: USB serial devices
 and Meshtastic Bluetooth advertisements, each with the "port" the host file
@@ -75,6 +84,7 @@ HERE = Path(__file__).resolve().parent.parent
 OFF_WHY = "Switched off: the node's port is free for other apps"
 RADIOS_MAX = 4
 _ID = re.compile(r"[^a-z0-9]+")
+AUTO_FILE = "mesh-auto.json"  # {node id ("" the first): auto_trace}, the page's switch
 SCAN_BLE_S = 8.0              # how long a scan listens for Bluetooth advertisements
 SCAN_WAIT_S = float(os.environ.get("MESH_SCAN_WAIT_S", "30"))   # a scan that has not answered by then is stopped
 log = logging.getLogger("mesh")
@@ -127,7 +137,7 @@ class MeshAddon(Addon):
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel
     routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite",
               "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel", "mesh_conv", "mesh_select",
-              "mesh_scan")
+              "mesh_scan", "mesh_auto")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -213,8 +223,55 @@ class MeshAddon(Addon):
                 out.append(f"mesh {label} connected but no packets for {int(quiet // 60)} min")
         return out
 
+    def _auto_path(self):
+        return os.path.join(self.state_dir, AUTO_FILE) if self.state_dir else None
+
+    def _auto_saved(self):
+        """{node id: bool} the switch kept, {} when never used, or None when the
+        file is there but unreadable (then every node starts with it off)."""
+        path = self._auto_path()
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            if not isinstance(d, dict) or not all(isinstance(v, bool) for v in d.values()):
+                raise ValueError("not {node: true|false}")
+            return d
+        except (OSError, ValueError) as e:
+            log.warning("mesh: %s not read (%s); automatic traceroutes start off on every node", path, e)
+            return None
+
+    def _auto_keep(self, node, on):
+        path = self._auto_path()
+        if not path:
+            return
+        d = self._auto_saved() or {}
+        d[node] = bool(on)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".tmp", "w") as f:
+                json.dump(d, f, indent=1, sort_keys=True)
+            os.replace(path + ".tmp", path)
+        except OSError as e:
+            log.warning("mesh: %s not written: %s", path, e)
+
+    def _auto_apply(self, saved):
+        """Each node's starting auto_trace: the switch's kept choice over the host file's."""
+        if saved is None:
+            self.args.mesh_auto_trace = False
+            for x in self.extra:
+                x["args"].mesh_auto_trace = False
+            return
+        if "" in saved:
+            self.args.mesh_auto_trace = saved[""]
+        for x in self.extra:
+            if x["id"] in saved:
+                x["args"].mesh_auto_trace = saved[x["id"]]
+
     async def start(self):
         from mesh import MeshEngine
+        self._auto_apply(self._auto_saved())
         # A fresh engine per start: a stopped one is closing for good. With a
         # log its messages come back from it; without one, carry them over.
         self.engine = MeshEngine(self.host, self.args)
@@ -298,6 +355,17 @@ class MeshAddon(Addon):
             return
         e = self._pick(m, ws)
         if e is None:
+            return
+        if verb == "mesh_auto":
+            on = m.get("on")
+            if not isinstance(on, bool):         # a string "false" must never switch transmitting on
+                self.host.notice("Mesh: auto-trace takes on or off.", "warn", ws)
+                return
+            node = m.get("node") or ""
+            e.set_auto_trace(on)
+            args = self.args if node == "" else next(x["args"] for x in self.extra if x["id"] == node)
+            args.mesh_auto_trace = on            # a switch-off and on keeps it too
+            self._auto_keep(node, on)
             return
         if verb == "mesh_select":
             # One page's view of one node: its whole snapshot, to that page only.
