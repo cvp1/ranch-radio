@@ -3,8 +3,9 @@
 The first add-on with its own tab rather than an add-on panel: its page is
 the Mesh tab (static/mesh.js), so it keeps that tab's wire protocol. The page
 sends {"t": "mesh_send" | "mesh_config" | "mesh_trace" | "mesh_favorite" |
-"mesh_request" | "mesh_node" | "mesh_reboot" | "mesh_cancel" | "mesh_conv"}
-(this add-on's ROUTES) and gets {"t": "mesh", ...} back. What the add-on
+"mesh_request" | "mesh_node" | "mesh_reboot" | "mesh_cancel" | "mesh_conv" |
+"mesh_remote_get" | "mesh_remote_set" | "mesh_remote_reboot"} (the last three:
+remote admin of another node, through this one) (this add-on's ROUTES) and gets {"t": "mesh", ...} back. What the add-on
 system adds is the on/off switch: off stops the bridge and frees the node's
 serial port (the meshtastic CLI needs it to itself), and the choice is kept
 across restarts like any add-on's.
@@ -137,7 +138,7 @@ class MeshAddon(Addon):
     page = False                 # its page is the Mesh tab (mesh.js), not an add-on panel
     routes = ("mesh_send", "mesh_config", "mesh_trace", "mesh_favorite",
               "mesh_request", "mesh_node", "mesh_reboot", "mesh_cancel", "mesh_conv", "mesh_select",
-              "mesh_scan", "mesh_auto")
+              "mesh_scan", "mesh_auto", "mesh_remote_get", "mesh_remote_set", "mesh_remote_reboot")
 
     def __init__(self, host, opts):
         super().__init__(host, opts)
@@ -387,6 +388,12 @@ class MeshAddon(Addon):
             await e.traceroute(ws, str(m["to"]))
         elif verb == "mesh_favorite":
             await e.set_favorite(ws, str(m["to"]), bool(m["fav"]))
+        elif verb == "mesh_remote_get":
+            await e.remote_get(ws, str(m["to"]), str(m["section"]))
+        elif verb == "mesh_remote_set":
+            await e.remote_set(ws, str(m["to"]), str(m["section"]), m["values"])
+        elif verb == "mesh_remote_reboot":
+            await e.remote_reboot(ws, str(m["to"]))
         elif verb == "mesh_request":
             await e.request(ws, str(m["to"]), str(m["kind"]))
         elif verb == "mesh_node":

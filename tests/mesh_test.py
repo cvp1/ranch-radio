@@ -320,6 +320,40 @@ try:
     n = len(page.events)
     page.send({"t": "mesh_config", "section": "lora", "values": {"hop_limit": 6}})
     check("node refuses a setting: warning", page.warned(n), True)
+
+    # Remote admin of another node, through this one
+    page.events.clear()
+    page.send({"t": "mesh_remote_get", "to": "!0000beef", "section": "lora"})
+    e = page.wait(lambda e: (e.get("remote_config") or {}).get("to") == "!0000beef")
+    check("remote get: the far node's section reaches the asking page",
+          e and (e["remote_config"]["section"], e["remote_config"]["values"]["hop_limit"]), ("lora", 7))
+    gets = [c for c in commands() if c.get("cmd") == "remote_get"]
+    check("  the bridge got remote_get for that node and section",
+          gets and (gets[-1]["to"], gets[-1]["section"]), ("!0000beef", "lora"))
+    page.events.clear()
+    page.send({"t": "mesh_remote_set", "to": "!0000beef", "section": "lora", "values": {"hop_limit": 5}})
+    check("remote set: a 'saved' notice naming the node",
+          bool(page.wait(lambda e: e.get("t") == "notice" and "saved" in e["msg"] and "!0000beef" in e["msg"])), True)
+    sets = [c for c in commands() if c.get("cmd") == "remote_set"]
+    check("  the bridge got only that field, as a number",
+          sets and (sets[-1]["section"], sets[-1]["values"]), ("lora", {"hop_limit": 5}))
+    n = len(page.events)
+    page.send({"t": "mesh_remote_get", "to": "!0000dead", "section": "lora"})
+    check("remote get from a node that does not trust us: a warning", page.warned(n), True)
+    before = len(commands())
+    for name, msg in [("this node itself", {"t": "mesh_remote_get", "to": "!b2a6fd78", "section": "lora"}),
+                      ("not a node id", {"t": "mesh_remote_reboot", "to": "beef"}),
+                      ("security", {"t": "mesh_remote_set", "to": "!0000beef", "section": "security",
+                                    "values": {"admin_key": []}}),
+                      ("owner", {"t": "mesh_remote_set", "to": "!0000beef", "section": "owner",
+                                 "values": {"long_name": "x"}}),
+                      ("out of range", {"t": "mesh_remote_set", "to": "!0000beef", "section": "lora",
+                                        "values": {"hop_limit": 8}})]:
+        n = len(page.events)
+        page.send(msg)
+        check(f"remote admin refused with a warning: {name}", page.warned(n), True)
+    time.sleep(0.3)
+    check("  none of them reached the bridge", len(commands()), before)
     page.events.clear()
     page.send({"t": "mesh_favorite", "to": "!0000beef", "fav": True})
     e = page.wait(lambda e: any(x["id"] == "!0000beef" and x["fav"] for x in e.get("nodes") or []))
