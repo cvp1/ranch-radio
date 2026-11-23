@@ -9,7 +9,7 @@
 // on the Map tab; ⤢ gives the map the room), who hears
 // this node ("heard by N": the server's hears_us) and settings. Everything goes over the control WebSocket ({"t": "mesh"} in,
 // mesh_send / mesh_config / mesh_favorite / mesh_trace / mesh_request /
-// mesh_node / mesh_reboot out); the server keeps the history, so a page
+// mesh_node / mesh_reboot / mesh_auto out); the server keeps the history, so a page
 // opened later sees it too.
 // Uses app.js's $, send, toast and on.
 //
@@ -992,6 +992,24 @@ const mesh = (() => {
   scanBtn.textContent = "Find radios";
   scanBtn.title = "The Meshtastic radios this station can reach by USB or Bluetooth, and how to add one";
   $("#mesh-cfg-btn").before(scanBtn);
+  // Auto-trace: the station's only sending of its own (mesh.py auto_trace).
+  // Off: this node sends only what someone asks it to. Kept by the station.
+  let autoTrace = false, autoPerHour = 6;
+  const autoBtn = document.createElement("button");
+  autoBtn.type = "button";
+  autoBtn.className = "chip chip-mini";
+  autoBtn.id = "mesh-auto-btn";
+  scanBtn.before(autoBtn);
+  function renderAuto() {
+    autoBtn.textContent = `Auto-trace ${autoTrace ? "on" : "off"}`;
+    autoBtn.classList.toggle("on", autoTrace);
+    autoBtn.setAttribute("aria-pressed", String(autoTrace));
+    autoBtn.disabled = switchedOff;
+    autoBtn.title = autoTrace
+      ? `This station traceroutes nodes it hears over relays by itself (route discovery, up to ${autoPerHour} an hour). Click to stop: it will send only what you send.`
+      : "This station sends nothing by itself: no automatic traceroutes. Click to let it trace nodes heard over relays.";
+  }
+  autoBtn.addEventListener("click", () => tx({ t: "mesh_auto", on: !autoTrace }));
   const scanBox = document.createElement("div");
   scanBox.className = "mesh-scan";
   scanBox.id = "mesh-scan";
@@ -1246,6 +1264,9 @@ const mesh = (() => {
     hears = snap.hears || [];
     health = snap.health || null;
     packets = snap.packets || [];
+    autoTrace = !!snap.auto_trace;
+    autoPerHour = snap.auto_trace_per_hour || autoPerHour;
+    renderAuto();
     renderHealthBtn();
     if (healthOpen) renderHealth();
     drawMap();
@@ -1286,6 +1307,7 @@ const mesh = (() => {
       renderCompose();
     }
     if (m.config) setConfig(m.config);
+    if (typeof m.auto_trace === "boolean") { autoTrace = m.auto_trace; renderAuto(); }
     if (m.names) Object.assign(names, m.names);
     if (m.kept) {
       for (const n of m.kept.set || []) if (n?.id) kept[n.id] = n;

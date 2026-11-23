@@ -14,6 +14,12 @@ Checks the pure rules and the engine driving them through a fake bridge pipe:
     then not traced again; a disconnect empties the queue
   - the add-on refuses a bad auto_trace_per_hour, and an auto_trace that
     is not a boolean ("false" must not switch it on)
+  - the Mesh page's switch (set_auto_trace, the add-on's mesh_auto): off
+    drops the queue and the armed timer, says so to every page, and sends
+    nothing more, even from a timer that fires anyway; on traces again; the
+    add-on refuses anything but true/false, keeps the choice per node across
+    restarts over the host file's, and an unreadable kept file starts every
+    node off
 
     python3 tests/mesh_auto_trace_test.py
 """
@@ -182,6 +188,35 @@ async def main():
     e.proc.returncode = 0
     await e.stop()
 
+    # the page's switch
+    e = engine(auto=True, per_hour=10)
+    many = [node(f"!0000000{i}", 2, heard=time.time() + 1) for i in range(1, 6)]
+    e._on_bridge({"ev": "nodes", "nodes": many})
+    await settle(e, 0.1)
+    check("switch: on, the first goes", traces_sent(e), ["!00000001"])
+    check("  the snapshot says on", (e.snapshot()["auto_trace"], e.snapshot()["auto_trace_per_hour"]), (True, 10))
+    ref = e.proc.stdin.lines[-1]["ref"]
+    e._on_bridge({"ev": "trace", "ref": ref, "to": "!00000001", "ok": True, "route": ["!0000cafe", "!0000beef"]})
+    check("  the rest queued, a timer armed", (len(e._auto_queue) > 0, e._auto_timer is not None), (True, True))
+    e.station.sent.clear()
+    check("switch off: changed", e.set_auto_trace(False), True)
+    check("  queue and timer gone", (e._auto_queue, e._auto_timer), ({}, None))
+    check("  every page hears it", [x for x in e.station.sent if "auto_trace" in x], [{"t": "mesh", "auto_trace": False}])
+    check("  the snapshot says off", e.snapshot()["auto_trace"], False)
+    e._on_bridge({"ev": "nodes", "nodes": many})
+    await settle(e, 0.6)
+    check("  off: nothing more goes out", traces_sent(e), ["!00000001"])
+    e._auto_queue["!00000003"] = time.time()  # a timer that fires anyway (armed just before the switch)
+    e._auto_fire()
+    await settle(e, 0.05)
+    check("  a stray timer sends nothing either", traces_sent(e), ["!00000001"])
+    check("off again: no change", e.set_auto_trace(False), False)
+    check("switch on: changed", e.set_auto_trace(True), True)
+    await settle(e, 0.4)
+    check("  on: tracing again", len(traces_sent(e)), 2)
+    e.proc.returncode = 0
+    await e.stop()
+
 
 asyncio.run(main())
 
@@ -205,6 +240,58 @@ for bad in ("false", 1, None):
         check(f"add-on refuses auto_trace={bad!r}", "accepted", "ValueError")
     except ValueError:
         check(f"add-on refuses auto_trace={bad!r}", "ValueError", "ValueError")
+
+# --- the add-on's switch: mesh_auto, kept across restarts
+import tempfile  # noqa: E402
+import addons.mesh as mesh_addon  # noqa: E402
+
+
+class Host:
+    def __init__(self):
+        self.notes = []
+
+    def notice(self, msg, level="info", ws=None):
+        self.notes.append(msg)
+
+
+def addon(tmp, **kw):
+    a = MeshAddon(Host(), {"port": "/dev/null", "label": "MF18", "auto_trace": True,
+                           "radios": [{"label": "LF", "port": "/dev/null2"}], **kw})
+    a.state_dir = tmp
+    calls = []
+    a.engine = SimpleNamespace(set_auto_trace=lambda on: calls.append(("", on)))
+    a.extra[0]["engine"] = SimpleNamespace(set_auto_trace=lambda on: calls.append(("lf", on)))
+    return a, calls
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    a, calls = addon(tmp)
+    for bad in ("false", 0, None):
+        asyncio.run(a.command(None, "mesh_auto", {"on": bad}))
+    check("mesh_auto refuses anything but true/false, and says so", (calls, len(a.host.notes)), ([], 3))
+    check("  nothing kept", os.path.exists(os.path.join(tmp, mesh_addon.AUTO_FILE)), False)
+    asyncio.run(a.command(None, "mesh_auto", {"on": False}))
+    asyncio.run(a.command(None, "mesh_auto", {"on": True, "node": "lf"}))
+    check("mesh_auto reaches the picked node", calls, [("", False), ("lf", True)])
+    with open(os.path.join(tmp, mesh_addon.AUTO_FILE)) as f:
+        check("  kept per node", json.load(f), {"": False, "lf": True})
+    check("  and in the args a switch-off and on starts from", (a.args.mesh_auto_trace, a.extra[0]["args"].mesh_auto_trace),
+          (False, True))
+    b, _ = addon(tmp)                        # a restart: the host file says on for MF18, off for LF
+    check("restart, before: the host file's", (b.args.mesh_auto_trace, b.extra[0]["args"].mesh_auto_trace), (True, False))
+    b._auto_apply(b._auto_saved())
+    check("  after: the switch's choice wins", (b.args.mesh_auto_trace, b.extra[0]["args"].mesh_auto_trace), (False, True))
+    with open(os.path.join(tmp, mesh_addon.AUTO_FILE), "w") as f:
+        f.write("{not json")
+    c, _ = addon(tmp)
+    c.extra[0]["args"].mesh_auto_trace = True
+    c._auto_apply(c._auto_saved())
+    check("an unreadable kept file: every node starts off", (c.args.mesh_auto_trace, c.extra[0]["args"].mesh_auto_trace),
+          (False, False))
+    d, _ = addon(None)
+    d.state_dir = None
+    d._auto_apply(d._auto_saved())
+    check("no state directory: the host file's", d.args.mesh_auto_trace, True)
 
 print(f"\n{fails} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
