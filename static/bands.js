@@ -10,7 +10,10 @@
 //   forecast    skywatch's forecast windows covering now; a window is one
 //               path (band and region), never the whole band
 //
-// and, on the band JTDX is decoding, the Roster's strong needs.
+// and, on the band JTDX is decoding, the Roster's count of stations that
+// would be a new DXCC or a new grid (overall, on the band or in the mode:
+// roster.js STRONG; "strong needs" on screen until 2026-11-23, which said
+// nothing about what they were).
 //
 // From R2 (needs-all-bands, 2026-11-21) a fourth fact on every band:
 //
@@ -145,14 +148,14 @@ const bandStrip = (() => {
              top.join("\n") + (n > top.length ? `\n+${n - top.length} more` : "") };
   }
 
-  // The Roster's strong needs, for the band JTDX decodes on. null: no roster here.
+  // The Roster's new-DXCC-or-grid stations, for the band JTDX decodes on. null: no roster here.
   function needs() {
     const R = addons.data("roster");
     if (!R || R.error || !R.roster || !R.roster.band) return null;
     const c = R.need_counts;
-    if (!c) return { band: R.roster.band, state: "wait", text: "strong needs: unknown",
+    if (!c) return { band: R.roster.band, state: "wait", text: "new DXCC or grid: unknown",
       title: "The needs index is not ready (building, or no logbook): unknown, not zero" };
-    const text = `${plural(c.strong, "recent station", "recent stations")} with strong needs` +
+    const text = `${plural(c.strong, "station", "stations")} for a new DXCC or grid` +
       (c.unconfirmed ? ` · ${c.unconfirmed} unconfirmed` : "");
     return { band: c.band, state: c.strong ? "ok" : "none", text,
       title: `JTDX on ${c.band} ${c.mode}, the last two minutes: ${text}; ${plural(c.new_calls, "new call", "new calls")}` };

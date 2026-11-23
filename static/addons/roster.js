@@ -160,7 +160,8 @@
       if (!snap.roster) return { state: "off", lines: [] };
       const c = needCounts();
       if (!c) return { state: "needs unknown", lines: ["the needs index is not ready"] };
-      return { state: `${c.strong.length} strong needs`, lines: c.strong.slice(0, 3).map((r) => `${esc(r.call)} — ${esc((NEED[r.need] || [r.need])[0])}`) };
+      // The tag names what it counts (2026-11-23, was "N strong needs").
+      return { state: `${c.strong.length} new DXCC or grid`, lines: c.strong.slice(0, 3).map((r) => `${esc(r.call)} — ${esc((NEED[r.need] || [r.need])[0])}`) };
     },
   });
 })();
