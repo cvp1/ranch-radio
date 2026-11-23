@@ -5,7 +5,7 @@ stand-in logbook (a plain web server that records what it was asked for):
   - then the frame shows the configured url, and the stand-in is asked for it
   - the "Open in its own tab" link points at the same url
   - a port-only block frames the logbook on the page's own host name
-  - Mission Control's card: the sync's counts per logbook, the latest QSO and
+  - the Shack's card: the sync's counts per logbook, the latest QSO and
     then the address; held or not running says so; without the sync, the address
 
     python3 tests/logbook_page_test.py
@@ -105,8 +105,9 @@ try:
             time.sleep(0.1)
         check("  and the logbook was asked for it", asked[:1], ["/index.php/dashboard"])
         check("the link opens the same url", b.js(LINK), url)
-        # Mission Control's card (UX plan PR 0.4): the sync's state, counts and
-        # latest QSO from the status it already sends; the address comes last.
+        # The Shack's card (UX plan PR 0.4): the sync's state, counts and latest
+        # QSO from the status it already sends; the address only while there is
+        # nothing else to say (2026-11-23).
         CARD = ("JSON.stringify((() => { const c = addons.card('logbook'), d = document.createElement('div'); "
                 "return [c.state, c.lines.filter(Boolean).map((l) => { d.innerHTML = l; return d.textContent; })]; })())")
         check("card without the sync: the address only", json.loads(b.js(CARD)), ["linked", [url]])
@@ -115,8 +116,8 @@ try:
                   "recent": [{"id": 9, "call": "JA1ABC", "band": "20m", "mode": "FT8", "time": "12:34", "near": False, "d": {}},
                              {"id": 8, "call": "VK2ABC", "band": "40m", "mode": "FT8", "time": "12:01", "near": False, "d": {}}]}
         b.js("addons.event(" + json.dumps({"t": "addon", "addon": "logbook", "logsync": status}) + ")")
-        check("card with the sync: counts per logbook, the latest QSO, then the address",
-              json.loads(b.js(CARD)), ["held", ["Wavelog 12✓ · 1 waiting · QRZ 11✓ · 2 held", "Last: JA1ABC 20m FT8 12:34", url]])
+        check("card with the sync: counts per logbook and the latest QSO, no address",
+              json.loads(b.js(CARD)), ["held", ["Wavelog 12✓ · 1 waiting · QRZ 11✓ · 2 held", "Last: JA1ABC 20m FT8 12:34"]])
         status["counts"]["qrz"] = {"sent": 13}
         b.js("addons.event(" + json.dumps({"t": "addon", "addon": "logbook", "logsync": status}) + ")")
         check("  nothing held: syncing", json.loads(b.js(CARD))[0], "syncing")

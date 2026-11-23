@@ -4,7 +4,7 @@ Two simulated radios (G90, QMX) behind station.py, with fake Pat, a fake
 mesh bridge, the Propagation add-on (no network) and a scratch host file (the
 Modules tab). Nothing transmits: "keyed" is a simulator keyed over rigctl.
 Checks:
-  1. the bar shows every radio on Mission Control, a radio's tab, Winlink,
+  1. the bar shows every radio on the Shack, a radio's tab, Winlink,
      Mesh, an add-on tab and Modules, at 1500 px and at 390 px (inside the
      screen); one focus radio in full (frequency, mode, band, meter), the
      other compact; a click on the compact one focuses it, and it sticks

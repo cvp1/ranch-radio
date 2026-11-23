@@ -12,7 +12,7 @@
 //   event(m)           a {"t": "addon", addon: name, ...} message
 //   off()              it was switched off: forget the device's state
 //   tab()              {dot: "ok"|"off"|"tx", off: bool, badge, title} for the nav
-//   card()             {state, lines: [html]} for the station's Mission Control
+//   card()             {state, lines: [html]} for the station's Shack
 //   data()             its current merged state, for other views (UX plan
 //                      5.3, PR 3a, 2026-11-19: this file keeps only the hello
 //                      snapshot); read through addons.data(name)

@@ -1,6 +1,6 @@
 "use strict";
 
-// Mission Control's instruments (station.js draws the view): a radio's mini
+// The Shack's instruments (station.js draws the view): a radio's mini
 // spectrum and waterfall from the scope frames its server already sends every
 // client, a signal trace of the last two minutes, and the cards' icons.
 //

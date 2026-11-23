@@ -50,10 +50,11 @@ simulated station on your own machine.
 ## The station page
 
 A station with more than one radio, or with Winlink, Mesh and packet, opens
-on **Mission Control**: everything at once, on one screen at 1440x900 or
-larger.
+on **the Shack** (called Mission Control before 2026-11-23): what's on the
+air, what needs you, and every radio and service, on one screen at 1440x900
+or larger.
 
-![Mission Control: the rig bar with STOP TX for all HF radios, the clock, the band strip, the Now row of needed stations, the radios, messaging, mesh and tools](docs/images/mission-control.png)
+![The Shack: the rig bar with STOP TX for all HF radios, what's on the air and what needs you, the band strip, the Now row of needed stations, the radios, messaging, mesh and tools](docs/images/mission-control.png)
 
 - **The rig bar** sits under the top bar on every view. Each HF radio shows
   its frequency, mode, band and S-meter (watts in red while it's on the

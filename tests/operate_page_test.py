@@ -221,7 +221,7 @@ try:
       addons.hello(%s, %s);
     })()""" % (json.dumps(ADDONS), json.dumps({"roster": {"roster": ROSTER}, "map": MAP})))
     b.wait("document.querySelectorAll('#view-addon-roster .rs-row').length === 2 && !!document.querySelector('#view-addon-map .rm-wrap')", 15)
-    check("the Operate tab follows Mission Control",
+    check("the Operate tab follows the Shack",
           b.js("[...document.querySelectorAll('#st-nav > a')].slice(0, 2).map((a) => a.getAttribute('href'))"),
           ["#/home", "#/operate"])
 

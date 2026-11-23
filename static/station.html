@@ -33,7 +33,7 @@
   <span class="theme-pick"></span>
 </header>
 <!-- The open section's members, one click each (nav.js; 2026-11-22). Hidden on
-     Mission Control and wherever the open view is not in a group of several. -->
+     the Shack and wherever the open view is not in a group of several. -->
 <nav class="st-subnav" id="st-subnav" hidden></nav>
 
 <!-- The rig bar (UX plan PR 1a, 2026-11-19; was the radio strip of
@@ -46,12 +46,13 @@
 <div class="rig-bar" id="rig-bar" hidden aria-label="HF radios"></div>
 
 <main class="st-main">
-  <!-- Mission Control: what is on the air, what needs you, and every radio
-       and service live, in the tab bar's groups; a card (or its number key)
-       opens its tab -->
+  <!-- The Shack (named Mission Control until 2026-11-23): what is on the air,
+       what needs you, and every radio and service live, in the tab bar's
+       groups; a card (or its number key) opens its tab. No clock of its own
+       (2026-11-23): the header's UTC clock is on every view, and a second,
+       larger one here was the first of several things said twice. -->
   <section class="st-view" id="view-home" hidden>
     <div class="mc-band">
-      <div class="mc-clock" id="mc-clock"><span class="mc-utc"></span><small>UTC</small><span class="mc-local"></span></div>
       <div class="mc-air" id="mc-air" aria-live="polite"></div>
       <div class="mc-needs" id="mc-needs" aria-live="polite"></div>
     </div>
@@ -66,7 +67,6 @@
     </div>
     <div class="mc-lanes" id="st-cards"></div>
     <p class="st-help" id="st-help"></p>
-    <p class="st-help mc-keys">Keys: <kbd>1</kbd>–<kbd>9</kbd> open a card's tab · <kbd>0</kbd> back here</p>
   </section>
 
   <!-- Operate (UX plan PR 2b): the band strip over the layout's panes. The

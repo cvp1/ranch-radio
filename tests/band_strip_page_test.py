@@ -1,4 +1,4 @@
-"""Mission Control's band strip (static/bands.js, UX plan PR 3a, 2026-11-19),
+"""the Shack's band strip (static/bands.js, UX plan PR 3a, 2026-11-19),
 driven in headless Chromium.
 
 Two simulated radios (G90: 0.5-30 MHz, QMX: 1.8-54 MHz) behind station.py,
@@ -9,7 +9,7 @@ deliver them, raw as addons/propagation.py and the Roster's own view make them
 (peak 0.72, region NA_EAST: never a pre-formatted string). No network. The
 strip's clock is fixed (bandStrip.now) so hours are known. Checks:
 
-  place     under the clock row on Mission Control, once
+  place     under the clock row on the Shack, once
   bands     one cell per band <= 54 MHz the focus radio covers; a click on
             the other radio in the rig bar changes the set (6 m)
   unknown   each fact's unknown states: not set up (the server's own
@@ -211,7 +211,7 @@ try:
     b.wait("!!document.querySelector('#rig-bar .rb-rig.focus')")
 
     print("# place")
-    check("the strip is the clock row's next sibling, on Mission Control",
+    check("the strip is the clock row's next sibling, on the Shack",
           b.wait("!document.querySelector('#mc-bands').hidden && "
                  "[document.querySelector('#view-home .mc-band').nextElementSibling.id, "
                  "document.querySelector('#mc-bands').closest('.st-view').id]"), ["mc-bands", "view-home"])
@@ -242,12 +242,15 @@ try:
     deliver({"t": "addon", "addon": "propagation", "state": prop()})
     b.wait(f"{CELL.format('20m')}.querySelector('.bs-heard').dataset.state === 'wait'")
     check("each fact waiting", [states("heard"), states("you"), states("fc")], [["wait"], ["wait"], ["wait"]])
+    check("  the Shack's compact strip keeps a waiting band open (unknown is not quiet)",
+          b.js(f"{CELLS}.some((c) => c.classList.contains('bs-quiet'))"), False)
 
     print("\n# unknown: each source failing")
     deliver({"t": "addon", "addon": "propagation",
              "state": prop(heard_error="skywatch not reachable", heard_checked=T, psk_error="PSKReporter not reachable",
                            psk_checked=T, forecast_error="skywatch not reachable")})
     b.wait(f"{CELL.format('20m')}.querySelector('.bs-heard').dataset.state === 'err'")
+    check("  compact: a failing band stays open", b.js(f"{CELLS}.some((c) => c.classList.contains('bs-quiet'))"), False)
     check("each fact unavailable", [states("heard"), states("you"), states("fc")], [["err"], ["err"], ["err"]])
     check("  heard here: unknown, not zero",
           any(n == "skywatch not reachable: what this station heard is unknown, not zero" for n in b.js(NOTES)), True)
@@ -266,6 +269,31 @@ try:
     check("  nobody reported you: no tick", [f40["you"][0], f40["you"][1]], ["none", ""])
     check("  no forecast measurement: not set up, not 'nothing open'",
           [states("fc"), any("no forecast measurement" in n for n in b.js(NOTES))], [["off"], True])
+    # The Shack's compact strip (2026-11-23): a band where every source
+    # answered "nothing" is just its name; the legend folds behind Key, and a
+    # note that something is unknown or not set up stays in the open.
+    QUIET = f"{CELL.format('40m')}.classList.contains('bs-quiet')"
+    check("compact: a band every source answered 'nothing' for shrinks to its name",
+          [b.js(QUIET), b.js(f"getComputedStyle({CELL.format('40m')}.querySelector('.bs-heard')).display"),
+           b.js(f"!!{CELL.format('40m')}.querySelector('.bs-tune')")], [True, "none", True])
+    check("  its facts kept, on hover", b.js(f"{CELL.format('40m')}.title"),
+          "40m: quiet. 40m: no decodes in the last 60 min: may not have been monitored")
+    FOLDED = "[...document.querySelectorAll('#mc-bands .bs-key span')].map((e) => e.textContent)"
+    OPEN = "[...document.querySelectorAll('#mc-bands .bs-notes > span')].map((e) => e.textContent)"
+    check("  the legend folds behind Key, closed",
+          [any(n.startswith("Heard here: decodes") for n in b.js(FOLDED)), b.js("document.querySelector('#mc-bands .bs-key').open")],
+          [True, False])
+    check("  'no forecast measurement' stays in the open", any("no forecast measurement" in n for n in b.js(OPEN)), True)
+    b.js("document.querySelector('#mc-bands .bs-key summary').click()")
+    # A real redraw (20m now has decodes, so the strip's HTML changes): the
+    # Key is rewritten, and must come back open.
+    deliver({"t": "addon", "addon": "propagation", "state": prop(heard_checked=T, psk_checked=T, bands={"20m": {"n": 5}})})
+    b.wait(f"{CELL.format('20m')}.querySelector('.bs-heard').dataset.state === 'ok'")
+    check("  Key opened stays open across a redraw", b.js("document.querySelector('#mc-bands .bs-key')?.open"), True)
+    b.js("document.querySelector('#mc-bands .bs-key summary').click()")     # closed again for what follows
+    # Back to "nothing heard", so the next section's wait for 'ok' waits for its own state.
+    deliver({"t": "addon", "addon": "propagation", "state": prop(heard_checked=T, psk_checked=T)})
+    b.wait(f"{CELL.format('20m')}.querySelector('.bs-heard').dataset.state === 'none'")
 
     print("\n# facts")
     deliver({"t": "addon", "addon": "propagation", "state": GOOD})
@@ -356,7 +384,7 @@ try:
     b.wait(f"{CELL.format('15m')}.querySelector('.bs-near').dataset.state === 'off'")
 
     print("\n# hour: the clock crosses 04Z with no event")
-    # Off Mission Control nothing else redraws it (its S-meter and 30 s
+    # Off the Shack nothing else redraws it (its S-meter and 30 s
     # redraws run only on the view), so only the strip's own hour check can.
     b.js("location.hash = '#/propagation'")
     b.wait("location.hash === '#/propagation' && document.querySelector('#view-home').hidden")
@@ -399,7 +427,7 @@ try:
     time.sleep(0.5)                    # a quiet window: checking that nothing was sent
     check("a click on every cell sends nothing", b.js("window.__sent"), [])
     check("  the radios' frequencies as they were (rigctl)", (rig_freq(QMX), rig_freq(G90)), before)
-    check("  Mission Control stays open", b.js("location.hash"), "#/home")
+    check("  the Shack stays open", b.js("location.hash"), "#/home")
 
     print("\n# 390 px")
     b.call("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
