@@ -401,22 +401,22 @@ try:
     b.js("location.hash = '#/home'")
     b.wait("!document.querySelector('#view-home').hidden")
 
-    print("\n# needs: the roster's strong needs on its band")
+    print("\n# needs: the roster's new-DXCC-or-grid stations on its band")
     deliver({"t": "addon", "addon": "roster", "roster": {"band": "20m", "mode": "FT8", "dial": 14_074_000,
                                                         "rows": ROWS, "needs": None}})
     check("needs index unavailable: unknown, not zero",
-          b.wait(f"{CELL.format('20m')}.querySelector('.bs-needs')?.textContent"), "strong needs: unknown")
+          b.wait(f"{CELL.format('20m')}.querySelector('.bs-needs')?.textContent"), "new DXCC or grid: unknown")
     check("  only on the decoding band", b.js("document.querySelectorAll('.bs-needs').length"), 1)
     deliver({"t": "addon", "addon": "roster", "roster": {"band": "20m", "mode": "FT8", "dial": 14_074_000,
                                                         "rows": ROWS, "needs": SUMMARY}})
     check("fresh rows on 20m FT8 in the strong levels; unconfirmed apart",
-          b.wait(f"/strong needs ·/.test({CELL.format('20m')}.querySelector('.bs-needs')?.textContent) && "
+          b.wait(f"/new DXCC or grid ·/.test({CELL.format('20m')}.querySelector('.bs-needs')?.textContent) && "
                  f"{CELL.format('20m')}.querySelector('.bs-needs').textContent"),
-          "2 recent stations with strong needs · 1 unconfirmed")
+          "2 stations for a new DXCC or grid · 1 unconfirmed")
     check("  new calls counted apart, in the title", "1 new call" in facts("20m")["needs"][2], True)
     check("  the Roster card uses the same count",
           b.wait("[...document.querySelectorAll('.mc-card')].find((c) => c.querySelector('b').textContent === 'Roster')"
-                 "?.querySelector('.mc-tag')?.textContent"), "2 strong needs")
+                 "?.querySelector('.mc-tag')?.textContent"), "2 new DXCC or grid")
     shot("1500-needs")
 
     print("\n# display only")

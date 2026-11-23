@@ -1344,8 +1344,10 @@ const station = (() => {
     const d = addons.data("roster"), R = d?.roster, c = d?.need_counts;
     const why = rd.error ? `the Roster is not loaded (${rd.error})` : !rd.on ? "the Roster is switched off"
       : !d ? "waiting for the Roster" : d.error ? d.error : !R ? "waiting for JTDX"
-      : !c ? "strong needs unknown (the needs index is not ready)"
-      : !c.now.length ? `no fresh strong needs on ${c.band || "?"} ${c.mode || ""}`.trim() : "";
+      : !c ? "new DXCC or grid unknown (the needs index is not ready)"
+      // Named for what it counts (2026-11-23, was "strong needs"); with no
+      // band from JTDX yet, no "on ?".
+      : !c.now.length ? `nothing for a new DXCC or grid${c.band ? ` on ${c.band} ${c.mode || ""}`.trimEnd() : ""} in the last two minutes` : "";
     const html = why ? `<span class="mc-now-empty">Now: ${esc(why)}</span>`
       : `<span class="mc-now-name">Now</span>` + c.now.map((r) => `<button type="button" class="mc-now-item${r.to_me ? " me" : ""}" data-key="${esc(r.key)}" data-call="${esc(r.call)}"` +
           ` data-need="${esc(r.need)}" title="${esc(r.tip)}"><b>${esc(r.call)}</b> <span>${esc(r.label)}</span>` +

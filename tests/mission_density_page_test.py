@@ -9,7 +9,7 @@ station's socket delivers it (no logbook sync runs here). No network. Checks:
 
   fits      #view-home does not scroll at 1600x1000 or at 1440x900
   lanes     Messaging and Mesh share one row
-  now       up to five fresh decodes with strong needs, the band strip's
+  now       up to five fresh decodes for a new DXCC or grid, the band strip's
             filter: a row from the previous band, another mode, a stale one
             or a weak level is not shown; the needs index unavailable is
             unknown, not "none"
@@ -187,10 +187,15 @@ try:
     check("the needs index unavailable: unknown, not none",
           b.wait("/unknown/.test(document.querySelector('#mc-now .mc-now-empty')?.textContent || '') && "
                  "document.querySelector('#mc-now .mc-now-empty').textContent"),
-          "Now: strong needs unknown (the needs index is not ready)")
+          "Now: new DXCC or grid unknown (the needs index is not ready)")
     check("  the Log tile: unknown", b.wait("document.querySelector('#mc-log')?.dataset.state || null"), "wait")
+    deliver(roster(WEAK + OUT))
+    check("none of them: says what it counts, on which band and mode",
+          b.wait("/nothing for/.test(document.querySelector('#mc-now .mc-now-empty')?.textContent || '') && "
+                 "document.querySelector('#mc-now .mc-now-empty').textContent"),
+          "Now: nothing for a new DXCC or grid on 20m FT8 in the last two minutes")
     deliver(roster(STRONG + WEAK + OUT))
-    check("five fresh strong needs on 20m FT8, in the Roster's order",
+    check("five fresh new-DXCC-or-grid stations on 20m FT8, in the Roster's order",
           b.wait(f"{NOW}.length === 5 && {NOW}.map((e) => e.dataset.call)"),
           ["N9ABC", "N9ABD", "N9ABE", "N9ABF", "N9ABG"])
     check("  each names its need", b.js(f"{NOW}[0].textContent.includes('New DXCC')"), True)
