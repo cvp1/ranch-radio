@@ -49,6 +49,7 @@ import aiohttp
 from aiohttp import WSMsgType, web
 
 import logcap
+import station_peers
 import webguard
 import winlink
 from server import band_of, tls_context
@@ -451,6 +452,16 @@ class Station:
         # Every radio is watched (2026-11-15; before, only those with a Winlink
         # lane): the Map tab shows what each one is doing. A watch only reads.
         self.watches = {r.id: RadioWatch(self, r) for r in self.radios}
+        # Other stations' radios (station_peers.py), kept apart from self.radios:
+        # the shared port, the Winlink lane and JS8 read that list only. A
+        # broken peers block must not take the station down: no peers, said why.
+        try:
+            peers = station_peers.check_peers(cfg.get("peers"), cfg.get("name"))
+        except station_peers.PeerError as e:
+            log.error("peers: %s; no peer's radios this run", e)
+            peers = []
+        self.peers = station_peers.Peers(peers, on_change=lambda: self._broadcast(
+            json.dumps({"t": "radios", **self.radios_info()})))
         self.packet_cfg = cfg.get("packet") or {}
         self.packet_url = self.packet_cfg.get("url")
         self.packet_agwpe = self.packet_cfg.get("agwpe")
@@ -556,8 +567,14 @@ class Station:
                 pkt["name"] = self.packet_cfg["name"]
             if self.packet_cfg.get("title"):
                 pkt["title"] = self.packet_cfg["title"]
-        return {"radios": [r.info(p) for r in self.radios], "shared_port": self.shared_port,
+        return {"radios": [r.info(p) for r in self.radios] + self.peers.infos(), "shared_port": self.shared_port,
                 "packet": pkt}
+
+    def own_radios(self):
+        """What a peer station reads (GET /api/radios): this host's radios only,
+        never the peers' (station_peers.py: nothing chains)."""
+        return {"station": self.cfg.get("name"),
+                "radios": [{"id": r.id, "name": r.name, "present": r.present} for r in self.radios]}
 
     # --- the shared rigctl port and Pat's rig lane: plain TCP relays
 
@@ -850,6 +867,8 @@ class Station:
         await self.start_wavelog_cat()
         await self.start_js8()
         self._tasks.append(asyncio.create_task(self.presence_loop()))
+        if self.peers:
+            self._tasks.append(asyncio.create_task(self.peers.loop()))
 
     # --- Wavelog CAT (wavelog_cat.py): WaveLogGate's radio-to-Wavelog jobs; its failure stays its own
 
@@ -1170,9 +1189,14 @@ def make_app(station, args):
 
     http = {}
 
-    async def proxy(request, base, tail, body=None):
-        """HTTP and WebSocket to a local backend (a radio's page, the hub)."""
+    async def proxy(request, base, tail, body=None, peer=None):
+        """HTTP and WebSocket to a local backend (a radio's page, the hub), or
+        with peer (station_peers.Peer) to a radio's page on another station:
+        its pinned certificate, the Host it knows itself by, and its token
+        only for this station's operator; this station's cookie stays here."""
         url = f"{base}/{tail}"
+        operator = request.get("rr_role", "operator") == "operator"
+        tls = peer.ssl if peer is not None else None
         if request.query_string:
             url += "?" + request.query_string
         if request.headers.get("Upgrade", "").lower() == "websocket":
@@ -1183,8 +1207,10 @@ def make_app(station, args):
                 # The browser's cookie goes up, so the radio (which keys, and so
                 # decides who may) sees the operator's session (review plan PR 4).
                 fwd = {"Cookie": request.headers["Cookie"]} if "Cookie" in request.headers else {}
+                if peer is not None:
+                    fwd = peer.headers(operator)
                 async with http["s"].ws_connect(url.replace("http", "ws", 1), heartbeat=5,
-                                                max_msg_size=1 << 20, headers=fwd) as up:
+                                                max_msg_size=1 << 20, headers=fwd, ssl=tls) as up:
                     async def down():
                         async for m in up:
                             if m.type == WSMsgType.TEXT:
@@ -1214,8 +1240,12 @@ def make_app(station, args):
                    if k.lower() not in HOP | {"origin", "x-forwarded-for"}}
         headers["X-Ranch-Radio"] = "1"
         headers["X-Forwarded-For"] = webguard.forwarded_for(request)   # the backend's from_this_machine
+        if peer is not None:
+            for k in [k for k in headers if k.lower() in ("host", "cookie", "authorization")]:
+                del headers[k]
+            headers.update(peer.headers(operator))
         try:
-            async with http["s"].request(request.method, url, headers=headers,
+            async with http["s"].request(request.method, url, headers=headers, ssl=tls,
                                          data=body if body is not None else
                                          (await request.read() if request.body_exists else None),
                                          allow_redirects=False) as r:
@@ -1231,13 +1261,23 @@ def make_app(station, args):
             return web.Response(status=502, text=f"not answering: {e}")
 
     async def radio_page(request):
-        r = station.radio(request.match_info["rid"])
-        if r is None:
+        rid = request.match_info["rid"]
+        r = station.radio(rid)
+        remote = station.peers.find(rid) if r is None else None
+        if r is None and remote is None:
             raise web.HTTPNotFound()
         tail = canonical_tail(request)
         if tail is None:
             return web.json_response({"error": "not a plain path"}, status=400)
+        if remote is not None:
+            peer, there = remote
+            return await proxy(request, f"{peer.url}/r/{there}", tail, peer=peer)
         return await proxy(request, f"http://127.0.0.1:{r.web}", tail)
+
+    async def api_radios(request):
+        if not authorised(request):
+            return web.json_response({"error": "token required"}, status=401)
+        return web.json_response(station.own_radios())
 
     async def packet_page(request):
         if not station.packet_url:
@@ -1290,6 +1330,7 @@ def make_app(station, args):
                             station.addons.degraded() if station.addons is not None else []), authorised))
     r.add_get("/ws", ws_control)
     r.add_get("/audio", lone_audio)
+    r.add_get("/api/radios", api_radios)        # what a peer station reads (station_peers.py)
     r.add_get("/r/{rid}", slash("/r/"))
     r.add_route("*", "/r/{rid}/{tail:.*}", radio_page)
     r.add_get("/packet", slash("/packet"))
