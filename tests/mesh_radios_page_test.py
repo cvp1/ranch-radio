@@ -130,9 +130,11 @@ try:
               b.wait(f"(({btn('MF18')}.querySelector('.mesh-radio-n')?.textContent || '') === '2') && '2'"), "2")
         check("  and does not land in LF's view", "port-lf" in b.js(ME), True)
 
-        b.js("location.reload()")
-        time.sleep(0.5)
-        check("the pick survives a reload", "port-lf" in (b.wait(f"{ME}.includes('port-lf') && {ME}") or ""), True)
+        # The old page satisfies the wait until it unloads: a mark only it carries
+        # (2026-11-24; a half-second sleep stood in for this, too short under load).
+        b.js("window.__beforeReload = true; location.reload()")
+        check("the pick survives a reload", "port-lf" in (b.wait(
+            f"!window.__beforeReload && document.readyState === 'complete' && {ME}.includes('port-lf') && {ME}") or ""), True)
         b.js(f"{btn('MF18')}.click()")
         check("back to MF18: its node again", "port-mf18" in (b.wait(f"{ME}.includes('port-mf18') && {ME}") or ""), True)
         check("  its count cleared", b.js(f"!!{btn('MF18')}.querySelector('.mesh-radio-n')"), False)
@@ -141,9 +143,8 @@ try:
 
     server = start(two=False)
     try:
-        b.js("location.reload()")
-        time.sleep(0.5)
-        b.wait(f"{ME}.includes('port-mf18')")
+        b.js("window.__beforeReload = true; location.reload()")
+        b.wait(f"!window.__beforeReload && document.readyState === 'complete' && {ME}.includes('port-mf18')")
         check("one node only: no switcher", b.js("document.querySelector('#mesh-radios').hidden"), True)
     finally:
         stop(server)

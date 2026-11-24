@@ -121,8 +121,10 @@ try:
     testkit.wait_for(lambda: starts() >= n + 3, 15)       # LF's bridge retried: each try says "not connected"
     check("  it stays so while LF's bridge retries", state(),
           ["warn", False, "Meshtastic: LF not connected", "warn", "LF not connected"])
-    b.js("location.reload()")
-    b.wait(f"({TEXT})('#conn b') === 'Connected' && {TAB} && {CARD} && {DOT} === 'warn'")
+    # The old page satisfies this wait until it unloads: a mark only it carries (2026-11-24).
+    b.js("window.__beforeReload = true; location.reload()")
+    b.wait(f"!window.__beforeReload && document.readyState === 'complete' && "
+           f"({TEXT})('#conn b') === 'Connected' && {TAB} && {CARD} && {DOT} === 'warn'")
     check("  and across a reload", state(), ["warn", False, "Meshtastic: LF not connected", "warn", "LF not connected"])
 
     b.js("location.hash = '#/mesh'")
