@@ -127,6 +127,22 @@ Test style: a standalone script with a docstring that lists what it covers, a
 `check(name, got, want)` function, fakes that behave like the hardware, and
 `testkit.wait_for` instead of `sleep`. Ports come from `testkit.free_port()`.
 
+- **After `location.reload()`, wait for the new page.** Until it unloads, the
+  old page still matches whatever the test waits for, so the wait can pass at
+  once and the next check reads the new page mid-load. Set a mark only the old
+  page carries, and wait for it to be gone:
+  `b.js("window.__beforeReload = true; location.reload()")`, then
+  `b.wait("!window.__beforeReload && document.readyState === 'complete' && ...")`
+  (`mesh_kept_page_test`, 2026-11-24). Note that `b.wait` returns a falsy value
+  on timeout instead of failing.
+- **A flaky test: compare against main before blaming the branch or
+  rerunning.** `ONLY="<test>" bash tests/flake_hunt.sh` on the branch, then the
+  same on a worktree of `origin/main`, at CI's CPU budget. The same rate on
+  both means the flake was already there.
+- **A failed shard's test output is in its "Logs of failed tests" step.**
+  `gh run view --log-failed` leaves that step out, because the step itself
+  passes; read the job's full log (`gh run view <run> --job <id> --log`).
+
 ## Conventions
 
 - Comments carry the **why**, often with the date and host it was learned on.
