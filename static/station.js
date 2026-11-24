@@ -556,6 +556,7 @@ const station = (() => {
           if (latch[r.id]?.ws === w) { delete latch[r.id]; renderBar(); }
           if (l.helloWs === w) l.helloWs = null;
           for (const fn of [...l.waiters]) fn(w, { t: "closed" });
+          homeChanged();                  // its TX state is unknown now, not what it last said (2026-11-23)
           if (live[r.id] === l) setTimeout(open, 2000);
         };
       };
@@ -1266,9 +1267,13 @@ const station = (() => {
   function renderAir() {
     const el = $("#mc-air");
     el.innerHTML = "";
-    const on = [];
+    const on = [], unknown = [];
     for (const r of present()) {
-      const S = live[r.id]?.S;
+      const l = live[r.id], S = l?.S;
+      // A radio's TX is known only from its current socket's hello on
+      // (2026-11-23, bug bash): before it, or after that socket closed, it
+      // was read from an empty or stale state and drawn as "Nothing on the air".
+      if (!l?.helloWs) { unknown.push(r.name); continue; }
       if (S?.tx) on.push({ r, text: `${r.name} · ${fmtFreq(S.freq)} ${S.mode || ""}${S.data ? "-D" : ""}`, href: `#/${r.id}` });
     }
     if (wlOn && wlArmed) on.push({ text: `Winlink · ${winlink.summary().text}`, href: "#/winlink" });
@@ -1277,6 +1282,10 @@ const station = (() => {
       if (c?.state === "tx") on.push({ text: `${d.label} transmitting`, href: `#/${d.name}` });
     }
     el.classList.toggle("tx", on.length > 0);
+    const unk = unknown.length
+      ? `<div class="mc-air-row"><i class="st-dot warn"></i><span><b>Not known</b> for ${esc(unknown.join(", "))}` +
+        `<span class="mc-dim"> · no connection to ${unknown.length === 1 ? "its" : "their"} server yet</span></span></div>` : "";
+    if (!on.length && unknown.length) { el.innerHTML = unk; return; }
     if (!on.length) {
       const w = wlOn ? winlink.summary() : null;
       el.innerHTML = `<div class="mc-air-row"><i class="st-dot ok"></i><span><b>Nothing on the air</b>` +
@@ -1296,6 +1305,7 @@ const station = (() => {
       }
       el.append(row);
     }
+    if (unk) el.insertAdjacentHTML("beforeend", unk);
   }
 
   // What needs you: each chip opens the tab that deals with it.
@@ -1316,14 +1326,31 @@ const station = (() => {
       const n = parseInt(t.badge, 10);
       if (n) needs.push(["hot", `${n} new on ${d.label}`, `#/${d.name}`]);
     }
-    if (offline.length) needs.push(["off", `Offline: ${offline.map((o) => o[0]).join(", ")}`, offline[0][1]]);
-    el.innerHTML = needs.length ? "" : `<span class="mc-clear">Nothing needs you</span>`;
+    el.innerHTML = needs.length || offline.length ? "" : `<span class="mc-clear">Nothing needs you</span>`;
     for (const [cls, text, href] of needs) {
       const a = document.createElement("a");
       a.className = `mc-need ${cls}`;
       a.href = href;
       a.textContent = text;
       el.append(a);
+    }
+    // Offline: one chip, each name its own link to the tab that deals with it
+    // (2026-11-23, bug bash: the whole chip went to the first item's place,
+    // which for a radio is this view). A radio with no tab of its own is text.
+    if (offline.length) {
+      const chip = document.createElement("span");
+      chip.className = "mc-need off";
+      chip.append("Offline: ");
+      offline.forEach(([name, href], i) => {
+        if (i) chip.append(", ");
+        if (href && href !== "#/home") {
+          const a = document.createElement("a");
+          a.href = href;
+          a.textContent = name;
+          chip.append(a);
+        } else chip.append(name);
+      });
+      el.append(chip);
     }
   }
 
@@ -1344,10 +1371,10 @@ const station = (() => {
     const d = addons.data("roster"), R = d?.roster, c = d?.need_counts;
     const why = rd.error ? `the Roster is not loaded (${rd.error})` : !rd.on ? "the Roster is switched off"
       : !d ? "waiting for the Roster" : d.error ? d.error : !R ? "waiting for JTDX"
-      : !c ? "new DXCC or grid unknown (the needs index is not ready)"
+      : !c ? "DXCC and grid needs unknown (the needs index is not ready)"
       // Named for what it counts (2026-11-23, was "strong needs"); with no
       // band from JTDX yet, no "on ?".
-      : !c.now.length ? `nothing for a new DXCC or grid${c.band ? ` on ${c.band} ${c.mode || ""}`.trimEnd() : ""} in the last two minutes` : "";
+      : !c.now.length ? `nothing needed for DXCC or grids${c.band ? ` on ${c.band} ${c.mode || ""}`.trimEnd() : ""} in the last two minutes` : "";
     const html = why ? `<span class="mc-now-empty">Now: ${esc(why)}</span>`
       : `<span class="mc-now-name">Now</span>` + c.now.map((r) => `<button type="button" class="mc-now-item${r.to_me ? " me" : ""}" data-key="${esc(r.key)}" data-call="${esc(r.call)}"` +
           ` data-need="${esc(r.need)}" title="${esc(r.tip)}"><b>${esc(r.call)}</b> <span>${esc(r.label)}</span>` +
@@ -1403,7 +1430,10 @@ const station = (() => {
       if (!c) continue;
       const known = ["ok", "off", "tx"].includes(c.state);
       const t = addons.tab(d.name);
-      if (c.state === "off" && t?.off) { offline.push([d.label, `#/${d.name}`]); continue; }
+      // Switched off or not connected: the Offline chip. A module that failed
+      // to load keeps its card, which says why (2026-11-23, bug bash: #193
+      // folded it into the chip and the reason was lost).
+      if (c.state === "off" && t?.off && !d.error) { offline.push([d.label, `#/${d.name}`]); continue; }
       put(d.group, { title: d.label, icon: mission.KIND[d.name] || (d.group === "radios" ? "handheld" : "dot"), state: known ? c.state : "ok", tag: known ? (c.state === "off" ? "off" : "") : c.state,
         lines: c.lines, href: `#/${d.name}` });
     }

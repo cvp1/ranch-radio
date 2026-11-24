@@ -153,9 +153,12 @@ const bandStrip = (() => {
     const R = addons.data("roster");
     if (!R || R.error || !R.roster || !R.roster.band) return null;
     const c = R.need_counts;
-    if (!c) return { band: R.roster.band, state: "wait", text: "new DXCC or grid: unknown",
+    if (!c) return { band: R.roster.band, state: "wait", text: "DXCC and grid needs: unknown",
       title: "The needs index is not ready (building, or no logbook): unknown, not zero" };
-    const text = `${plural(c.strong, "station", "stations")} for a new DXCC or grid` +
+    // "needed for DXCC or grids" (2026-11-23, bug bash): the count includes a
+    // worked entity or grid that is new on this band or in this mode, which
+    // "new DXCC or grid" overstated.
+    const text = `${plural(c.strong, "station", "stations")} needed for DXCC or grids` +
       (c.unconfirmed ? ` · ${c.unconfirmed} unconfirmed` : "");
     return { band: c.band, state: c.strong ? "ok" : "none", text,
       title: `JTDX on ${c.band} ${c.mode}, the last two minutes: ${text}; ${plural(c.new_calls, "new call", "new calls")}` };
