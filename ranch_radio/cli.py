@@ -773,7 +773,9 @@ def cmd_update(a):
                     if art.path not in seen and art.module in restart_ids
                     and (art.fmt == "plist" or art.path.endswith((".service", "station.json")))]
     held = []
-    check = functools.partial(service.idle, drop_rigctl=bool(getattr(a, "drop_rigctl", False)))
+    # strict: a running server that doesn't answer is left for later, not
+    # restarted (2026-11-23, bug bash). The rollback above keeps the lenient check.
+    check = functools.partial(service.idle, drop_rigctl=bool(getattr(a, "drop_rigctl", False)), strict=True)
     skip = {"updates"} if job else ()
     if code:
         updater.journal_agents(home, head_now, service.touched(h, changed, new=new, skip=skip))

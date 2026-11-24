@@ -208,6 +208,20 @@ class CivRadio(Radio):
     def _frame(self, cmd, data=b""):
         return PREAMBLE + bytes([self.addr, self.ctrl, cmd]) + data + bytes([EOM])
 
+    def drop_pending_keys(self):
+        """STOP TX (2026-11-23, bug bash): a key-down (1C 00 01) or tune start
+        (1C 01 02) still in the ordered queue would go out after the latch, the
+        unkey behind it ~0.1 s later: a blip on the air after STOP TX. Drop
+        them; keep everything else in order (the unkey, the RX restore)."""
+        keep, dropped = collections.deque(), 0
+        for key, frame in self._ordered:
+            if (key == "tx" and frame[-2] == 1) or (key == "tuner" and frame[-2] == 2):
+                dropped += 1
+                continue
+            keep.append((key, frame))
+        self._ordered = keep
+        return dropped
+
     def _queue(self, key, cmd, data=b""):
         """Queue a user command; a newer command with the same key replaces it,
         except around transmit frames, which keep strict order (see _ordered)."""

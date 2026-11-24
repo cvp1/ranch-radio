@@ -320,6 +320,35 @@ def test_f1_unit_unkey_then_stop():
         check_true("ON sent, state says rx: stop() still writes OFF", False, f"({e})")
 
 
+def test_stop_drops_queued_key():
+    print("\n# STOP TX: a key-down still queued is dropped, the unkey kept (bug bash 2026-11-23)")
+    from civ import CivRadio
+
+    async def run():
+        radio = CivRadio(rigs.get(RIG), "/nonexistent")
+        await radio.set("tx", True)            # queued, not yet sent (between pump slots)
+        await radio.set("freq", 14_074_000)    # asked for after it: stays after it
+        dropped = radio.drop_pending_keys()
+        await radio.set("tx", False)           # what STOP TX's unkey queues next
+        return dropped, [(k, f[-3:-1].hex()) for k, f in radio._ordered]
+
+    dropped, order = asyncio.run(run())
+    check("one key-down dropped", dropped, 1)
+    check("  no key-down left in the queue", any(k == "tx" and d.endswith("01") for k, d in order), False)
+    check("  the unkey is queued", any(k == "tx" and d == "0000" for k, d in order), True)
+    check("  the frequency asked for after it is kept", any(k == "freq" for k, _ in order), True)
+
+    async def tune():
+        radio = CivRadio(rigs.get(RIG), "/nonexistent")
+        await radio.set("tuner", 2)            # a tune start, queued
+        return radio.drop_pending_keys(), [k for k, _ in radio._ordered]
+
+    if "tuner" in rigs.get(RIG)["features"]:
+        check("a queued tune start is dropped too", asyncio.run(tune()), (1, []))
+    else:
+        print("  (no ATU on this rig: tune start not checked)")
+
+
 def test_f1_manual_tx_left_alone_on_shutdown():
     print("\n# F1 + the operator's rule: shutdown never cuts a manual (front-panel/mic) TX")
     r = Rig()
@@ -1240,7 +1269,7 @@ def test_ic7300_sigterm_restores_source():
         r.close()
 
 
-TESTS = [test_f1_sigterm_while_keyed, test_f1_unit_unkey_then_stop,
+TESTS = [test_f1_sigterm_while_keyed, test_f1_unit_unkey_then_stop, test_stop_drops_queued_key,
          test_f1_manual_tx_left_alone_on_shutdown, test_f1_manual_tx_after_our_key_left_alone,
          test_f2_back_to_back_ptt, test_f2_split_hop_order,
          test_f3_no_retune_while_keyed, test_f3_jtdx_sequence_still_works,

@@ -37,11 +37,25 @@ async def main(url):
     try:
         async with aiohttp.ClientSession() as s:
             async with s.ws_connect(url, ssl=ctx, timeout=5) as ws:
-                h = json.loads((await ws.receive(timeout=5)).data)
+                # The hello, whatever comes first (a scope frame, a state): read
+                # until it, 5 s in all (2026-11-23, bug bash).
+                end = asyncio.get_running_loop().time() + 5
+                while True:
+                    m = await ws.receive(timeout=max(0.1, end - asyncio.get_running_loop().time()))
+                    if m.type != aiohttp.WSMsgType.TEXT:
+                        if m.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            raise ConnectionError("closed before hello")
+                        continue
+                    h = json.loads(m.data)
+                    if isinstance(h, dict) and h.get("t") == "hello":
+                        break
     except Exception as e:
         print(json.dumps({"up": False, "why": type(e).__name__})); return
     st, wl, cf = h.get("state") or {}, h.get("winlink") or {}, h.get("config") or {}
-    print(json.dumps({"up": True, "tx": bool(st.get("tx")), "armed": bool(wl.get("armed")),
+    # tuning: an ATU tune is on the air with tx still false (civ.py sets
+    # tuner 2 alone); server.py's own gates count it as transmitting.
+    print(json.dumps({"up": True, "tx": bool(st.get("tx")), "tuning": st.get("tuner") == 2,
+                      "armed": bool(wl.get("armed")),
                       "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0),
                       "stopped": bool(cf.get("tx_stopped")), "stop_saved": bool(cf.get("stop_saved"))}))
 asyncio.run(main(sys.argv[1]))
@@ -114,7 +128,12 @@ def servers(h):
     return out
 
 
-def idle(h, r=None, drop_rigctl=False):
+# What the probe says when nothing accepts the connection (IDLE_SCRIPT prints
+# the exception's type name): ClientConnectorError is aiohttp's refused connect.
+NOT_LISTENING = {"ClientConnectorError", "ConnectionRefusedError"}
+
+
+def idle(h, r=None, drop_rigctl=False, strict=False):
     """(ok, why): ok when nothing would be cut off by a restart. A server
     that doesn't answer is idle (there's nothing to interrupt).
 
@@ -123,13 +142,24 @@ def idle(h, r=None, drop_rigctl=False):
     reconnecting. drop_rigctl (update --drop-rigctl)
     restarts anyway; transmitting and Winlink are never overridden."""
     st = probe(h, r)
-    if st.get("why") == "not answering":
-        return True, "not answering"
-    if not st.get("up"):
-        return True, "not running"
     name = r["name"] if r else "the station"
-    if st.get("tx"):
-        return False, f"{name} is transmitting"
+    if not st.get("up"):
+        # strict (the update's own restart, 2026-11-23, bug bash): a server the
+        # service manager runs that doesn't answer may be keyed and hung, so it
+        # is left for later, as `ranch-radio restart` already does. A rollback
+        # keeps the lenient reading: it must be able to restart a server the
+        # new code left hung.
+        # Refused means nothing is listening (crashed, or between restarts):
+        # nothing transmits through it, and an update must be able to put
+        # fixed code on a server that crash-loops. Anything else (a handshake
+        # or hello that times out) may be a hung server still keyed.
+        refused = st.get("why") in NOT_LISTENING
+        if strict and not refused and active(h, r["id"] if r else "station"):
+            return False, (f"{name} is running but not answering ({st.get('why', '?')}): it can't be shown "
+                           "idle, so it is left on the old code")
+        return True, "not answering" if st.get("why") == "not answering" else "not running"
+    if st.get("tx") or st.get("tuning"):
+        return False, f"{name} is {'tuning (ATU)' if st.get('tuning') and not st.get('tx') else 'transmitting'}"
     if st.get("armed") or st.get("session"):
         return False, f"{name} is in a Winlink session"
     if st.get("stopped") and not st.get("stop_saved"):     # in memory only: a restart would clear it
@@ -458,8 +488,8 @@ def stoppable(h, key, r, restarting=False, drop_rigctl=False):
     if not st.get("up"):
         return False, (f"{name} is running but not answering ({st.get('why', '?')}): it can't be shown idle, "
                        "so it is left alone (the service manager can still stop it)")
-    if st.get("tx"):
-        return False, f"{name} is transmitting"
+    if st.get("tx") or st.get("tuning"):
+        return False, f"{name} is {'tuning (ATU)' if st.get('tuning') and not st.get('tx') else 'transmitting'}"
     if st.get("armed") or st.get("session"):
         return False, f"{name} is in a Winlink session"
     if restarting and st.get("stopped") and not st.get("stop_saved"):

@@ -119,7 +119,12 @@ probe.write_text(f"""import json, os
 mark = open({str(TMP / 'RUNNING')!r}).read().strip()
 busy = os.path.exists({str(TMP / 'BUSY')!r})
 rigctl = 1 if os.path.exists({str(TMP / 'RIGCTL')!r}) else 0
-print(json.dumps({{"up": mark == "good", "tx": busy, "rigctl": rigctl}}))
+if os.path.exists({str(TMP / 'HUNG')!r}):          # accepts, never says hello: may be keyed
+    print(json.dumps({{"up": False, "why": "TimeoutError"}})); raise SystemExit
+if os.path.exists({str(TMP / 'REFUSED')!r}):       # nothing listening: crashed or restarting
+    print(json.dumps({{"up": False, "why": "ClientConnectorError"}})); raise SystemExit
+tuning = os.path.exists({str(TMP / 'TUNING')!r})   # an ATU tune: tuner 2, tx still false
+print(json.dumps({{"up": mark == "good", "tx": busy, "tuning": tuning, "rigctl": rigctl}}))
 """)
 notify = TMP / "notify.sh"
 notify.write_text(f'#!/bin/sh\necho "$1 | $2" >> {NOTES}\n')
@@ -238,6 +243,38 @@ check("  held for later", bool(state().get("pending")), True)
 rc, out = rr("update", host, "--apply", "--drop-rigctl")
 check("  --drop-rigctl restarts it anyway", (rc, restarted(), state().get("pending")), (0, True, []))
 (TMP / "RIGCTL").unlink()
+
+# ---------------------------------------------------------------- hung, crashed, tuning (bug bash 2026-11-23)
+# A running radio that accepts but never says hello may be keyed and hung:
+# the update leaves it (it restarted it, read as "not answering" = idle).
+(TMP / "HUNG").touch()
+hung_rev = push("while the radio is hung")
+rc, out = rr("update", host, "--apply")
+check("hung radio: the code updates", (rc, head()), (0, hung_rev))
+check("  the radio is left alone", restarted(), False)
+check("  and says why", "running but not answering" in out, True)
+check("  held for later", bool(state().get("pending")), True)
+(TMP / "HUNG").unlink()
+rc, out = rr("update", host, "--apply")
+check("  answering again: the next update restarts it", (rc, restarted(), state().get("pending")), (0, True, []))
+
+# Nothing listening (crash-looping on bad code): an update must still be
+# able to put fixed code on it.
+(TMP / "REFUSED").touch()
+push("while the radio crash-loops")
+rc, out = rr("update", host, "--apply")
+check("refused (crash-looping): restarted onto the new code", (rc, restarted()), (0, True))
+(TMP / "REFUSED").unlink()
+
+# An ATU tune is on the air with tx still false.
+(TMP / "TUNING").touch()
+push("while the ATU tunes")
+rc, out = rr("update", host, "--apply")
+check("tuning: the radio is left alone", (rc, restarted()), (0, False))
+check("  and says why", "tuning (ATU)" in out, True)
+(TMP / "TUNING").unlink()
+rc, out = rr("update", host, "--apply")
+check("  tune over: the next update restarts it", (rc, restarted(), state().get("pending")), (0, True, []))
 
 # ---------------------------------------------------------------- the first update, pulled by an older one
 # The old update pulls, then runs `update --no-pull --code-changed --apply` with

@@ -150,6 +150,12 @@ class Radio:
     async def set(self, key, value):
         await self._apply(key, self.validate(key, value))
 
+    def drop_pending_keys(self):
+        """STOP TX: drop a key-down or tune start this backend queued but has
+        not sent yet, so it can't reach the radio after the latch. Returns how
+        many it dropped. Backends that write at once (no queue) have none."""
+        return 0
+
     async def swap_vfo(self):
         raise NotImplementedError
 
