@@ -298,6 +298,13 @@ try:
           b.wait("(() => { const t = document.querySelector('#mc-air').textContent; "
                  "return /Not known for QMX/.test(t) && [/Nothing on the air/.test(t), /Not known for QMX/.test(t)]; })()", 20),
           [False, True])
+    # It must stay so: the station drops a gone radio from its list within a
+    # second, and the line used to fall back to "Nothing on the air" then
+    # (6 runs in 12 at CI's CPU budget, 2026-11-24). Past several presence cycles:
+    time.sleep(3)
+    check("  still Not known after the station has dropped it",
+          b.js("(() => { const t = document.querySelector('#mc-air').textContent; "
+               "return [/Nothing on the air/.test(t), /Not known for QMX/.test(t)]; })()"), [False, True])
 finally:
     b.close()
     stop(front)
