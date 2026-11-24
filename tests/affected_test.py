@@ -3,7 +3,8 @@
   - a module's own tests, by import and by name (civ.py -> civ_safety_test and
     the ic7300 rerun; addons/logbook.py -> its addon and page tests)
   - a fake a test spawns by path (tests/fake_civ.py) reaches that test
-  - a page asset reaches every page test, and an add-on's script its own tests
+  - a page asset reaches every page test, and an add-on's script its own tests;
+    an add-on's own asset reaches only the page tests that name the add-on
   - a test belongs by name to the longest module stem it starts with:
     station_id_test is station_id.py's, not station.py's or station.css's
   - a file nothing tests (README.md) picks nothing; the harness picks everything
@@ -98,6 +99,13 @@ check("a page asset: every page test", [n for n in page if n not in app], [])
 check("  and not a test that opens no page", [n for n in app if n in ("aprs_test", "ax25_link_test", "qmx_test", "igate_test")], [])
 uv = affected.select(["static/addons/uvpro.js"])
 check("an add-on's script: its own tests too", ("uvpro_test" in uv, "uvpro_page_test" in uv), (True, True))
+# 2026-11-24: an add-on's own CSS picked every page test (~40 browser runs),
+# though a page loads it only where that add-on is configured.
+js8 = affected.select(["static/addons/js8call.css"])
+check("an add-on's own asset: only the page tests that load it",
+      ([n for n in js8 if n.endswith("_page_test")], "js8call_addon_test" in js8), (["js8call_page_test"], True))
+check("  not the page tests of other tabs", [n for n in ("mesh_page_test", "station_page_test", "winlink_page_test") if n in js8], [])
+check("  the add-on registry is still every page's", [n for n in page if n not in affected.select(["static/addons.js"])], [])
 
 # The radio server is the transmitting process: a Winlink feature (its listen
 # plans, the P2P directory, the Pat engine) is not on its import path. The
