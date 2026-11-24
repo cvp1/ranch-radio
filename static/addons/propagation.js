@@ -141,10 +141,20 @@
       <div class="pg-rlead">${lead}${rs.length > 2 ? `<span class="more">+${rs.length - 2} more</span>` : ""}</div>`;
   }
 
+  // A source's empty answer counts only once it has answered (2026-11-23,
+  // bug bash): before the first skywatch or PSKReporter reply the snapshot's
+  // bands and psk are {} with heard_checked / psk_checked null, and those
+  // were drawn as "no decodes" and "heard you: none". Waiting is not none.
+  const heardKnown = () => !!(snap.skywatch && !snap.heard_error && snap.heard_checked);
+  const heardWait = () => !!(snap.skywatch && !snap.heard_error && !snap.heard_checked);
+  const pskKnown = () => !!(snap.pskreporter && !snap.psk_error && snap.psk_checked);
+  const pskWait = () => !!(snap.pskreporter && !snap.psk_error && !snap.psk_checked);
+
   function youCell(b) {
     if (!snap.pskreporter) return "";
     const l = `<em class="pg-you-l">Heard you</em>`;
     if (snap.psk_error) return `<div class="pg-you dim">${l}unknown</div>`;
+    if (pskWait()) return `<div class="pg-you dim">${l}waiting</div>`;
     const y = (snap.psk || {})[key(b)];
     if (!y) return `<div class="pg-you dim">${l}nobody</div>`;
     const cs = (y.countries || []).slice(0, 3).map(([c, n]) => `${esc(c)} ${n}`).join(" · ");
@@ -187,9 +197,9 @@
   }
 
   function bandsSection() {
-    const heardOK = snap.skywatch && !snap.heard_error;
+    const heardOK = heardKnown();
     const bands = heardOK ? snap.bands || {} : {};
-    const psk = snap.pskreporter && !snap.psk_error ? snap.psk || {} : {};
+    const psk = pskKnown() ? snap.psk || {} : {};
     if (!snap.skywatch && !snap.pskreporter) {
       return `<section class="pg-section"><h3 class="pg-h">Bands</h3><div class="st-empty">No decode source is set.
         Name a skywatch InfluxDB ("skywatch": {"url", "db"}) or a PSKReporter callsign ("pskreporter": {"call"})
@@ -210,6 +220,8 @@
       lede += `</p>`;
     } else if (heardOK) {
       lede = `<p class="pg-lede dim">Nothing decoded in the last ${snap.window_min} minutes.</p>`;
+    } else if (heardWait()) {
+      lede = `<p class="pg-lede dim">Waiting for skywatch's first answer: what this station heard is not known yet.</p>`;
     }
 
     // a legend for the regions on screen
@@ -223,7 +235,7 @@
       const k = key(b), d = bands[k];
       const pct = d ? Math.max(4, Math.round((100 * Math.log10(1 + d.n)) / Math.log10(1 + max))) : 0;
       const src = d ? Object.keys(d.sources || {}).map((s) => SOURCE[s] || s).join(" + ") : "";
-      const heard = !heardOK ? `<div class="pg-busy dim">${snap.skywatch ? "unknown" : ""}</div>`
+      const heard = !heardOK ? `<div class="pg-busy dim">${heardWait() ? "waiting" : snap.skywatch ? "unknown" : ""}</div>`
         : !d ? `<div class="pg-busy dim">no decodes</div>`
         : `<div class="pg-busy" data-tip="${d.n} decodes in the last ${snap.window_min} min, heard by ${esc(src)}">
              <div class="pg-count"><b>${fmtN(d.n)}</b><span>${LEVEL[level(d.n)]}</span></div>
@@ -244,13 +256,13 @@
 
     const head = `<div class="pg-row pg-headrow" aria-hidden="true"><div>Band</div><div>Decodes, last ${snap.window_min} min</div>
       <div>Heard from</div><div>Signals</div>${snap.pskreporter ? "<div>Heard you</div>" : ""}</div>`;
-    const quiet = idle.length ? `<p class="pg-idle"><span>No decodes:</span> ${idle.map((b) => `<i>${esc(key(b))}</i>`).join("")}
+    const quiet = idle.length && heardOK ? `<p class="pg-idle"><span>No decodes:</span> ${idle.map((b) => `<i>${esc(key(b))}</i>`).join("")}
       <small>Usually means nobody listened there, not that the band is closed.</small></p>` : "";
     const errs = [snap.skywatch && snap.heard_error ? `${snap.heard_error}: what this station heard is unknown, not zero.` : "",
                   snap.pskreporter && snap.psk_error ? `${snap.psk_error}: who heard you is unknown.` : ""].filter(Boolean);
     const foot = `<p class="pg-note">${errs.map(esc).join(" ")}
       ${heardOK ? `Decodes updated ${esc(ago(snap.heard_checked))}.` : ""}
-      ${snap.pskreporter && !snap.psk_error ? `PSKReporter reports of ${esc(snap.pskreporter)} checked ${esc(ago(snap.psk_checked))}.` : ""}
+      ${pskKnown() ? `PSKReporter reports of ${esc(snap.pskreporter)} checked ${esc(ago(snap.psk_checked))}.` : ""}
       <button class="chip chip-mini pg-tbl">${showTable ? "Hide table" : "Table view"}</button></p>`;
 
     return `<section class="pg-section">
@@ -300,12 +312,12 @@
   function badgeBands() {
     const chips = document.getElementById("bands");
     if (!chips) return;
-    const bands = snap.skywatch && !snap.heard_error ? snap.bands || {} : null;
+    const bands = heardKnown() ? snap.bands || {} : null;
     for (const c of chips.querySelectorAll("button[data-v]")) {
       const b = BANDS.find((x) => x.n === c.dataset.v);
       let i = c.querySelector(".prop-badge");
       const d = bands && b ? bands[key(b)] : null;
-      const y = b && snap.pskreporter ? (snap.psk || {})[key(b)] : null;
+      const y = b && pskKnown() ? (snap.psk || {})[key(b)] : null;
       const you = y ? `\nheard you: ${y.receivers} station${y.receivers === 1 ? "" : "s"}` +
         (y.max_km != null ? `, farthest ${y.max_km} km` : "") : "";
       if (!d) {
@@ -340,12 +352,14 @@
     if (snap.skywatch) {
       heard = snap.heard_error
         ? `<span class="prop-sw dim">${esc(snap.heard_error)}: band activity unknown</span>`
+        : heardWait() ? `<span class="prop-sw dim">bands: waiting for skywatch</span>`
         : `<a class="prop-sw dim" href="#/propagation" title="Decodes heard per band in the last ${snap.window_min} minutes. A band without a badge had no decodes: usually nobody was listening there.">bands, last ${snap.window_min} min →</a>`;
     }
     if (snap.pskreporter) {
       const top = Object.entries(snap.psk || {}).sort((a, b) => b[1].receivers - a[1].receivers).slice(0, 2);
       heard += snap.psk_error
         ? `<span class="prop-sw dim">${esc(snap.psk_error)}</span>`
+        : pskWait() ? `<span class="prop-sw dim">heard you: waiting for PSKReporter</span>`
         : top.length
           ? `<a class="prop-sw dim" href="#/propagation" title="Stations that reported ${esc(snap.pskreporter)} to PSKReporter in the last ${snap.window_min} minutes">heard you: ${top.map(([b, y]) => `${esc(b)} ${y.receivers}`).join(", ")}</a>`
           : `<span class="prop-sw dim" title="No PSKReporter reports of ${esc(snap.pskreporter)} in the last ${snap.window_min} minutes (have you transmitted?)">heard you: none</span>`;

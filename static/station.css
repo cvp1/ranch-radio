@@ -242,6 +242,11 @@ a.rb-tag { text-decoration: none; }
   box-shadow: 0 0 14px -4px rgba(var(--accent-rgb), .6); }
 .mc-need.warn { border-color: rgba(var(--warm-rgb), .55); color: var(--warm); background: rgba(var(--warm-rgb), .1); }
 .mc-need.off { color: var(--dim); }
+/* The Offline chip is a span of links, one per item (2026-11-23). */
+span.mc-need { cursor: default; }
+span.mc-need:hover { transform: none; }
+.mc-need a { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.mc-need a:hover, .mc-need a:focus-visible { color: var(--text); }
 .mc-clear { color: var(--muted); font: 500 13px var(--sans); }
 
 /* The band strip (static/bands.js, UX plan PR 3a, 2026-11-19): a cell per

@@ -21,6 +21,11 @@ station's socket delivers it (no logbook sync runs here). No network. Checks:
   stop      the rig bar's STOP TX stays in view at every size
   phone     at 390 px the order is on air and needs, Now, radios, bands, the
             rest (bands below the radios from 2026-11-23)
+  offline   the Offline chip links each item to its own tab (HaLow, switched
+            off); a module that failed to load keeps its card and its reason
+            (2026-11-23, bug bash)
+  unknown   a radio whose server goes away reads "Not known" on the on-air
+            line, never "Nothing on the air" (2026-11-23, bug bash)
 
     python3 tests/mission_density_page_test.py [screenshot-dir]
 """
@@ -187,13 +192,13 @@ try:
     check("the needs index unavailable: unknown, not none",
           b.wait("/unknown/.test(document.querySelector('#mc-now .mc-now-empty')?.textContent || '') && "
                  "document.querySelector('#mc-now .mc-now-empty').textContent"),
-          "Now: new DXCC or grid unknown (the needs index is not ready)")
+          "Now: DXCC and grid needs unknown (the needs index is not ready)")
     check("  the Log tile: unknown", b.wait("document.querySelector('#mc-log')?.dataset.state || null"), "wait")
     deliver(roster(WEAK + OUT))
     check("none of them: says what it counts, on which band and mode",
-          b.wait("/nothing for/.test(document.querySelector('#mc-now .mc-now-empty')?.textContent || '') && "
+          b.wait("/nothing needed/.test(document.querySelector('#mc-now .mc-now-empty')?.textContent || '') && "
                  "document.querySelector('#mc-now .mc-now-empty').textContent"),
-          "Now: nothing for a new DXCC or grid on 20m FT8 in the last two minutes")
+          "Now: nothing needed for DXCC or grids on 20m FT8 in the last two minutes")
     deliver(roster(STRONG + WEAK + OUT))
     check("five fresh new-DXCC-or-grid stations on 20m FT8, in the Roster's order",
           b.wait(f"{NOW}.length === 5 && {NOW}.map((e) => e.dataset.call)"),
@@ -271,6 +276,28 @@ try:
     check("  nothing wider than the screen",
           b.js("document.querySelector('#view-home').scrollWidth <= innerWidth"), True)
     shot("390")
+
+    print("\n# offline and failed modules (bug bash 2026-11-23)")
+    size(1600, 1000)
+    CHIP = "document.querySelector('#mc-needs span.mc-need')"
+    check("the Offline chip links HaLow to its own tab",
+          b.wait(f"{CHIP} && [...{CHIP}.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])"),
+          [["HaLow", "#/halow"]])
+    # A module that failed to load: the registry's own record says why.
+    b.js("addons.list().find((d) => d.name === 'map').error = 'not loaded: ImportError: no module named x'")
+    deliver(roster(STRONG + WEAK + OUT))
+    MAP = "[...document.querySelectorAll('#st-cards .mc-card')].find((c) => c.querySelector('b')?.textContent === 'Map')"
+    check("a module that failed keeps its card, with the reason",
+          b.wait(f"{MAP} && {MAP}.textContent.includes('ImportError') || null"), True)
+    check("  and is not folded into the chip", b.js(f"{CHIP}.textContent.includes('Map')"), False)
+
+    print("\n# a radio whose server goes away")
+    check("both radios known: nothing on the air", b.wait("/^Nothing on the air/.test(document.querySelector('#mc-air').textContent) || null"), True)
+    stop(qmx)
+    check("the QMX gone: Not known for it, never 'Nothing on the air'",
+          b.wait("(() => { const t = document.querySelector('#mc-air').textContent; "
+                 "return /Not known for QMX/.test(t) && [/Nothing on the air/.test(t), /Not known for QMX/.test(t)]; })()", 20),
+          [False, True])
 finally:
     b.close()
     stop(front)

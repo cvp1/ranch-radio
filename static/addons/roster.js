@@ -161,7 +161,7 @@
       const c = needCounts();
       if (!c) return { state: "needs unknown", lines: ["the needs index is not ready"] };
       // The tag names what it counts (2026-11-23, was "N strong needs").
-      return { state: `${c.strong.length} new DXCC or grid`, lines: c.strong.slice(0, 3).map((r) => `${esc(r.call)} — ${esc((NEED[r.need] || [r.need])[0])}`) };
+      return { state: `${c.strong.length} needed for DXCC or grids`, lines: c.strong.slice(0, 3).map((r) => `${esc(r.call)} — ${esc((NEED[r.need] || [r.need])[0])}`) };
     },
   });
 })();
