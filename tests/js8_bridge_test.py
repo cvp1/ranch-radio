@@ -23,10 +23,16 @@
   - the allowlist: across everything here the bridge sent only status.get,
     config.set (ARM or DISARM exactly), tx.send {text, tx_freq_hz?, submode?},
     tx.hb and tx.halt
-  - waterfall: spectrum_row turns the engine's linear FFT into 300 bins of
-    10 Hz, dB above the floor (a tone at 1500 Hz on top); a coarser FFT is
-    carried across; malformed ones are no row; a burst becomes one row per
-    SPEC_EVERY_S, to listeners only
+  - waterfall: spectrum_db turns the engine's linear FFT into 300 bins of
+    10 Hz in dB; a coarser FFT is carried across; malformed ones are no row.
+    Flatten (an IC-7300, 2026-11-24: a 700-2300 Hz filter, 45 dB of
+    noise inside it): the band's noise reads near 0 and a JS8 trace on it its
+    own height, not the filter's; bins 40 dB under the passband are -1
+    (outside the filter), a filter skirt 20 dB down is not; a station on its
+    offset half the time stays above its noise; a carrier that never stops
+    flattens away; the window holds FLAT_ROWS; a new dial frequency starts
+    it afresh. A burst becomes one row per SPEC_EVERY_S, flattened, to
+    listeners only
   - malformed engine messages (not JSON, a list, data not an object) don't stop it
   - the engine restarts: the bridge says disconnected, then reconnects by itself
 
@@ -191,20 +197,47 @@ async def main():
     check("status keys are the allowlist", "ws_port" in e.view(), False)
 
     # ------------------------------------------------------------ the waterfall
-    # spectrum_row: linear magnitudes at 1.5 Hz a bin (a 12 kHz, 8192-point FFT).
+    # spectrum_db: linear magnitudes at 1.5 Hz a bin (a 12 kHz, 8192-point FFT).
     HZ = 12000 / 8192
     tone = [1.0] * 4096
     for i in range(int(1497 / HZ), int(1503 / HZ) + 1):
         tone[i] = 1000.0                      # +60 dB at 1500 Hz
-    row = js8_bridge.spectrum_row({"bins": tone, "hz_per_bin": HZ})
-    check("waterfall: 300 bins, 0-3000 Hz", len(row), 300)
-    check("waterfall: the tone's bin at the top, the floor at 0", (row[150], max(row[:140] + row[160:])), (60, 0))
-    wide = js8_bridge.spectrum_row({"bins": [1.0, 10.0] * 100, "hz_per_bin": 25.0})
-    check("waterfall: a coarser engine FFT is carried across the gaps", (len(wide), wide[3], wide[4]), (300, 20, 20))
+    db = js8_bridge.spectrum_db({"bins": tone, "hz_per_bin": HZ})
+    check("waterfall: 300 bins of dB, 0-3000 Hz", (len(db), round(db[150]), round(max(db[:140] + db[160:]))), (300, 60, 0))
+    wide = js8_bridge.spectrum_db({"bins": [1.0, 10.0] * 100, "hz_per_bin": 25.0})
+    check("waterfall: a coarser engine FFT is carried across the gaps", (len(wide), round(wide[3]), round(wide[4])), (300, 20, 20))
     for name, bad in (("no bins", {"hz_per_bin": 1.5}), ("a zero bin width", {"bins": [1.0], "hz_per_bin": 0}),
                       ("a negative magnitude", {"bins": [1.0, -1.0], "hz_per_bin": 1.5}),
                       ("a string", {"bins": [1.0, "x"], "hz_per_bin": 1.5}), ("NaN width", {"bins": [1.0], "hz_per_bin": float("nan")})):
-        check(f"waterfall: {name}: not a row", js8_bridge.spectrum_row(bad), None)
+        check(f"waterfall: {name}: not a row", js8_bridge.spectrum_db(bad), None)
+
+    # Flatten, on rows shaped like a measured IC-7300 band: noise at 45 dB inside a
+    # 700-2300 Hz filter, 0 dB outside, a 25 dB-down skirt at 600-700 Hz, and
+    # a little jitter (the noise's own ups and downs).
+    def band(k, sig=None):
+        r = []
+        for b in range(300):
+            base = 45.0 if 70 <= b < 230 else 20.0 if 60 <= b < 70 else 0.0
+            r.append(base + ((b * 7 + k * 13) % 5))
+        for b, lvl in (sig or {}).items():
+            r[b] += lvl
+        return r
+    fl = js8_bridge.Flatten()
+    for k in range(60):
+        out = fl.row(band(k, {120: 20} if k % 2 else None))    # a station at 1200 Hz half the time
+    out = fl.row(band(60, {150: 25, 120: 20}))
+    check("Flatten: the band's noise near 0, not the filter's +45", max(out[80:115] + out[125:145] + out[155:220]) <= 5, True)
+    check("Flatten: a JS8 trace stands its own height above its noise", 22 <= out[150] <= 28, True)
+    check("Flatten: a station on its offset half the time stays above its noise", out[120] >= 17, True)
+    check("Flatten: outside the filter is -1", (set(out[:60]), set(out[230:])), ({-1}, {-1}))
+    check("Flatten: a skirt 25 dB down is still the band", min(out[60:70]) >= 0, True)
+    check("Flatten: the window holds FLAT_ROWS", len(fl.hist), 61)
+    for k in range(js8_bridge.FLAT_ROWS + 10):
+        out = fl.row(band(k, {200: 30}))                        # a carrier that never stops
+    check("Flatten: the window is bounded", len(fl.hist), js8_bridge.FLAT_ROWS)
+    check("Flatten: a carrier that never stops flattens away", out[200] <= 5, True)
+    fl.reset()
+    check("Flatten: reset starts afresh", (len(fl.hist), fl.base), (0, None))
     heard = []
     br.listeners.append(heard.append)
     pushed_before = len(st.pushed)
@@ -214,12 +247,18 @@ async def main():
     await asyncio.sleep(0.15)
     rows = [m for m in heard if m["t"] == "js8_spectrum"]
     check("waterfall: a burst of 10 becomes 1 row (at most 4 a second)", len(rows), 1)
-    check("waterfall: the row as spectrum_row makes it", (rows[0]["radio"], rows[0]["hz"], rows[0]["row"][150]), ("ic7300", 10, 60))
+    # The engine's first row is measured against itself: all at its noise.
+    check("waterfall: the row, flattened", (rows[0]["radio"], rows[0]["hz"], len(rows[0]["row"]), max(rows[0]["row"])), ("ic7300", 10, 300, 0))
     check("waterfall: to listeners only, never broadcast to every page by the bridge",
           [m["t"] for m in st.pushed[pushed_before:] if m["t"] == "js8_spectrum"], [])
     await asyncio.sleep(js8_bridge.SPEC_EVERY_S)
     await eng.push({"type": "event", "event": "spectrum", "data": {"bins": tone, "hz_per_bin": HZ}})
     check("waterfall: after SPEC_EVERY_S, the next row", await until(lambda: len([m for m in heard if m["t"] == "js8_spectrum"]) == 2), True)
+    check("waterfall: the engine's rows are learned", len(e._flat.hist), 2)
+    await eng.push({"type": "event", "event": "status", "data": dict(eng.status, radio_freq_khz=7078.0)})
+    check("waterfall: a new dial frequency starts Flatten afresh", await until(lambda: len(e._flat.hist) == 0), True)
+    await eng.push({"type": "event", "event": "status", "data": dict(eng.status)})
+    await until(lambda: e.status.get("radio_freq_khz") == 14078.0)
     br.listeners.remove(heard.append)
 
     # ------------------------------------------------------------ frames

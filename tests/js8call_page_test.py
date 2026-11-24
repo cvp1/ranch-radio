@@ -27,8 +27,8 @@ real browser: no server, the page's own CSS and scripts, a stub add-on registry.
     disabled saying why and a click tunes nothing; a page with no tuning
     disables them
   - waterfall: above the chat, waiting for audio until a row; a row is drawn
-    (the strong bin bright, the floor dark, a 16 dB signal plainly visible:
-    the bug this replaced painted it dark blue) without re-rendering the
+    (the strong bin bright, the noise dark, outside the radio's filter grey,
+    a 16 dB signal plainly visible: the first cut painted it dark blue) without re-rendering the
     tab; Range redraws the kept rows and is remembered; another radio's row
     is not drawn; a decode is boxed at its offset, as wide as its speed, and
     named; the strip names who was on each offset lately; a click on a name
@@ -191,19 +191,21 @@ try:
     row = [0] * 300
     row[150] = 60
     row[100] = 16
+    row[:40] = [-1] * 40                      # outside the radio's filter (js8_bridge.Flatten)
     b.js("document.querySelector('#j .js8-head') && (window.__head = document.querySelector('#j .js8-head'), 1)")
     setup("__impl.js8call.event({event: 'spectrum', radio: 'ic7300', hz: 10, row: %s})" % json.dumps(row))
     check("waterfall: a row drawn, the note gone", b.js(f"[({Q})('.js8-wf-canvas').dataset.rows, ({Q})('.js8-wf-note').hidden]"), ["1", True])
     px = "(x) => Array.from(document.querySelector('#j .js8-wf-canvas').getContext('2d').getImageData(x, 0, 1, 1).data.slice(0, 3))"
-    check("waterfall: the strong bin is bright, the floor dark", b.js(f"[({px})(300), ({px})(80)]"), [[255, 250, 240], [4, 6, 10]])
-    # The bug this replaces: 16 dB over the floor was painted at 16/60 of the
-    # colour map, dark blue on black. Floor 4 / Range 24 puts it at the middle.
+    check("waterfall: the strong bin is bright, the noise dark, outside the filter grey",
+          b.js(f"[({px})(300), ({px})(160), ({px})(20)]"), [[255, 250, 240], [4, 6, 10], [14, 16, 22]])
+    # The first cut painted 16 dB at 16/60 of the colour map, dark blue on
+    # black. Floor 6 / Range 20 puts it at the middle.
     mid = b.js(f"({px})(200)")
     check("waterfall: a 16 dB signal is plainly visible (not dark blue)", sum(mid) > 250, True)
     setup(f"{{ const i = ({Q})('[data-wf=\"range\"]'); i.value = 60; i.dispatchEvent(new Event('input')); }}")
     check("waterfall: Range redraws the kept rows, and is remembered",
-          [sum(b.js(f"({px})(200)")) < sum(mid), b.js("JSON.parse(localStorage.getItem('js8.wf')).range")], [True, 60])
-    setup(f"{{ const i = ({Q})('[data-wf=\"range\"]'); i.value = 24; i.dispatchEvent(new Event('input')); }}")
+          [sum(b.js(f"({px})(200)")) < sum(mid), b.js("JSON.parse(localStorage.getItem('js8.wf2')).range")], [True, 60])
+    setup(f"{{ const i = ({Q})('[data-wf=\"range\"]'); i.value = 20; i.dispatchEvent(new Event('input')); }}")
     check("waterfall: a row redraws only the waterfall, not the tab", b.js("document.querySelector('#j .js8-head') === window.__head"), True)
     setup("__impl.js8call.event({event: 'spectrum', radio: 'other', hz: 10, row: %s})" % json.dumps(row))
     check("waterfall: another radio's row is not drawn here", b.js(f"({Q})('.js8-wf-canvas').dataset.rows"), "1")
