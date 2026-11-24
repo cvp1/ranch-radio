@@ -145,6 +145,13 @@ class Peers:
                             **({} if p.up else {"away": p.error or "not answering"})})
         return out
 
+    def summary(self):
+        """Each peer station, for the page: whether it answers, why not, and how
+        many radios it last listed. A peer that has never answered lists no
+        radios, so without this the page had nothing to say about it."""
+        return [{"name": p.name, "up": p.up, "radios": len(p.radios),
+                 **({} if p.up else {"error": p.error or "not answering yet"})} for p in self.peers]
+
     def find(self, rid):
         """'<radio>@<peer>' -> (Peer, the radio's id there), or None."""
         rid_, sep, name = str(rid).rpartition(SEP)

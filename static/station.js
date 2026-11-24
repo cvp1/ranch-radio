@@ -1426,6 +1426,12 @@ const station = (() => {
       if (r.present) put("radios", radioCard(r));
       else offline.push([r.name, "#/home"]);
     }
+    // A peer station that is away and has no radio listed (it never answered
+    // since this station started): its radios can't be named, so the station
+    // is (2026-11-24). One that listed radios already shows them above.
+    for (const p of peerStations) {
+      if (!p.up && !radios.some((r) => r.remote === p.name)) offline.push([`${p.name} station`, "#/home"]);
+    }
     if (wlOn) put("messaging", winlinkCard());
     // A short name on the card; the host file's full title on hover (2026-11-19).
     const packetTitle = packet.title || `Packet (${packetName()})`;
@@ -1529,9 +1535,12 @@ const station = (() => {
 
   let landed = false;             // the first radios message has picked the opening view
 
+  // Other stations this one uses (station_peers.py): name, up, error, radios.
+  let peerStations = [];
   function applyRadios(m) {
     const before = landed ? new Set(present().map((r) => r.id)) : null;
     radios = m.radios || [];
+    peerStations = m.peers || [];
     if (before) {
       for (const r of radios) {
         if (r.present && !before.has(r.id)) wall.note(`${r.name} connected`);
