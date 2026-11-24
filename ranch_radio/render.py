@@ -128,6 +128,8 @@ RULES = [
     (("mesh", "bridge"), TOKEN), (("mesh", "log"), TOKEN),
     (("mesh", "feed"), TOKEN), (("mesh", "feed_cred"), TOKEN),
     (("station", "tls_names", "*"), TOKEN), (("station", "label"), LABEL), (("station", "path"), TOKEN),
+    (("station", "peers", "*", "name"), SLUG), (("station", "peers", "*", "url"), TOKEN),
+    (("station", "peers", "*", "pin_sha256"), TOKEN), (("station", "peers", "*", "token_file"), TOKEN),
     (("integrations", "macos-widget", "label"), LABEL), (("integrations", "macos-widget", "app"), TOKEN),
     (("updates", "at"), CLOCK), (("updates", "label"), LABEL),
     (("auth", "mode"), TOKEN), (("auth", "token_file"), TOKEN),
@@ -453,6 +455,7 @@ def validate(h):
     listen_plan(h)
     listen_hf_plan(h)
     _validate_directory(h)
+    _validate_peers(h)
     _validate_logsync(h)
     _validate_wavelog_cat(h)
 
@@ -529,6 +532,19 @@ def _validate_directory(h):
         pd.config(w["directory"])
         pd.maintain(w["directory"])
     except pd.DirectoryError as e:
+        raise HostError(f"{h['host']}: {e}") from None
+
+
+def _validate_peers(h):
+    """station.peers: the other stations whose radios this one may use
+    (station_peers.py); each https one pinned."""
+    st = h.get("station")
+    if not isinstance(st, dict) or "peers" not in st:
+        return
+    pc = _feature("station_peers_config")
+    try:
+        pc.check_peers(st["peers"], h["host"])
+    except pc.PeerError as e:
         raise HostError(f"{h['host']}: {e}") from None
 
 
@@ -1126,6 +1142,9 @@ def station_json(h):
         d["js8"] = {"radios": {r["id"]: r["js8_port"] for r in js8_radios(h)}}
     if h.get("addons"):
         d["addons"] = h["addons"]
+    peers = (h.get("station") or {}).get("peers")
+    if peers:
+        d["peers"] = _feature("station_peers_config").check_peers(peers, h["host"])
     d["host_file"] = h["host"]                  # the station page's Modules tab
     au = h.get("auth") or {}
     if au.get("mode", "open") != "open":

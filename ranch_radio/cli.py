@@ -363,6 +363,29 @@ def cmd_init(a):
     return init.run(a, ROOT)
 
 
+def cmd_peer_pin(a):
+    """The SHA-256 of a peer station's certificate, for its host file entry
+    (station.peers[].pin_sha256). Compare it with what that station's own
+    `ranch-radio peer-pin https://localhost:7300` says before trusting it."""
+    import hashlib
+    import ssl
+    from urllib.parse import urlsplit
+    u = urlsplit(a.url)
+    if u.scheme != "https" or not u.hostname:
+        print(f"{a.url}: an https URL, like https://linux-station.local:7300", file=sys.stderr)
+        return 2
+    try:
+        pem = ssl.get_server_certificate((u.hostname, u.port or 443), timeout=5)
+    except (OSError, ssl.SSLError) as e:
+        print(f"{a.url}: {e}", file=sys.stderr)
+        return 1
+    pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+    print(pin)
+    print(f'  "peers": [{{"name": "{"peer" if u.hostname.replace(".", "").isdigit() else u.hostname.split(".")[0].lower()}", "url": "{a.url.rstrip("/")}", "pin_sha256": "{pin}"}}]',
+          file=sys.stderr)
+    return 0
+
+
 def cmd_where(a):
     """The host file this machine (or HOST) uses; exit 1 if there's none."""
     p = paths.find(HOSTS, a.host or this_host())
@@ -914,6 +937,8 @@ def main(argv=None):
     na.add_argument("--css", action="store_true", help="also a static/addons/NAME.css")
     dm = sub.add_parser("demo", help="try it without a radio: a simulated station on this machine, until Ctrl-C")
     dm.add_argument("--port", type=int, default=0, help="the station page's port (default: a free one)")
+    pp = sub.add_parser("peer-pin", help="a peer station's certificate SHA-256, for station.peers[].pin_sha256")
+    pp.add_argument("url", help="the peer station, like https://linux-station.local:7300")
     w = sub.add_parser("where", help="the host file this machine uses (exit 1 if none)")
     w.add_argument("host", nargs="?")
     sx = sub.add_parser("status", help="each server: running, answering, transmitting, latched, rigctl clients")
@@ -976,7 +1001,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     return {"modules": cmd_modules, "hosts": cmd_hosts, "render": cmd_render, "radios": cmd_radios,
             "drift": cmd_drift, "install": cmd_install, "doctor": cmd_doctor,
-            "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where,
+            "add": cmd_add, "remove": cmd_remove, "init": cmd_init, "where": cmd_where, "peer-pin": cmd_peer_pin,
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
             "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs, "status": cmd_status,
             "stop": cmd_stop, "restart": cmd_restart,

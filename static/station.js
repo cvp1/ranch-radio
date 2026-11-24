@@ -33,7 +33,9 @@ const station = (() => {
   // The packet hub's name: what the host file calls it, else the UV-PRO (the
   // only packet hub there was before network KISS TNCs).
   const packetName = () => packet.name || "UV-PRO";
+  // A peer station's radio (station_peers.py) has no port here: it says whose it is.
   const portsOf = (r) => {
+    if (r.remote) return `on ${r.remote}`;
     const sp = r.shared ? (sharedPort ?? 0) : 0;
     return sp > 0 ? `${sp} · ${r.rigctl}` : `${r.rigctl}`;
   };
@@ -47,7 +49,8 @@ const station = (() => {
     // works. Its tab stays while it is the open view.
     const view = route();
     const items = present().map((r) => ({ id: r.id, label: r.name, group: "radios", dot: "ok", sub: portsOf(r),
-      title: `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
+      title: r.remote ? `${r.name}: a radio on the ${r.remote} station, used through it (its transmit limits and STOP TX are its own)`
+        : `${r.name}: rigctl ${portsOf(r).replace(" · ", " and ")}${r.shared && (sharedPort ?? 0) > 0 ? ` (${sharedPort ?? 0} is shared: the radio connected longest)` : ""}` }));
     if (wlOn) items.push({ id: "winlink", label: "Winlink", group: "messaging", dot: wlArmed ? "tx" : "",
       title: `Winlink mail over HF (ARDOP), the ${packetName()} (packet) or telnet` });
     if (packet.configured) items.push({ id: "packet", label: "Packet", group: "messaging", dot: packet.present ? "ok" : "off",
@@ -1228,7 +1231,8 @@ const station = (() => {
 
   function radioCard(r) {
     const S = live[r.id]?.S || {};
-    const ports = `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
+    const ports = r.remote ? `on the <code>${esc(r.remote)}</code> station`
+      : `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
     const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? "VARA HF" : "ARDOP")).join(" and ")}` : "";
     // Its ports and lane on one line (UX plan PR 3b, 2026-11-19): two lines
     // under the trace were the card's dead space, and the Shack has to

@@ -106,6 +106,33 @@ input, and the screen is kept awake.
 
 ![The wall view: a large map of who you hear and who hears you, a big UTC clock, the focus radio's spectrum and waterfall, and the band strip](docs/images/wall.png)
 
+**Radios on other stations.** A station can use the radios on any other
+Ranch Radio station on the LAN. Name each one under `station.peers` in the
+host file:
+
+```json
+"station": {"https": true, "peers": [
+  {"name": "linux-station", "url": "https://linux-station.local:7300",
+   "pin_sha256": "<what ranch-radio peer-pin prints>"}
+]}
+```
+
+`ranch-radio peer-pin https://linux-station.local:7300` prints the other
+station's certificate fingerprint. Check it against the same command run on
+that station (with `https://localhost:7300`) before you trust it. A station's
+certificate is self-signed, so the pin is what tells this station it is
+talking to the right machine. A peer with `auth` on takes a `token_file`;
+its token goes up only for this station's operator.
+
+The other station's radios join the rig bar and the radio list as
+`g90@linux-station`, each with its own full page, audio and WebSocket,
+passed through that station. That station's radio server still keys its
+radio: the transmit time limit, the STOP TX latch and Resume are its own.
+**STOP TX all HF** reaches a peer's radios too. A peer's radio is never this
+station's shared rigctl port, a Winlink radio or a JS8 radio, because those
+need its sound card on this machine. Stations don't chain: each one lists
+only its own radios to its peers.
+
 ## Supported radios
 
 | Rig | Radio | Link | Status |
