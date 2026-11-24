@@ -16,12 +16,16 @@ linux-station as a peer, then checks:
     moves the G90's dial (read on its own rigctl port), and STOP TX latches it
   - a radio the peer doesn't have, or a peer not named: 404
   - linux-station going away: g90@linux-station stays listed, not connected, saying why
+  - a peer that never answers ("ghost"): no radio of its own to list, so the
+    page's peer summary says it is away and why, and the Shack's Offline chip
+    names "ghost station" (a page in Chrome)
 
     python3 tests/station_peers_test.py
 """
 import asyncio
 import json
 import os
+import shutil
 import socket
 import ssl
 import subprocess
@@ -39,6 +43,7 @@ from aiohttp import web  # noqa: E402
 import station_peers  # noqa: E402
 import station_peers_config as pc  # noqa: E402
 import testkit  # noqa: E402
+from cdp_browser import Browser  # noqa: E402
 from ranch_radio import render  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="station-peers-")
@@ -186,12 +191,16 @@ def station(name, cfg, listen, *extra):
                             cwd=ROOT, env=env, stdout=open(os.path.join(TMP, f"{name}.log"), "w"), stderr=subprocess.STDOUT)
 
 
+HELLO = {}
+
+
 async def hello(port):
     async with aiohttp.ClientSession() as s:
         async with s.ws_connect(f"http://127.0.0.1:{port}/ws", origin=f"http://127.0.0.1:{port}") as ws:
             while True:
                 m = json.loads((await ws.receive(timeout=10)).data)
                 if m.get("t") == "hello":
+                    HELLO.update(m)
                     return {r["id"]: r for r in m["radios"]}
 
 
@@ -211,7 +220,8 @@ qmx = radio("qmx", QMX)
 cam = station("linux-station", {"radios": [{"id": "g90", "name": "G90", "web": G90["web"], "rigctl": G90["rigctl"]}]}, CAM_WEB,
               "--rigctl-port", "0")
 dog = station("mac-shack", {"radios": [{"id": "qmx", "name": "QMX", "web": QMX["web"], "rigctl": QMX["rigctl"]}],
-                        "peers": [{"name": "linux-station", "url": f"http://127.0.0.1:{CAM_WEB}"}]}, DOG_WEB,
+                        "peers": [{"name": "linux-station", "url": f"http://127.0.0.1:{CAM_WEB}"},
+                                  {"name": "ghost", "url": f"http://127.0.0.1:{testkit.free_port()}"}]}, DOG_WEB,
               "--rigctl-port", str(DOG_SHARED))
 try:
     assert wait_port(CAM_WEB) and wait_port(DOG_WEB), "a station did not start"
@@ -221,6 +231,23 @@ try:
           (g.get("present"), g.get("name"), g.get("remote")), (True, "G90 (linux-station)", "linux-station"))
     check("  never mac-shack's shared rigctl port, a Winlink radio or a rigctl port of its own",
           (g.get("shared"), g.get("winlink"), g.get("rigctl"), r.get("qmx", {}).get("shared")), (False, False, None, True))
+    peers = {p["name"]: p for p in HELLO.get("peers", [])}
+    check("the page's peer summary: linux-station up with its radio; ghost away, saying why",
+          (peers.get("linux-station", {}).get("up"), peers.get("linux-station", {}).get("radios"),
+           peers.get("ghost", {}).get("up"), bool(peers.get("ghost", {}).get("error"))), (True, 1, False, True))
+    check("  ghost has no radio in the list", [k for k in r if k.endswith("@ghost")], [])
+    CHROME = os.environ.get("CHROME") or shutil.which("chromium") or shutil.which("google-chrome")
+    if CHROME:
+        b = Browser(CHROME, testkit.free_port(), size="1600,1000")
+        try:
+            b.goto(f"http://127.0.0.1:{DOG_WEB}/#/home")
+            chip = b.wait("[...document.querySelectorAll('#mc-needs .mc-need.off')].map((c) => c.textContent).join(' ') || null")
+            check("  the Shack's Offline chip names the ghost station, not linux-station", (
+                "ghost station" in (chip or ""), "linux-station" in (chip or "")), (True, False))
+        finally:
+            b.close()
+    else:
+        print("skip  no Chrome: the Offline chip")
     rigctl(QMX["rigctl"], "F 14074000")
     check("  mac-shack's shared port is still its own QMX", rigctl(DOG_SHARED, "f"), ["14074000"])
 

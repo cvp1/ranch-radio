@@ -568,7 +568,7 @@ class Station:
             if self.packet_cfg.get("title"):
                 pkt["title"] = self.packet_cfg["title"]
         return {"radios": [r.info(p) for r in self.radios] + self.peers.infos(), "shared_port": self.shared_port,
-                "packet": pkt}
+                "packet": pkt, "peers": self.peers.summary()}
 
     def own_radios(self):
         """What a peer station reads (GET /api/radios): this host's radios only,
