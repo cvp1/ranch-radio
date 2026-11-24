@@ -206,6 +206,11 @@ class Station(TxAudio):
         # Kept on disk too (StopState), so a restart comes back stopped.
         self.stop_state = StopState(getattr(args, "stop_state", None))
         self.tx_stopped = self.stop_state.load()
+        # Whether the file says stopped now (2026-11-23, bug bash): what a
+        # restart would come back as. A latch load() returned (from the file,
+        # or a bad file failing toward stopped) is already there; a shutdown
+        # STOP TX or a failed save is in memory only.
+        self.stop_on_disk = self.tx_stopped is not None
         # Split emulated for rigctl apps on rigs that can't set VFO B over CAT
         # (G90): the TX frequency is held here and dialled in only while keyed.
         self.emu_split = False
@@ -263,7 +268,11 @@ class Station(TxAudio):
     def config(self):
         return {"name": self.radio.name, "tx_allowed": not self.args.no_tx,
                 "auto_tune": self.auto_tune, "tx_stopped": self.tx_stopped,
-                "stop_saved": self.stop_state.path is not None,    # STOP TX survives a restart
+                # This latch survives a restart: the file says stopped. It said
+                # only "a path is configured" until 2026-11-23, so a shutdown
+                # STOP TX (not saved, by design) or a failed save still read
+                # saved, and update/restart cleared a latch the page showed.
+                "stop_saved": self.stop_state.path is not None and self.stop_on_disk,
                 # No Winlink panel or Modules tab here: both are the station's.
                 "winlink": False,
                 "mesh": bool(self.addons and self.addons.get("mesh")),
@@ -1040,6 +1049,11 @@ class Station(TxAudio):
         again = self.tx_stopped is not None
         self.tx_stopped = {"at": time.time(), "by": self._who(ws)}
         log.warning("STOP TX by %s%s", self.tx_stopped["by"], " (again)" if again else "")
+        # Before the unkey is queued: a key-down still waiting for the port
+        # must not reach the radio after the latch (2026-11-23, bug bash).
+        dropped = self.radio.drop_pending_keys()
+        if dropped:
+            log.warning("STOP TX: dropped %d queued key command(s) before they were sent", dropped)
         for t in (self._tune_task, self._quiet_task, self._first_use_wait, self._pending_task):
             if t and not t.done():
                 t.cancel()
@@ -1065,6 +1079,7 @@ class Station(TxAudio):
         try:
             if not shutdown:
                 self.stop_state.save(self.tx_stopped)
+                self.stop_on_disk = self.stop_state.path is not None
         except OSError as e:
             log.error("STOP TX: could not save %s: %s", self.stop_state.path, e)
             unsaved = f" It could not be saved ({e.strerror or e}): a restart would clear it."
@@ -1082,6 +1097,7 @@ class Station(TxAudio):
         unsaved = ""
         try:
             self.stop_state.save(None)
+            self.stop_on_disk = False
         except OSError as e:    # the safe way round: a restart comes back stopped
             log.error("Resume: could not save %s: %s", self.stop_state.path, e)
             unsaved = f" It could not be saved ({e.strerror or e}): after a restart STOP TX is on again."

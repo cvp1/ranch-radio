@@ -10,6 +10,11 @@ never hardware).
   4  a state file that can't be written: STOP TX still latches, and the page
      is told a restart would clear it
   5  render gives each radio its own file
+  6  stop_saved (what update/restart trust) says whether the FILE holds the
+     latch: true after a saved STOP TX and after a start that loaded one;
+     false after a failed save and after a shutdown STOP TX (not saved by
+     design) on a clear file, so a restart can't clear a latch the page shows
+     (2026-11-23, bug bash: it said only "a path is configured")
 
     .venv/bin/python tests/stop_state_test.py
 """
@@ -110,6 +115,7 @@ async def run(state, scenario):
         async with aiohttp.ClientSession() as s:
             async with s.ws_connect(f"http://127.0.0.1:{web}/ws") as ws:
                 page = Page(ws)
+                page.web = web
                 await page.wait(lambda: page.hello() is not None, 5)
                 await asyncio.sleep(3.5)              # past the post-connect arming window
                 await scenario(page, port)
@@ -119,6 +125,16 @@ async def run(state, scenario):
         out = proc.communicate(timeout=10)[0]
     check("  no server traceback", out[-600:] if "Traceback" in out else "", "")
     return out
+
+
+async def saved(page):
+    """stop_saved as a new connection's hello reports it (what the probe reads)."""
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(f"http://127.0.0.1:{page.web}/ws") as ws:
+            async for m in ws:
+                if m.type == aiohttp.WSMsgType.TEXT and json.loads(m.data).get("t") == "hello":
+                    c = json.loads(m.data)["config"]
+                    return [bool(c.get("tx_stopped")), c.get("stop_saved")]
 
 
 def stopped(page):
@@ -136,12 +152,14 @@ async def main():
         check("2 STOP TX pressed", ok)
         d = json.loads(state.read_text()) if state.exists() else {}
         check("2 it is on disk before the crash", bool(d.get("stopped")))
+        check("6 a saved STOP TX: stop_saved", await saved(page), [True, True])
     await run(state, first)
 
     async def second(page, port):
         st = stopped(page)
         check("2 after kill -9 and start: still stopped, by whom", (st or {}).get("by"), "127.0.0.1")
         check("2   rigctl T 1 refused", rig_cmd(port, "T 1"), "RPRT -11")
+        check("6 started stopped from the file: stop_saved", await saved(page), [True, True])
         await page.ws.send_str(json.dumps({"t": "tx_resume"}))
         ok = await page.wait(lambda: any(d.get("t") == "tx_stop" and d.get("stopped") is None for d in page.msgs), 3)
         check("2 Resume", ok)
@@ -172,6 +190,39 @@ async def main():
         check("4 can't save: the page is told a restart would clear it", ok)
         check("4   STOP TX still holds: rigctl T 1 refused", rig_cmd(port, "T 1"), "RPRT -11")
     await run(blocker / "r.json", unwritable)
+
+    # A path that loads clean (no file) but can't be written: the latch is
+    # in memory only, and stop_saved must say so. (Scenario 4's path is under
+    # a file, so it loads as unreadable and STARTS stopped: a restart would
+    # come back stopped, and stop_saved is rightly true there.)
+    ro = tmp / "read-only"
+    ro.mkdir()
+    ro.chmod(0o555)
+
+    async def failed_save(page, port):
+        check("6 a clean start: not stopped", stopped(page), None)
+        await page.ws.send_str(json.dumps({"t": "tx_stop"}))
+        ok = await page.wait(lambda: bool(page.notices("could not be saved")), 3)
+        check("6 a failed save: the page is told", ok)
+        check("6   stop_saved false", await saved(page), [True, False])
+    if os.geteuid() == 0:
+        print("  (root ignores the read-only folder: failed-save case not checked)")
+    else:
+        await run(ro / "r.json", failed_save)
+    ro.chmod(0o755)
+
+    clear = tmp / "stop-tx" / "clear.json"
+
+    async def shutdown_stop(page, port):
+        await page.ws.send_str(json.dumps({"t": "tx_stop", "shutdown": True}))
+        ok = await page.wait(lambda: any(d.get("t") == "tx_stop" and d.get("stopped") for d in page.msgs), 3)
+        check("6 a shutdown STOP TX latches", ok)
+        check("6   not on disk, and stop_saved says so", [clear.exists() and bool(json.loads(clear.read_text()).get("stopped")),
+                                                         await saved(page)], [False, [True, False]])
+        await page.ws.send_str(json.dumps({"t": "tx_stop"}))
+        await page.wait(lambda: clear.exists(), 3)
+        check("6 then a STOP TX that saves: stop_saved", await saved(page), [True, True])
+    await run(clear, shutdown_stop)
 
 
 asyncio.run(main())
