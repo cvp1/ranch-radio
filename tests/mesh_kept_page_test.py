@@ -113,8 +113,12 @@ try:
     check("  the count follows", b.js(f"{COUNT}.textContent"), f"{listed + 1} known")
     check("  and so does the station's file",
           testkit.wait_for(lambda: "!00000a01" not in json.load(open(KEPT)) and "!00000a02" in json.load(open(KEPT)), 10), True)
-    b.js("location.reload()")
-    b.wait(f"{ROWS}.length >= 3 && {SHORTS}.includes('OLD2')")
+    # Mark this page, so the wait below can only pass on the reloaded one: right
+    # after reload() the old page is still there and already shows OLD2 alone,
+    # so the wait passed at once and the check read the new page mid-load,
+    # empty (1 run in 12 to 1 in 20 at CI's CPU budget, 2026-11-24).
+    b.js("window.__beforeReload = true; location.reload()")
+    b.wait(f"!window.__beforeReload && document.readyState === 'complete' && {ROWS}.length >= 3 && {SHORTS}.includes('OLD2')")
     check("after a reload: still forgotten, the other still kept", sorted(b.js(KEPT_ROWS)), ["OLD2"])
 finally:
     b.close()
