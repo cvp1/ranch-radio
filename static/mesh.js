@@ -52,7 +52,8 @@ const mesh = (() => {
     ["env", "Environment", "Ask it for its sensor readings (temperature, humidity, pressure)"],
     ["nodeinfo", "User info", "Swap user info with it (its name and key; it gets ours)"],
     ["neighbors", "Neighbours", "Ask it which nodes it hears directly, with SNR (answers only with its NeighborInfo module on; once every 3 minutes)"]];
-  const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true), rings: true, onExpand: () => toggleBig() });
+  const map = meshMap.create($("#mesh-map"), { onSelect: (id) => select(id, true), rings: true, onExpand: () => toggleBig(),
+    labels: true, popup: (id) => popupHtml(id), onPopup: (id, act) => popupAct(id, act) });
   const LIVE_S = 15 * 60;
   // Per conversation ("c0", "d!id"): archived, muted, pinned, read_t, kept by
   // the station (mesh_convs.py), so unread survives a reload and every browser agrees.
@@ -640,7 +641,7 @@ const mesh = (() => {
     return [...out, ...mine];
   }
   const legend = () => `${selected ? `${short(selected)}: green hears it, blue it hears, purple both`
-    : reach().size ? "you: green hears you, blue you hear, purple both" : ""}${nodes.length > 1 ? " · ◆ a router, a number its hops" : ""}`.replace(/^ · /, "");
+    : reach().size ? "you: green hears you, blue you hear, purple both" : ""}${nodes.length > 1 ? " · ◆ a router · beside a name: its SNR if heard direct, else its hops" : ""}`.replace(/^ · /, "");
   const drawLinks = () => { map.setLinks(links(), legend()); renderReach(); };
 
   // What the map draws of each node beyond its place: a router is a diamond;
@@ -660,8 +661,97 @@ const mesh = (() => {
         [heard, w ? `${kmText(w)} ${compass(w.deg)}` : "", n.battery != null ? (n.battery > 100 ? "powered" : `battery ${n.battery}%`) : ""].filter(Boolean).join(" · "),
         [inn ? `hears you at ${db(x.inn)}` : "", outw ? `you hear it at ${db(x.out)}` : ""].filter(Boolean).join(" · ")].filter(Boolean).join("\n");
       return { ...n, tip, shape: ROUTERS.has(n.role) ? "diamond" : "", ring: inn && outw ? "both" : inn ? "in" : outw ? "out" : "",
-        glyph: n.hops > 0 ? String(Math.min(n.hops, 9)) : "", pin: !!(n.fav || inn || outw), kind: n.mqtt ? "mqtt" : "" };
+        glyph: n.hops > 0 ? String(Math.min(n.hops, 9)) : "", pin: !!(n.fav || inn || outw), kind: n.mqtt ? "mqtt" : "", ...badge(n) };
     });
+  }
+
+  // What a signal report needs beside a node's name on the map (2026-11-24):
+  // heard direct, the SNR we last heard it at; relayed, how many hops; by MQTT, that.
+  const signed = (v) => `${v > 0 ? "+" : ""}${v}`;
+  function badge(n) {
+    if (n.mqtt) return { badge: "MQTT", badgeCls: "mqtt" };
+    if (n.hops == null) return {};
+    if (n.hops === 0) return { badge: n.snr != null ? `${signed(n.snr)} dB` : "direct", badgeCls: "h0" };
+    return { badge: `${n.hops} hop${n.hops > 1 ? "s" : ""}`, badgeCls: `h${Math.min(n.hops, 3)}` };
+  }
+
+  // ---------- the card at a node on the map: who it is, how we hear it, and what to do
+
+  function reportText(n) {
+    const r = reach().get(n.id) || {}, w = where(n), tr = traces[n.id];
+    const how = n.mqtt ? "heard by MQTT" : n.hops === 0 ? `heard direct${n.snr != null ? `, SNR ${signed(n.snr)} dB` : ""}`
+      : n.hops != null ? `heard over ${n.hops} hop${n.hops > 1 ? "s" : ""}` : "hops unknown";
+    const parts = [`${n.shortName || "?"} (${n.longName || n.id}) ${n.id}`, how,
+      "inn" in r ? `hears us at ${r.inn != null ? `${signed(r.inn)} dB` : "?"}` : "",
+      w ? `${kmText(w)} ${compass(w.deg)}` : "", n.last_heard ? `${ago(n.last_heard) === "now" ? "just now" : `${ago(n.last_heard)} ago`}` : ""];
+    let text = parts.filter(Boolean).join(" · ");
+    if (tr?.state === "done") {
+      const there = [myId(), ...(tr.route || []), tr.to];
+      text += `\ntrace: ${there.map((id, i) => short(id) + (i ? ` (${tr.snr_towards?.[i - 1] == null ? "?" : `${signed(tr.snr_towards[i - 1])} dB`})` : "")).join(" > ")}`;
+    }
+    return text;
+  }
+
+  function popupHtml(id) {
+    const n = byId(id);
+    if (!n) return null;
+    if (n.me) return `<div class="mm-pop-h"><b>${esc(n.shortName || "?")}</b> ${esc(n.longName || "")}</div><div class="wl-dim">this node · ${esc(n.id)}</div>`;
+    const r = reach().get(n.id) || {}, w = where(n), tr = traces[n.id];
+    const reqs = requests[n.id] || {}, busy = Object.values(reqs).some((x) => x.state === "running");
+    const row = (k, v) => (v ? `<div class="mm-pop-r"><span>${k}</span><b>${esc(v)}</b></div>` : "");
+    const b = badge(n);
+    const trLine = !tr ? "" : tr.state === "running" ? `<div class="mm-pop-tr wl-dim">Traceroute… waiting (up to 90 s)</div>`
+      : tr.state === "failed" ? `<div class="mm-pop-tr failed">Traceroute failed: ${esc(tr.error || "?")}</div>`
+      : `<div class="mm-pop-tr">${[myId(), ...(tr.route || []), tr.to].map((x, i) => esc(short(x)) +
+          (i ? ` <span class="wl-dim">${tr.snr_towards?.[i - 1] == null ? "?" : `${signed(tr.snr_towards[i - 1])}`}</span>` : "")).join(" → ")}` +
+        ` <span class="wl-dim">· ${(tr.route || []).length} between · ${esc(ago(tr.done_t) === "now" ? "just now" : `${ago(tr.done_t)} ago`)}</span></div>`;
+    const off = !connected || busy ? " disabled" : "";
+    return `<div class="mm-pop-h"><b>${esc(n.shortName || "?")}</b> ${esc(n.longName || "")}` +
+      (b.badge ? ` <span class="mm-pop-badge ${esc(b.badgeCls)}">${esc(b.badge)}</span>` : "") + `</div>` +
+      `<div class="wl-dim mm-pop-id">${esc(n.id)}${n.hwModel ? ` · ${esc(n.hwModel)}` : ""}${n.role ? ` · ${esc(n.role)}` : ""}</div>` +
+      row("hops", hopsText(n) || "unknown") +
+      row("we hear it", "out" in r ? (r.out != null ? `${signed(r.out)} dB SNR` : "direct") : n.hops === 0 && n.snr != null ? `${signed(n.snr)} dB SNR` : "") +
+      row("it hears us", "inn" in r ? (r.inn != null ? `${signed(r.inn)} dB SNR` : "yes") : "") +
+      row("distance", w ? `${kmText(w)} ${compass(w.deg)} (${Math.round(w.deg)}°)` : "") +
+      row("heard", n.last_heard ? (ago(n.last_heard) === "now" ? "just now" : `${ago(n.last_heard)} ago`) : "never") +
+      row("battery", n.battery != null ? (n.battery > 100 ? "powered" : `${n.battery}%`) : "") +
+      trLine +
+      `<div class="mm-pop-acts">` +
+      `<button class="chip chip-mini" data-act="trace"${!connected || tr?.state === "running" ? " disabled" : ""} title="Ask the mesh for the route to this node and back, with each hop's SNR">Traceroute</button>` +
+      `<button class="chip chip-mini" data-act="dm" title="A direct message to this node">Message</button>` +
+      `<button class="chip chip-mini" data-act="req-position"${off} title="Ask it for its position">Position</button>` +
+      `<button class="chip chip-mini" data-act="req-telemetry"${off} title="Ask it for its battery, voltage and channel use">Telemetry</button>` +
+      `<button class="chip chip-mini" data-act="req-neighbors"${off} title="Ask it which nodes it hears directly, with SNR">Neighbours</button>` +
+      `<button class="chip chip-mini" data-act="copy" title="Copy its name, how we hear it and the last traceroute, for a signal report">Copy report</button>` +
+      `</div>`;
+  }
+
+  function copyText(text) {
+    // navigator.clipboard needs a secure page; a station on plain http over the LAN isn't one.
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    const t = document.createElement("textarea");
+    t.value = text;
+    t.style.position = "fixed";
+    t.style.opacity = "0";
+    document.body.append(t);
+    t.select();
+    const ok = document.execCommand("copy");
+    t.remove();
+    return ok ? Promise.resolve() : Promise.reject(new Error("copy refused"));
+  }
+
+  let lastReport = "";                       // the last report copied (the page test reads it: _report)
+  function popupAct(id, act) {
+    const n = byId(id);
+    if (!n) return;
+    if (act === "trace") tx({ t: "mesh_trace", to: id });
+    else if (act === "dm") { map.closePopup(); directTo(id); }
+    else if (act.startsWith("req-")) tx({ t: "mesh_request", to: id, kind: act.slice(4) });
+    else if (act === "copy") {
+      const text = reportText(n);
+      lastReport = text;
+      copyText(text).then(() => toast(`Copied: ${text.split("\n")[0]}`), () => toast("Couldn't copy: the browser refused", "warn"));
+    }
   }
   const drawMap = () => map.setNodes(mapNodes(), myId());
 
@@ -787,7 +877,7 @@ const mesh = (() => {
     const card = $("#mesh-card");
     const n = byId(selected);
     card.hidden = !n;
-    if (!n) return;
+    if (!n) { map.refreshPopup(); return; }
     const tr = traces[n.id];
     const w = where(n), env = n.env || {};
     const fields = [["hops", hopsText(n)], ["SNR", n.snr != null ? `${n.snr} dB` : ""],
@@ -835,6 +925,7 @@ const mesh = (() => {
       REQUESTS.map(([k, label, why]) => `<button class="chip chip-mini" data-req="${k}" title="${esc(why)}"${!connected || busy ? " disabled" : ""}>${label}</button>`).join("") +
       (reqNote ? `<span class="wl-dim mesh-req-note">${esc(reqNote)}</span>` : "") + "</div>" +
       neighboursHtml(n) + traceHtml(tr);
+    map.refreshPopup();
     card.onclick = (e) => {
       const go = e.target.closest("[data-go]")?.dataset.go;
       if (go) { if (byId(go)) select(go); return; }
@@ -1394,5 +1485,5 @@ const mesh = (() => {
     if (radios.length < 2) return { up: connected, down: [] };
     return { up: radios.some((r) => r.connected), down: radios.filter((r) => !r.connected).map((r) => r.label) };
   }
-  return { hello, event, power, summary, radioLinks, connected: () => connected, _nodes: () => nodes };
+  return { hello, event, power, summary, radioLinks, connected: () => connected, _nodes: () => nodes, _report: () => lastReport };
 })();

@@ -650,6 +650,35 @@ textarea.wl-intake-text { width: 100%; box-sizing: border-box; resize: vertical;
 .mm-trk-pt { fill: var(--warm); }
 .mm-box { fill: rgba(var(--accent-rgb), .06); stroke: rgba(var(--accent-rgb), .35); stroke-dasharray: 3 3; }
 .mm-node text.mm-glyph { font: 700 7px var(--mono); fill: var(--well); stroke: none; pointer-events: none; }
+/* Beside a node's name (mesh.js badge): its SNR heard direct, else its hops, coloured by how far it is in hops. */
+.mm-node text.mm-badge { font: 600 10px var(--mono); fill: var(--muted); }
+.mm-node text.mm-badge.h0 { fill: var(--ok); }
+.mm-node text.mm-badge.h1 { fill: #60a5fa; }
+.mm-node text.mm-badge.h2 { fill: #fbbf24; }
+.mm-node text.mm-badge.h3 { fill: #f87171; }
+.mm-node text.mm-badge.mqtt { fill: var(--dim); }
+.mm-trace-snr { font: 700 10px var(--mono); paint-order: stroke; stroke: rgba(0,0,0,.85); stroke-width: 3px; pointer-events: none; }
+.mm-trace-snr.out { fill: var(--accent); }
+.mm-trace-snr.back { fill: #a78bfa; }
+/* The card at a clicked node (meshmap.js popup): who it is, how we hear it, and its actions. */
+.mm-pop { position: absolute; z-index: 4; width: 270px; max-width: calc(100% - 12px); padding: 8px 10px; cursor: default;
+  background: rgba(10,13,18,.94); border: 1px solid var(--line-hi); border-radius: 8px; backdrop-filter: blur(4px);
+  font-size: 12px; line-height: 1.4; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+.mm-pop-x { position: absolute; right: 4px; top: 3px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
+.mm-pop-h { padding-right: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-pop-h b { font: 700 12px var(--mono); }
+.mm-pop-id { font-size: 10.5px; margin-bottom: 4px; }
+.mm-pop-badge { font: 600 10.5px var(--mono); }
+.mm-pop-badge.h0 { color: var(--ok); }
+.mm-pop-badge.h1 { color: #60a5fa; }
+.mm-pop-badge.h2 { color: #fbbf24; }
+.mm-pop-badge.h3 { color: #f87171; }
+.mm-pop-r { display: flex; justify-content: space-between; gap: 8px; }
+.mm-pop-r span { color: var(--muted); }
+.mm-pop-r b { font: 600 11px var(--mono); text-align: right; }
+.mm-pop-tr { margin-top: 5px; font: 11px var(--mono); }
+.mm-pop-tr.failed { color: #fbbf24; }
+.mm-pop-acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
 .mm-node.k-wx .mm-mark { fill: #60a5fa; }
 .mm-node.k-obj .mm-mark { fill: #c084fc; }
 .mm-node.k-is .mm-mark { fill: rgba(167, 139, 250, .55); }

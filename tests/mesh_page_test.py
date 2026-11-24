@@ -4,7 +4,9 @@ Covers: the panel only with a mesh node; node, state, channel tabs and key
 check (never the key); messages, a long text's parts and Send's 9-part limit, delivery ticks,
 an automatic resend's countdown and Cancel,
 DMs from a node card, unread counts; favorites; the node list and map;
-traceroute; Health (band, findings, charts, talkers, packet log, a finding
+traceroute; the map's names with each node's SNR (direct) or hops, the Names
+switch, the card at a clicked node (its signal report, Traceroute from it, the
+legs' SNRs on the map, Copy report, Esc); Health (band, findings, charts, talkers, packet log, a finding
 opens its node); Settings (dirty marking, validation, only changed fields sent,
 risky fields ask first, Revert, disabled while disconnected); the on/off switch.
 Also: replies (quoted, sent with reply_to), reactions (sent, shown as chips,
@@ -202,8 +204,12 @@ try:
         b.js("document.querySelector('#mesh-all').click()")
         check("map: visible", b.js(f"({VISIBLE})('#mesh-map')"), True)
         check("  nodes with a position on it",
-              sorted(b.js("[...document.querySelectorAll('#mesh-map .mm-node text')].map((t) => t.textContent)")),
+              sorted(b.js("[...document.querySelectorAll('#mesh-map .mm-node text:not(.mm-badge)')].map((t) => t.textContent)")),
               ["BASE", "RDG", "TEST"])
+        BADGES = ("Object.fromEntries([...document.querySelectorAll('#mesh-map .mm-node')].filter((g) => g.querySelector('.mm-badge'))"
+                  ".map((g) => [g.querySelector('text').textContent, [g.querySelector('.mm-badge').textContent, g.querySelector('.mm-badge').getAttribute('class')]]))")
+        check("  beside each name: the SNR of a node heard direct; this node has none",
+              b.js(BADGES), {"RDG": ["+3.25 dB", "mm-badge h0"], "BASE": ["+7.5 dB", "mm-badge h0"]})
         check("  says how many", b.js(f"({TEXT})('#mesh-map .mm-note')").split(" · ")[0], "2 of 3 nodes on the map")
         # Nothing selected: this node's own links, coloured by direction (RDG's NeighborInfo
         # lists us; packets from RDG and BASE arrived with no hop used).
@@ -232,8 +238,19 @@ try:
         check("  distance rings around this node, each saying how far", (1 <= len(rings) <= 3, all(r.endswith(" km") for r in rings)), (True, True))
         b.js("window.__nodes0 = mesh._nodes(); mesh.event({ t: 'mesh', nodes: __nodes0.map((n) => n.id === '!0000dead' ? "
              "{ ...n, lat: 40.95, lon: -105.2, last_heard: Date.now() / 1000 } : n) })")
-        check("  a node two hops away carries its hops; it wears no ring",
-              b.js(f"[{NODE}('TRK').querySelector('.mm-glyph').textContent, {NODE}('TRK').querySelector('.mm-ring')]"), ["2", None])
+        check("  a node two hops away carries its hops, in the mark and beside its name; it wears no ring",
+              b.js(f"[{NODE}('TRK').querySelector('.mm-glyph').textContent, {NODE}('TRK').querySelector('.mm-badge').textContent, "
+                   f"{NODE}('TRK').querySelector('.mm-badge').getAttribute('class'), {NODE}('TRK').querySelector('.mm-ring')]"),
+              ["2", "2 hops", "mm-badge h2", None])
+        # Names: "fit" names what fits; "all" names every node, overlaps and all (kept in the browser).
+        LBL = "document.querySelector('#mesh-map [data-labels]')"
+        check("  Names: fit by default", b.js(f"{LBL}.textContent"), "Names: fit")
+        b.js(f"{LBL}.click()")
+        check("  Names: all names every placed node, and is kept",
+              (b.js(f"{LBL}.textContent"), b.js("document.querySelectorAll('#mesh-map .mm-node text:not(.mm-glyph):not(.mm-badge)').length"),
+               b.js("document.querySelectorAll('#mesh-map .mm-node').length"), b.js("localStorage.getItem('ic7300.mm.labels')")),
+              ("Names: all", 4, 4, '"all"'))
+        b.js(f"{LBL}.click()")
         b.js("mesh.event({ t: 'mesh', nodes: __nodes0 })")
         # Who hears whom, by name, beside the map (as on the Map tab).
         SIDE = "document.querySelector('#mesh-map .mm-side')"
@@ -314,8 +331,44 @@ try:
         b.js("send({ t: 'mesh_send', text: 'on the air', ch: 1 })")
         check("  a message of ours pulses red at this node",
               bool(b.wait("document.querySelectorAll('#mesh-map .mm-pulse.tx').length === 1", 5)), True)
-        b.js("[...document.querySelectorAll('#mesh-nodes .mesh-node')].find((n) => n.textContent.includes('BASE')).click()")
+        # The card at a node on the map: its signal report and what to do, Traceroute among them.
+        POP = "document.querySelector('#mesh-map .mm-pop')"
+        b.js(f"{POP}.hidden || document.querySelector('#mesh-map .mm-pop-x').click()")
+        b.js("[...document.querySelectorAll('#mesh-map .mm-node')].find((g) => g.querySelector('text')?.textContent === 'BASE')"
+             ".dispatchEvent(new MouseEvent('click', { bubbles: true }))")
+        check("a node clicked on the map: its card opens at it, and the side card follows",
+              (b.js(f"!{POP}.hidden"), b.js(f"({TEXT})('#mesh-map .mm-pop-h b')"), b.js(f"({TEXT})('#mesh-card .mesh-card-head b')")), (True, "BASE", "BASE"))
+        ROWS_POP = f"[...{POP}.querySelectorAll('.mm-pop-r')].map((r) => r.children[0].textContent + ': ' + r.children[1].textContent)"
+        rows = b.js(ROWS_POP)
+        check("  its signal report: hops, how we hear it, how far",
+              (rows[:2], rows[2].startswith("distance: 2.0 km ")), (["hops: direct", "we hear it: +7.5 dB SNR"], True))
+        check("  its actions", b.js(f"[...{POP}.querySelectorAll('[data-act]')].map((x) => x.textContent)"),
+              ["Traceroute", "Message", "Position", "Telemetry", "Neighbours", "Copy report"])
+        b.js(f"{POP}.querySelector('[data-act=trace]').click()")
+        check("Traceroute from the map: the card at the node shows the path with each leg's SNR",
+              bool(b.wait(f"({TEXT})('#mesh-map .mm-pop-tr').startsWith('TEST → RDG +6 → BASE +4.5')")), True)
+        check("  the map writes each leg's SNR on the path, there and back",
+              sorted(b.js("[...document.querySelectorAll('#mesh-map .mm-trace-snr')].map((t) => t.getAttribute('class').split(' ')[1] + ' ' + t.textContent)")),
+              sorted(["out +6 dB", "out +4.5 dB", "back +5 dB", "back ?"]))
+        BOX = "(q) => [...document.querySelectorAll(q)].map((t) => t.getBoundingClientRect())"
+        check("  no leg's SNR sits on another label (the other leg's, a link's)",
+              b.js(f"(() => {{ const a = ({BOX})('#mesh-map .mm-trace-snr'), o = [...a, ...({BOX})('#mesh-map .mm-link-label')];"
+                   " return a.some((r, i) => o.some((q, j) => j !== i && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top)); })()"), False)
+        if SHOT:
+            b.js("document.querySelector('#mesh-map [data-big]').click()")
+            time.sleep(0.5)
+            b.screenshot(SHOT.replace(".png", "-pop.png"))
+            b.js("document.querySelector('#mesh-map [data-big]').click()")
+        b.js(f"{POP}.querySelector('[data-act=copy]').click()")
+        report = b.js("mesh._report()").split("\n")
+        check("  Copy report: name, how we hear it, and the trace", (report[0].split(" · ")[:2], report[1]),
+              (["BASE (Ranch Base) !0000beef", "heard direct, SNR +7.5 dB"], "trace: TEST > RDG (+6 dB) > BASE (+4.5 dB)"))
+        b.call("Input.dispatchKeyEvent", type="keyDown", key="Escape", code="Escape", windowsVirtualKeyCode=27)
+        b.call("Input.dispatchKeyEvent", type="keyUp", key="Escape", code="Escape", windowsVirtualKeyCode=27)
+        check("  Esc puts the card at the node away", b.js(f"{POP}.hidden"), True)
         b.js("document.querySelector('#mesh-card [data-act=trace]').click()")
+        check("  the side card's Traceroute still asks (the node allows one every 30 s, and says so)",
+              bool(b.wait("[...document.querySelectorAll('#toasts .toast')].some((t) => t.textContent.includes('one traceroute every'))", 5)), True)
         check("Traceroute: the card shows the path",
               bool(b.wait("(document.querySelector('#mesh-card .mesh-trace')?.textContent || '').includes('RDG (6 dB)')")), True)
         trace_text = b.js("document.querySelector('#mesh-card .mesh-trace').textContent")
