@@ -105,6 +105,11 @@ class Addons:
         self.host = host
         self.state_path = os.path.expanduser(state_path) if state_path else None
         self.items = {}           # name -> {"addon": Addon|None, "on": bool, "error": str|None, "running": bool}
+        # One on/off at a time per add-on (2026-11-23, bug bash): an off still
+        # awaiting its bridge's exit and an on from another page interleaved,
+        # and the old stop() cleared the new engine's reference, leaving the
+        # page saying On with no engine.
+        self._power_locks = {}
         saved = self._read_state()
         for name, opts in (cfg or {}).items():
             opts = dict(opts or {})
@@ -255,6 +260,11 @@ class Addons:
             await rec["addon"].command(ws, verb, m)
 
     async def power(self, ws, name, on):
+        lock = self._power_locks.setdefault(name, asyncio.Lock())
+        async with lock:                  # through the state write and the broadcast
+            await self._power(ws, name, on)
+
+    async def _power(self, ws, name, on):
         rec = self.items[name]
         if rec["addon"] is None:
             self.host.notice(f"{name}: {rec['error']}", "warn", ws)

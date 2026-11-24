@@ -344,8 +344,17 @@ def journal_files(home, rev, entries):
     update that dies halfway can still be undone. A retry of the same rev
     keeps the first backup of each file: that one is what ran before."""
     j = load_journal(home, rev, log=lambda *_: None) or {"rev": rev, "files": [], "agents": []}
-    have = {f["path"] for f in j["files"]}
-    j["files"] += [{"path": path, "backup": backup} for path, backup in entries if path not in have]
+    have = {f["path"]: f for f in j["files"]}
+    for path, backup in entries:
+        f = have.get(path)
+        if f is None:
+            j["files"].append({"path": path, "backup": backup})
+        elif f.get("backup") and backup and not _there(Path(f["backup"])):
+            # The first attempt journaled this backup but died before moving the
+            # file there: the old file is still in place, and this attempt moves
+            # it to ITS backup. Point the journal there, or a rollback skips the
+            # missing first backup and leaves the new file (2026-11-23, bug bash).
+            f["backup"] = backup
     _save_journal(home, j)
 
 
