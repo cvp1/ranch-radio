@@ -9,9 +9,11 @@ station's pages:
 
 and to its listeners only (the JS8 tab's add-on relays it as its own event):
 
-    {"t": "js8_spectrum", "radio": ID, "hz": 10, "row": [0..60, ...]}
-                           the engine's audio spectrum, 0-3000 Hz in 10 Hz bins, dB
-                           above the row's floor, SPEC_EVERY_S apart: the waterfall
+    {"t": "js8_spectrum", "radio": ID, "hz": 10, "row": [-1..60, ...]}
+                           the engine's audio spectrum, 0-3000 Hz in 10 Hz bins,
+                           flattened (Flatten: each bin in dB above its own recent
+                           noise; -1 outside the radio's filter), SPEC_EVERY_S
+                           apart: the waterfall
 
 Pages ({"t": "js8", "do": VERB, "radio": ID}, or the JS8 tab through its
 add-on):
@@ -81,7 +83,11 @@ SEND_OK = re.compile(r"^[\x20-\x7e]+$")   # printable ASCII; jf8call packs it (v
 SPEC_EVERY_S = 0.25           # waterfall rows to the tab: 4 a second (the engine sends ~18)
 SPEC_HZ = 10                  # one waterfall bin
 SPEC_TOP_HZ = 3000            # the passband JS8 lives in
-SPEC_RANGE_DB = 60            # a row's values: dB above its floor, 0..this
+SPEC_RANGE_DB = 60            # a row's values: dB above the bin's noise, 0..this
+FLAT_ROWS = 240               # each bin's noise: its last minute of rows (4 a second)...
+FLAT_PCT = 0.2                # ...20th percentile: a station on that offset half the time stays above it
+FLAT_EVERY = 4                # recomputed once a second
+FILTER_DB = 30                # noise this far under the passband's: outside the radio's filter (-1)
 ARM = {"txEnabled": True, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
 DISARM = {"txEnabled": False, "autoReply": False, "heartbeatEnabled": False, "heartbeatAckEnabled": False}
 STATUS_KEYS = ("radio_connected", "radio_freq_khz", "radio_mode", "submode_name", "callsign", "grid",
@@ -118,11 +124,10 @@ def frame_of(event, data):
     return f
 
 
-def spectrum_row(data):
-    """jf8call's spectrum event (linear FFT magnitudes, hz_per_bin) -> one
-    waterfall row: 0-SPEC_TOP_HZ in SPEC_HZ bins (the strongest bin in each),
-    dB above the row's floor (its 25th percentile), 0..SPEC_RANGE_DB. None if
-    the event isn't one."""
+def spectrum_db(data):
+    """jf8call's spectrum event (linear FFT magnitudes, hz_per_bin) -> 0-SPEC_TOP_HZ
+    in SPEC_HZ bins, the strongest engine bin in each, in dB. None if the event
+    isn't one."""
     bins, hz = data.get("bins"), data.get("hz_per_bin")
     if not isinstance(bins, list) or not bins or isinstance(hz, bool) or not isinstance(hz, (int, float)) \
             or not math.isfinite(hz) or hz <= 0:
@@ -143,8 +148,43 @@ def spectrum_row(data):
         if peak[k] is None:
             peak[k] = peak[k - 1]
     db = [20 * math.log10(v + 1e-9) for v in peak]
-    floor = sorted(db)[n // 4]
-    return [max(0, min(SPEC_RANGE_DB, round(d - floor))) for d in db]
+    return db
+
+
+class Flatten:
+    """Each bin in dB above its own noise, the FLAT_PCT percentile of its last
+    FLAT_ROWS rows (what WSJT-X and JS8Call call Flatten); a bin whose noise is
+    FILTER_DB under the passband's (the upper quartile of the bins' noise) is
+    outside the radio's filter: -1.
+
+    Why (measured 2026-11-24, an IC-7300 in USB-D): the radio's filter
+    passes about 700-2300 Hz and the bins outside it are 40-50 dB quieter. The
+    first waterfall took one floor for the whole row (its 25th percentile), which
+    landed outside the filter, so the band's own noise read +43 dB and the
+    signals on it hit the 60 dB cap: the tab showed a white slab. Against each
+    bin's own noise the passband's noise sits at ~5 dB (90% under 12) and JS8
+    traces stand 15-35 dB above it. The cost, as in JS8Call: a carrier that never
+    stops flattens away within a minute. A new dial frequency starts it afresh
+    (reset), or the old band's noise would set the new band's for a minute."""
+
+    def __init__(self):
+        self.hist = collections.deque(maxlen=FLAT_ROWS)
+        self.base = None
+        self.n = 0
+
+    def reset(self):
+        self.hist.clear()
+        self.base, self.n = None, 0
+
+    def row(self, db):
+        self.hist.append(db)
+        if self.base is None or self.n % FLAT_EVERY == 0:
+            k = int(FLAT_PCT * (len(self.hist) - 1))
+            self.base = [sorted(col)[k] for col in zip(*self.hist)]
+        self.n += 1
+        band = sorted(self.base)[len(self.base) * 3 // 4]
+        return [-1 if f < band - FILTER_DB else max(0, min(SPEC_RANGE_DB, round(d - f)))
+                for d, f in zip(db, self.base)]
 
 
 class CodecHold:
@@ -250,6 +290,7 @@ class Engine:
         self.rid, self.port, self.push = rid, port, push
         self.quiet = quiet or (lambda msg: None)   # to the bridge's listeners only (the waterfall)
         self._spec_at = 0.0
+        self._flat = Flatten()
         self.codec = codec                   # CodecHold, or None: the codec is left alone
         self.radio = radio or (lambda: {})   # the radio server's word: {"present", "tx_allowed", "tx_stopped", "tx"}
         self.armed = None                    # {"by": page, "until": monotonic, "until_utc": epoch} while it may send
@@ -471,6 +512,8 @@ class Engine:
 
     def _status(self, data):
         old = self.view()
+        if "radio_freq_khz" in data and data["radio_freq_khz"] != self.status.get("radio_freq_khz"):
+            self._flat.reset()               # another band's noise: learn it afresh
         self.status = {k: data.get(k) for k in STATUS_KEYS if k in data}
         new = self.view()
         if new["unsafe"] and new["unsafe"] != old["unsafe"]:
@@ -527,10 +570,11 @@ class Engine:
                 elif m.get("type") == "event" and m.get("event") == "spectrum":
                     now = time.monotonic()
                     if now - self._spec_at >= SPEC_EVERY_S:
-                        row = spectrum_row(data)
-                        if row is not None:
+                        db = spectrum_db(data)
+                        if db is not None:
                             self._spec_at = now
-                            self.quiet({"t": "js8_spectrum", "radio": self.rid, "hz": SPEC_HZ, "row": row})
+                            self.quiet({"t": "js8_spectrum", "radio": self.rid, "hz": SPEC_HZ,
+                                        "row": self._flat.row(db)})
                 elif m.get("type") == "event" and m.get("event") in ("message.frame", "message.decoded"):
                     f = frame_of(m["event"], data)
                     self.frames.append(f)

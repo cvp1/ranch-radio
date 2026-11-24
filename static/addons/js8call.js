@@ -12,12 +12,11 @@
 //                   while armed); on the right, Transmit: 5/10/30 min and
 //                   Arm TX, or the time left and Disarm; when it can't arm, why
 //   2 waterfall     the engine's audio, 0-3000 Hz, newest on top. The rows
-//                   arrive as dB above the row's floor (js8_bridge.py, 0..60);
-//                   the first cut painted 0..60 across the whole colour map,
-//                   so a JS8 signal (5-20 dB over the floor) came out dim
-//                   blue on dark blue and nothing was readable. Floor and
-//                   Range (kept per browser) now set what is black and what
-//                   is white, and redraw the kept history. Every decode is
+//                   arrive flattened (js8_bridge.Flatten: each bin in dB over
+//                   its own noise, 0..60; -1 outside the radio's filter, drawn
+//                   as a flat grey so the filter's edges show). Floor and
+//                   Range (kept per browser) set what is black and what is
+//                   white, and redraw the kept history. Every decode is
 //                   boxed where it was on the air: its offset, its speed's
 //                   width (Normal 50 Hz, Fast 80, Turbo 160, Slow 25) and its
 //                   on-air time, labelled with the sender. A strip above
@@ -72,7 +71,7 @@
 
   // ---------- waterfall geometry and colours
   const WF_TOP_HZ = 3000, WF_W = 600, WF_H = 240, LANE_MS = 5 * 60 * 1000, LANES = 3;
-  const WF_KEY = "js8.wf";
+  const WF_KEY = "js8.wf2";
   // The radio page's waterfall colours (mission.js LUT): dark blue to white.
   const WF_LUT = (() => {
     const stops = [[0, [4, 6, 10]], [0.22, [10, 30, 72]], [0.42, [14, 96, 140]], [0.58, [32, 200, 180]],
@@ -86,10 +85,14 @@
     }
     return lut;
   })();
-  // Floor: dB over the row's floor that is still black. Range: dB above the
-  // floor that reaches white. 4 and 24 put a 15 dB signal mid-map.
+  // Floor: dB over the noise that is still black. Range: dB above Floor that
+  // reaches white. Flattened, the band's noise sits at ~5 dB (90% under 12)
+  // and JS8 traces at 15-35 (an IC-7300, 2026-11-24): 6 and 20 keep the noise
+  // dark and put a 16 dB trace mid-map. Kept under a new key, so the 4/24
+  // tried against the unflattened rows doesn't carry over.
+  const WF_OFF = [14, 16, 22];                      // outside the radio's filter
   const wfCfg = (() => {
-    const d = { floor: 4, range: 24 };
+    const d = { floor: 6, range: 20 };
     try { return Object.assign(d, JSON.parse(localStorage.getItem(WF_KEY)) || {}); } catch { return d; }
   })();
 
@@ -353,6 +356,7 @@
       const k = (Math.max(0, Math.min(1, (v - lo) / span)) * 255) | 0;
       const o = (y * WF_W + x) * 4;
       let R = WF_LUT[k * 3], G = WF_LUT[k * 3 + 1], B = WF_LUT[k * 3 + 2];
+      if (v < 0) [R, G, B] = WF_OFF;
       if (r.tick && x % 6 < 3) { R = Math.max(R, 70); G = Math.max(G, 80); B = Math.max(B, 100); }   // a cycle line
       img.data[o] = R; img.data[o + 1] = G; img.data[o + 2] = B; img.data[o + 3] = 255;
     }
