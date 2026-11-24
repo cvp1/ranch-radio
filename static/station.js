@@ -481,8 +481,15 @@ const station = (() => {
   // Each radio's own socket: its state, config (tx_stopped, caps), Winlink arm
   // state, STOP TX latch and notices. It sends only Release TX and the bar's
   // STOP TX (PR 1b), both messages the radio's own page sends.
+  // Radios whose server went away while this page watched them (2026-11-24):
+  // their TX stays "Not known" until they are back. The station drops a gone
+  // radio from its list within a second, so without this the on-air line
+  // said "Not known" for that second and then "Nothing on the air", which is
+  // what #195 set out to stop. A radio never seen on this page isn't here.
+  const dropped = new Set();
   function syncLive() {
     for (const r of present()) {
+      dropped.delete(r.id);
       if (live[r.id]) continue;
       // helloWs: the socket whose hello is in (tuneFocus sends only on that
       // one). waiters: tuneFocus's answers in flight (PR 1d, 2026-11-19).
@@ -567,6 +574,7 @@ const station = (() => {
       if (!present().some((r) => r.id === id)) {
         const l = live[id];
         delete live[id];
+        dropped.add(id);
         if (l.ws) l.ws.close();
       }
     }
@@ -1276,6 +1284,7 @@ const station = (() => {
       if (!l?.helloWs) { unknown.push(r.name); continue; }
       if (S?.tx) on.push({ r, text: `${r.name} · ${fmtFreq(S.freq)} ${S.mode || ""}${S.data ? "-D" : ""}`, href: `#/${r.id}` });
     }
+    for (const r of radios) if (!r.present && dropped.has(r.id)) unknown.push(r.name);
     if (wlOn && wlArmed) on.push({ text: `Winlink · ${winlink.summary().text}`, href: "#/winlink" });
     for (const d of addons.list()) {
       const c = addons.card(d.name);
@@ -1284,7 +1293,7 @@ const station = (() => {
     el.classList.toggle("tx", on.length > 0);
     const unk = unknown.length
       ? `<div class="mc-air-row"><i class="st-dot warn"></i><span><b>Not known</b> for ${esc(unknown.join(", "))}` +
-        `<span class="mc-dim"> · no connection to ${unknown.length === 1 ? "its" : "their"} server yet</span></span></div>` : "";
+        `<span class="mc-dim"> · no connection to ${unknown.length === 1 ? "its" : "their"} server</span></span></div>` : "";
     if (!on.length && unknown.length) { el.innerHTML = unk; return; }
     if (!on.length) {
       const w = wlOn ? winlink.summary() : null;
