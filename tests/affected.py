@@ -18,7 +18,11 @@ A run is picked when a changed file is
     test's name starts with, so station_id_test is station_id.py's alone and
     a change to station.py or static/station.css does not pick it by name
     (station_page_test, with no station_page module, is still station's);
-  - under static/ (a page asset): every *_page_test, plus the above.
+  - under static/ (a page asset): every *_page_test, plus the above; but an
+    add-on's own asset (static/addons/NAME.js or .css) only the page tests
+    whose source names NAME: a page loads it only where that add-on is
+    configured (2026-11-24: js8call.css picked all ~40 page tests, and only
+    js8call_page_test ever loads it).
 A change to the harness itself (tests/run_all.sh, tests/ci/, requirements.txt,
 constraints.txt, install.sh, .github/) picks every run, except the CI split's own files
 (tests/ci/shard.py, tests/ci/durations.json): they decide which shard a run
@@ -192,6 +196,16 @@ def _owner(name, stems):
     return max(hits, key=len, default=None)
 
 
+def _names_addon(test, name):
+    """Whether a test's source names the add-on: its host block, its tab, its
+    asset path. Unreadable: True (keep the edge; a missed run is the worse error)."""
+    try:
+        text = (ROOT / test).read_text()
+    except (OSError, UnicodeDecodeError):
+        return True
+    return re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", text) is not None
+
+
 def select(changed):
     """{run name: the changed file that picked it} ("*" when the harness changed)."""
     changed = [rel(c) for c in changed]
@@ -217,6 +231,8 @@ def select(changed):
             elif stem and owner[name] == stem:
                 picked[name] = c
             elif c.startswith("static/") and name in page_tests:
+                if c.startswith("static/addons/") and not _names_addon(test, Path(c).stem):
+                    continue
                 picked[name] = c
     return {name: picked[name] for name, _ in all_runs if name in picked}
 
