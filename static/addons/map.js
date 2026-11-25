@@ -25,8 +25,13 @@
 // is placed in the copy of the world centred on you, so a path over the
 // Pacific is one line and not two halves.
 //
+// History: when the host file names a page ("history"), a History button
+// swaps the live map for it, framed from /map/history. That page is served
+// sandboxed in an opaque origin (addons/map.py HISTORY_CSP) and framed with a
+// sandbox here too: it reaches nothing of the station's.
+//
 // Server: addons/map.py ({map: {me, band, showing, grids, decodes}, heard,
-// rig, radios, hears_me, pota}, whole on hello and in parts as each changes).
+// rig, radios, hears_me, pota, history}, whole on hello and in parts as each changes).
 // Uses common.js (esc, store) and send().
 
 const rrMapMath = (() => {
@@ -120,6 +125,7 @@ const rrMapMath = (() => {
   const FX_MAX = 40;                             // decodes animated per push (a busy band gives a hundred a cycle)
   const keep = typeof store !== "undefined" ? store : { get: (k, d) => d, set() {} };
 
+  let historyOn = false;                         // the History view instead of the live map
   let body = null, snap = {}, z = 3, cx = null, cy = null, w = 0, h = 0, built = false, drag = null, centred = false;
   let sel = null, skew = 0, stations = [], me = null, timer = null, fitted = false;
   let layers = { hear: true, heard: true, paths: true, grids: true, pota: true, night: true, ...keep.get("map.layers", {}) };
@@ -573,11 +579,39 @@ const rrMapMath = (() => {
 
   function refresh() { model(); bar(); list(); card(); draw(); }
 
+  function historyChip() {
+    return snap.history && snap.history.ok ? `<button class="chip chip-mini" data-history title="Everything heard and hearing you, every medium, all time">History</button>` : "";
+  }
+  // The History view: the configured page in a sandboxed frame (no allow-same-origin: an opaque origin).
+  function historyView() {
+    const hs = snap.history || {};
+    body.innerHTML = `<div class="rm-bar stat"><button class="chip chip-mini" data-live title="Back to the live map">← Live map</button>
+        <span class="rm-hist-note">${hs.ok ? `History page built ${hs.built ? ago(hs.built) : "–"}` : esc(hs.why || "no History page")}</span></div>
+      ${hs.ok ? `<iframe class="rm-history" src="map/history" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" title="History"></iframe>` : ""}`;
+    $$("[data-live]").onclick = () => { historyOn = false; built = false; render(); };
+  }
+
   function render() {
     if (!body) return;
-    if (snap.error) { body.innerHTML = `<div class="st-empty">${esc(snap.error)}</div>`; built = false; return; }
+    if (historyOn) { historyView(); built = false; return; }
+    if (snap.error) {
+      body.innerHTML = `<div class="st-empty">${esc(snap.error)}${historyChip() ? `<div style="margin-top:8px">${historyChip()}</div>` : ""}</div>`;
+      const hb = $$("[data-history]"); if (hb) hb.onclick = () => { historyOn = true; render(); };
+      built = false; return;
+    }
     if (!built) build();
+    syncHistoryChip();
     refresh();
+  }
+  // The History button follows the state each render: a page that appears later gets its button.
+  function syncHistoryChip() {
+    const ctl = $$(".rm-ctl"); if (!ctl) return;
+    const have = ctl.querySelector("[data-history]"), want = !!(snap.history && snap.history.ok);
+    if (have && !want) have.remove();
+    if (!have && want) {
+      ctl.insertAdjacentHTML("beforeend", historyChip());
+      ctl.querySelector("[data-history]").onclick = () => { historyOn = true; built = false; render(); };
+    }
   }
 
   function take(m) {
@@ -597,6 +631,7 @@ const rrMapMath = (() => {
       delete snap.error;
       take(m);
       if (!body) return;
+      if (historyOn) return;                                         // the History frame needs nothing live
       if (!built) { render(); return; }
       if ("rig" in m && !("map" in m)) { drawAir(); return; }       // keyed or unkeyed: the marker, the beam, the panel
       render();

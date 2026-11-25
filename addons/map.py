@@ -28,11 +28,25 @@ Options (the host file's addons block):
 
     "map": {"enabled": true}
     "map": {"enabled": true, "pota": false}      no POTA spots
+    "map": {"enabled": true, "history": "~/path/to/two-way.html"}
+
+**History** ("history": a file path): a page of your own that covers longer than
+the hour this map keeps (e.g. every medium you hear and that hears you, built
+daily elsewhere), shown on the tab's History view and served at /map/history.
+It is whatever that file holds, often inline script and text heard over the
+air, so it is never served as part of the station: the response carries its
+own policy, a CSP sandbox WITHOUT allow-same-origin. The browser runs it in an
+opaque origin: no station cookies, no station API (a request from it says
+"Origin: null", which webguard refuses), no forms, no fetches; images (map
+tiles) and links out only; framed only by the station. The file is read on
+each request (rebuilt daily, nothing cached), at most HISTORY_MAX_BYTES.
 """
 import asyncio
 import logging
 import os
 import time
+
+from aiohttp import web
 
 from . import Addon
 
@@ -44,6 +58,20 @@ HEARD_KEEP_S = 3600              # a station you heard stays on the map this lon
 HEARD_MAX = 500                  # and at most this many (the oldest go first)
 TICK_S = 20                      # how often a new PSKReporter answer is looked for
 RIG_PUSH_S = 0.1                 # what is on the air goes to the pages at most this often
+HISTORY_MAX_BYTES = 30 << 20     # the History page is read whole; past this it is refused, not truncated
+# The History page's own policy (see the docstring): sandboxed without allow-same-origin, so its
+# inline script runs in an opaque origin that can reach nothing of the station's.
+HISTORY_CSP = "; ".join((
+    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
+    "default-src 'none'",
+    "script-src 'unsafe-inline'",
+    "style-src 'unsafe-inline'",
+    "img-src data: https:",
+    "connect-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'self'",
+))
 NO_PSK = ('To see who hears you, switch on the Propagation add-on and give it your callsign '
           '("pskreporter": {"call": "N0CALL"}): the stations come from PSKReporter.')
 BANDS_KHZ = (("160m", 1800, 2000), ("80m", 3500, 4000), ("60m", 5250, 5450), ("40m", 7000, 7300), ("30m", 10100, 10150),
@@ -84,6 +112,8 @@ class Map(Addon):
     def __init__(self, host, opts):
         super().__init__(host, opts)
         self.want_pota = opts.get("pota", True) is not False
+        h = opts.get("history")
+        self.history = os.path.expanduser(h) if isinstance(h, str) and h else None
         self.pota, self.pota_at, self.pota_error = [], 0.0, None
         self.showing = None             # None: the current band; "all"; or a band name
         self.heard = {}                 # (call, band) -> the station as last heard (HEARD_KEEP_S)
@@ -201,11 +231,42 @@ class Map(Addon):
         return {"pota": [s for s in self.pota if band == "all" or s["band"] == band] if self.want_pota else None,
                 "pota_age": round(time.time() - self.pota_at) if self.pota_at else None, "pota_error": self.pota_error}
 
+    def _history_part(self):
+        """Whether the History view has a page to show, and when it was built."""
+        if not self.history:
+            return {"history": None}
+        try:
+            st = os.stat(self.history)
+        except OSError:
+            return {"history": {"ok": False, "why": "the History page isn't there yet"}}
+        return {"history": {"ok": True, "built": int(st.st_mtime)}}
+
     def snapshot(self):
         if self._sync() is None:
-            return {"error": "the logbook sync isn't running on this station, so there's no map data"}
+            return {"error": "the logbook sync isn't running on this station, so there's no map data",
+                    **self._history_part()}
         part = self._map_part()
-        return {**part, **self._rig_part(), **self._hears_part(), **self._pota_part(part["map"]["showing"])}
+        return {**part, **self._rig_part(), **self._hears_part(), **self._pota_part(part["map"]["showing"]),
+                **self._history_part()}
+
+    def http(self, app, authorised):
+        async def history(request):
+            if not self.history:
+                return web.json_response({"error": "no History page is set (the host file's addons.map.history)"},
+                                         status=404)
+            try:
+                size = os.path.getsize(self.history)
+                if size > HISTORY_MAX_BYTES:
+                    return web.json_response({"error": f"the History page is {size >> 20} MB, over the "
+                                                       f"{HISTORY_MAX_BYTES >> 20} MB this serves"}, status=413)
+                with open(self.history, "rb") as f:
+                    body = f.read(HISTORY_MAX_BYTES + 1)
+            except OSError:
+                return web.json_response({"error": "the History page isn't there yet"}, status=404)
+            return web.Response(body=body, content_type="text/html", charset="utf-8",
+                                headers={"Content-Security-Policy": HISTORY_CSP, "Cache-Control": "no-store"})
+
+        app.router.add_get("/map/history", history)
 
     def push(self):
         """New decodes on the roster (station.roster_changed)."""

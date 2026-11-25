@@ -126,3 +126,7 @@
    and the wall takes no input. The on-air panel stays: it is display. */
 .rm-wall :is(.rm-bar, .rm-ctl, .rm-list, .rm-card) { display: none !important; }
 .rm-wall .rm-wrap { cursor: default; }
+
+/* History view (addons/map.py "history"): the configured page, framed sandboxed */
+.rm-history { display: block; width: 100%; height: calc(100vh - 210px); min-height: 440px; border: 0; border-radius: 6px; background: #14171c; }
+.rm-hist-note { margin-left: 8px; color: var(--muted, #9aa3ad); font-size: 12.5px; }
