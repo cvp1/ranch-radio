@@ -167,6 +167,14 @@ check("  and an explicit observe: false wins",
       "--igate-observe" in render.hub_argv({**aprs_h, "packet": {**aprs_h["packet"], "igate": {**aprs_h["packet"]["igate"],
                                             "observe": False}}}, "p", "/r", lambda x: x), False)
 
+# A trailing NOGATE (or RFONLY) keeps our messages off APRS-IS so a reply proves RF; it is not a hop.
+ng_h = copy.deepcopy(aprs_h)
+ng_h["packet"]["aprs"]["path"] = ["WIDE1-1", "WIDE2-1", "NOGATE"]
+validate(ng_h)
+ng = render.hub_argv({**ng_h, "packet": {k: v for k, v in ng_h["packet"].items() if k != "igate"}}, "p", "/r", lambda x: x)
+check("a NOGATE path renders and the hub reads it back",
+      tnc_hub.parse_args(ng[2:]).aprs_path, ["WIDE1-1", "WIDE2-1", "NOGATE"])
+
 probe_h = copy.deepcopy(aprs_h)
 probe_h["packet"]["aprs"]["probe"] = {"target": "WXBOT", "text": "wx 85602"}
 pargv = render.hub_argv(probe_h, "/usr/bin/python3", "/r", lambda x: x)
@@ -185,6 +193,9 @@ refused("aprs.owned_calls with a shell character", aprs_h, aprs_set("owned_calls
 refused("aprs.firmware_acks a string", aprs_h, aprs_set("firmware_acks", "false"))
 refused("aprs.path of three hops", aprs_h, aprs_set("path", ["WIDE1-1", "WIDE2-2", "WIDE3-3"]))
 refused("aprs.path with an option in it", aprs_h, aprs_set("path", ["--tx"]))
+refused("aprs.path with NOGATE before a hop", aprs_h, aprs_set("path", ["WIDE1-1", "NOGATE", "WIDE2-1"]))
+refused("aprs.path with two markers", aprs_h, aprs_set("path", ["WIDE2-1", "NOGATE", "RFONLY"]))
+refused("aprs.path of three hops behind a marker", aprs_h, aprs_set("path", ["WIDE1-1", "WIDE2-1", "WIDE3-1", "NOGATE"]))
 refused("aprs.ack_reserve not below ui_total_per_min", aprs_h, aprs_set("ack_reserve", 12))
 refused("aprs.ui_total_per_min over the overall 300", aprs_h, aprs_set("ui_total_per_min", 301))
 refused("aprs.msg_per_min 0", aprs_h, aprs_set("msg_per_min", 0))
