@@ -2078,8 +2078,9 @@ def parse_args(argv=None):
         if ax25.base_call(c) not in allow:
             p.error(f"--aprs-owned-calls {c}: not admitted by --allow-calls ({', '.join(allow)})")
     a.aprs_path = [x.strip().upper() for x in a.aprs_path.split(",") if x.strip()]
-    if len(a.aprs_path) > 2:
-        p.error("--aprs-path: at most 2 hops (WIDE1-1,WIDE2-1)")
+    marks = [i for i, x in enumerate(a.aprs_path) if x in ("NOGATE", "RFONLY")]   # never gated (render.APRS_NO_GATE)
+    if len(a.aprs_path) - len(marks) > 2 or marks not in ([], [len(a.aprs_path) - 1]):
+        p.error("--aprs-path: at most 2 hops, optionally ending in NOGATE or RFONLY (WIDE1-1,WIDE2-1,NOGATE)")
     for x in a.aprs_path:
         ax25.parse_call(x)
     if a.aprs_probe_target:

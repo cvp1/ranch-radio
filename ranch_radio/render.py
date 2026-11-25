@@ -67,6 +67,19 @@ class HostError(ValueError):
     pass
 
 
+# A frame carrying one of these is never gated to APRS-IS (igate.NO_GATE, APRS spec): it doesn't
+# hop, so it rides after the hops and doesn't count against the two. tnc_hub.py applies the same rule.
+APRS_NO_GATE = ("NOGATE", "RFONLY")
+
+
+def aprs_path_ok(path):
+    """At most 2 hops, plus at most one no-gate marker, last."""
+    if not isinstance(path, list) or not all(isinstance(x, str) for x in path):
+        return False
+    marks = [i for i, x in enumerate(path) if x.upper() in APRS_NO_GATE]
+    return len(path) - len(marks) <= 2 and (not marks or marks == [len(path) - 1])
+
+
 # ---------------------------------------------------------------- value rules
 #
 # Host-file values end up on command lines: a Linux unit's ExecStart is one
@@ -193,8 +206,9 @@ def _validate_aprs(h, pk):
             raise HostError(f"{host}: packet.aprs.owned_calls {c!r} is not admitted by packet.allow_calls "
                             f"({', '.join(sorted(allow))})")
     path = ap.get("path")
-    if path is not None and (not isinstance(path, list) or len(path) > 2):
-        raise HostError(f"{host}: packet.aprs.path must be a list of at most 2 hops, like [\"WIDE1-1\", \"WIDE2-1\"]")
+    if path is not None and not aprs_path_ok(path):
+        raise HostError(f"{host}: packet.aprs.path must be a list of at most 2 hops, optionally ending in NOGATE or "
+                        f"RFONLY, like [\"WIDE1-1\", \"WIDE2-1\"] or [\"WIDE1-1\", \"WIDE2-1\", \"NOGATE\"]")
     for k, (_, typ, lo, hi) in APRS_CAPS.items():
         if k in ap:
             v = ap[k]
