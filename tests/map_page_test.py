@@ -234,8 +234,9 @@ h.rigs_view = lambda: [{"id": "ic7300", "name": "IC-7300", "present": True, "con
 s2.rig_view = lambda: {"alive": True, "transmitting": True, "dx_call": "JA5XYZ"}
 snap3 = m2.snapshot()
 check("  with it on and a callsign: its stations, and no hint", (snap3["hears_me"]["receivers"][0]["call"], snap3["hears_me_why"]), ("JK1AKC", None))
-check("  the snapshot is whole: the map, who you hear, who hears you, what is on the air, POTA",
-      sorted(snap3), sorted(["now", "map", "heard", "rig", "radios", "hears_me", "hears_me_why", "pota", "pota_age", "pota_error"]))
+check("  the snapshot is whole: the map, who you hear, who hears you, what is on the air, POTA, History",
+      sorted(snap3), sorted(["now", "map", "heard", "rig", "radios", "hears_me", "hears_me_why", "pota", "pota_age", "pota_error",
+                             "history"]))
 h.sent.clear()
 m2.push_hears()
 m2.push_hears()
@@ -435,6 +436,26 @@ try:
     check("    and stays there while it is selected", json.loads(b.js(LIST))[0], "rx")
     b.js("document.querySelector('#mapbox .rm-card [data-x]').click(); __impl.hello(" + json.dumps(no_hb) + ")")
     check("    closed, the next snapshot goes back to the operator's tab", json.loads(b.js(LIST))[0], "both")
+    # ---- History (addons/map.py "history"): a button only when there is a page; the page framed sandboxed
+    HIST = """JSON.stringify({btn: !!document.querySelector('#mapbox [data-history]'),
+      frame: (() => { const f = document.querySelector('#mapbox iframe.rm-history');
+                      return f ? {src: f.getAttribute('src'), sandbox: f.getAttribute('sandbox')} : null; })(),
+      live: !!document.querySelector('#mapbox [data-live]'), map: !!document.querySelector('#mapbox .rm-wrap')})"""
+    b.js("__impl.hello(" + json.dumps({**no_hb, "history": None}) + ")")
+    check("history: no page set, no History button", json.loads(b.js(HIST))["btn"], False)
+    b.js("__impl.hello(" + json.dumps({**no_hb, "history": {"ok": True, "built": 1795600000}}) + ")")
+    check("  a page set: the button is there", json.loads(b.js(HIST))["btn"], True)
+    b.js("document.querySelector('#mapbox [data-history]').click()")
+    hv = json.loads(b.js(HIST))
+    check("  clicked: the page in a frame from /map/history, the live map gone, a way back",
+          (hv["frame"]["src"], hv["map"], hv["live"]), ("map/history", False, True))
+    check("  the frame is sandboxed WITHOUT allow-same-origin (an opaque origin)",
+          ("allow-scripts" in hv["frame"]["sandbox"], "allow-same-origin" in hv["frame"]["sandbox"]), (True, False))
+    b.js("__impl.event({map: " + json.dumps(no_hb["map"]) + "})")
+    check("  live updates leave the History view alone", json.loads(b.js(HIST))["frame"] is not None, True)
+    b.js("document.querySelector('#mapbox [data-live]').click()")
+    hv = json.loads(b.js(HIST))
+    check("  '← Live map': the map is back, the frame gone", (hv["map"], hv["frame"]), (True, None))
 finally:
     b.close()
 

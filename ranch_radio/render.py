@@ -156,6 +156,7 @@ RULES = [
     (("wavelog_cat", "qsy", "station_url"), TOKEN), (("wavelog_cat", "qsy", "origins", "*"), TOKEN),
     (("js8", "bin"), TOKEN), (("js8", "label"), LABEL), (("js8", "call"), CALL), (("js8", "grid"), GRID),
     (("js8", "audio_in"), TEXT), (("js8", "audio_out"), TEXT),
+    (("addons", "map", "history"), TOKEN),   # the Map tab's History page (addons/map.py): a file path
     (("addons", "*"), None),     # add-on names: checked below
 ]
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"), ("radios", "*", "js8_port"),
