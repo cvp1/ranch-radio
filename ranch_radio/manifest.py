@@ -9,8 +9,11 @@ modules it leans on, and the things outside Python it needs on the machine.
 Recipes ("auto" on a need): a shell command `doctor --fix` may run as you,
 never as root: a venv, a pip install, the ardop build, brew. {repo}, {path}
 (the need's resolved path), {dir} (its directory), {python} / {venv} (the
-need's python and its venv) and {host_python} are filled in. A need with no
-recipe, or one needing root, is only printed.
+need's python and its venv), {host_python} and {pip} are filled in. {pip} is
+how to install into the need's python (ranch_radio/pip.py: its own pip, or
+uv's aimed at it when it is a venv without pip); a recipe using it is left
+out when nothing can. A need with no recipe, or one needing root, is only
+printed.
 
 Per module:
     label     its short name on the page (the catalog's title is the long one)
@@ -218,7 +221,7 @@ MANIFESTS = {
                    "fix": "install BlueZ (needed for a Bluetooth TNC)"},
                   # macOS reaches the radio's RFCOMM channel through IOBluetooth (bt_rfcomm.py).
                   {"pymod": "IOBluetooth", "tnc": "bt:", "os": "macos",
-                   "auto": "{host_python} -m pip install -q pyobjc-framework-IOBluetooth",
+                   "auto": "{pip} install -q pyobjc-framework-IOBluetooth",
                    "fix": "~/ranch-radio/.venv/bin/pip install pyobjc-framework-IOBluetooth (a Bluetooth TNC on a Mac)"},
                   {"bin": "direwolf", "key": "direwolf", "default": "direwolf", "tnc": "direwolf",
                    "fix": "install Direwolf (brew install direwolf, or your package manager)"}],
@@ -344,7 +347,7 @@ MANIFESTS = {
         # core never imports it (picture.py, sstv.py, wefax.py are loaded
         # by this add-on only).
         "needs": [{"pymod": "numpy", "fix": "pip install numpy (into the station's Python)",
-                   "auto": "{host_python} -m pip install -q numpy"}],
+                   "auto": "{pip} install -q numpy"}],
     },
     # The logbook sync (logsync.py): a station module, not an add-on. doctor
     # adds its own checks (doctor.logsync_checks): TQSL answers -v, the
@@ -405,7 +408,7 @@ CORE = {
                         {"bin": "aplay", "default": "aplay",
                          "fix": "install alsa-utils (sudo pacman -S alsa-utils, or sudo apt install alsa-utils)"}],
               "macos": [{"pymod": "sounddevice", "fix": "pip install sounddevice (into the host's python)",
-                         "auto": "{host_python} -m pip install -q sounddevice"}]},
+                         "auto": "{pip} install -q sounddevice"}]},
     "https": {"bin": "openssl", "default": "openssl", "fix": "install openssl"},
 }
 

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import service
+from . import pip as pipmod
 
 STATE = ".local/state/ranch-radio/update.json"
 
@@ -219,9 +220,11 @@ def requirements(root, h, log=print):
                        f"then run the update again")
     log(f"packages: installing {'; '.join(missing)}")
     pip = shlex.split(os.environ["RANCH_RADIO_PIP"]) if os.environ.get("RANCH_RADIO_PIP") else \
-        [_python(h), "-m", "pip"]
+        pipmod.argv(_python(h))
+    if pip is None:
+        return False, pipmod.why_not(_python(h))
     try:
-        r = subprocess.run(pip + install_args(root),
+        r = subprocess.run(pip + pipmod.install_args(pip, install_args(root)),
                            capture_output=True, text=True, timeout=900)
         err = (r.stderr or r.stdout).strip()[-600:]
     except (OSError, subprocess.TimeoutExpired) as e:
