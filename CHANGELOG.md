@@ -5,6 +5,10 @@ All notable changes to Ranch Radio are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- JS8 engine (`+rr.4`): long messages are no longer cut to their first two frames. jf8call force-completed every multi-frame message 60 s after its first frame, while it was still being sent (anything past ~5 Normal frames), and grouped frames in fixed 10 Hz buckets, so a drifting rig lost every frame past a bucket edge. A message now ends after 8 frame periods of silence (10 minutes at most), and each frame joins the nearest open message within 10 Hz. Seen on air 2026-11-25: an 8-frame directed message arrived as `GOOD DEAL. YOU'RE`. `js8_engine.py` now needs `+rr.4`; the station keeps up to 1000 characters of a message (was 200).
+
 ### Security
 
 - Every page the radio server, the station and the packet hub send carries a Content-Security-Policy (only the app's own scripts run: no inline script, no eval, no plugins), `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`. A name or comment heard over the air that slipped past escaping can no longer run script on the LAN page. The station and packet pages' last inline scripts moved to `static/station_boot.js` and `static/packet.js`.
@@ -1091,6 +1095,10 @@ full test suite passed on, to point people at and to come back to.
   station fails with a clear message if the shared port can't bind.
 - Safe `ruff` auto-fixes across the code (import order, `TimeoutError`,
   `re.IGNORECASE`, `removeprefix` and `removesuffix`). No behavior change.
+
+### Fixed
+
+- JS8 engine (`+rr.4`): long messages are no longer cut to their first two frames. jf8call force-completed every multi-frame message 60 s after its first frame, while it was still being sent (anything past ~5 Normal frames), and grouped frames in fixed 10 Hz buckets, so a drifting rig lost every frame past a bucket edge. A message now ends after 8 frame periods of silence (10 minutes at most), and each frame joins the nearest open message within 10 Hz. Seen on air 2026-11-25: an 8-frame directed message arrived as `GOOD DEAL. YOU'RE`. `js8_engine.py` now needs `+rr.4`; the station keeps up to 1000 characters of a message (was 200).
 
 ### Security
 

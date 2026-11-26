@@ -1,0 +1,506 @@
+From f953653654de5adc88e31ecb529440eef130836e Mon Sep 17 00:00:00 2001
+From: cvp1 <54213066+cvp1@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 17:08:44 -0700
+Subject: [PATCH] GFSK8 assembly: expire on silence, follow drift; VERSION
+ 0.7.1+rr.4
+
+Off air 2026-11-25 (20 m, Normal): an 8-frame directed message came
+out as its first two frames, the rest as loose pieces. Two rules in the
+inline assembler:
+
+- Buffers were force-completed 60 s after their FIRST frame (checked every
+  15 s), so any Normal message longer than ~5 frames was cut mid-send. Now
+  a buffer ends on 8 frame periods of silence, or 600 s in all.
+- Buffers were keyed by qRound(freq / 10): a rig drifting across a bucket
+  edge (2096.9 -> 2092.3 Hz) lost every frame past it. Now a frame joins
+  the nearest open buffer within 10 Hz of its last-heard offset.
+
+The assembly moves to src/frameassembler.h (Qt Core only) with
+cpp_tests/test_frameassembler.cpp replaying the off-air frames; the test
+fails against both old rules.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt                    |   8 ++
+ VERSION                           |   2 +-
+ cpp_tests/test_frameassembler.cpp | 127 +++++++++++++++++++++++++++++
+ src/frameassembler.h              | 128 ++++++++++++++++++++++++++++++
+ src/mainwindow.cpp                |  93 +++++++++-------------
+ src/mainwindow.h                  |  15 ++--
+ 6 files changed, 308 insertions(+), 65 deletions(-)
+ create mode 100644 cpp_tests/test_frameassembler.cpp
+ create mode 100644 src/frameassembler.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e254736..be39954 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -284,6 +284,7 @@ set(HEADERS
+     src/messageinbox.h
+     src/hamlibcontroller.h
+     src/jf8message.h
++    src/frameassembler.h
+     src/messagemodel.h
+     src/waterfallwidget.h
+     src/audioinput.h
+@@ -429,6 +430,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cpp_tests/test_headless_core.cpp")
+         src/checksum.h
+         src/jf8message.cpp
+         src/jf8message.h
++        src/frameassembler.h
+         src/gfsk8_modem.cpp
+         src/gfsk8_modem.h
+     )
+@@ -455,3 +457,9 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cpp_tests/test_headless_core.cpp")
+     add_test(NAME headless_core COMMAND test_headless_core)
+ endif()
+ 
++# FrameAssembler (header-only, Qt Core): multi-frame assembly replayed from off-air frames.
++add_executable(test_frameassembler cpp_tests/test_frameassembler.cpp src/frameassembler.h)
++target_include_directories(test_frameassembler PRIVATE "${CMAKE_SOURCE_DIR}/src")
++target_link_libraries(test_frameassembler PRIVATE Qt6::Core)
++add_test(NAME frameassembler COMMAND test_frameassembler)
++
+diff --git a/VERSION b/VERSION
+index febd904..e65936d 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.7.1+rr.3
++0.7.1+rr.4
+diff --git a/cpp_tests/test_frameassembler.cpp b/cpp_tests/test_frameassembler.cpp
+new file mode 100644
+index 0000000..6c9e459
+--- /dev/null
++++ b/cpp_tests/test_frameassembler.cpp
+@@ -0,0 +1,127 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// FrameAssembler, replaying frames heard off air (2026-11-25, 20 m, Normal):
++// a TS-480 drifted 2096.9 -> 2092.3 Hz across a 13-frame-class message,
++// and its sender's sign-off lost five frames to QSB. The old assembler published the
++// first two frames of each. Checks run in Release too (no assert()).
++
++#include <cstdio>
++#include <cstdlib>
++#include "frameassembler.h"
++
++static int failures = 0;
++#define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); ++failures; } } while (0)
++
++struct F { int t; float hz; char kind; const char *text; };   // kind: F(irst) M(iddle) L(ast)
++
++// Feed frames, running expire() every 5 s as the 5 s timer does. Returns the
++// messages published, completed or incomplete, in order.
++static QList<QString> replay(FrameAssembler &a, const QList<F> &frames, qint64 t0, int runFor)
++{
++    QList<QString> out;
++    int next = 0;
++    for (int t = 0; t <= runFor; ++t) {
++        if (t % 5 == 0)
++            for (const auto &b : a.expire(t0 + t))
++                out.append(QStringLiteral("~") + b.text);   // ~ marks incomplete
++        while (next < frames.size() && frames[next].t == t) {
++            const F &f = frames[next++];
++            const QString s = QString::fromLatin1(f.text);
++            if (f.kind == 'F') {
++                if (auto st = a.first(f.hz, s, -10, 0, t0 + t)) out.append(QStringLiteral("~") + st->text);
++            } else if (f.kind == 'M') {
++                a.middle(f.hz, s, t0 + t);
++            } else if (auto w = a.last(f.hz, s, t0 + t)) {
++                out.append(w->text);
++            }
++        }
++    }
++    return out;
++}
++
++int main()
++{
++    const qint64 t0 = 1764114975;   // 2026-11-25T23:56:15Z
++
++    {   // 1. Drift across the old 10 Hz bucket edge (2095 Hz), 105 s long.
++        FrameAssembler a;
++        const QList<F> fr = {
++            {0, 2096.875f, 'F', "K0ABC: KE2XYZ  "},
++            {15, 2095.875f, 'M', "GOOD DEAL. YOU'RE "},
++            {30, 2093.25f, 'M', "DOING PRETTY WELL INTO "},
++            {45, 2092.25f, 'M', "THE MIDWEST. BAND CDX "},
++            {60, 2094.75f, 'M', "AREN'T GREAT TONIGHT--"},
++            {75, 2095.25f, 'M', "I COULDN'T GET A WINL"},
++            {90, 2095.25f, 'M', "INK CONNECTION FOR THE "},
++            {105, 2094.75f, 'L', "LIFE OF ME."},
++        };
++        const auto out = replay(a, fr, t0, 400);
++        CHECK(out.size() == 1);
++        CHECK(!out.isEmpty() && out[0] == QStringLiteral(
++            "K0ABC: KE2XYZ  GOOD DEAL. YOU'RE DOING PRETTY WELL INTO THE MIDWEST. BAND CDX "
++            "AREN'T GREAT TONIGHT--I COULDN'T GET A WINLINK CONNECTION FOR THE LIFE OF ME."));
++        CHECK(a.size() == 0);
++    }
++
++    {   // 2. The sign-off: five frames lost (a 90 s gap), then the rest and its Last.
++        FrameAssembler a;
++        const QList<F> fr = {
++            {0, 2099.5f, 'F', "K0ABC: KE2XYZ  "},
++            {15, 2099.0f, 'M', "THX FOR THE QSO, "},
++            {105, 2100.5f, 'M', "RADIO KENWOOD TS-480"},
++            {120, 2100.0f, 'M', "HX ANTENNA EFHW POWER "},
++            {150, 2099.5f, 'M', "QTH NOWHERE, GRID "},
++            {165, 2099.0f, 'L', "FN31 73!"},
++        };
++        const auto out = replay(a, fr, t0, 400);
++        CHECK(out.size() == 1);
++        CHECK(!out.isEmpty() && out[0].startsWith(QStringLiteral("K0ABC: KE2XYZ  THX FOR THE QSO, RADIO")));
++        CHECK(!out.isEmpty() && out[0].endsWith(QStringLiteral("FN31 73!")));
++    }
++
++    {   // 3. Silence ends a message: published incomplete, but not before 8 frame periods.
++        FrameAssembler a;
++        a.first(1500.0f, QStringLiteral("W1AW: N0CALL  "), -5, 0, t0);
++        a.middle(1500.0f, QStringLiteral("HELLO "), t0 + 15);
++        CHECK(a.expire(t0 + 15 + 120).isEmpty());          // exactly 8 x 15 s: still open
++        const auto gone = a.expire(t0 + 15 + 121);
++        CHECK(gone.size() == 1 && gone[0].text == QStringLiteral("W1AW: N0CALL  HELLO "));
++        CHECK(a.size() == 0);
++    }
++
++    {   // 4. Two stations 40 Hz apart stay apart.
++        FrameAssembler a;
++        a.first(1000.0f, QStringLiteral("AA1AA: "), 0, 0, t0);
++        a.first(1040.0f, QStringLiteral("BB2BB: "), 0, 0, t0);
++        a.middle(1003.0f, QStringLiteral("ONE "), t0 + 15);
++        a.middle(1038.0f, QStringLiteral("TWO "), t0 + 15);
++        auto x = a.last(1001.0f, QStringLiteral("END"), t0 + 30);
++        auto y = a.last(1041.0f, QStringLiteral("END"), t0 + 30);
++        CHECK(x && x->text == QStringLiteral("AA1AA: ONE END"));
++        CHECK(y && y->text == QStringLiteral("BB2BB: TWO END"));
++    }
++
++    {   // 5. A new First where a message never got its Last flushes the old one.
++        FrameAssembler a;
++        a.first(1200.0f, QStringLiteral("CC3CC: "), 0, 0, t0);
++        a.middle(1200.0f, QStringLiteral("CUT "), t0 + 15);
++        auto st = a.first(1202.0f, QStringLiteral("CC3CC: "), 0, 0, t0 + 60);
++        CHECK(st && st->text == QStringLiteral("CC3CC: CUT "));
++        CHECK(a.size() == 1);
++        CHECK(!a.middle(1300.0f, QStringLiteral("X"), t0 + 75));   // nothing open near 1300
++    }
++
++    {   // 6. Nothing assembles forever.
++        FrameAssembler a;
++        a.first(900.0f, QStringLiteral("DD4DD: "), 0, 4, t0);      // Slow: 30 s frames
++        for (int t = 30; t <= 600; t += 30) a.middle(900.0f, QStringLiteral("."), t0 + t);
++        CHECK(a.expire(t0 + 600).isEmpty());
++        CHECK(a.expire(t0 + 601).size() == 1);
++    }
++
++    if (failures) {
++        std::fprintf(stderr, "%d frameassembler check(s) FAILED\n", failures);
++        return 1;
++    }
++    std::puts("All frameassembler tests PASSED.");
++    return 0;
++}
+diff --git a/src/frameassembler.h b/src/frameassembler.h
+new file mode 100644
+index 0000000..0c38fee
+--- /dev/null
++++ b/src/frameassembler.h
+@@ -0,0 +1,128 @@
++#pragma once
++// GFSK8 multi-frame assembly: First, Middle..., Last frames of one message,
++// joined by the sender's audio offset.
++//
++// Two rules the inline version in MainWindow got wrong (off air, 2026-11-25:
++// a 13-frame Normal message from a drifting TS-480 came out as its first two
++// frames, the rest as loose pieces):
++//
++//   * A buffer expires on SILENCE, not on age. The old code force-completed
++//     every buffer 60 s after its FIRST frame, so any Normal message longer
++//     than ~5 frames (15 s each) was cut while it was still being sent.
++//     Now: SILENCE_FRAMES frame periods with nothing heard, or MAX_AGE_S in all.
++//   * A frame joins the NEAREST open buffer within NEAR_HZ of the offset that
++//     buffer last heard, and the buffer follows the drift. The old code keyed
++//     buffers by qRound(freq / 10), a fixed 10 Hz bucket: a rig drifting across
++//     a bucket edge (2096.9 -> 2092.3 Hz) lost every frame on the far side.
++
++#include <QList>
++#include <QString>
++#include <QtGlobal>
++#include <cmath>
++#include <optional>
++
++class FrameAssembler {
++public:
++    static constexpr float  NEAR_HZ        = 10.0f;  // as JS8Call's receive threshold
++    static constexpr int    SILENCE_FRAMES = 8;      // frames lost to QSB (90 s seen off air) don't end a message
++    static constexpr qint64 MAX_AGE_S      = 600;    // nothing assembles forever
++
++    struct Buffer {
++        QString text;          // rawText of the frames so far
++        qint64  firstSec = 0;
++        qint64  lastSec  = 0;
++        float   freqHz   = 0;  // the offset last heard (follows drift)
++        float   firstHz  = 0;
++        int     snrDb    = 0;  // first frame's
++        int     submode  = 0;
++    };
++
++    // Seconds one frame takes in a submode (0 Normal, 1 Fast, 2 Turbo, 4 Slow, 8 Ultra).
++    static int periodSec(int submode)
++    {
++        switch (submode) {
++            case 1: return 10;
++            case 2: return 6;
++            case 4: return 30;
++            case 8: return 4;
++            default: return 15;
++        }
++    }
++
++    // A First frame. A buffer already open near this offset is a message whose
++    // Last frame was never heard: it is returned, to be published as incomplete.
++    std::optional<Buffer> first(float freqHz, const QString &text, int snrDb, int submode, qint64 now)
++    {
++        std::optional<Buffer> flushed;
++        const int i = nearest(freqHz);
++        if (i >= 0)
++            flushed = m_bufs.takeAt(i);
++        Buffer b;
++        b.text = text;
++        b.firstSec = b.lastSec = now;
++        b.freqHz = b.firstHz = freqHz;
++        b.snrDb = snrDb;
++        b.submode = submode;
++        m_bufs.append(b);
++        return flushed;
++    }
++
++    // A Middle frame: appended to the nearest buffer. The assembled text so
++    // far, or nullopt if no buffer is open near this offset.
++    std::optional<QString> middle(float freqHz, const QString &text, qint64 now)
++    {
++        const int i = nearest(freqHz);
++        if (i < 0)
++            return std::nullopt;
++        Buffer &b = m_bufs[i];
++        b.text += text;
++        b.lastSec = now;
++        b.freqHz = freqHz;
++        return b.text;
++    }
++
++    // A Last frame: the whole message, its buffer closed; nullopt if none was open.
++    std::optional<Buffer> last(float freqHz, const QString &text, qint64 now)
++    {
++        const int i = nearest(freqHz);
++        if (i < 0)
++            return std::nullopt;
++        Buffer b = m_bufs.takeAt(i);
++        b.text += text;
++        b.lastSec = now;
++        b.freqHz = freqHz;
++        return b;
++    }
++
++    // Buffers gone silent (or too old), closed and returned to be published as incomplete.
++    QList<Buffer> expire(qint64 now)
++    {
++        QList<Buffer> out;
++        for (int i = m_bufs.size() - 1; i >= 0; --i) {
++            const Buffer &b = m_bufs[i];
++            if (now - b.lastSec > qint64(SILENCE_FRAMES) * periodSec(b.submode)
++                    || now - b.firstSec > MAX_AGE_S)
++                out.prepend(m_bufs.takeAt(i));
++        }
++        return out;
++    }
++
++    int size() const { return int(m_bufs.size()); }
++
++private:
++    int nearest(float freqHz) const
++    {
++        int best = -1;
++        float bestD = NEAR_HZ + 0.001f;
++        for (int i = 0; i < m_bufs.size(); ++i) {
++            const float d = std::fabs(m_bufs[i].freqHz - freqHz);
++            if (d < bestD) {
++                bestD = d;
++                best = i;
++            }
++        }
++        return best;
++    }
++
++    QList<Buffer> m_bufs;
++};
+diff --git a/src/mainwindow.cpp b/src/mainwindow.cpp
+index 783503e..c2d1723 100644
+--- a/src/mainwindow.cpp
++++ b/src/mainwindow.cpp
+@@ -302,7 +302,7 @@ MainWindow::MainWindow(const QString &configDir, QWidget *parent)
+ 
+     // Frame cleanup timer: checks for timed-out GFSK8 multi-frame buffers
+     m_frameCleanupTimer = new QTimer(this);
+-    m_frameCleanupTimer->setInterval(15000); // check every 15 seconds
++    m_frameCleanupTimer->setInterval(5000); // check every 5 seconds
+     connect(m_frameCleanupTimer, &QTimer::timeout, this, &MainWindow::onFrameCleanupTimer);
+     m_frameCleanupTimer->start();
+ 
+@@ -1333,13 +1333,9 @@ void MainWindow::onDecodeFinished(const QList<QVariantMap> &results)
+ 
+         if (isGfsk8 && frameIsFirst && !frameIsLast) {
+             // First frame of a multi-frame message: start assembly buffer.
+-            GfskFrameBuffer buf;
+-            buf.assembledRawText = effectiveRawText;
+-            buf.firstSeenSec     = nowSec;
+-            buf.freqHz           = freqHz;
+-            buf.snrDb            = snrDb;
+-            buf.submode          = submode;
+-            m_gfsk8FrameBuffers[fKey] = buf;
++            // One still open near this offset never got its Last: publish it.
++            if (auto stale = m_frames.first(freqHz, effectiveRawText, snrDb, submode, nowSec))
++                publishIncomplete(*stale);
+             // Fall through to heard pane update only (no model/wsServer/auto-reply yet).
+             // Parse just enough to get display text for heard pane.
+             JF8Message partialMsg = parseDecoded(d, effectiveRawText, m_config.callsign);
+@@ -1374,10 +1370,8 @@ void MainWindow::onDecodeFinished(const QList<QVariantMap> &results)
+         if (isGfsk8 && !frameIsFirst && !frameIsLast) {
+             // Middle continuation frame: append to buffer.
+             m_passband.recordDecode(freqHz, rxBwHz, QString(), nowMs);
+-            if (m_gfsk8FrameBuffers.contains(fKey))
+-                m_gfsk8FrameBuffers[fKey].assembledRawText += effectiveRawText;
+-            const QString assembled = m_gfsk8FrameBuffers.contains(fKey)
+-                ? m_gfsk8FrameBuffers[fKey].assembledRawText : effectiveRawText;
++            const QString assembled = m_frames.middle(freqHz, effectiveRawText, nowSec)
++                                          .value_or(effectiveRawText);
+             // Heard pane: middle frame — append raw text to existing entry.
+             if (m_infoPane) {
+                 auto it2 = m_heardFreqBlock.find(fKey);
+@@ -1397,12 +1391,11 @@ void MainWindow::onDecodeFinished(const QList<QVariantMap> &results)
+ 
+         if (isGfsk8 && !frameIsFirst && frameIsLast) {
+             // Last frame of multi-frame: assemble and process complete message.
+-            if (m_gfsk8FrameBuffers.contains(fKey)) {
+-                effectiveRawText = m_gfsk8FrameBuffers[fKey].assembledRawText + effectiveRawText;
++            if (auto whole = m_frames.last(freqHz, effectiveRawText, nowSec)) {
++                effectiveRawText = whole->text;
+                 // Restore first-frame SNR for the assembled message
+-                snrDb = m_gfsk8FrameBuffers[fKey].snrDb;
++                snrDb = whole->snrDb;
+                 d.snrDb = snrDb;
+-                m_gfsk8FrameBuffers.remove(fKey);
+             }
+             d.frameType = Varicode::JS8CallLast;
+             // Fall through to full processing below.
+@@ -2816,44 +2809,36 @@ void MainWindow::rigConfigToConfig(const RigConfig &cfg)
+ 
+ void MainWindow::onFrameCleanupTimer()
+ {
+-    const qint64 nowSec = QDateTime::currentSecsSinceEpoch();
+-    for (auto it = m_gfsk8FrameBuffers.begin(); it != m_gfsk8FrameBuffers.end(); ) {
+-        const qint64 ageSec = nowSec - it.value().firstSeenSec;
+-        if (ageSec > 90) {
+-            // Discard: too old to be useful
+-            it = m_gfsk8FrameBuffers.erase(it);
+-        } else if (ageSec > 60) {
+-            // Force-complete: process whatever was assembled so far
+-            const GfskFrameBuffer &buf = it.value();
+-            if (!buf.assembledRawText.isEmpty()) {
+-                ModemDecoded d;
+-                d.modemType   = 0;
+-                d.isRawText   = false;
+-                d.frequencyHz = buf.freqHz;
+-                d.snrDb       = buf.snrDb;
+-                d.submode     = buf.submode;
+-                d.frameType   = Varicode::JS8CallLast; // force-complete
+-                // Re-parse as assembled message
+-                JF8Message msg = parseDecoded(d,
+-                    buf.assembledRawText, m_config.callsign);
+-                m_decodedHistory.prepend(msg);
+-                if (m_decodedHistory.size() > 500)
+-                    m_decodedHistory.resize(500);
+-                if (!msg.from.isEmpty()) m_model->addMessage(msg);
+-                if (m_wsServer) m_wsServer->pushMessageDecoded(msg);
+-                emit messageDecoded(msg);
+-                // Append timeout marker to heard pane
+-                const int fKey = qRound(buf.freqHz / 10.0f);
+-                auto hIt = m_heardFreqBlock.find(fKey);
+-                if (hIt != m_heardFreqBlock.end()) {
+-                    hIt->text += QStringLiteral(" \u2666?");
+-                    rebuildHeardPane();
+-                }
+-            }
+-            it = m_gfsk8FrameBuffers.erase(it);
+-        } else {
+-            ++it;
+-        }
++    // A message whose sender went silent before its Last frame: publish what
++    // was assembled (frameassembler.h: silence, not age, ends a message).
++    for (const FrameAssembler::Buffer &buf : m_frames.expire(QDateTime::currentSecsSinceEpoch()))
++        publishIncomplete(buf);
++}
++
++void MainWindow::publishIncomplete(const FrameAssembler::Buffer &buf)
++{
++    if (buf.text.isEmpty())
++        return;
++    ModemDecoded d;
++    d.modemType   = 0;
++    d.isRawText   = false;
++    d.frequencyHz = buf.firstHz;
++    d.snrDb       = buf.snrDb;
++    d.submode     = buf.submode;
++    d.frameType   = Varicode::JS8CallLast; // force-complete
++    JF8Message msg = parseDecoded(d, buf.text, m_config.callsign);
++    m_decodedHistory.prepend(msg);
++    if (m_decodedHistory.size() > 500)
++        m_decodedHistory.resize(500);
++    if (!msg.from.isEmpty()) m_model->addMessage(msg);
++    if (m_wsServer) m_wsServer->pushMessageDecoded(msg);
++    emit messageDecoded(msg);
++    // Append timeout marker to heard pane
++    const int fKey = qRound(buf.firstHz / 10.0f);
++    auto hIt = m_heardFreqBlock.find(fKey);
++    if (hIt != m_heardFreqBlock.end()) {
++        hIt->text += QStringLiteral(" \u2666?");
++        rebuildHeardPane();
+     }
+ }
+ 
+diff --git a/src/mainwindow.h b/src/mainwindow.h
+index b7403f2..6ea0612 100644
+--- a/src/mainwindow.h
++++ b/src/mainwindow.h
+@@ -26,6 +26,7 @@
+ #include "jf8message.h"
+ #include "freqschedule.h"
+ #include "passbandtracker.h"
++#include "frameassembler.h"
+ 
+ class MessageModel;
+ class WaterfallWidget;
+@@ -384,15 +385,9 @@ private:
+     double          m_lastTrackedDialKhz = 0.0;
+     int             m_hbDeferRetries     = 0;
+ 
+-    // GFSK8 multi-frame assembly buffer.
+-    // Keyed by round(freqHz/10); holds accumulated rawText across frame periods.
+-    struct GfskFrameBuffer {
+-        QString assembledRawText; ///< rawText from first + middle frames
+-        qint64  firstSeenSec;     ///< epoch seconds when first frame arrived
+-        float   freqHz;           ///< audio frequency (for re-creating ModemDecoded)
+-        int     snrDb;            ///< SNR from first frame
+-        int     submode;
+-    };
+-    QHash<int, GfskFrameBuffer> m_gfsk8FrameBuffers;
++    // GFSK8 multi-frame assembly (frameassembler.h): nearest-offset buffers
++    // that follow drift and expire on silence.
++    FrameAssembler m_frames;
++    void publishIncomplete(const FrameAssembler::Buffer &buf);
+     QTimer *m_frameCleanupTimer = nullptr;
+ };
+-- 
+2.55.0
+

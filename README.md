@@ -948,7 +948,12 @@ ranch-radio install
   default), and a "YES MSG ID" to stations it holds overheard messages for,
   with no auto-reply setting to stop it. `js8/patches` puts both behind
   auto-reply, turns TX off by default, and adds the filter switch.
-  `js8_engine.py` refuses any build older than `+rr.2`.
+  `js8_engine.py` refuses any build older than `+rr.4`.
+- **Long messages arrive whole.** A multi-frame message ends when its sender
+  goes quiet for 8 frame periods (or after 10 minutes), not 60 s after its
+  first frame, and its frames follow a drifting rig to the nearest open
+  message within 10 Hz. Before `+rr.4` anything past ~5 Normal frames, or past
+  a 10 Hz bucket edge, was cut off.
 - **SNR and times match what other stations see.** A patch to its modem
   reads Normal SNR as stock JS8Call 3.0.3 does (it read 6 dB low on air;
   Fast agreed), and each frame is stamped with the period it went on air,
