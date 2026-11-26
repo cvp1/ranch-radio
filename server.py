@@ -227,6 +227,7 @@ class Station(TxAudio):
         # An app's frequency change that arrived during an ATU tune: applied
         # when the tune ends (2026-10-14), reported by "f" meanwhile.
         self.pending_freq = None
+        self._pending_by = None      # the rigctl session that queued it (None: the browser)
         self._pending_task = None
         # Hold: while a rigctl app (JTDX) is connected, the radio stays on the
         # frequency/mode/data the apps last set. A change made at the radio
@@ -235,6 +236,13 @@ class Station(TxAudio):
         # kills line audio and gives 0 W (linux-station, 2026-10-13).
         self.rigctl_clients = 0
         self.hold = {}
+        # The rigctl sessions that set the hold (their handover names). Only
+        # an app that set something pins the radio: a background engine that
+        # only listens (the JS8 engine, connected all day) never does, and a
+        # browser change alone never seeds it (2026-11-26: the knob kept
+        # snapping back to the page's last frequency with only JS8 connected).
+        self.hold_by = set()
+        self._hold_shown = False     # the HELD badge state last broadcast
         self._hold_task = None
         self._hold_restores = []     # monotonic times of recent restores
         self._hold_gave_up = 0.0     # monotonic time we stopped fighting
@@ -369,35 +377,85 @@ class Station(TxAudio):
 
     # hold: keep the radio where the connected apps put it
 
-    def app_set(self, key, value, hold=True):
+    def app_set(self, key, value, hold=True, by=None):
         """Record a frequency/mode/data change made by an app (rigctl or browser).
-        hold=False (Pat's Winlink lane): never moves or seeds the hold."""
+        hold=False (Pat's Winlink lane): never moves or seeds the hold.
+        by: the rigctl session that set it (None: the browser, or a change
+        queued behind an ATU tune). Only a rigctl app seeds the hold and
+        pins the radio; a browser change moves a hold that exists."""
         if key not in ("freq", "mode", "data"):
             return
         if not hold:
             if key == "freq":
                 self._tune_on_app_freq(value)
             return
-        if self.rigctl_clients and not self.hold:
-            # First app setting: seed the rest from the radio. A data-sticky
-            # rig (G90) only has line audio in DATA, so an app needs it on.
-            s, caps = self.radio.state, self.radio.caps
-            self.hold = {"freq": s["freq"], "mode": s["mode"], "data": bool(s.get("data"))}
-            if caps.get("data_sticky") and s["mode"] in caps.get("data_modes", []):
-                self.hold["data"] = True
-            if "vfo_b" not in caps["features"] and "split" in caps["features"]:
-                # G90: the radio's own split is never wanted (no CAT to VFO B).
-                self.hold["split"] = False
-        if self.rigctl_clients:
+        if by is not None and self.rigctl_clients:
+            if not self.hold:
+                # First app setting: seed the rest from the radio. A data-sticky
+                # rig (G90) only has line audio in DATA, so an app needs it on.
+                s, caps = self.radio.state, self.radio.caps
+                self.hold = {"freq": s["freq"], "mode": s["mode"], "data": bool(s.get("data"))}
+                if caps.get("data_sticky") and s["mode"] in caps.get("data_modes", []):
+                    self.hold["data"] = True
+                if "vfo_b" not in caps["features"] and "split" in caps["features"]:
+                    # G90: the radio's own split is never wanted (no CAT to VFO B).
+                    self.hold["split"] = False
+            if by not in self.hold_by:
+                log.info("hold: set by rigctl app %s (%s %s)", by, key, value)
+                self.hold_by.add(by)
             self.hold[key] = value
+        elif self.holding():
+            self.hold[key] = value       # the operator moved it on the page: the hold follows
         if key == "freq":
             self._tune_on_app_freq(value)
+        self._hold_broadcast()
 
-    def rigctl_connected(self, on):
+    def holding(self):
+        """True while an app that set the hold is connected: the radio is pinned."""
+        return bool(self.rigctl_clients and self.hold and self.hold_by)
+
+    def _hold_broadcast(self, ws=None):
+        """The page's HELD badge: sent on change, and to each page at hello."""
+        on = self.holding()
+        payload = json.dumps({"t": "hold", "on": on, "hold": self.hold if on else {}})
+        if ws is not None:
+            asyncio.ensure_future(self._send(ws, payload))
+        elif on != self._hold_shown:
+            self._hold_shown = on
+            self._broadcast(payload)
+
+    def _hold_clear(self):
+        self.hold = {}
+        self.hold_by = set()
+        self._hold_restores, self._hold_gave_up = [], 0.0
+        if self._hold_task and not self._hold_task.done():
+            self._hold_task.cancel()
+        self._hold_broadcast()
+
+    def release_hold(self, ws=None):
+        """The operator's 'leave the radio alone': it stays where it is until
+        an app sets a frequency, mode or DATA again."""
+        if not self.holding():
+            self.notice("Nothing is holding the radio.", "info", ws)
+            self._hold_broadcast(ws)
+            return
+        log.info("hold: released by the operator%s (was %s, set by %s)",
+                 f" {self._who(ws)}" if ws is not None else "", self.hold, sorted(self.hold_by))
+        self._hold_clear()
+        self.notice("Hold released: the radio stays where you put it until an app sets it again.")
+
+    def rigctl_connected(self, on, who=None):
         self.rigctl_clients += 1 if on else -1
+        if not on and who in self.hold_by:
+            self.hold_by.discard(who)
+            if self.hold and not self.hold_by and self.rigctl_clients > 0:
+                log.info("hold: released, the app that set it left (was %s)", self.hold)
+                self._hold_clear()
         if self.rigctl_clients <= 0:
             self.rigctl_clients = 0
             self.hold = {}
+            self.hold_by = set()
+            self._hold_broadcast()
             # F9: an emulated split belongs to the apps that set it. A later
             # client that keys without sending I must not hop to a stale
             # TX frequency (JTDX re-sends S 1 and I when it reconnects).
@@ -420,7 +478,7 @@ class Station(TxAudio):
         return {k: v for k, v in self.hold.items() if s.get(k) != v}
 
     def _check_hold(self):
-        if not self.rigctl_clients or not self.hold or self._hold_busy():
+        if not self.holding() or self._hold_busy():
             return
         if time.monotonic() - self._hold_gave_up < HOLD_WINDOW_S:
             return
@@ -433,7 +491,7 @@ class Station(TxAudio):
             while self._hold_busy():                  # e.g. front-panel tune still running
                 await asyncio.sleep(0.5)
             drift = self._hold_drift()
-            if not drift or not self.rigctl_clients:
+            if not drift or not self.holding():
                 return
             now = time.monotonic()
             if now - self._hold_gave_up < HOLD_WINDOW_S:
@@ -450,7 +508,8 @@ class Station(TxAudio):
             was = {k: s.get(k) for k in drift}
             log.info("hold: radio changed at the radio %s; restoring %s", was, drift)
             self.notice("Radio changed at the front panel; restored "
-                        + ", ".join(f"{k} {v}" for k, v in drift.items()), "warn")
+                        + ", ".join(f"{k} {v}" for k, v in drift.items())
+                        + " (an app holds it there; click HELD to release)", "warn")
             # Split off first. Mode before DATA: on the G90 a mode set drops
             # DATA. Each set re-checks that nothing keyed in the meantime.
             steps = []
@@ -914,9 +973,7 @@ class Station(TxAudio):
         # after every session. The app's next setting seeds the hold again.
         if self.hold:
             log.info("hold: cleared after the Winlink session (was %s)", self.hold)
-            self.hold = {}
-            if self._hold_task and not self._hold_task.done():
-                self._hold_task.cancel()
+            self._hold_clear()
 
     # transmit control
 
@@ -982,9 +1039,10 @@ class Station(TxAudio):
         """Blocked only because an ATU tune is running (nobody holds PTT)."""
         return self.radio.state.get("tuner") == 2 and self.ptt_owner is None
 
-    def freq_after_tune(self, hz):
-        """Queue an app's frequency change until the running tune ends."""
-        self.pending_freq = hz
+    def freq_after_tune(self, hz, by=None):
+        """Queue an app's frequency change until the running tune ends.
+        by: the rigctl session that asked (it sets the hold when applied)."""
+        self.pending_freq, self._pending_by = hz, by
         log.info("freq %d requested during an ATU tune; applying when it ends", hz)
         if not (self._pending_task and not self._pending_task.done()):
             self._pending_task = asyncio.ensure_future(self._apply_after_tune())
@@ -1002,7 +1060,7 @@ class Station(TxAudio):
             hz, self.pending_freq = self.pending_freq, None
             if hz is not None:
                 log.info("tune finished; moving to %d", hz)
-                self.app_set("freq", hz)
+                self.app_set("freq", hz, by=self._pending_by)
                 await self.radio.set("freq", hz)
         except asyncio.CancelledError:
             self.pending_freq = None
@@ -1237,6 +1295,7 @@ class Station(TxAudio):
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {},
                                       "role": getattr(ws, "rr_role", "operator")}))
+        self._hold_broadcast(ws)
         watch = asyncio.ensure_future(self._session_watch(ws)) if getattr(ws, "rr_expiry", None) else None
         try:
             async for msg in ws:
@@ -1367,6 +1426,8 @@ class Station(TxAudio):
             await self.tx_stop(ws, shutdown=m.get("shutdown") is True)
         elif t == "tx_resume":
             await self.tx_resume(ws)
+        elif t == "hold_release":
+            self.release_hold(ws)
         elif t == "sim_panel" and self.args.sim:
             # Test hook (simulator only): a change made at the radio's front
             # panel, bypassing every app path.
