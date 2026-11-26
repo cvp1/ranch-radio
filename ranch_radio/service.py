@@ -58,8 +58,11 @@ async def main(url):
                       "armed": bool(wl.get("armed")),
                       "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0),
                       "stopped": bool(cf.get("tx_stopped")), "stop_saved": bool(cf.get("stop_saved")),
-                      # the station's Pat: running with a status and not refused at preflight
-                      "pat_ready": bool(wl.get("status")) and not wl.get("blocked") and not wl.get("off")}))
+                      "ptt": bool(h.get("ptt_held")),
+                      # the station's Pat: its exchanges, and whether it is up now (live
+                      # child, this generation's Status, live WebSocket: PatEngine.pat_ready)
+                      "inbound": bool(wl.get("inbound")), "pat_busy": bool(wl.get("pat_busy")),
+                      "pat_ready": wl.get("pat_ready") is True and not wl.get("blocked")}))
 asyncio.run(main(sys.argv[1]))
 """
 

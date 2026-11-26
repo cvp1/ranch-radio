@@ -796,8 +796,18 @@ class PatEngine:
         during a session too: the session's own lane state does not carry it."""
         return self.idle_lane.state().get("modem") if self.idle_lane else None
 
+    def pat_ready(self):
+        """Pat is up now, not just once: the current child runs, its own
+        Status is in (this generation's), and its WebSocket is live. A
+        retained status from a child that has exited is not ready (M1 r3 R4)."""
+        p = getattr(self, "proc", None)
+        return bool(getattr(self, "running", True) and p is not None and p.returncode is None
+                    and getattr(self, "status_gen", None) == getattr(self, "proc_gen", None)
+                    and getattr(self, "pat_ws", None) is not None and getattr(self, "_status_live", False))
+
     def snapshot(self):
         return {**self.lane_state(), "modem": self.modem_state(), "session": self.session_url, "peer": self.session_peer,
+                "pat_ready": self.pat_ready(),
                 "via": self.lane.name if self.lane else None,
                 "modems": list(self.hf_modems), "blocked": self.blocked,
                 "inbound": self.inbound, "pat_busy": self.pat_busy, "listen": self.listen_state(),

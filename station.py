@@ -688,6 +688,14 @@ class Station:
 
     def lane_for(self, url, via):
         scheme = urlsplit(url).scheme
+        # A VARA backend switch restarts this station (and Pat): no session
+        # starts while it runs, telnet included; VARA HF waits for its finish
+        # (vara_fence.py; panel M1 r3 R3). The radios check the same fence.
+        import vara_fence
+        fence = getattr(self, "cutover_fence_path", None) or os.path.expanduser(vara_fence.CUTOVER_FENCE)
+        why = vara_fence.cutover_fenced(fence, "varahf" if scheme == "varahf" else None)
+        if why:
+            return None, f"Not now: {why}."
         if scheme == "telnet":
             return winlink.NoLane("telnet", self.notice), None
         if scheme.startswith("ax25"):

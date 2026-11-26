@@ -119,6 +119,15 @@ class TxAudio:
             log.info("voice: released while preparing; nothing keyed")
             await self._voice_restore()
             return None
+        fenced = self.cutover_key_refusal() if hasattr(self, "cutover_key_refusal") else None
+        if fenced:
+            # A backend switch began while the voice path was being prepared
+            # (it saw this radio idle: nothing was keyed yet). Not now.
+            log.warning("voice: not transmitting: %s", fenced)
+            self.notice(fenced, "warn", ws)
+            self.ptt_owner = None
+            await self._voice_restore()
+            return None
         self.ptt_seen = self.ptt_started = time.monotonic()
         self._voice_since, self.voice_bytes, self.voice_rx_bytes = time.monotonic(), 0, 0
         self._vm = {"po": [], "alc": [], "sq": 0.0, "n": 0, "peak": 0}

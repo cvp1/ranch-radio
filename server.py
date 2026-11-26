@@ -96,51 +96,9 @@ def codec_levels(text):
         raise argparse.ArgumentTypeError(str(e)) from None
 
 
-# `ranch-radio vara-backend` (ranch_radio/vara_backend.py) writes two files:
-#   CUTOVER_FENCE  {"until": epoch s}: a switch is running; nothing arms, keys
-#                  or tunes here. Expires (a switch that died must not wedge
-#                  the radio).
-#   + PENDING      {"to": backend}: the modem is switched but Pat is not yet
-#                  restarted on its settings; VARA HF sessions are refused
-#                  until `--apply --finish`. Never expires (panel M1 r2 C7).
-CUTOVER_FENCE = "~/.local/state/radio-remote/vara-cutover.json"
-PENDING_SUFFIX = ".pending"
-_EXPIRED_SEEN = set()
-
-
-def _read_json(path):
-    """(dict or None, unreadable?)"""
-    try:
-        with open(path) as f:
-            d = json.load(f)
-    except FileNotFoundError:
-        return None, False
-    except (OSError, ValueError):
-        return None, True
-    return (d if isinstance(d, dict) else None), not isinstance(d, dict)
-
-
-def cutover_fenced(path, scheme):
-    """Why a session of this scheme may not arm now because of a backend
-    switch (None: it may). scheme None: a key or a tune (only the switch's
-    own fence applies). An unreadable file refuses; an expired switch fence
-    is ignored and logged; the pending-Pat state does not expire."""
-    d, bad = _read_json(path)
-    if bad:
-        return "a VARA backend switch is under way (its fence file is unreadable)"
-    if d is not None:
-        until = d.get("until")
-        if isinstance(until, (int, float)) and time.time() < until:
-            return "a VARA backend switch is under way (ranch-radio vara-backend)"
-        if (path, until) not in _EXPIRED_SEEN:     # once per fence, not per key
-            _EXPIRED_SEEN.add((path, until))
-            log.warning("winlink: ignoring an expired VARA backend switch fence %s", path)
-    if scheme != "varahf":
-        return None
-    d, bad = _read_json(path + PENDING_SUFFIX)
-    if bad or d is not None:
-        return "the VARA backend switch waits for Pat's settings (ranch-radio vara-backend --apply --finish)"
-    return None
+# The VARA backend switch's fence and pending state (vara_fence.py; the
+# station reads them too).
+from vara_fence import CUTOVER_FENCE, PENDING_SUFFIX, cutover_fenced  # noqa: E402,F401
 
 
 def mercury_call(text):
@@ -1221,6 +1179,13 @@ class Station(TxAudio):
             return "The radio's split was on (it would transmit on VFO B); turned it off. Key again."
         return None
 
+    def cutover_key_refusal(self):
+        """Why nothing new may key now because a backend switch is running
+        (None: it may). Checked at every key admission (can_key, start_tune)
+        and again at the page voice's own key-down (tx_audio)."""
+        fenced = cutover_fenced(self.cutover_fence_path, None)
+        return f"Not now: {fenced}." if fenced else None
+
     def tune_only_blocked(self):
         """Blocked only because an ATU tune is running (nobody holds PTT)."""
         return self.radio.state.get("tuner") == 2 and self.ptt_owner is None
@@ -1476,6 +1441,9 @@ class Station(TxAudio):
         await ws.send_str(json.dumps({"t": "hello", "state": self.radio.state,
                                       "config": self.config(),
                                       "rigctl_clients": self.rigctl_clients,
+                                      # PTT reserved or held (a page's voice key may be
+                                      # preparing, not yet keyed): busy for a restart (M1 r3 R2)
+                                      "ptt_held": self.ptt_owner is not None,
                                       # the lane's state: the station's RemoteLane and its
                                       # RadioWatch read it (modems: which may arm here)
                                       "winlink": {"armed": self.winlink_armed,
