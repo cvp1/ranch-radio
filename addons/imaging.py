@@ -10,6 +10,11 @@ tuning. Tune the radio yourself: SSTV on 14.230 USB (20 m) or 7.171 LSB
 published carrier (Pt. Reyes NMC 8682.0 -> 8680.1 USB). While the radio
 transmits, nothing is decoded.
 
+A picture whose VIS header never came through (weak, or joined late) is
+still found: every 20 s the SSTV decoder folds the last picture's length of
+audio at each mode's line period on a worker thread (sstv.find_headerless)
+and saves what passes as <...>-noheader.png. Off with "sstv_scan": false.
+
 Decoding is sstv.py and wefax.py (pure, numpy), fed by one
 picture.Discriminator. SSTV pictures start at their VIS header and are
 slant-corrected from their sync pulses. A fax chart starts at the start
@@ -37,6 +42,7 @@ Options (the host file's addons block):
                 "radio": "ic7300",        # which radio to listen to (default: the first)
                 "sstv": true, "fax": true, # which decoders run
                 "sstv_modes": ["pd120", "martin1"],   # default: all
+                "sstv_scan": true,        # also find pictures whose VIS header never came through
                 "fax_lpm": 120, "fax_ioc": 576,
                 "clock_ppm": 0,           # the sound card's clock error, for fax (SSTV measures its own)
                 "keep": 100}              # pictures kept
@@ -91,6 +97,9 @@ class Imaging(Addon):
                 raise ValueError(f"{k}: true or false")
         if not any(self.want.values()):
             raise ValueError("sstv, fax: at least one must be on")
+        self.scan = o.pop("sstv_scan", True)
+        if not isinstance(self.scan, bool):
+            raise ValueError("sstv_scan: true or false")
         self.modes = o.pop("sstv_modes", None)
         if self.modes is not None and (not isinstance(self.modes, list) or not self.modes
                                        or any(m not in sstv.BY_NAME for m in self.modes)):
@@ -112,6 +121,7 @@ class Imaging(Addon):
         except ValueError as e:
             raise ValueError(str(e).replace("fax lpm", "fax_lpm").replace("fax ioc", "fax_ioc")) from e
         self._task = None
+        self._scan_task = None
         self.error = None
         self.listening = False
         self.live = {}                     # kind -> {"name", "v", "mode", "label", "lines", "total"}
@@ -121,7 +131,7 @@ class Imaging(Addon):
         self.disc = self._picture.Discriminator()
         self.dec = {}
         if self.want["sstv"]:
-            self.dec["sstv"] = self._sstv.SstvDecoder(self.modes)
+            self.dec["sstv"] = self._sstv.SstvDecoder(self.modes, scan=self.scan)
         if self.want["fax"]:
             self.dec["fax"] = self._wefax.FaxDecoder(**self.fax_opts)
         self._pending = bytearray()
@@ -151,6 +161,9 @@ class Imaging(Addon):
         self._task = asyncio.ensure_future(self._run())
 
     async def stop(self):
+        st, self._scan_task = self._scan_task, None
+        if st is not None:
+            st.cancel()
         t, self._task = self._task, None
         if t is not None:
             t.cancel()
@@ -217,13 +230,32 @@ class Imaging(Addon):
         for kind, dec in self.dec.items():
             for ev in dec.feed(f):
                 await self._event(kind, ev, r)
+        d = self.dec.get("sstv")
+        if d is not None and self._scan_task is None and d.scan_due():
+            self._scan_task = asyncio.ensure_future(self._scan(d, d.scan_snapshot(), r))
+
+    async def _scan(self, d, snap, r):
+        """The headerless scan, on a worker thread (0.5..0.9 s each, every
+        20 s, measured 2026-11-26), then its finds back on the loop."""
+        try:
+            found = await asyncio.to_thread(self._sstv.find_headerless, *snap)
+            if d is self.dec.get("sstv"):                     # not replaced while it ran
+                for ev in d.scan_apply(found, snap[2]):
+                    await self._event("sstv", ev, r)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                                # noqa: BLE001 (a scan bug must not stop the decoders)
+            log.exception("imaging: headerless scan: %s", e)
+        finally:
+            self._scan_task = None
 
     async def _event(self, kind, ev, r):
         e = ev["event"]
         if e == "start":
             self.live[kind] = {"name": None, "v": 0, "mode": ev["mode"], "label": ev["label"],
                                "lines": 0, "total": ev.get("lines")}
-            self.emit({"event": "start", "kind": kind, "label": ev["label"]})
+            label = ev["label"] if ev.get("header", True) else f"{ev['label']} (found without its header)"
+            self.emit({"event": "start", "kind": kind, "label": label})
         elif e == "progress":
             live = self.live.setdefault(kind, {"name": None, "v": 0, "mode": ev["mode"], "label": "", "total": None})
             live["lines"] = ev["lines"]

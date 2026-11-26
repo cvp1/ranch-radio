@@ -10,6 +10,9 @@ transmitter clock off by hundreds of ppm. Offline; numpy.
   - a weak picture from a sender whose clock runs +1460 ppm (as one did off
     the air, 2026-11-26): few syncs line by line, timed by the whole-picture
     fold, the clock error within 30 ppm, close to what was sent
+  - a picture with no header is found by the scan, once, close to what was
+    sent; band noise and a fax chart are not; a picture decoded from its
+    header is not found twice
   - the same picture however the audio is chunked (bit for bit)
   - negative controls: noise alone starts nothing; a VIS with bad parity
     starts nothing; a mode not allowed starts nothing; an unknown mode name
@@ -107,6 +110,35 @@ if e:
     check("  timed by the whole-picture fold", e["timing"], "fold")
     check("  the clock error within 30 ppm", abs(e["clock_ppm"] - 1460) <= 30, True)
     check("  close to what was sent (mean error < 30 of 255 at this noise)", err(e["image"], sent) < 30, True)
+
+# --- SSTV: pictures found without their header (sstv.find_headerless)
+
+
+def run_scanning(audio, chunk=1600):
+    d, dec, evs = P.Discriminator(), sstv.SstvDecoder(), []
+    for i in range(0, len(audio), chunk):
+        evs += dec.feed(d.feed(audio[i:i + chunk]))
+        if dec.scan_due():
+            evs += dec.scan_now()
+    return evs
+
+
+audio, sent = S.sstv("martin1", ppm=800, noise=0.15, seed=6, sync_hz=1440, header=False)
+evs = run_scanning(np.concatenate([noise(20, 0.15, seed=11), audio, noise(70, 0.15, seed=12)]))
+pics = [e for e in evs if e["event"] == "done"]
+check("a Martin M1 with no header (+800 ppm, shallow sync) is found once",
+      [(e["mode"], e["status"]) for e in pics], [("martin1", "noheader")])
+if pics:
+    check("  its clock error within 30 ppm", abs(pics[0]["clock_ppm"] - 800) <= 30, True)
+    check("  close to what was sent (mean error < 35)", err(pics[0]["image"], sent) < 35, True)
+check("band noise alone: the scan finds nothing (4 min)", run_scanning(noise(240, 0.3, seed=13)), [])
+chart_audio = S.fax(np.tile((np.arange(1810) % 255).astype(np.uint8), (240, 1)), noise=0.1)
+check("a fax chart (strong 0.5 s line rhythm): the scan finds no SSTV",
+      [e["mode"] for e in run_scanning(chart_audio) if e["event"] == "done"], [])
+audio, _ = S.sstv("martin1", noise=0.05)
+pics = [e for e in run_scanning(np.concatenate([audio, noise(80, 0.1, seed=14)])) if e["event"] == "done"]
+check("a picture decoded from its header is not found again by the scan",
+      [(e["mode"], e["status"]) for e in pics], [("martin1", "complete")])
 
 # --- SSTV: chunking
 

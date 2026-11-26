@@ -44,7 +44,11 @@ BIN = int(10 * MS)                 # VIS hunt: 10 ms bins
 LEADER_BINS = 20                   # 200 ms of the 300 ms leader must read 1900 Hz
 SYNC_HZ = 1350                     # below this is sync (1200), above is picture (1500..2300)
 CLOCK_MAX = 0.003                  # +-3000 ppm: senders' PC sound cards run far off (+1460 measured)
-FOLD_MIN_DEPTH = 150.0             # Hz, folded sync dip under the fold's median: whole real picture 273..294; noise, see tests
+FOLD_MIN_DEPTH = 150.0
+SCAN_HALVES = 150.0                # Hz: each half of a headerless picture's fold
+SCAN_PHASE_MS = 12.0               # the halves' sync phase must agree (real <= 9.7 ms, band noise >= 16)
+SCAN_EVERY_S = 20.0                # how often the headerless scan looks
+SCAN_SETTLE_S = 40.0               # a candidate not bettered for this long is the picture             # Hz, folded sync dip under the fold's median: whole real picture 273..294; noise, see tests
 PROGRESS_EVERY = 8                 # lines between progress events
 HUNT_KEEP_S = 2.0
 
@@ -113,16 +117,96 @@ def vis_bits(code):
     return bits + [sum(bits) % 2]
 
 
+def fold(buf, mode, a0, lines, start=0):
+    """Every line from `start` to `lines` folded together: (a, b, depth), or
+    None when there isn't enough audio. Line n's sync pulse starts at a + n*b
+    (a is placed nearest a0, the expected line 0 sync); depth is how far the
+    folded sync dip (a box mean the sync's length) lies under the folded
+    picture's median, in Hz. Searches the clock error over +-CLOCK_MAX and
+    the phase. One weak sync per line adds up over a whole picture where no
+    single line shows it. Pure: reads `buf` only (a snapshot, on the scan's
+    thread)."""
+    lines -= start
+    if lines < 8:
+        return None
+    P0 = mode.period_ms * MS
+    dur = max(1, int(mode.sync_dur * MS))
+    origin = a0 + (start - 0.5) * P0                     # half a line before line `start`'s sync
+    x, first = buf.span(origin, origin + (lines + 1) * P0 * (1 + CLOCK_MAX))
+    if x.size < lines * P0:
+        return None
+    c = np.concatenate([[0.0], np.cumsum(x, dtype=np.float64)])
+    box = (c[dur:] - c[:-dur]) / dur
+    o = origin - first
+
+    def score(ppm, step=1):
+        Lp = P0 * (1 + ppm * 1e-6)
+        N = int(Lp)
+        starts = [int(o + n * Lp) for n in range(lines) if 0 <= int(o + n * Lp) and int(o + n * Lp) + N <= box.size]
+        if len(starts) < 8:
+            return -1.0, 0
+        prof = np.mean([box[i:i + N:step] for i in starts], axis=0)
+        k = int(np.argmin(prof))
+        return float(np.median(prof) - prof[k]), k * step
+    coarse = max(range(-int(CLOCK_MAX * 1e6), int(CLOCK_MAX * 1e6) + 1, 40), key=lambda q: score(q, 4)[0])
+    best = max(range(coarse - 40, coarse + 41, 4), key=lambda q: score(q)[0])
+    depth, k = score(best)
+    b = P0 * (1 + best * 1e-6)
+    a = first + o + k - start * b                        # back to line 0's sync
+    a += round((a0 - a) / b) * b
+    return float(a), float(b), float(depth)
+
+
+def find_headerless(buf, modes, end, after):
+    """Pictures whose VIS header was never read, ending by `end`: for each
+    mode, the window one picture long ending at `end` (not reaching back
+    before `after`, the last picture's end), folded whole and in halves.
+    Returns [(depth, mode, a, b)] for each window that passes every check:
+    the whole fold at least FOLD_MIN_DEPTH, both halves at least SCAN_HALVES,
+    and the halves' sync phase within SCAN_PHASE_MS. Pure (a snapshot, on the
+    scan's thread). Measured 2026-11-26 on 95 minutes of real audio (14.230
+    and NMC fax): every real picture passed (depth 299..378, halves >= 268,
+    phase <= 9.7 ms); every window that passed was a real picture."""
+    out = []
+    for m in modes:
+        P0 = m.period_ms * MS
+        start = end - m.periods * P0 * (1 + CLOCK_MAX) - P0
+        if start < max(buf.base, after):
+            continue
+        a0 = start + 0.5 * P0
+        whole = fold(buf, m, a0, m.periods)
+        if whole is None or whole[2] < FOLD_MIN_DEPTH:
+            continue
+        half = m.periods // 2
+        h1, h2 = fold(buf, m, a0, half), fold(buf, m, a0, m.periods, start=half)
+        if h1 is None or h2 is None or min(h1[2], h2[2]) < SCAN_HALVES:
+            continue
+        b = whole[1]
+        dphase = abs((h1[0] - h2[0] + b / 2) % b - b / 2) / MS
+        if dphase > SCAN_PHASE_MS:
+            continue
+        out.append((whole[2], m, whole[0], b))
+    return out
+
+
 class SstvDecoder:
     """feed(freq) -> events: {"event": "start"|"progress"|"done", ...}.
     `modes`: the mode names to accept (default all)."""
 
-    def __init__(self, modes=None):
+    def __init__(self, modes=None, scan=True):
         self.allowed = set(modes) if modes else set(BY_NAME)
         unknown = self.allowed - set(BY_NAME)
         if unknown:
             raise ValueError(f"unknown SSTV mode(s): {', '.join(sorted(unknown))}")
         self.buf = P.Buffer()
+        # The headerless scan (find_headerless) needs a picture's worth of audio
+        # behind it while hunting, plus the time a candidate takes to settle.
+        self.scan_on = bool(scan)
+        longest = max(BY_NAME[n].seconds for n in self.allowed)
+        self.keep_s = (longest * (1 + CLOCK_MAX) + SCAN_SETTLE_S + 2 * SCAN_EVERY_S + 5) if scan else HUNT_KEEP_S
+        self.last_scan = 0
+        self.last_pic_end = 0.0                  # no headerless window reaches back before this
+        self.cands = {}                          # mode name -> (depth, mode, a, b, found at)
         self._hunt_reset()
 
     # --- state
@@ -153,6 +237,58 @@ class SstvDecoder:
             return None
         return self._finish("stopped")
 
+    # --- the headerless scan (find_headerless runs on a snapshot, off the loop)
+
+    def scan_due(self):
+        return self.scan_on and not self.mode and self.buf.end - self.last_scan >= SCAN_EVERY_S * P.RATE
+
+    def scan_snapshot(self):
+        """(buffer copy, modes, end, after): find_headerless's arguments."""
+        self.last_scan = self.buf.end
+        return (self.buf.snapshot(), [BY_NAME[n] for n in sorted(self.allowed)],
+                float(self.buf.end), self.last_pic_end)
+
+    def scan_apply(self, found, end):
+        """Take a scan's finds; a candidate not bettered for SCAN_SETTLE_S is
+        the picture: drawn from its fold timing and given as start + done
+        (status "noheader")."""
+        if self.mode:
+            return []
+        for depth, m, a, b in found:
+            have = self.cands.get(m.name)
+            if have is None or depth > have[0]:
+                self.cands[m.name] = (depth, m, a, b, end)
+        ready = [c for c in self.cands.values() if end - c[4] >= SCAN_SETTLE_S * P.RATE]
+        if not ready:
+            return []
+        depth, m, a, b, _ = max(ready, key=lambda c: c[0])
+        span = (a - m.sync_ms * MS, a + m.periods * b)
+        self.cands = {k: c for k, c in self.cands.items()
+                      if c[2] - c[1].sync_ms * MS > span[1] or c[2] + c[1].periods * c[3] < span[0]}
+        if span[0] < self.buf.base:
+            return []                              # its audio is gone already
+        return self._emit_headerless(m, a, b, depth)
+
+    def scan_now(self):
+        """The scan, synchronously (tests, replays)."""
+        snap = self.scan_snapshot()
+        return self.scan_apply(find_headerless(*snap), snap[2])
+
+    def _emit_headerless(self, m, a, b, depth):
+        self.mode, self.P, self.a0 = m, m.period_ms * MS, a
+        self.img = np.zeros((m.lines, m.width, 3), dtype=np.uint8)
+        self.ycc36 = {}
+        for n in range(m.periods):
+            self._draw(n, a, b)
+        img = self.img
+        self.mode, self.img = None, None
+        self.last_pic_end = a + m.periods * b
+        return [{"event": "start", "mode": m.name, "label": m.label, "width": m.width, "lines": m.lines,
+                 "seconds": round(m.seconds), "header": False},
+                {"event": "done", "mode": m.name, "label": m.label, "status": "noheader", "lines": m.lines,
+                 "total": m.lines, "image": img, "syncs": 0, "clock_ppm": round((b / (m.period_ms * MS) - 1) * 1e6),
+                 "timing": "fold", "depth": round(depth)}]
+
     # --- input
 
     def feed(self, freq):
@@ -172,7 +308,7 @@ class SstvDecoder:
 
     def _step_hunt(self):
         if self.buf.end < self.next_bin + BIN:
-            self.buf.drop_before(self.buf.end - int(HUNT_KEEP_S * P.RATE))
+            self.buf.drop_before(self.buf.end - int(self.keep_s * P.RATE))
             return False
         m = P.mean(self.buf, self.next_bin, self.next_bin + BIN)
         self.bins.append((self.next_bin, m))
@@ -231,6 +367,7 @@ class SstvDecoder:
     # --- one picture
 
     def _begin(self, mode, t0):
+        self.cands = {}                          # a header now: whatever the scan had is older
         self.mode = mode
         self.t0 = t0
         self.P = mode.period_ms * MS
@@ -351,44 +488,13 @@ class SstvDecoder:
         self.img[r] = P.ycc_to_rgb(y, cr, cb)
 
     def _fold_fit(self, lines, start=0):
-        """(a, b) from every line so far folded together, or None: the sync
-        pulse's start in line n is a + n*b. Searches the clock error over
-        +-CLOCK_MAX and the phase, scoring the folded sync dip (a box mean the
-        sync's length) against the folded picture's median. One weak sync per
-        line adds up over a whole picture where no single line shows it."""
-        m = self.mode
-        lines -= start
-        if lines < 8:
+        """(a, b) for this picture from fold() (line n's sync starts at a + n*b),
+        or None when the folded dip is under FOLD_MIN_DEPTH."""
+        r = fold(self.buf, self.mode, self.a0, lines, start)
+        if r is None:
             return None
-        dur = max(1, int(m.sync_dur * MS))
-        origin = self.a0 + (start - 0.5) * self.P            # fold from half a line before line `start`'s sync
-        x, first = self.buf.span(origin, origin + (lines + 1) * self.P * (1 + CLOCK_MAX))
-        if x.size < lines * self.P:
-            return None
-        c = np.concatenate([[0.0], np.cumsum(x, dtype=np.float64)])
-        box = (c[dur:] - c[:-dur]) / dur
-        o = origin - first
-
-        def score(ppm, step=1):
-            Lp = self.P * (1 + ppm * 1e-6)
-            N = int(Lp)
-            starts = [int(o + n * Lp) for n in range(lines) if 0 <= int(o + n * Lp) and int(o + n * Lp) + N <= box.size]
-            if len(starts) < 8:
-                return -1.0, 0
-            prof = np.mean([box[i:i + N:step] for i in starts], axis=0)
-            k = int(np.argmin(prof))
-            return float(np.median(prof) - prof[k]), k * step
-        coarse = max(range(-int(CLOCK_MAX * 1e6), int(CLOCK_MAX * 1e6) + 1, 40), key=lambda q: score(q, 4)[0])
-        best = max(range(coarse - 40, coarse + 41, 4), key=lambda q: score(q)[0])
-        depth, k = score(best)
-        if depth < FOLD_MIN_DEPTH:
-            return None
-        b = self.P * (1 + best * 1e-6)
-        a = first + o + k
-        a -= start * b                                        # back to line 0's sync
-        a += round((self.a0 - a) / b) * b
-        self.fold_depth = depth
-        return float(a), float(b)
+        a, b, self.fold_depth = r
+        return (a, b) if self.fold_depth >= FOLD_MIN_DEPTH else None
 
     def _finish(self, status):
         m = self.mode
@@ -406,6 +512,7 @@ class SstvDecoder:
         ev = {"event": "done", "mode": m.name, "label": m.label, "status": status,
               "lines": self.rows_done, "total": m.lines, "image": img.copy(),
               "syncs": len(self.syncs), "clock_ppm": round(slant), "timing": timing}
+        self.last_pic_end = float(self.buf.end)
         self.buf.clear_to_end()
         self._hunt_reset()
         return [ev]
