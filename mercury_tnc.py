@@ -65,7 +65,7 @@ def parse_lsof(text):
     """[Row] from `lsof -F pcnT` output. Row = (pid, command, address,
     port, state, peer): address and port are the local end; peer is
     (address, port) for a connection ("a:b->c:d"), else None. A file with no
-    TCP state counts as a listener unless it has a peer (plain -F pcn)."""
+    TCP state counts as a listener unless it has a peer (then "UNKNOWN")."""
     rows, pid, cmd, cur = [], None, "", None
     for line in (text or "").splitlines():
         if not line:
@@ -87,7 +87,9 @@ def parse_lsof(text):
     out = []
     for r in rows:
         if r[4] is None:
-            r[4] = "ESTABLISHED" if r[5] else "LISTEN"
+            # No TCP state: a plain listener row (-F pcn) is a listener; a
+            # connection row's state is unknown, and never matches a lane client.
+            r[4] = "UNKNOWN" if r[5] else "LISTEN"
         out.append(tuple(r))
     return out
 
