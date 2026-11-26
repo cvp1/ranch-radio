@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import rigs
 
 from .manifest import ASK, CORE, MANIFESTS, asked, template
+from . import pip as pipmod
 
 OK, WARN, MISSING = "ok", "warn", "missing"
 
@@ -147,6 +148,8 @@ def _recipe(n, host_os, ctx):
         auto = auto.get(host_os)
     if not auto:
         return ""
+    if "{pip}" in auto and not ctx.get("pip"):
+        return ""                       # nothing can install into it (pipmod.why_not says so in the fix)
     try:
         return auto.format(repo=REPO, **ctx)
     except (KeyError, IndexError):
@@ -165,7 +168,8 @@ def _need(name, n, block, host_python, path=None, host_os=None):
         found = _which(exe, path)
         full = _expand(exe) if "/" in str(exe) else os.path.expanduser(f"~/.local/bin/{exe}")
         recipe = _recipe(n, host_os, {"path": full, "dir": os.path.dirname(full), "python": host_python,
-                                      "venv": "", "host_python": _expand(host_python)})
+                                      "venv": "", "host_python": _expand(host_python),
+                                      "pip": pipmod.shell(_expand(host_python))})
         return [Check(name, OK, f"{n['bin']}: {found}")] if found else \
             [Check(name, level, f"{n['bin']} not found ({exe})", fix, recipe)]
     if "pymod" in n:
@@ -173,7 +177,8 @@ def _need(name, n, block, host_python, path=None, host_os=None):
         ok, why = _imports(py, n["pymod"])
         venv = os.path.dirname(os.path.dirname(_expand(py)))
         recipe = _recipe(n, host_os, {"python": _expand(py), "venv": venv, "path": _expand(py),
-                                      "dir": venv, "host_python": _expand(host_python)})
+                                      "dir": venv, "host_python": _expand(host_python),
+                                      "pip": pipmod.shell(_expand(py))})
         return [Check(name, OK, f"{n['pymod']} imports in {py}")] if ok else \
             [Check(name, level, f"{n['pymod']} does not import in {py}: {why}", fix, recipe)]
     if "file" in n or "files" in n:
@@ -233,7 +238,7 @@ def machine(h, budget_s=None, include_available=False):
             in_venv = os.path.exists(os.path.join(os.path.dirname(os.path.dirname(_expand(py))), "pyvenv.cfg"))
             out.append(Check("core", OK, f"{mod} imports") if ok else
                        Check("core", MISSING, f"{mod} does not import: {why}", f"{py} -m pip install {mod}",
-                             f"{_expand(py)} -m pip install -q {mod}" if in_venv else ""))
+                             f"{pipmod.shell(_expand(py))} install -q {mod}" if in_venv and pipmod.shell(_expand(py)) else ""))
     sp = search_path(h)
     core_needs = list(CORE["audio"][h["os"]])
     if any(r.get("https") for r in h["radios"]) or (h.get("station") or {}).get("https"):
