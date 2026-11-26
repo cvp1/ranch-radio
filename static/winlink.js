@@ -21,6 +21,9 @@ const winlink = (() => {
   const isHF = (kind) => kind in MODEM_LABEL;
   // The via's VARA backend ("mercury", "xara"; none on a host without Mercury).
   const viaBackend = () => (vias.find((v) => v.id === viaSel()?.value) || {}).backend;
+  // The ID ledger's and modem strip's slot for a via kind: a Mercury via's
+  // VARA HF is the ledger's "mercury" (its ID is the station's own).
+  const ledgerKind = (kind) => (kind === "varahf" && viaBackend() === "mercury" ? "mercury" : kind);
   const modemLabel = (kind) => (kind !== "varahf" ? MODEM_LABEL[kind]
     : viaBackend() === "mercury" ? "Mercury HF" : viaBackend() === "xara" ? "VARA HF (xara)" : MODEM_LABEL[kind]);
   const PLACEHOLDER = { ardop: "ardop:///CALL?bw=2000MAX&freq=kHz", varahf: "varahf:///CALL?bw=500&freq=kHz" };
@@ -454,8 +457,17 @@ const winlink = (() => {
     clearInterval(modemTimer);
     modemTimer = null;
     if (group.hidden) return;
-    const r = modemSnap?.[kind];
-    const name = MODEM_LABEL[kind];
+    const lk = ledgerKind(kind);
+    const r = modemSnap?.[lk];
+    const name = modemLabel(kind);
+    if (!r && lk === "mercury") {
+      // Mercury's TNC port is Pat's alone and it writes no log this server
+      // reads: no link state to show, which is not "not tracked".
+      setPill("modem", `${name} · no status`, { off: true });
+      for (const id of ["link", "snr", "speed", "busy", "ptt"]) setPill(id, "—", { off: true });
+      $("#wl-pill-modem").title = "Mercury HF reports its link only to Pat; the radio server sends its CW ID";
+      return;
+    }
     if (!r) {
       // No record. Three reasons, each said as itself, never blank-as-fine
       // (2026-11-19: a radio server still on old code read "not tracked",
@@ -1215,7 +1227,7 @@ const winlink = (() => {
   // Station ID (47 CFR 97.119): what the server's ledger says about the
   // modems' IDs (ardopcf's, or xara's CW ID for VARA HF: id.last.source).
   // "sent" only when an ID was seen going out through the lane.
-  const ID_FLAG = { ardop: "--winlink-ardop-log", varahf: "--winlink-vara-log" };
+  const ID_FLAG = { ardop: "--winlink-ardop-log", varahf: "--winlink-vara-log", mercury: "--winlink-mercury-call" };
   function idState(i) {
     const el = $("#wl-id");
     if (!i) return;
@@ -1223,10 +1235,11 @@ const winlink = (() => {
     let text = "", warn = false, title = "";
     const at = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const kind = viaKind();
+    const lk = ledgerKind(kind);
     const who = i.last?.source || "ardopcf";
-    if (!i.tracked || (isHF(kind) && Array.isArray(i.tracked_modems) && !i.tracked_modems.includes(kind))) {
+    if (!i.tracked || (isHF(kind) && Array.isArray(i.tracked_modems) && !i.tracked_modems.includes(lk))) {
       text = "ID not tracked";
-      title = `Station ID is not checked: start the server with ${ID_FLAG[isHF(kind) ? kind : "ardop"]}`;
+      title = `Station ID is not checked: start the server with ${ID_FLAG[isHF(kind) ? lk : "ardop"]}`;
     } else if (i.waiting || i.in_progress) {
       text = "Sending station ID…";
     } else if (i.owed) {
