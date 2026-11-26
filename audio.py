@@ -188,9 +188,11 @@ class AudioBridge:
             await asyncio.sleep(max(0, next_t - loop.time()))
 
     async def play(self, pcm: bytes):
-        """Send microphone audio to the radio's USB audio input."""
+        """Send microphone audio to the radio's USB audio input. True if it
+        was handed to the card (the simulator: always); False if playback
+        failed or was refused (the station's CW ID stops on that)."""
         if self.sim:
-            return
+            return True
         if MACOS:
             try:
                 if self._player is None:
@@ -199,13 +201,14 @@ class AudioBridge:
             except Exception as e:
                 log.warning("audio playback on %s failed: %s", self.device, e)
                 self._player = None
-            return
+                return False
+            return True
         if self._player is None or self._player.returncode is not None:
             try:
                 cmd = playback_cmd(self.device)
             except ValueError as e:
                 log.warning("audio playback refused: %s", e)
-                return
+                return False
             self._player = await asyncio.create_subprocess_exec(
                 *cmd, stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         try:
@@ -213,6 +216,8 @@ class AudioBridge:
             await self._player.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             self._player = None
+            return False
+        return True
 
     async def stop(self):
         if self._capture:

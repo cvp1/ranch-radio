@@ -61,7 +61,25 @@ PRESENCE_EVERY_S = 1.0
 ARM_WAIT_S = 30.0              # an arm may wait for the radio's ATU tune (server.py WINLINK_TUNE_WAIT_S)
 WATCH_RETRY_S = 2.0            # a radio's watch socket, after it drops
 END_WAIT_S = winlink.ID_GRACE_S + 10
+# A radio may ask for longer (its armed message's end_wait_s): Mercury HF's
+# station ID waits out Mercury's longest key and frame first (mercury_id.py
+# END_WAIT_S, ~90 s). Never longer than this, whatever a radio says.
+END_WAIT_MAX_S = 300.0
 HOP = webguard.HOP
+
+
+def end_wait(v):
+    """A radio's end_wait_s: a finite number clamped to [END_WAIT_S,
+    END_WAIT_MAX_S], else END_WAIT_S. Never raises."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return END_WAIT_S
+    try:
+        f = float(v)
+    except (OverflowError, ValueError):
+        return END_WAIT_S
+    if f != f or f in (float("inf"), float("-inf")):
+        return END_WAIT_S
+    return min(max(f, END_WAIT_S), END_WAIT_MAX_S)
 
 
 def _expand(p):
@@ -133,6 +151,7 @@ class RemoteLane:
 
     async def arm(self, ws, url):
         st = self.station
+        self.end_wait_s, self._end_wait_bound = END_WAIT_S, False    # this arm's, set by its armed message
         self.page = ws                     # the session's page: the radio's notices are relayed to it
         scheme = urlsplit(url).scheme
         self.scheme = scheme if scheme in winlink.HF_MODEMS else "ardop"
@@ -186,6 +205,13 @@ class RemoteLane:
         for k in ("armed", "codec_db", "id"):
             if k in d:
                 self.radio_state[k] = d[k]
+        if d.get("armed") is True and "end_wait_s" in d and not getattr(self, "_end_wait_bound", False):
+            # One allowance per arm, from the first armed message only; a
+            # finite number or nothing, clamped; never raises (panel
+            # pb34973ec68 F4: "nan", NaN and a 310-digit int got through, or
+            # killed the reader).
+            self._end_wait_bound = True
+            self.end_wait_s = end_wait(d.get("end_wait_s"))
 
     async def _read(self):
         try:
@@ -199,6 +225,12 @@ class RemoteLane:
                         self._armed.set()
                     elif m.get("armed") is False:
                         self._disarmed.set()
+                    if m.get("end_request") and self._armed.is_set() and not self._ending:
+                        # The radio ends the session but stays armed for its
+                        # station ID (Mercury HF's session bound): Pat is
+                        # aborted the usual way; its return ends the session
+                        # (end() -> winlink_end), and the radio IDs, then disarms.
+                        asyncio.ensure_future(self.station.winlink.abort(str(m["end_request"])))
                     # the station-ID ledger reaches the pages through the radio's watch
                 elif m.get("t") == "notice":
                     if m.get("level") == "warn" and not self._armed.is_set():
@@ -224,7 +256,7 @@ class RemoteLane:
                 await self.ws.send_str(json.dumps({"t": "winlink_end", "started": started, "ok": ok,
                                                    "reason": reason}))
                 try:
-                    await asyncio.wait_for(self._disarmed.wait(), END_WAIT_S)
+                    await asyncio.wait_for(self._disarmed.wait(), end_wait(getattr(self, "end_wait_s", END_WAIT_S)))
                 except TimeoutError:
                     log.warning("winlink: the %s did not disarm; closing its lane", self.radio.name)
         finally:

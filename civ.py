@@ -208,11 +208,25 @@ class CivRadio(Radio):
     def _frame(self, cmd, data=b""):
         return PREAMBLE + bytes([self.addr, self.ctrl, cmd]) + data + bytes([EOM])
 
-    def drop_pending_keys(self):
+    def drop_pending_keys(self, unpaired_only=False):
         """STOP TX (2026-11-23, bug bash): a key-down (1C 00 01) or tune start
         (1C 01 02) still in the ordered queue would go out after the latch, the
         unkey behind it ~0.1 s later: a blip on the air after STOP TX. Drop
-        them; keep everything else in order (the unkey, the RX restore)."""
+        them; keep everything else in order (the unkey, the RX restore).
+
+        unpaired_only (a release the owner did not ask for: a disarm, a
+        disconnect, a limit; panel pb34973ec68 F6): drop only a trailing
+        key-down with no unkey queued after it, the one being released.
+        Another client's completed ON/OFF pair stays, in order."""
+        if unpaired_only:
+            for i in range(len(self._ordered) - 1, -1, -1):
+                key, frame = self._ordered[i]
+                if key == "tx":
+                    if frame[-2] == 1:
+                        del self._ordered[i]
+                        return 1
+                    return 0
+            return 0
         keep, dropped = collections.deque(), 0
         for key, frame in self._ordered:
             if (key == "tx" and frame[-2] == 1) or (key == "tuner" and frame[-2] == 2):
@@ -221,6 +235,18 @@ class CivRadio(Radio):
             keep.append((key, frame))
         self._ordered = keep
         return dropped
+
+    async def wait_tx_off_written(self, timeout):
+        """True once no transmit frame is queued and the last PTT frame
+        written was OFF (or none was ever written); False after timeout.
+        The state's tx is optimistic (set when queued): this is the wire
+        (panel pb34973ec68 F3)."""
+        end = time.monotonic() + timeout
+        while self._ptt_sent_on or any(k == "tx" for k, _ in self._ordered):
+            if time.monotonic() >= end:
+                return False
+            await asyncio.sleep(0.01)
+        return True
 
     def _queue(self, key, cmd, data=b""):
         """Queue a user command; a newer command with the same key replaces it,

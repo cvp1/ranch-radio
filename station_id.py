@@ -24,6 +24,10 @@ own lane and sends a CW ID at every close for a US call. Its --log
 VARA lane's own record of that burst (accepted T 1, how it was released)
 says whether it went out whole. Each ID carries its source ("ardopcf",
 "xara"), and an ID of one source is never completed by the other's lane.
+
+Mercury HF (plan winlink-mercury M0) sends no ID; the radio server keys its
+own CW ID on Mercury's lane (mercury_id.py), source "station", recorded by
+id_done() with how it ended.
 """
 
 import asyncio
@@ -122,8 +126,9 @@ class ArdopLogParser:
 
 
 # Which modem's log tells of which lane's IDs: the lane a modem keys through
-# is named after its URL scheme; its log after the program.
-SOURCE_OF = {"ardop": "ardopcf", "varahf": "xara"}
+# is named after its URL scheme; its log after the program. Mercury HF sends
+# no ID: the radio server sends it ("station", mercury_id.py) on Mercury's lane.
+SOURCE_OF = {"ardop": "ardopcf", "varahf": "xara", "mercury": "station"}
 MODEM_OF = {v: k for k, v in SOURCE_OF.items()}
 
 
@@ -226,6 +231,16 @@ class IdLedger:
                      else "never saw it key")
         return cur
 
+    def id_done(self, wall, on_air, why=None, source="station"):
+        """The station's own ID (mercury_id.py) ended: on air only if it was
+        played to the end and released with its own T 0. Its PTT went through
+        the Mercury lane like any burst; the keyer knows how it ended."""
+        cur = self._open(source)
+        if cur is None:
+            return None
+        self._finish(cur, wall, bool(on_air), why or "released it before it ended")
+        return cur
+
     def tick(self, wall=None):
         """Time passes: a xara ID that never found its keying goes stale."""
         self._resolve(self.clock() if wall is None else wall)
@@ -310,8 +325,16 @@ class IdLedger:
             return None
         if self.last_tx is None:
             return False
-        end = self.last_on_air_end()
-        return end is None or self.last_tx > end + SLOP_S
+        on_air = [i for i in self.ids if i["on_air"]]
+        if not on_air:
+            return True
+        last = max(on_air, key=lambda i: i["end"])
+        # SLOP_S is for a modem's log line against this process's lane; the
+        # station's own ID (mercury_id.py) is timed by this process's clock
+        # like the lane, so its order is exact (panel p59d35d3ea8 #10: a key
+        # within 0.5 s of an on-air station ID was not counted).
+        slop = 0.0 if last.get("source") == "station" else SLOP_S
+        return self.last_tx > last["end"] + slop
 
     def in_progress(self, source=None):
         """An ID (of that source, or any) started and not yet ended, and not stale."""
