@@ -139,8 +139,9 @@ def listener_refusal(rows, expected):
 def lane_client_pid(rows, peer_port, lane_port):
     """The pid of the process whose TCP connection from 127.0.0.1:peer_port
     reaches the lane on lane_port, or None."""
-    for pid, _, a, p, _, peer in rows:
-        if peer and p == peer_port and peer[1] == lane_port and a == "127.0.0.1":
+    for pid, _, a, p, state, peer in rows:
+        if (peer == ("127.0.0.1", lane_port) and p == peer_port and a == "127.0.0.1"
+                and state == "ESTABLISHED"):
             return pid
     return None
 

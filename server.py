@@ -96,30 +96,51 @@ def codec_levels(text):
         raise argparse.ArgumentTypeError(str(e)) from None
 
 
-# `ranch-radio vara-backend` writes this while it switches the VARA modem
-# (ranch_radio/vara_backend.py): {"scope": "all"|"varahf", "until": epoch s}.
+# `ranch-radio vara-backend` (ranch_radio/vara_backend.py) writes two files:
+#   CUTOVER_FENCE  {"until": epoch s}: a switch is running; nothing arms, keys
+#                  or tunes here. Expires (a switch that died must not wedge
+#                  the radio).
+#   + PENDING      {"to": backend}: the modem is switched but Pat is not yet
+#                  restarted on its settings; VARA HF sessions are refused
+#                  until `--apply --finish`. Never expires (panel M1 r2 C7).
 CUTOVER_FENCE = "~/.local/state/radio-remote/vara-cutover.json"
+PENDING_SUFFIX = ".pending"
+_EXPIRED_SEEN = set()
 
 
-def cutover_fenced(path, scheme):
-    """Why a session of this scheme may not arm while a backend switch is
-    under way (None: it may). An unreadable fence refuses; an expired one
-    (a switch that died) is ignored with its age in the log."""
+def _read_json(path):
+    """(dict or None, unreadable?)"""
     try:
         with open(path) as f:
             d = json.load(f)
     except FileNotFoundError:
-        return None
+        return None, False
     except (OSError, ValueError):
+        return None, True
+    return (d if isinstance(d, dict) else None), not isinstance(d, dict)
+
+
+def cutover_fenced(path, scheme):
+    """Why a session of this scheme may not arm now because of a backend
+    switch (None: it may). scheme None: a key or a tune (only the switch's
+    own fence applies). An unreadable file refuses; an expired switch fence
+    is ignored and logged; the pending-Pat state does not expire."""
+    d, bad = _read_json(path)
+    if bad:
         return "a VARA backend switch is under way (its fence file is unreadable)"
-    until = d.get("until") if isinstance(d, dict) else None
-    if not isinstance(until, (int, float)) or time.time() >= until:
-        log.warning("winlink: ignoring an expired VARA backend switch fence %s", path)
+    if d is not None:
+        until = d.get("until")
+        if isinstance(until, (int, float)) and time.time() < until:
+            return "a VARA backend switch is under way (ranch-radio vara-backend)"
+        if (path, until) not in _EXPIRED_SEEN:     # once per fence, not per key
+            _EXPIRED_SEEN.add((path, until))
+            log.warning("winlink: ignoring an expired VARA backend switch fence %s", path)
+    if scheme != "varahf":
         return None
-    if d.get("scope") == "varahf" and scheme != "varahf":
-        return None
-    return ("a VARA backend switch is under way (ranch-radio vara-backend)" if d.get("scope") != "varahf"
-            else "the VARA backend switch waits for Pat's settings (ranch-radio vara-backend --apply --finish)")
+    d, bad = _read_json(path + PENDING_SUFFIX)
+    if bad or d is not None:
+        return "the VARA backend switch waits for Pat's settings (ranch-radio vara-backend --apply --finish)"
+    return None
 
 
 def mercury_call(text):
@@ -314,7 +335,6 @@ class Station(TxAudio):
         # 2.4, M1): a coroutine function returning `lsof -F pcn` text. A test swaps it.
         self.mercury_listen_probe = self._mercury_lsof
         self.mercury_lsof_bin = None     # None: mercury_tnc.lsof_bin() (a test points it at a fake)
-        self._mercury_first = None       # the arm's first probe: {"pid", "binds"}
         self.mercury_armed_snap = None   # the verified instance this Mercury session keys through
         # Arming stops while `ranch-radio vara-backend` switches the modem
         # (plan winlink-mercury 2.6; panel M1 #4): its fence file.
@@ -780,9 +800,9 @@ class Station(TxAudio):
             if scheme not in self.hf_modems:
                 self.notice(f"Winlink not armed: {scheme} is not set up on this station.", "warn", ws)
                 return
-            self._mercury_first = None
+            first = None              # this request's own first probe (panel M1 r2 C4)
             if self.lane_modem_of(scheme) == "mercury":
-                why, self._mercury_first = await self.mercury_snapshot()
+                why, first = await self.mercury_snapshot()
                 if why:
                     # Mercury's control port keys the radio with no login: never
                     # arm while it (or anything in its place) is reachable off
@@ -826,7 +846,7 @@ class Station(TxAudio):
                 return
             self._winlink_arming = ws
             try:
-                await self._winlink_arm_prepare(ws, freq_hz, scheme, qsy_hz)
+                await self._winlink_arm_prepare(ws, freq_hz, scheme, qsy_hz, first=first)
             finally:
                 self._winlink_arming = None
         else:
@@ -941,7 +961,7 @@ class Station(TxAudio):
             return "a session is already being armed."
         return None
 
-    async def _winlink_arm_prepare(self, ws, freq_hz, scheme="ardop", qsy_hz=None):
+    async def _winlink_arm_prepare(self, ws, freq_hz, scheme="ardop", qsy_hz=None, first=None):
         if self.codec is not None:
             hz = freq_hz if freq_hz is not None else self.radio.state.get("freq")
             try:
@@ -961,7 +981,7 @@ class Station(TxAudio):
             # Mercury, the same binds, as the first probe. No await between
             # this result and the commit below.
             why, snap = await self.mercury_snapshot()
-            if why is None and snap != self._mercury_first:
+            if why is None and snap != first:
                 why = "Mercury HF's listeners changed while the session was being armed"
         # A backend switch that began while this arm was being prepared wins
         # (its idle check could not see an arm that had not committed yet).
@@ -1180,6 +1200,11 @@ class Station(TxAudio):
             return "Transmit is disabled on this server (--no-tx)."
         if self.tx_stopped:
             return STOP_MSG
+        fenced = cutover_fenced(self.cutover_fence_path, None)
+        if fenced and self.ptt_owner is not owner:
+            # A backend switch found this radio idle and will restart it:
+            # nothing new keys until it is done (panel M1 r2 C2).
+            return f"Not now: {fenced}."
         if self.ptt_owner not in (None, owner):
             return "Another operator is transmitting."
         if self._winlink_arming is not None:
@@ -1261,6 +1286,12 @@ class Station(TxAudio):
         refused (STOP TX), nothing was sent to the radio."""
         if self.tx_stopped:
             log.warning("ATU tune refused: transmit is stopped (STOP TX)")
+            self.tune_refusal = STOP_MSG
+            return False
+        fenced = cutover_fenced(self.cutover_fence_path, None)
+        if fenced:
+            log.warning("ATU tune refused: %s", fenced)
+            self.tune_refusal = f"Not now: {fenced}."
             return False
         self._tune_ours_at, self._tune_seen = time.monotonic(), False
         await self.radio.set("tuner", 2)
@@ -1578,7 +1609,7 @@ class Station(TxAudio):
                 await self._confirm(ws, k)
             elif k == "tuner" and v == 2:
                 if not await self.start_tune():
-                    self.notice(STOP_MSG, "warn", ws)
+                    self.notice(getattr(self, "tune_refusal", None) or STOP_MSG, "warn", ws)
                     await self._confirm(ws, k)
             else:
                 self.app_set(k, v)
