@@ -15,9 +15,13 @@ below the published carrier): black 1500 Hz, white 2300 Hz, and
 
 Here the tones are found as one strong line in the frequency stream
 (picture.goertzel_share). After the start tone, two stretches of phasing
-lines are folded on the line period: where the pulse sits gives the line
-start, and how far it moved between them gives the sound card's clock
-error, so a chart is not slanted. Phasing lines are left off the chart.
+lines are folded on the line period: where the pulse sits (the same place in
+both, or it is not phasing) gives the line start. Phasing lines are left off
+the chart. The line period is the nominal one corrected by `clock_ppm`, the
+sound card's clock error as the operator sets it (0 by default). It is not
+measured from phasing: 2026-11-26 off the air, a fold of 10 faint phasing
+lines put the pulse within ~0.005 line, so the drift between two folds read
+-158 ppm where the chart showed ~0 (and drawn at -158 ppm it leaned 240 px).
 The chart ends at the stop tone, a new start tone, MAX_LINES, or Stop.
 
 Joined mid-chart (no start tone heard), the operator's Start begins one
@@ -32,12 +36,24 @@ import picture as P
 
 WIN = int(0.5 * P.RATE)           # tone windows: 0.5 s ...
 HOP = WIN // 2                    # ... every 0.25 s
-TONE_SHARE = 0.35                 # this much of the variance in one line = a tone
+# A tone: this much of a window's variance in one line. Measured off the air
+# 2026-11-26 (NMC 12786 kHz, IC-7300 USB, 2400 Hz filter): real start tones
+# 0.12..0.37 (synthetic square waves: 0.95), stop tones 0.12..0.87, and chart
+# content and band noise never above 0.015 in 45 minutes. 0.08 sits between.
+TONE_SHARE = 0.08
 TONE_SPREAD_HZ = 150              # and the signal must swing at least this much (std)
 START_HOLD = 6                    # windows (1.5 s) of start tone to believe it
-STOP_HOLD = 8                     # windows (2 s) of stop tone
+STOP_HOLD = 6                     # windows (1.5 s) of stop tone
 FOLD_LINES = 10                   # phasing lines folded per estimate
 FOLD_BINS = 2000
+# Phasing lock: the pulse must stand out of its own fold (z, against the
+# fold's robust spread) and sit in the same place in both folds. Measured
+# 2026-11-26 off the air: real phasing z >= 280, moved <= 0.003 line; band
+# noise and chart content z 1..3, moved 0.07..0.18 line. (A fixed contrast
+# could not tell them apart: NMC's pulse reached ~70/255, and a fold of noise
+# scored higher than one real phasing.)
+PHASE_Z = 8.0
+PHASE_MOVED = 0.02                 # real phasing moved up to 0.0056 between folds (fading); noise >= 0.07
 PROGRESS_EVERY = 25
 LPMS = (60, 90, 120, 240)
 IOCS = {300: 576, 675: 288}
@@ -183,7 +199,7 @@ class FaxDecoder:
     # --- phasing
 
     def _fold(self, first, n):
-        L = self.line_samples
+        L = self.line_samples * (1 + self.clock_ppm * 1e-6)   # the corrected period: the pulse stands still
         rows = [P.pixels(self.buf, first + k * L, L, FOLD_BINS).astype(np.float64) for k in range(n)]
         prof = np.median(np.stack(rows), axis=0)
         d = prof - np.median(prof)
@@ -193,34 +209,33 @@ class FaxDecoder:
         run = (c[w:w + FOLD_BINS] - c[:FOLD_BINS]) / w  # mean over [i, i+w)
         i = int(np.argmax(run))
         contrast = float(run[i])
+        away = np.concatenate([run[:max(0, i - 2 * w)], run[i + 2 * w:]])
+        spread = 1.4826 * float(np.median(np.abs(away - np.median(away)))) if away.size else 0.0
+        z = (contrast - float(np.median(away))) / max(spread, 0.5) if away.size else 0.0
         # Sub-bin start of the pulse: the centroid of its bright part.
         idx = np.arange(i - w // 2, i + w + w // 2)
         wt = np.clip(d[idx % FOLD_BINS] - contrast / 2, 0, None)
         if wt.sum() <= 0:
-            return None, contrast
+            return None, z
         centre = float((idx * wt).sum() / wt.sum())
-        return (centre - w / 2) / FOLD_BINS, contrast   # the pulse's leading edge, as a fraction of a line
+        return (centre - w / 2) / FOLD_BINS, z         # the pulse's leading edge (fraction of a line), its z
 
     def _try_phase(self, _a):
-        L = self.line_samples
+        L = self.line_samples * (1 + self.clock_ppm * 1e-6)
         gap = 2                                        # lines between the two folds
         need = self.phasing_at + (2 * FOLD_LINES + gap + 1) * L
         if self.buf.end < need:
             return []
-        p1, c1 = self._fold(self.phasing_at, FOLD_LINES)
-        p2, c2 = self._fold(self.phasing_at + (FOLD_LINES + gap) * L, FOLD_LINES)
-        if p1 is None or p2 is None or min(c1, c2) < 60:
+        p1, z1 = self._fold(self.phasing_at, FOLD_LINES)
+        p2, z2 = self._fold(self.phasing_at + (FOLD_LINES + gap) * L, FOLD_LINES)
+        moved = ((p2 - p1 + 0.5) % 1.0) - 0.5 if p1 is not None and p2 is not None else 1.0
+        Lc = L
+        if min(z1, z2) < PHASE_Z or abs(moved) > PHASE_MOVED:
             # No pulse to lock to (a station without phasing, or too weak):
             # run free from here, like a manual start.
-            self._begin(float(self.phasing_at), L * (1 + self.clock_ppm * 1e-6), aligned=False)
+            self._begin(float(self.phasing_at), Lc, aligned=False)
             return [self._start_event()]
-        moved = ((p2 - p1 + 0.5) % 1.0) - 0.5          # fraction of a line, over FOLD_LINES + gap lines
-        per_line = moved / (FOLD_LINES + gap)
-        per_line = max(-MAX_PPM * 1e-6, min(MAX_PPM * 1e-6, per_line))
-        Lc = L * (1 + per_line)
-        s0 = self.phasing_at + p1 * L
-        self._begin(s0, Lc, aligned=True)
-        self.measured_ppm = round(per_line * 1e6)
+        self._begin(self.phasing_at + (p1 + moved / 2) * L, Lc, aligned=True)
         return [self._start_event()]
 
     # --- the chart
@@ -232,7 +247,7 @@ class FaxDecoder:
         self.skipping = aligned                        # leave the phasing lines off
         self.rows = []
         self.rows_at = []                              # each row's first sample
-        self.measured_ppm = None
+        self.measured_ppm = round(self.clock_ppm)      # the correction applied (the host file's clock_ppm)
         self.W = width(self.cur_ioc)
         self.start_hits = self.stop_hits = 0
 
@@ -241,8 +256,11 @@ class FaxDecoder:
                 "width": self.W, "aligned": self.aligned}
 
     def _is_phasing(self, row):
+        """Black, with a pulse at the line start that stands out of it. Not
+        "white": NMC's reached ~70/255 off the air (2026-11-26)."""
         w = max(1, len(row) // 20)
-        return float(row[:w].mean()) > 170 and float(row[w + w // 2:].mean()) < 50
+        rest = row[w + w // 2:].astype(np.float64)
+        return float(np.median(rest)) < 30 and float(rest.mean()) < 45 and float(row[:w].mean()) > float(rest.mean()) + 25
 
     def _step_line(self):
         a = self.s0 + self.k * self.Lc

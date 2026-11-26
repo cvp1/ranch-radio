@@ -134,8 +134,8 @@ def chart(h, w):
 
 W = wefax.width(576)
 sent = chart(160, W)
-e = done(run(wefax.FaxDecoder(), S.fax(sent, ppm=250, noise=0.05), chunk=3200))
-check("fax 120/576 (+250 ppm): a whole chart, lined up",
+e = done(run(wefax.FaxDecoder(clock_ppm=250), S.fax(sent, ppm=250, noise=0.05), chunk=3200))
+check("fax 120/576 (a +250 ppm clock, clock_ppm 250): a whole chart, lined up",
       (e and e["status"], e and e["lines"], e and e["aligned"]), ("complete", 160, True))
 if e:
     check("fax: 1810-pixel lines", e["image"].shape[1], 1810)
@@ -152,7 +152,39 @@ if e:
     check("fax: lined up within 3 px", abs(top) <= 3, True)
     check("fax: close to what was sent at that offset (mean error < 10)",
           float(np.abs(np.roll(out, top, axis=1) - sent.astype(int)).mean()) < 10, True)
-    check("fax: the clock error measured within 15 ppm", abs(e["clock_ppm"] - 250) <= 15, True)
+    check("fax: reports the clock correction it applied", e["clock_ppm"], 250)
+
+# Phasing sets the line start only, never the line period: off the air a fold
+# of faint phasing read -158 ppm where the chart was square (2026-11-26).
+e = done(run(wefax.FaxDecoder(), S.fax(sent, noise=0.15, pulse_level=70), chunk=3200))
+check("fax: a dim phasing pulse (NMC's ~70/255) under noise still lines a chart up",
+      (e and e["status"], e and e["aligned"], e and e["lines"]), ("complete", True, 160))
+if e:
+    out = e["image"].astype(int)
+    tops = [min(range(-10, 11), key=lambda s, r=r: np.abs(np.roll(out[r], s) - sent[r].astype(int)).mean()) for r in (10, 140)]
+    check("  and draws it square, at no clock correction (no slant from phasing)", abs(tops[0] - tops[1]) <= 1, True)
+
+
+def tone_track(seconds, share_target_sigma, f=300, seed=5):
+    """A start tone as received off the air: the 300 Hz alternation buried in
+    frequency noise, so only ~0.15 of the window's variance is the tone (real
+    NMC start tones measured 0.12..0.37; synthetic square waves 0.95)."""
+    n = int(seconds * S.RATE)
+    t = np.arange(n) / S.RATE
+    sq = 1900 + 400 * np.sign(np.sin(2 * np.pi * f * t))
+    return (sq + np.random.default_rng(seed).normal(0, share_target_sigma, n)).astype(np.float32)
+
+
+trk = tone_track(1.0, 840)
+check("  (the weak tone track's share is real-like, 0.1..0.25)", 0.1 <= P.goertzel_share(trk[:8000], 300) <= 0.25, True)
+dec = wefax.FaxDecoder()
+dec.feed(np.full(S.RATE, 1500, dtype=np.float32))
+dec.feed(tone_track(4.5, 840))
+check("fax: a weak, real-shaped start tone (share ~0.15, 4.5 s) is heard", dec.state in ("starting", "phasing"), True)
+dec = wefax.FaxDecoder()
+rng = np.random.default_rng(9)
+dec.feed((1900 + rng.normal(0, 840, 30 * S.RATE)).astype(np.float32))
+check("  (control: the same noise without the tone starts nothing)", dec.state, "idle")
 
 sent288 = chart(60, wefax.width(288))
 e = done(run(wefax.FaxDecoder(ioc=288), S.fax(sent288, ioc=288, noise=0.05), chunk=3200))
