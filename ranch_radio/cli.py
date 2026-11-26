@@ -879,7 +879,9 @@ def cmd_vara_backend(a):
     h = load_host(hname)
     if a.apply and hname != this_host():
         sys.exit(f"ranch-radio: vara-backend --apply runs on {hname} itself (it loads and stops its agents)")
-    return vara_backend.main(h, host_path(hname), a.backend, a.apply)
+    if a.finish and not a.apply:
+        sys.exit("ranch-radio: --finish goes with --apply")
+    return vara_backend.main(h, host_path(hname), a.backend, a.apply, finish=a.finish)
 
 
 def cmd_radios(a):
@@ -1004,6 +1006,8 @@ def main(argv=None):
     vb.add_argument("backend", choices=["xara", "mercury"])
     vb.add_argument("--host", help="default: this machine")
     vb.add_argument("--apply", action="store_true")
+    vb.add_argument("--finish", action="store_true",
+                    help="after Pat's two edits: restart the station (and Pat) and lift the VARA fence")
     ls = sub.add_parser("logsync", help="the logbook sync's ledger: status, the backfill review, and needs")
     ls.add_argument("action", choices=["status", "backfill", "needs"])
     ls.add_argument("--apply", metavar="HASH", help="backfill: release exactly the set the report with this hash listed")
