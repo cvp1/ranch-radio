@@ -496,7 +496,13 @@ def _xara_probe(label, port):
         except (OSError, subprocess.TimeoutExpired):
             return False
     return (ok(["launchctl", "print", f"gui/{os.getuid()}/{label}"]), plist if os.path.exists(plist) else None,
-            ok(["pgrep", "-x", "xara"]), ok(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"]))
+            ok(["pgrep", "-x", "xara"]), ok([_lsof(), "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"]))
+
+
+def _lsof():
+    """The system lsof by absolute path (a launchd agent's PATH lacks /usr/sbin)."""
+    import mercury_tnc
+    return mercury_tnc.lsof_bin() or "/usr/sbin/lsof"
 
 
 def xara_leftover_checks(h, probe=None):

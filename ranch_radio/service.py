@@ -57,7 +57,9 @@ async def main(url):
     print(json.dumps({"up": True, "tx": bool(st.get("tx")), "tuning": st.get("tuner") == 2,
                       "armed": bool(wl.get("armed")),
                       "session": bool(wl.get("session")), "rigctl": int(h.get("rigctl_clients") or 0),
-                      "stopped": bool(cf.get("tx_stopped")), "stop_saved": bool(cf.get("stop_saved"))}))
+                      "stopped": bool(cf.get("tx_stopped")), "stop_saved": bool(cf.get("stop_saved")),
+                      # the station's Pat: running with a status and not refused at preflight
+                      "pat_ready": bool(wl.get("status")) and not wl.get("blocked") and not wl.get("off")}))
 asyncio.run(main(sys.argv[1]))
 """
 

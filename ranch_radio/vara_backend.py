@@ -7,24 +7,29 @@ changes nothing. With --apply, under the host-file lock for the whole run
 
   0. re-read the host file; validate and render the TARGET host before
      anything changes (a refusal there changes nothing)
-  1. fence: the radio servers refuse every new Winlink arm while the fence
-     file exists (server.cutover_fenced; checked again just before an arm
-     commits); then every radio with a lane must answer and be idle (no
-     session, nothing keyed): one that doesn't answer counts as busy
+  1. fence: while the fence file exists the radio server refuses every new
+     Winlink arm, key and ATU tune (server.cutover_fenced; arms check it
+     again at commit); then every radio with a lane must answer and be idle
+     as service.idle means it (nothing keyed or tuning, no session, no
+     unsaved STOP TX, no rigctl client): no answer counts as busy
   2. boot out the other backend's agent (it must really unload) and move
      its plist aside, dated, to ~/.Trash (never removed)
-  3. wait until that modem's process and every one of its listeners are gone
+  3. wait until that modem's process and every one of its listeners are
+     gone ("absent"; a probe that can't be read is not gone)
   4. write winlink.vara_modem and install what it renders
-  5. load the new agent; wait for the new modem's listeners (Mercury:
-     127.0.0.1 only, on exactly its ports); restart the radio server; check
-     the new agent is loaded and the old one is not
-  6. Pat's config on disk must already name the new modem (varahf.addr and,
-     for Mercury, MERCURY in service_codes). If not: stop here, print the
-     two edits and `vara-backend <to> --apply --finish`; VARA arms stay
-     fenced (ARDOP may arm) until then. Pat is never restarted on a stale
-     config.
-  7. restart the station (Pat restarts with it): its process must be a new
-     one; then no connection to the old modem's port may be left. Unfence.
+  5. restart the radio server and wait for the new modem's lane, owned by
+     it (Mercury exits at start when it can't reach its lane); then load the
+     new agent and wait for its listeners, owned by its process (Mercury:
+     127.0.0.1 only, on exactly its ports); check the agents
+  6. with the station and the lane radio idle (an ARDOP session is not
+     cut): Pat's config on disk must already name the new modem. If not,
+     stop: print the two edits and `vara-backend <to> --apply --finish`.
+     VARA HF stays refused (a durable pending state that does not expire;
+     ARDOP may run) until --finish succeeds. Pat is never restarted on a
+     stale config.
+  7. the modem is still listening; restart the station (Pat restarts with
+     it): a new pid, and its Pat running; no connection to the old modem's
+     port left. Lift the fence and the pending state.
 
 Everything that touches launchd, a process table, a socket or Pat's config
 goes through an Ops object, so tests drive a fake and nothing real is loaded.
@@ -44,11 +49,11 @@ from . import hostfile, hostlock, render, service
 
 XARA_LABEL = "ranch-radio.xara"
 PROC = {"xara": "xara", "mercury": "mercury"}
-# The radio servers read the same file (server.CUTOVER_FENCE; the test checks
-# they agree): {"scope": "all"|"varahf", "until": epoch s}.
+# The radio servers read the same files (server.CUTOVER_FENCE; the test checks
+# they agree): the switch's fence {"until"} and the durable pending-Pat state.
 FENCE = ".local/state/radio-remote/vara-cutover.json"
-FENCE_SWITCH_S = 900          # a switch that dies leaves arms fenced at most this long
-FENCE_PAT_S = 7200            # VARA arms wait this long for Pat's edits and --finish
+PENDING_SUFFIX = ".pending"   # server.PENDING_SUFFIX: VARA refused until --finish, no expiry
+FENCE_SWITCH_S = 900          # a switch that dies leaves the radio fenced at most this long
 
 
 def _mt():
@@ -92,22 +97,23 @@ def pat_refusal(h, to):
 
 class Ops:
     """The real machine: launchctl, pgrep, lsof (service._cmd's RANCH_RADIO_*
-    stand-ins apply), Pat's config read through pat_config only."""
+    stand-ins apply), Pat's config read through pat_config only. Socket
+    probes answer "present", "absent" or "unreadable"; unreadable never
+    counts as ready or as gone (panel M1 r2 C5)."""
 
     def __init__(self, home=None):
         self.home = Path(home or os.path.expanduser("~"))
 
     def idle(self, h, r):
-        """(ok, why): ok only on a positive answer: the server answers, and
-        nothing is keyed, tuning or armed. No answer is not idle (M1 #4)."""
+        """(ok, why) for a radio (r) or the station (r None): ok only on a
+        positive answer (no answer is busy, panel M1 r2 C2), then everything
+        service.idle refuses a restart for: keyed, tuning, a session, an
+        unsaved STOP TX latch, a connected rigctl client."""
         st = service.probe(h, r)
+        name = r["name"] if r else "the station"
         if not st.get("up"):
-            return False, f"{r['name']} did not answer ({st.get('why', '?')}): it can't be shown idle"
-        if st.get("tx") or st.get("tuning"):
-            return False, f"{r['name']} is transmitting or tuning"
-        if st.get("armed") or st.get("session"):
-            return False, f"{r['name']} is in a Winlink session"
-        return True, "idle"
+            return False, f"{name} did not answer ({st.get('why', '?')}): it can't be shown idle"
+        return service.idle(h, r)
 
     def loaded(self, label):
         return service._loaded(label)
@@ -142,25 +148,47 @@ class Ops:
         except (OSError, subprocess.TimeoutExpired):
             return True                      # can't tell: treat as still there (stop)
 
-    def _lsof_port(self, port, state):
+    def _port(self, port, state):
+        """("present", {pids}) | ("absent", set()) | ("unreadable", set())."""
         exe = _mt().lsof_bin()
         if exe is None:
-            return True                      # can't tell: treat as still there
+            return "unreadable", set()
         try:
-            r = subprocess.run([exe, "-nP", f"-iTCP:{port}", f"-sTCP:{state}"], capture_output=True, timeout=10)
-            return r.returncode == 0 or bool(r.stdout.strip())
+            r = subprocess.run([exe, "-nP", f"-iTCP:{port}", f"-sTCP:{state}", "-F", "p"], capture_output=True,
+                               text=True, timeout=10)
         except (OSError, subprocess.TimeoutExpired):
-            return True
+            return "unreadable", set()
+        out, err = (r.stdout or "").strip(), (r.stderr or "").strip()
+        if r.returncode == 0 and out:
+            return "present", {int(x[1:]) for x in out.splitlines() if x[:1] == "p" and x[1:].isdigit()}
+        if r.returncode == 1 and not out and not err:
+            return "absent", set()
+        return "unreadable", set()
 
     def listening(self, port):
-        return self._lsof_port(port, "LISTEN")
+        return self._port(port, "LISTEN")[0]
 
     def connected(self, port):
         """A TCP connection on port (Pat's TNC socket to the old modem)."""
-        return self._lsof_port(port, "ESTABLISHED")
+        return self._port(port, "ESTABLISHED")[0]
+
+    def owned_refusal(self, ports, label):
+        """Why `ports` are not all listened on by the process of agent `label`."""
+        pid = self.pid(label)
+        if pid is None:
+            return f"{label} has no running process"
+        for p in ports:
+            state, pids = self._port(p, "LISTEN")
+            if state != "present":
+                return f"port {p}: {state}"
+            if pids != {pid}:
+                return f"port {p} is held by pid {', '.join(map(str, sorted(pids)))}, not {label} (pid {pid})"
+        return None
 
     def modem_refusal(self, h, backend):
-        """Why backend's listeners are not up as they must be (None: they are)."""
+        """Why backend's listeners are not up as they must be, owned by its
+        agent's process (None: they are)."""
+        label = label_of(h, backend)
         if backend == "mercury":
             mt = _mt()
             m = h["winlink"]["mercury"]
@@ -168,9 +196,22 @@ class Ops:
                 rows = mt.parse_lsof(mt.run_lsof())
             except OSError as e:
                 return str(e)
-            return mt.listener_refusal(rows, mt.ports(m["port"], m["broadcast_port"]))
-        down = [p for p in ports_of(h, backend) if not self.listening(p)]
-        return f"nothing listens on {', '.join(map(str, down))}" if down else None
+            why, info = mt.snapshot(rows, mt.ports(m["port"], m["broadcast_port"]))
+            if why:
+                return why
+            pid = self.pid(label)
+            return None if info["pid"] == pid else f"Mercury's ports are held by pid {info['pid']}, not {label} ({pid})"
+        return self.owned_refusal(ports_of(h, backend), label)
+
+    def lane_refusal(self, h, r, backend):
+        """Why the radio server r is not listening on backend's lane (the
+        port its modem keys through: Mercury exits at start without it)."""
+        return self.owned_refusal([h["winlink"][backend]["lane_port"]], r["label"])
+
+    def pat_ready(self, h):
+        """The station answers and its Pat is running with a status."""
+        st = service.probe(h, None)
+        return bool(st.get("up") and st.get("pat_ready"))
 
     def pat_refusal(self, h, to):
         return pat_refusal(h, to)
@@ -190,11 +231,14 @@ def trash_path(home, label, today=None):
     return p
 
 
-def _fence(home, scope, seconds):
+def _fence(home, seconds=None):
+    """The switch's fence: nothing arms, keys or tunes on the radio while it
+    lasts (server.cutover_fenced); it expires, so a switch that dies does not
+    wedge the radio."""
     p = Path(home) / FENCE
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps({"scope": scope, "until": time.time() + seconds}))
+    tmp.write_text(json.dumps({"until": time.time() + (seconds or FENCE_SWITCH_S)}))
     tmp.replace(p)
 
 
@@ -202,6 +246,29 @@ def _unfence(home):
     p = Path(home) / FENCE
     if p.exists():
         p.replace(p.with_name(p.name + ".done"))     # moved aside, not removed
+
+
+def _pend(home, to):
+    """Durable: VARA HF stays refused until --finish succeeds (no expiry)."""
+    p = Path(home) / (FENCE + PENDING_SUFFIX)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps({"to": to, "since": time.time()}))
+    tmp.replace(p)
+
+
+def _unpend(home):
+    p = Path(home) / (FENCE + PENDING_SUFFIX)
+    if p.exists():
+        p.replace(p.with_name(p.name + ".done"))
+
+
+def pending_of(home):
+    p = Path(home) / (FENCE + PENDING_SUFFIX)
+    try:
+        return json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {"to": "?"} if p.exists() else None
 
 
 def target_of(h, to):
@@ -231,16 +298,16 @@ def plan(h, to):
     new_l, old_l = label_of(h, to), label_of(h, old)
     b = w[to]
     steps = [
-        "fence new Winlink arms on this host; every radio with a Winlink lane must answer and be idle",
+        "fence the radio (no new session, key or tune); every radio with a Winlink lane must answer and be idle",
         f"launchctl bootout {old_l}, if loaded; move ~/{render.AGENTS}/{old_l}.plist to ~/.Trash/{old_l}-<date>.plist",
         f"wait until no {PROC[old]} process runs and nothing listens on {', '.join(map(str, ports_of(h, old)))}",
         f"write winlink.vara_modem = {to!r} to hosts/{h['host']}.json; install what it renders",
-        f"load {new_l} and wait for its listeners; restart the radio server with the Winlink lane",
+        f"restart the radio server and wait for {to}'s lane; then load {new_l} and wait for its listeners",
         f"Pat's config must already say varahf.addr = localhost:{b['port']}"
         + ('; service_codes includes "MERCURY"' if to == "mercury" else "")
         + f"; if not, stop here (VARA arms fenced) until `ranch-radio vara-backend {to} --apply --finish`",
-        f"restart the station (Pat with it, a new process); check no connection to {old}'s port "
-        f"{ports_of(h, old)[0]} is left; unfence",
+        f"with the station and the radio idle: restart the station (Pat with it, a new process, Pat ready); "
+        f"check no connection to {old}'s port {ports_of(h, old)[0]} is left; lift the fence",
     ]
     return steps, None
 
@@ -270,12 +337,29 @@ def _say_out(out, log):
 
 
 def _finish(h, to, ops, home, log, wait_s):
-    """Steps 6-7: Pat's config, the station (Pat) restart, the stale socket."""
+    """Steps 6-7, under the switch's fence: everything idle (the station and
+    the lane radio: an ARDOP session the pending state let through is not
+    cut, C3), Pat's config, the modem still listening (C6), the station (Pat)
+    restart, a new pid, Pat ready (C6), no stale socket. Only full success
+    lifts the pending state (C7)."""
     old = other(to)
-    why = ops.pat_refusal(h, to)
     b = h["winlink"][to]
+    _fence(home)
+
+    def stop(rc, msg):
+        _pend(home, to)
+        _unfence(home)
+        log(msg)
+        return rc
+    for r in [None] + [r for r in h["radios"] if r.get("lane")]:
+        ok, why = ops.idle(h, r)
+        if not ok:
+            return stop(1, f"stopped before restarting Pat: {why}; nothing was restarted. "
+                           f"Run `ranch-radio vara-backend {to} --apply --finish` when it is idle")
+    why = ops.pat_refusal(h, to)
     if why:
-        _fence(home, "varahf", FENCE_PAT_S)
+        _pend(home, to)
+        _unfence(home)
         log(f"stopped before restarting Pat: {why}.")
         log("Pat's config, by hand (ranch-radio never writes it):")
         log(f"  varahf.addr = \"localhost:{b['port']}\"")
@@ -284,6 +368,10 @@ def _finish(h, to, ops, home, log, wait_s):
         log(f"then: ranch-radio vara-backend {to} --apply --finish   "
             f"(until then VARA HF sessions are refused here; ARDOP is not)")
         return 2
+    why = ops.modem_refusal(h, to)
+    if why:
+        return stop(1, f"stopped before restarting Pat: {to} is not listening as it must ({why}). "
+                       f"Run `ranch-radio vara-backend {to} --apply` again")
     st_l = (h.get("station") or {}).get("label", render.STATION_LABEL)
     before = ops.pid(st_l)
     out = []
@@ -291,18 +379,19 @@ def _finish(h, to, ops, home, log, wait_s):
     _say_out(out, log)
     after = ops.pid(st_l) if not rc else None
     if rc or after is None or after == before:
-        log(f"stopped: the station ({st_l}) did not restart (pid {before} -> {after}); Pat may still run "
-            f"on its old settings. VARA arms stay fenced; run --finish again")
-        _fence(home, "varahf", FENCE_PAT_S)
-        return 1
+        return stop(1, f"stopped: the station ({st_l}) did not restart (pid {before} -> {after}); Pat may still "
+                       f"run on its old settings. VARA stays refused; run --finish again")
+    if not ops.wait(lambda: ops.pat_ready(h), wait_s):
+        return stop(1, f"stopped: the station restarted (pid {after}) but its Pat is not running "
+                       f"(ranch-radio logs station; doctor). VARA stays refused; run --finish again")
     stale = ports_of(h, old)[0]
-    if not ops.wait(lambda: not ops.connected(stale), wait_s):
-        log(f"WARNING: a connection to {old}'s port {stale} is still open after the station restart "
-            f"(Pat's old TNC socket?): find it with lsof -nP -iTCP:{stale} and stop it, then --finish again")
-        _fence(home, "varahf", FENCE_PAT_S)
-        return 1
+    if not ops.wait(lambda: ops.connected(stale) == "absent", wait_s):
+        return stop(1, f"WARNING: a connection to {old}'s port {stale} is still open (or can't be read: "
+                       f"{ops.connected(stale)}) after the station restart (Pat's old TNC socket?): find it with "
+                       f"lsof -nP -iTCP:{stale} and stop it, then --finish again")
+    _unpend(home)
     _unfence(home)
-    log(f"restarted the station (pid {before} -> {after}, Pat with it); no connection to {old}'s port {stale}. "
+    log(f"restarted the station (pid {before} -> {after}, Pat ready); no connection to {old}'s port {stale}. "
         f"VARA HF is {'Mercury HF' if to == 'mercury' else 'xara'} now")
     return 0
 
@@ -336,10 +425,15 @@ def apply(h, path, to, ops=None, home=None, log=print, install=None, wait_s=10.0
                 return 1
             return _finish(h, to, ops, home, log, wait_s)
         target = target_of(h, to)                        # rendered before any change (M1 #6)
-        _fence(home, "all", FENCE_SWITCH_S)
+        _fence(home)
         rc = _switch(h, target, path, to, ops, home, log, install, wait_s)
         if rc:
-            _unfence(home)
+            _unfence(home)                               # the switch's lockout only (C7)
+            try:
+                if render.vara_modem(json.loads(Path(path).read_text())) == to:
+                    _pend(home, to)                      # half-switched: VARA stays refused
+            except (OSError, ValueError):
+                _pend(home, to)
             return rc
         return _finish(target, to, ops, home, log, wait_s)
 
@@ -368,13 +462,14 @@ def _switch(h, target, path, to, ops, home, log, install, wait_s):
         dest.parent.mkdir(parents=True, exist_ok=True)
         plist.rename(dest)
         log(f"moved {plist} -> {dest}")
-    # 3. gone, for real
+    # 3. gone, for real: "absent" only (unreadable is not gone, C5)
     gone = ops.wait(lambda: not ops.loaded(old_l) and not ops.proc_alive(PROC[old])
-                    and not any(ops.listening(p) for p in ports_of(h, old)), wait_s)
+                    and all(ops.listening(p) == "absent" for p in ports_of(h, old)), wait_s)
     if not gone:
         left = [w for w, on in ((f"{old_l} still loaded", ops.loaded(old_l)),
                                 (f"a {PROC[old]} process still runs", ops.proc_alive(PROC[old])),
-                                *((f"something still listens on {p}", ops.listening(p)) for p in ports_of(h, old)))
+                                *((f"port {p}: {ops.listening(p)}", ops.listening(p) != "absent")
+                                  for p in ports_of(h, old)))
                 if on]
         log(f"stopped: {old} is not gone after {wait_s:g} s ({'; '.join(left)}); {to} was NOT loaded. "
             f"Find it (lsof -nP -iTCP -sTCP:LISTEN) and stop it, then run this again")
@@ -387,29 +482,35 @@ def _switch(h, target, path, to, ops, home, log, install, wait_s):
         return 1
     install(target, home)
     log(f"hosts/{target['host']}.json: winlink.vara_modem = {to!r}; rendered files installed")
-    # 5. the new agent and its listeners, then the radio server
+    # 5. the radio server first: the new modem keys through its lane, and
+    # Mercury exits at start when it can't open it (radio_io.c:323-336,
+    # mercury_engine.c:292-299; panel M1 r2 C1). Then the modem.
+    lane_radios = [r for r in target["radios"] if r.get("lane")]
+    for r in lane_radios:
+        out = []
+        if ops.restart(r["label"], f"{render.AGENTS}/{r['label']}.plist", out):
+            _say_out(out, log)
+            log(f"stopped: the radio server {r['label']} did not restart; {to} was NOT loaded")
+            return 1
+        if not ops.wait(lambda r=r: ops.lane_refusal(target, r, to) is None, wait_s):
+            log(f"stopped: the radio server {r['label']} is not listening on {to}'s lane "
+                f"({ops.lane_refusal(target, r, to)}); {to} was NOT loaded")
+            return 1
     new_l = label_of(target, to)
     out = []
     if ops.up(new_l, f"{render.AGENTS}/{new_l}.plist", out):
         _say_out(out, log)
-        log(f"stopped: {new_l} did not load; the radio server was not restarted")
+        log(f"stopped: {new_l} did not load")
         return 1
     if not ops.wait(lambda: ops.modem_refusal(target, to) is None, wait_s):
         log(f"stopped: {new_l} is loaded but {to} is not listening as it must "
-            f"({ops.modem_refusal(target, to)}); the radio server was not restarted")
+            f"({ops.modem_refusal(target, to)})")
         return 1
-    for r in target["radios"]:
-        if r.get("lane"):
-            out = []
-            if ops.restart(r["label"], f"{render.AGENTS}/{r['label']}.plist", out):
-                _say_out(out, log)
-                log(f"stopped: the radio server {r['label']} did not restart")
-                return 1
     if not ops.loaded(new_l) or ops.loaded(old_l):
         log(f"stopped: after the switch {new_l} should be loaded and {old_l} not "
             f"(loaded: {new_l} {ops.loaded(new_l)}, {old_l} {ops.loaded(old_l)})")
         return 1
-    log(f"loaded {new_l} ({to} listening); restarted the radio server")
+    log(f"restarted the radio server; loaded {new_l} ({to} listening)")
     return 0
 
 
