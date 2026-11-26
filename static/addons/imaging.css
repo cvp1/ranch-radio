@@ -1,0 +1,12 @@
+/* imaging add-on panel (loaded with static/addons/imaging.js) */
+.imaging { display: grid; gap: 0.5rem; }
+.imaging .im-warn { color: var(--warn, #fab219); }
+.imaging .im-dec { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.imaging .im-state { color: var(--muted); }
+.imaging .im-live { max-width: 100%; border: 1px solid rgba(255, 255, 255, .12); }
+.imaging .im-live.im-sstv { width: 320px; }
+.imaging .im-live.im-fax { width: 100%; max-height: 60vh; object-fit: contain; object-position: top left; background: #000; }
+.imaging .im-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; }
+.imaging .im-pic { display: grid; gap: 2px; color: var(--text); text-decoration: none; font-size: 11.5px; }
+.imaging .im-pic img { width: 100%; aspect-ratio: 5 / 4; object-fit: cover; object-position: top; background: #000; }
+.imaging .im-pic span { color: var(--muted); }

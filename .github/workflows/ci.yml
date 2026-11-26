@@ -96,6 +96,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install -q -r requirements.txt -c constraints.txt
+          .venv/bin/pip install -q -c constraints.txt numpy   # the Imaging add-on's need (not core)
           python -m venv ~/.local/share/venvs/benlink
           ~/.local/share/venvs/benlink/bin/pip install -q "benlink @ git+https://github.com/khusmann/benlink@c4b9d22112402ea193d376f412bc028d1778fdb4"
       - name: Public hygiene

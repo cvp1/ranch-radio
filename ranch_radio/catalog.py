@@ -120,6 +120,11 @@ MODULES = [
      "code": "addons/halow.py, halow_ap.py, static/addons/halow.js (over SSH; nothing installed on the bridge)",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block: \"host\" and \"key\""},
+    {"name": "imaging", "kind": "addon", "title": "Pictures off the air: SSTV (hams, the ISS) and HF weather fax, "
+                                                  "decoded from a radio's receive audio; receive only",
+     "code": "addons/imaging.py, static/addons/imaging.js; sstv.py, wefax.py and picture.py (the decoders, numpy)",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's addons block; numpy in the station's Python"},
     {"name": "logbook", "kind": "addon", "title": "Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation",
      "code": "addons/logbook.py, static/addons/logbook.js (the browser frames the logbook; the server never talks to it)",
      "platforms": ["macos", "linux"],
