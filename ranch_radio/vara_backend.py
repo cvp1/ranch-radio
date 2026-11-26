@@ -105,15 +105,20 @@ class Ops:
         self.home = Path(home or os.path.expanduser("~"))
 
     def idle(self, h, r):
-        """(ok, why) for a radio (r) or the station (r None): ok only on a
-        positive answer (no answer is busy, panel M1 r2 C2), then everything
-        service.idle refuses a restart for: keyed, tuning, a session, an
-        unsaved STOP TX latch, a connected rigctl client."""
+        """(ok, why) for a radio (r) or the station (r None), decided on ONE
+        hello (panel M1 r3 R1): restart_blocker() on that answer. No answer
+        is busy, except an agent that is not loaded and refuses connections
+        (it isn't running, so it can't transmit: R6's retry after a failed
+        restart)."""
         st = service.probe(h, r)
         name = r["name"] if r else "the station"
         if not st.get("up"):
+            label = r["label"] if r else (h.get("station") or {}).get("label", render.STATION_LABEL)
+            if st.get("why") in service.NOT_LISTENING and not self.loaded(label):
+                return True, f"{name} is not running ({label} not loaded)"
             return False, f"{name} did not answer ({st.get('why', '?')}): it can't be shown idle"
-        return service.idle(h, r)
+        why = restart_blocker(st, name)
+        return (False, why) if why else (True, "idle")
 
     def loaded(self, label):
         return service._loaded(label)
@@ -218,6 +223,26 @@ class Ops:
 
     def wait(self, pred, timeout):
         return service._until(pred, timeout)
+
+
+def restart_blocker(st, name):
+    """Why a server that answered `st` (one hello) may not be restarted now
+    (None: it may): everything service.idle refuses for, a reserved or held
+    PTT, and the station's Pat exchanges (M1 r3 R1-R3)."""
+    if st.get("tx") or st.get("tuning"):
+        return f"{name} is {'tuning (ATU)' if st.get('tuning') and not st.get('tx') else 'transmitting'}"
+    if st.get("ptt"):
+        return f"{name} has its PTT held or reserved (a page's voice key may be getting ready)"
+    if st.get("armed") or st.get("session"):
+        return f"{name} is in a Winlink session"
+    if st.get("inbound") or st.get("pat_busy"):
+        return f"{name}'s Pat is in an exchange (inbound or busy)"
+    if st.get("stopped") and not st.get("stop_saved"):
+        return f"{name} has STOP TX latched but not saved; a restart would clear it"
+    n = int(st.get("rigctl") or 0)
+    if n:
+        return f"{name} has {n} rigctl client{'s' if n != 1 else ''} connected (JTDX, WSJT-X...)"
+    return None
 
 
 def trash_path(home, label, today=None):
@@ -426,14 +451,13 @@ def apply(h, path, to, ops=None, home=None, log=print, install=None, wait_s=10.0
             return _finish(h, to, ops, home, log, wait_s)
         target = target_of(h, to)                        # rendered before any change (M1 #6)
         _fence(home)
-        rc = _switch(h, target, path, to, ops, home, log, install, wait_s)
+        try:
+            rc = _switch(h, target, path, to, ops, home, log, install, wait_s)
+        except BaseException:
+            _unfence(home)               # the pending state, if the switch got that far, stays
+            raise
         if rc:
-            _unfence(home)                               # the switch's lockout only (C7)
-            try:
-                if render.vara_modem(json.loads(Path(path).read_text())) == to:
-                    _pend(home, to)                      # half-switched: VARA stays refused
-            except (OSError, ValueError):
-                _pend(home, to)
+            _unfence(home)               # the switch's lockout only; pending stays if it was set (C7, R5)
             return rc
         return _finish(target, to, ops, home, log, wait_s)
 
@@ -447,6 +471,10 @@ def _switch(h, target, path, to, ops, home, log, install, wait_s):
             if not ok:
                 log(f"refused: {why}; end or disarm the session first (the switch never cuts one)")
                 return 1
+    # The first disruptive step is next: from here VARA stays refused until
+    # --finish succeeds, whatever happens to this process (R5). A refusal
+    # above changed nothing, so it left any earlier state as it was.
+    _pend(home, to)
     # 2. the old agent out (for real), its plist aside
     out = []
     old_l = label_of(h, old)
@@ -490,7 +518,17 @@ def _switch(h, target, path, to, ops, home, log, install, wait_s):
         out = []
         if ops.restart(r["label"], f"{render.AGENTS}/{r['label']}.plist", out):
             _say_out(out, log)
-            log(f"stopped: the radio server {r['label']} did not restart; {to} was NOT loaded")
+            # Its old modem is gone and the new one can't start without it:
+            # try once more to bring the radio back, and say exactly how (R6).
+            again = []
+            back = not ops.loaded(r["label"]) and ops.up(r["label"], f"{render.AGENTS}/{r['label']}.plist", again) == 0
+            _say_out(again, log)
+            log(f"stopped: the radio server {r['label']} did not restart; {to} was NOT loaded. "
+                + (f"A second load brought {r['label']} back. " if back else
+                   f"It is still down: launchctl bootstrap gui/$(id -u) ~/{render.AGENTS}/{r['label']}.plist "
+                   f"(or start it from the menu-bar widget). ")
+                + f"Then run `ranch-radio vara-backend {to} --apply` again (a radio that is not loaded "
+                  f"counts as idle for it)")
             return 1
         if not ops.wait(lambda r=r: ops.lane_refusal(target, r, to) is None, wait_s):
             log(f"stopped: the radio server {r['label']} is not listening on {to}'s lane "
