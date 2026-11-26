@@ -156,6 +156,7 @@ body.tx .tx-bar { opacity: 1; animation: pulse 1.2s ease-in-out infinite; }
   color: var(--text); background: rgba(255,255,255,.06); border: 1px solid var(--line);
 }
 .badge-data { color: var(--warm); border-color: rgba(var(--warm-rgb), .4); background: rgba(var(--warm-rgb), .08); }
+.badge-hold { color: #38bdf8; border-color: rgba(56,189,248,.4); background: rgba(56,189,248,.08); cursor: pointer; font: inherit; }
 .badge-split { color: #a78bfa; border-color: rgba(167,139,250,.4); background: rgba(167,139,250,.08); }
 .badge-tx { color: #fff; background: var(--tx); border-color: var(--tx); box-shadow: 0 0 18px rgba(var(--tx-rgb), .7); animation: pulse 1.2s infinite; }
 

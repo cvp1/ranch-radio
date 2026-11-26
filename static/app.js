@@ -149,6 +149,9 @@ function connect() {
       if ("freq" in m.d) txLevel.bandMaybeChanged();
     } else if (m.t === "codec") {
       txLevel.event(m);
+    } else if (m.t === "hold") {
+      // An app that set the frequency/mode pins the radio there; click to release.
+      $("#b-hold").hidden = !m.on;
     } else if (m.t === "voice") {
       $("#b-usbsrc").hidden = !m.usb_src;
     } else if (m.t === "winlink") {
@@ -1452,6 +1455,7 @@ $("#tx-stop").addEventListener("click", () => {
   send({ t: "tx_stop" });
   if (!ws || ws.readyState !== 1) toast("Not connected to the station: STOP TX did not reach it. Switch the radio off.", "warn");
 });
+$("#b-hold").addEventListener("click", () => send({ t: "hold_release" }));
 $("#tx-resume").addEventListener("click", () => {
   if (confirm("Resume transmit? Nothing is re-armed; Winlink must be started again.")) send({ t: "tx_resume" });
 });

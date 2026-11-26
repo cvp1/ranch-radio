@@ -255,6 +255,7 @@ class RigctlSession:
         self.lane = lane
         self.modem = (modem or "ardop") if lane == "winlink" else None
         self.owner = RigctlOwner(peer, lane, self.modem)
+        self.hold_id = None      # this connection's handover name: who set the hold
         self.vfo = None          # VFO named on the command being handled
         # VFO this client selected with "V" (None = the radio's own). Virtual:
         # the radio is never switched. Hamlib before 4.6 (JTDX bundles 4.5)
@@ -331,7 +332,7 @@ class RigctlSession:
         if want_data and not data_ok:
             return RIG_EINVAL
         old_mode, old_data = self.s["mode"], bool(self.s.get("data"))
-        self.station.app_set("mode", base, hold=self.lane is None)
+        self.station.app_set("mode", base, hold=self.lane is None, by=self.hold_id)
         if base != old_mode:
             await self.radio.set("mode", base)
         if data_ok:
@@ -341,7 +342,7 @@ class RigctlSession:
             # sets drop data mode.
             sticky = bool(self.caps.get("data_sticky"))
             target = want_data or (sticky and old_data)
-            self.station.app_set("data", target, hold=self.lane is None)
+            self.station.app_set("data", target, hold=self.lane is None, by=self.hold_id)
             # On a sticky rig, send DATA on every time it's wanted: our read
             # of it can be wrong (2026-10-13 the G90 sat in plain USB, its
             # audio dead, while the server showed data on, so nothing was sent).
@@ -444,12 +445,12 @@ class RigctlSession:
                 if hz == (rx if rx is not None else s["freq"]):
                     return ok, False         # already there: harmless re-send
                 if self.station.tune_only_blocked():
-                    self.station.freq_after_tune(hz)   # applied when the tune ends
+                    self.station.freq_after_tune(hz, self.hold_id)   # applied when the tune ends
                     return ok, False
                 log.warning("rigctl %s: F %d refused: transmitting", self.owner.peer, hz)
                 return f"RPRT {RIG_ENAVAIL}\n", False
             self.station.pending_freq = None         # superseded
-            self.station.app_set("freq", hz, hold=self.lane is None)
+            self.station.app_set("freq", hz, hold=self.lane is None, by=self.hold_id)
             await self.radio.set("freq", hz)
             return ok, False
         if cmd in ("m", "get_mode"):
@@ -677,6 +678,7 @@ class Handover:
             return
         st = self.station
         snap = {"emu_split": st.emu_split, "emu_split_tx": st.emu_split_tx, "hold": st.hold,
+                "hold_by": sorted(st.hold_by),
                 "sel_vfo": {c.name: c.sess.sel_vfo for c in conns if c.sess}}
         if snap == self._last:
             return
@@ -731,6 +733,9 @@ async def serve(station, host, port, sock=None, adopted=(), lane=None, modem=Non
         station.emu_split = bool(saved.get("emu_split"))
         station.emu_split_tx = saved.get("emu_split_tx")
         station.hold = dict(saved.get("hold") or {})
+        # Who set it. A state file from before hold_by: the carried-over
+        # sessions are the apps that set it, so it stays held until they all go.
+        station.hold_by = set(saved.get("hold_by") or (["carried-over"] if station.hold else []))
         log.info("rigctl: restored split=%s tx=%s hold=%s for %d carried-over session(s)",
                  station.emu_split, station.emu_split_tx, station.hold, len(adopted))
     elif not adopted:
@@ -747,8 +752,9 @@ async def serve(station, host, port, sock=None, adopted=(), lane=None, modem=Non
         if lane is None:
             # Pat stays connected all the time: it must not hold the radio
             # where it last put it (that is for apps like JTDX).
-            station.rigctl_connected(True)
+            station.rigctl_connected(True, name)
         sess = RigctlSession(station, f"{peer[0]}:{peer[1]}" if peer else "?", lane, modem)
+        sess.hold_id = name
         conn = _Conn(writer, name)
         conn.sess = sess
         if carried and saved:
@@ -774,7 +780,7 @@ async def serve(station, host, port, sock=None, adopted=(), lane=None, modem=Non
             conns.discard(conn)
             await sess.release()
             if lane is None:
-                station.rigctl_connected(False)
+                station.rigctl_connected(False, name)
             if conn.handed_over:
                 log.info("rigctl client %s handed over (stays connected)", peer)
             else:
