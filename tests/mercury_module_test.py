@@ -587,24 +587,56 @@ async def r4_fence():
           server.CUTOVER_FENCE, "~/" + vara_backend.FENCE)
 
 
-def r4_idle():
-    """#4: a positive idle only: no answer is busy."""
+def idle_with(answers, loaded=True, r=None, h=None):
+    """Real Ops.idle; the probe stand-in prints answers[0], answers[1], ...
+    (the last repeated), one per call; launchctl print says loaded or not."""
     d = Path(tempfile.mkdtemp(prefix="rr-probe-"))
-    r = mon["radios"][0]
-    for name, ans, want in [("hello times out (may be keyed)", {"up": False, "why": "TimeoutError"}, False),
-                            ("not running (refused)", {"up": False, "why": "ClientConnectorError"}, False),
-                            ("C2 answers, STOP TX latched but not saved",
-                             {"up": True, "stopped": True, "stop_saved": False}, False),
-                            ("C2 answers, a rigctl client (JTDX) connected", {"up": True, "rigctl": 1}, False),
-                            ("answers, idle", {"up": True}, True),
-                            ("answers, armed", {"up": True, "armed": True}, False)]:
-        f = d / "probe.py"
-        f.write_text(f"import json\nprint(json.dumps({ans!r}))\n")
-        os.environ["RANCH_RADIO_PROBE"] = f"{sys.executable} {f}"
-        try:
-            ok, _ = vara_backend.Ops().idle(mon, r)
-        finally:
-            os.environ.pop("RANCH_RADIO_PROBE", None)
+    (d / "answers.json").write_text(json.dumps(answers))
+    f = d / "probe.py"
+    f.write_text("import json, pathlib\n"
+                 f"d = pathlib.Path({str(d)!r})\n"
+                 "n = int((d / 'n').read_text()) if (d / 'n').exists() else 0\n"
+                 "(d / 'n').write_text(str(n + 1))\n"
+                 "a = json.loads((d / 'answers.json').read_text())\n"
+                 "print(json.dumps(a[min(n, len(a) - 1)]))\n")
+    lc = d / "launchctl"
+    lc.write_text(f"#!/bin/sh\nexit {0 if loaded else 1}\n")
+    lc.chmod(0o755)
+    env = {"RANCH_RADIO_PROBE": f"{sys.executable} {f}", "RANCH_RADIO_LAUNCHCTL": str(lc)}
+    old = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        return vara_backend.Ops().idle(h or mon, mon["radios"][0] if r is None else r)
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def r4_idle():
+    """#4/R1: a positive idle, decided on ONE hello; no answer is busy."""
+    T = {"up": False, "why": "TimeoutError"}
+    for name, answers, loaded, want in [
+            ("hello times out (may be keyed)", [T], True, False),
+            ("not running (refused), its agent loaded", [{"up": False, "why": "ClientConnectorError"}], True, False),
+            ("R6 not running (refused) and its agent not loaded -> idle (can't transmit)",
+             [{"up": False, "why": "ClientConnectorError"}], False, True),
+            ("R6 not loaded but the hello times out -> busy", [T], False, False),
+            ("C2 answers, STOP TX latched but not saved", [{"up": True, "stopped": True, "stop_saved": False}],
+             True, False),
+            ("C2 answers, a rigctl client (JTDX) connected", [{"up": True, "rigctl": 1}], True, False),
+            ("R1 transmitting, then the next hello times out", [{"up": True, "tx": True}, T], True, False),
+            ("R1 a rigctl client, then a timeout", [{"up": True, "rigctl": 1}, T], True, False),
+            ("R1 STOP TX unsaved, then a timeout", [{"up": True, "stopped": True, "stop_saved": False}, T],
+             True, False),
+            ("R2 PTT reserved (voice preparing, not keyed)", [{"up": True, "ptt": True}], True, False),
+            ("R3 the station's Pat in an inbound exchange", [{"up": True, "inbound": True}], True, False),
+            ("R3 the station's Pat busy", [{"up": True, "pat_busy": True}], True, False),
+            ("answers, idle", [{"up": True}], True, True),
+            ("answers, armed", [{"up": True, "armed": True}], True, False)]:
+        ok, _ = idle_with(answers, loaded)
         check(f"#4 idle: {name} -> {'idle' if want else 'busy'}", ok, want)
 
 
@@ -775,12 +807,14 @@ class FakeOps:
     stale: the old modem's port still connected; pat: Pat's config refusal."""
 
     def __init__(self, loaded, procs, listening, busy=(), stuck=(), stale=False, stale_clears=True,
-                 up_fails=False, modem_dies=False, pat=None, pid_fixed=False, reappear=None, pat_fails=False):
+                 up_fails=False, modem_dies=False, pat=None, pid_fixed=False, reappear=None, pat_fails=False,
+                 radio_down=False, raise_at=None):
         self.loaded_set, self.procs, self.listen = set(loaded), set(procs), set(listening)
         self.busy, self.stuck = set(busy), set(stuck)
         self.stale, self.stale_clears = stale, stale_clears
         self.up_fails, self.modem_dies, self.pat = up_fails, modem_dies, pat
         self.pid_fixed, self.reappear, self.pat_fails = pid_fixed, reappear, pat_fails
+        self.radio_down, self.raise_at = radio_down, raise_at
         self.lane_up, self.modem_up = False, set()
         self.pids, self.calls, self.fence_seen, self.home, self.t_first = {ST_LABEL: 1000}, [], {}, None, None
 
@@ -793,6 +827,8 @@ class FakeOps:
     def idle(self, h, r):
         rid = r["id"] if r else "station"
         self._note(("idle", rid))
+        if self.raise_at == rid and ("up", "ranch-radio.mercury") in self.calls:
+            raise KeyboardInterrupt("the process is killed here")
         return (False, f"{rid} is not idle") if rid in self.busy else (True, "idle")
 
     def loaded(self, label):
@@ -811,7 +847,7 @@ class FakeOps:
 
     def up(self, label, path, out):
         self._note(("up", label))
-        if self.up_fails:
+        if self.up_fails or (self.radio_down and label == RADIO):
             return 1
         self.loaded_set.add(label)
         name = "mercury" if "mercury" in label else "xara"
@@ -830,6 +866,9 @@ class FakeOps:
             if self.stale_clears:
                 self.stale = False
         else:
+            if self.radio_down:
+                self.loaded_set.discard(label)
+                return 1
             self.lane_up = True
             if self.reappear:
                 self.loaded_set.add(self.reappear)
@@ -1035,6 +1074,158 @@ def c_lock():
           ops.t_first is not None and ops.t_first >= rel.get("t", 1e18), True)
 
 
+def c_r3():
+    """R1 through a cutover, R5 pending timing, R6 radio-down recovery."""
+    class RealIdle(FakeOps):
+        idle = vara_backend.Ops.idle
+    seq_dir = {}
+
+    def real_idle_cutover(answers):
+        ops = RealIdle({"ranch-radio.xara"}, {"xara"}, {8300, 8301})
+        d = Path(tempfile.mkdtemp(prefix="rr-probe-"))
+        (d / "answers.json").write_text(json.dumps(answers))
+        f = d / "probe.py"
+        f.write_text("import json, pathlib\n"
+                     f"d = pathlib.Path({str(d)!r})\n"
+                     "n = int((d / 'n').read_text()) if (d / 'n').exists() else 0\n"
+                     "(d / 'n').write_text(str(n + 1))\n"
+                     "a = json.loads((d / 'answers.json').read_text())\n"
+                     "print(json.dumps(a[min(n, len(a) - 1)]))\n")
+        os.environ["RANCH_RADIO_PROBE"] = f"{sys.executable} {f}"
+        try:
+            rc, home, newh, inst, out = cutover(xh, "mercury", ops, plists=["ranch-radio.xara"])
+        finally:
+            os.environ.pop("RANCH_RADIO_PROBE", None)
+        seq_dir["home"] = home
+        return rc, ops
+    for name, first in [("transmitting", {"up": True, "tx": True}), ("a rigctl client", {"up": True, "rigctl": 1}),
+                        ("STOP TX unsaved", {"up": True, "stopped": True, "stop_saved": False})]:
+        rc, ops = real_idle_cutover([first, {"up": False, "why": "TimeoutError"}])
+        check(f"R1 cutover: first hello {name}, then a timeout -> refused, zero bootouts, no pending",
+              (rc, [c for c in ops.calls if c[0] == "bootout"], pending(seq_dir["home"])), (1, [], None))
+    # R5: interrupted after the new modem listens (before Pat): pending survives the fence's expiry
+    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, raise_at="station")
+    home = Path(tempfile.mkdtemp(prefix="rr-home-"))
+    try:
+        cutover(xh, "mercury", ops, home=home)
+        killed = False
+    except KeyboardInterrupt:
+        killed = True
+    (home / FENCE_REL).write_text(json.dumps({"until": time.time() - 3600}))    # its fence long expired
+    check("R5 killed after the modem listens: pending was set before the first bootout, VARA still refused",
+          (killed, (pending(home) or {}).get("to"),
+           fence_reader()(str(home / FENCE_REL), "varahf") is not None), (True, "mercury", True))
+    mh = copy.deepcopy(xh)
+    mh["winlink"]["vara_modem"] = "mercury"
+    ops = FakeOps({"ranch-radio.mercury"}, {"mercury"}, {8340, 8341, 8342}, busy={"ic7300"})
+    rc, home, _, _, out = cutover(mh, "mercury", ops)
+    check("R5 a busy same-target apply with no pending before: refused, and still no pending file",
+          (rc, pending(home)), (1, None))
+    # R6: the radio server does not come back
+    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, radio_down=True)
+    rc, home, newh, _, out = cutover(xh, "mercury", ops)
+    check("R6 the radio server does not restart: stopped, one more load tried, the exact recovery printed",
+          (rc, ops.calls.count(("up", RADIO)), f"launchctl bootstrap gui/$(id -u) ~/{render.AGENTS}/{RADIO}.plist"
+           in out, "vara-backend mercury --apply" in out, (pending(home) or {}).get("to")),
+          (1, 1, True, True, "mercury"))
+    ops.radio_down = False                       # the operator brought it back; retry
+    rc, home, _, _, out = cutover(newh, "mercury", ops, home=home)
+    check("R6 the retry then completes", (rc, pending(home)), (0, None))
+
+
+async def r2_voice():
+    """R2: a fence installed while the page's voice key is being prepared:
+    no key-down after the preparation."""
+    st, _ = make(probe=GOOD)
+    gate = asyncio.Event()
+    started = asyncio.Event()
+
+    class Codec:
+        current = -20
+
+        def has(self, use):
+            return use == "voice"
+
+    async def prepare(voice_level, usb_src):
+        started.set()
+        await gate.wait()
+
+    async def restore():
+        pass
+    st.codec, st._voice_prepare, st._voice_restore = Codec(), prepare, restore
+    await st.radio.start()
+    keys = []
+    real_set = st.radio.set
+
+    async def spy(k, v):
+        if k == "tx":
+            keys.append(v)
+        return await real_set(k, v)
+    st.radio.set = spy
+    try:
+        await st.radio.set("freq", 14200000)
+        t = asyncio.ensure_future(st.voice_key(WS(), True, mic=True))
+        await asyncio.wait_for(started.wait(), 5)
+        check("R2 while voice prepares, the hello reports PTT reserved", st.ptt_owner is not None, True)
+        Path(st.cutover_fence_path).write_text(json.dumps({"until": time.time() + 60}))
+        gate.set()
+        await asyncio.wait_for(t, 5)
+        check("R2 a fence installed during voice preparation: no radio.set('tx', True)", keys, [])
+        check("R2   and the reservation is released", st.ptt_owner, None)
+    finally:
+        await st.radio.stop()
+
+
+def r3_telnet_and_pat():
+    import types
+
+    import station as station_mod
+    import winlink as winlink_mod
+    fence = Path(tempfile.mkdtemp(prefix="rr-st-")) / "vara-cutover.json"
+    fake = types.SimpleNamespace(cutover_fence_path=str(fence), notice=lambda *a, **k: None)
+    lane, why = station_mod.Station.lane_for(fake, "telnet:///N0CALL", None)
+    check("R3 no fence: a telnet connect gets its lane", (lane is not None, why), (True, None))
+    fence.write_text(json.dumps({"until": time.time() + 60}))
+    lane, why = station_mod.Station.lane_for(fake, "telnet:///N0CALL", None)
+    check("R3 the switch's fence up after the idle answer: a telnet connect is refused",
+          (lane, "switch" in (why or "")), (None, True))
+    e = object.__new__(winlink_mod.PatEngine)
+    e.running, e.proc, e.proc_gen, e.status_gen, e.pat_ws, e._status_live = (
+        True, types.SimpleNamespace(returncode=None), 3, 3, object(), True)
+    check("R4 Pat ready: live child, its own Status, live WebSocket", e.pat_ready(), True)
+    e.proc = types.SimpleNamespace(returncode=1)
+    check("R4 a Status, then the child exits before the poll -> not ready", e.pat_ready(), False)
+    e.proc, e.status_gen = types.SimpleNamespace(returncode=None), 2
+    check("R4 a new child whose own Status is not in yet -> not ready", e.pat_ready(), False)
+    check("R4 the probe reads the engine's pat_ready (not the retained status)",
+          'wl.get("pat_ready") is True' in service.IDLE_SCRIPT, True)
+
+
+def small_r3():
+    rows = mercury_tnc.parse_lsof("p100\ncmercury\nf9\nn127.0.0.1:52000->127.0.0.1:2\n")
+    check("small: a connection row with no TCP state never matches a lane client",
+          mercury_tnc.lane_client_pid(rows, 52000, 2), None)
+    bad = Path(tempfile.mkdtemp(prefix="rr-bad-")) / "vara-cutover.json"
+    bad.write_text("{not json")
+    w = fence_reader()(str(bad), None) or ""
+    check("small: an unreadable fence names its file and how to clear it", (str(bad) in w, "mv " in w), (True, True))
+
+
+from ranch_radio import service  # noqa: E402
+
+
+def fence_reader():
+    try:
+        import vara_fence
+        return vara_fence.cutover_fenced
+    except ImportError:              # older code: the server's own
+        return server.cutover_fenced
+
+
+section("R2 voice", r2_voice)
+section("R3 telnet, R4 Pat", r3_telnet_and_pat)
+section("small", small_r3)
+section("R1/R5/R6 cutover", c_r3)
 for name, fn in [("dry", c_dry), ("both ways", c_both_ways), ("refusals", c_refusals), ("pat", c_pat),
                  ("lock", c_lock)]:
     section(f"cutover {name}", fn)
