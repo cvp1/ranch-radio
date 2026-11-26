@@ -873,6 +873,15 @@ def cmd_logsync(a):
     return subprocess.run(argv, cwd=str(ROOT)).returncode
 
 
+def cmd_vara_backend(a):
+    from . import vara_backend
+    hname = a.host or this_host()
+    h = load_host(hname)
+    if a.apply and hname != this_host():
+        sys.exit(f"ranch-radio: vara-backend --apply runs on {hname} itself (it loads and stops its agents)")
+    return vara_backend.main(h, host_path(hname), a.backend, a.apply)
+
+
 def cmd_radios(a):
     import json
     path = Path(os.path.expanduser(a.config))
@@ -990,6 +999,11 @@ def main(argv=None):
     rm.add_argument("module")
     rm.add_argument("--host", help="default: this machine")
     rm.add_argument("--apply", action="store_true")
+    vb = sub.add_parser("vara-backend", help="switch the modem behind Pat's varahf, xara or Mercury HF "
+                                             "(prints the plan; --apply runs it, idle radios only)")
+    vb.add_argument("backend", choices=["xara", "mercury"])
+    vb.add_argument("--host", help="default: this machine")
+    vb.add_argument("--apply", action="store_true")
     ls = sub.add_parser("logsync", help="the logbook sync's ledger: status, the backfill review, and needs")
     ls.add_argument("action", choices=["status", "backfill", "needs"])
     ls.add_argument("--apply", metavar="HASH", help="backfill: release exactly the set the report with this hash listed")
@@ -1005,4 +1019,4 @@ def main(argv=None):
             "start": cmd_start, "update": cmd_update, "new-addon": cmd_new_addon,
             "logsync": cmd_logsync, "demo": cmd_demo, "logs": cmd_logs, "status": cmd_status,
             "stop": cmd_stop, "restart": cmd_restart,
-            "backup": cmd_backup}[a.cmd](a) or 0
+            "backup": cmd_backup, "vara-backend": cmd_vara_backend}[a.cmd](a) or 0
