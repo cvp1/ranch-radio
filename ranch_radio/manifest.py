@@ -91,6 +91,15 @@ PAT_FIX = "install Pat (https://getpat.io) and set its path with --set pat=PATH"
 # binary: built from the pinned tag. Manual only: the Rust toolchain is ~1 GB.
 XARA_FIX = ("brew install rust && cargo install --locked --git https://github.com/x0rro/xara "
             "--tag v0.1.3 --root ~/.local xara")
+# Mercury HF (plan winlink-mercury 1, 2.4): built from the pinned tag with this
+# repo's one patch (its listeners on MERCURY_BIND_ADDR, which the agent sets to
+# 127.0.0.1). Not the release .dmg: its signed command-line binary has no
+# audio-input entitlement and cannot capture (Makefile:622). Manual only: the
+# build is the operator's, and the first run needs a microphone grant.
+MERCURY_FIX = ("git clone --depth 1 --branch v1.9.25 https://github.com/Rhizomatica/mercury ~/src/mercury && "
+               "git -C ~/src/mercury apply ~/ranch-radio/mercury/0001-bind-addr-env.patch && "
+               "make -C ~/src/mercury && mkdir -p ~/.local/bin && "
+               "install -m 755 ~/src/mercury/mercury ~/.local/bin/mercury")
 ARDOP_FIX = "build it from this repo: ardop/build.sh (see ardop/README.md)"
 # The JS8 engine refuses any jf8call but the Ranch Radio build (js8_engine.MIN_RR):
 # upstream 0.7.1 transmits ACKs and relay notices by itself.
@@ -151,6 +160,25 @@ MANIFESTS = {
                 "audio_out": "the radio's sound card name for xara to play into",
                 "call": "your callsign (xara sends its CW ID with it)"},
         "needs": [{"bin": "xara", "key": "bin", "default": "~/.local/bin/xara", "fix": XARA_FIX}],
+    },
+    # Mercury HF behind Pat's varahf (plan winlink-mercury M1), nested in the
+    # Winlink block like xara. Present is not running: winlink.vara_modem picks
+    # the backend, and `ranch-radio vara-backend` switches it.
+    "mercury": {
+        "label": "Winlink over Mercury HF",
+        "family": "files",
+        "block": ("winlink", "mercury"),
+        "os": ["macos"],
+        "requires": ["winlink"],
+        "template": {"macos": {"bin": "~/.local/bin/mercury", "call": ASK, "audio_in": ASK, "audio_out": ASK,
+                               "port": 8340, "broadcast_port": 8342, "lane_port": 4535,
+                               "ini": "~/Library/Application Support/ranch-radio/mercury/mercury.ini",
+                               "log": "~/Library/Logs/ranch-radio-mercury.log"}},
+        "rules": {"audio_in": "audio_name", "audio_out": "audio_name", "call": "callsign"},
+        "ask": {"audio_in": "the radio's sound card for Mercury to listen on: its CoreAudio id (mercury -z)",
+                "audio_out": "the radio's sound card for Mercury to play into: its CoreAudio id (mercury -z)",
+                "call": "your callsign (the radio server sends it as Mercury's CW ID; Mercury sends none)"},
+        "needs": [{"bin": "mercury", "key": "bin", "default": "~/.local/bin/mercury", "fix": MERCURY_FIX}],
     },
     # The JS8 engine (js8_engine.py -> jf8call): one per radio with a
     # js8_port, keyed only through that radio's rigctl port, TX disarmed at

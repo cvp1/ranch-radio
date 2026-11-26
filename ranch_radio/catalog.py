@@ -37,6 +37,14 @@ MODULES = [
      "platforms": ["macos"],
      "ships": "macOS: a xara launchd agent and three --winlink-vara-* flags on the radio's server, with the station arming VARA sessions over its lane, rendered "
               "from the host file's winlink.xara block"},
+    {"name": "mercury", "kind": "service", "title": "Winlink over Mercury HF (Rhizomatica, VARA-TNC compatible), beside ARDOP",
+     "code": "mercury_id.py (the station's own CW ID), the Mercury lane in server.py / rigctl_server.py, "
+             "mercury_tnc.py (listener check, pinned INI); mercury/ carries the bind patch; Mercury itself "
+             "is built by the operator (doctor prints how)",
+     "platforms": ["macos"],
+     "ships": "macOS: a ranch-radio.mercury launchd agent and its INI, and --winlink-mercury-* flags on the radio's "
+              "server, rendered from the host file's winlink.mercury block while winlink.vara_modem is mercury "
+              "(ranch-radio vara-backend switches it)"},
     {"name": "js8", "kind": "service", "title": "JS8 engine: jf8call (JS8Call-compatible) headless beside each radio, "
                                                  "receive-first, keyed only through the radio's own rigctl port",
      "code": "js8_engine.py (the launcher: version gate, safe settings put back at every start); jf8call is built "

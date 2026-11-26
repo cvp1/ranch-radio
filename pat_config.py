@@ -92,7 +92,8 @@ def read_pat_config(path):
             "beacon_every": _key(_key(ax25, "beacon"), "every"),
             "agwpe_addr": _key(_key(cfg, "agwpe"), "addr"),
             "varahf_addr": _key(vara, "addr"), "varahf_rig": rig,
-            "varahf_ptt_ctrl": _key(vara, "ptt_ctrl"), "varahf_rig_addr": rig_addr}, None
+            "varahf_ptt_ctrl": _key(vara, "ptt_ctrl"), "varahf_rig_addr": rig_addr,
+            "service_codes": _key(cfg, "service_codes")}, None
 
 
 LOOPBACK = ("localhost", "127.0.0.1", "::1")
@@ -110,18 +111,23 @@ def _host_port(addr):
         return host, None
 
 
-def vara_refusal(path, modem_port, lane_port, fields=None):
+MODEM_NAMES = {"xara": "xara", "mercury": "Mercury HF"}
+
+
+def vara_refusal(path, modem_port, lane_port, fields=None, backend="xara"):
     """Why Pat's config is not safe for a VARA HF session on this server
-    (None: it is), naming the field to fix. modem_port: xara's command port;
+    (None: it is), naming the field to fix. modem_port: the VARA backend's
+    command port (xara's, or Mercury HF's: plan winlink-mercury 2.1);
     lane_port: this server's ARDOP lane (Pat's QSY for varahf goes through
     the rig varahf.rig names). Never returns any other value from the file."""
+    name = MODEM_NAMES.get(backend, backend)
     if fields is None:
         fields, why = read_pat_config(path)
         if why:
             return why
     host, port = _host_port(fields.get("varahf_addr"))
     if host not in LOOPBACK or port != modem_port:
-        return (f"set varahf.addr to localhost:{modem_port} in {path} (xara on this machine; "
+        return (f"set varahf.addr to localhost:{modem_port} in {path} ({name} on this machine; "
                 f"it is {'unset' if fields.get('varahf_addr') is None else 'another address'})")
     rig = fields.get("varahf_rig")
     if not isinstance(rig, str) or not rig:
@@ -131,7 +137,18 @@ def vara_refusal(path, modem_port, lane_port, fields=None):
         return (f"hamlib_rigs.{rig}.address in {path} must be localhost:{lane_port} (this server's "
                 f"Winlink lane), so Pat's QSY for VARA goes through it")
     if fields.get("varahf_ptt_ctrl") is not False:
-        return f"set varahf.ptt_ctrl to false in {path} (xara keys the radio through its own lane)"
+        return f"set varahf.ptt_ctrl to false in {path} ({name} keys the radio through its own lane)"
+    return None
+
+
+def mercury_service_codes_refusal(fields, path):
+    """Why Pat would list no Mercury gateway (None: it would): Mercury RMS
+    channels carry service code MERCURY (Mercury docs/WINLINK.md), and Pat
+    asks the CMS only for its config's service_codes (PUBLIC when unset)."""
+    codes = fields.get("service_codes")
+    codes = ["PUBLIC"] if codes in (None, []) else codes
+    if not isinstance(codes, list) or "MERCURY" not in [str(c).upper() for c in codes]:
+        return f'add "MERCURY" to service_codes in {path} (e.g. ["PUBLIC", "MERCURY"]) to list Mercury gateways'
     return None
 
 

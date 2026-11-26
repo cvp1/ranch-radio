@@ -123,6 +123,10 @@ RULES = [
     (("winlink", "xara", "bin"), TOKEN), (("winlink", "xara", "label"), LABEL), (("winlink", "xara", "call"), CALL),
     (("winlink", "xara", "audio_in"), TEXT), (("winlink", "xara", "audio_out"), TEXT),
     (("winlink", "xara", "log"), TOKEN), (("winlink", "xara", "state"), TEXT),
+    (("winlink", "vara_modem"), TOKEN),
+    (("winlink", "mercury", "bin"), TOKEN), (("winlink", "mercury", "call"), CALL),
+    (("winlink", "mercury", "audio_in"), TEXT), (("winlink", "mercury", "audio_out"), TEXT),
+    (("winlink", "mercury", "ini"), TEXT), (("winlink", "mercury", "log"), TOKEN),
     (("packet", "tnc"), TOKEN), (("packet", "mycall"), CALL), (("packet", "allow_calls", "*"), CALL),
     (("packet", "url"), TOKEN), (("packet", "agwpe"), TOKEN),
     (("packet", "name"), LABEL), (("packet", "title"), TEXT),
@@ -162,6 +166,7 @@ RULES = [
 PORTS = [("radios", "*", "web"), ("radios", "*", "rigctl"), ("radios", "*", "lane"), ("radios", "*", "js8_port"),
          ("winlink", "pat_port"), ("winlink", "lane_port"), ("winlink", "ardop_port"),
          ("winlink", "ardopcf", "port"), ("winlink", "xara", "port"), ("winlink", "xara", "lane_port"),
+         ("winlink", "mercury", "port"), ("winlink", "mercury", "broadcast_port"), ("winlink", "mercury", "lane_port"),
          ("station", "rigctl_port"), ("logsync", "udp", "port")]
 BOOLS = [("radios", "*", "tx"), ("radios", "*", "https"), ("radios", "*", "auto_tune"), ("radios", "*", "codec_save"),
          ("packet", "tx"), ("packet", "igate", "observe"), ("station", "https"), ("addons", "*", "enabled"),
@@ -466,6 +471,7 @@ def validate(h):
         if not isinstance(opts, dict):
             raise HostError(f"{h['host']}: add-on {name!r} needs an object")
     _validate_xara(h, ports)
+    _validate_mercury(h, ports)
     _validate_js8(h, ports)
     listen_plan(h)
     listen_hf_plan(h)
@@ -631,6 +637,7 @@ def _validate_js8(h, ports):
     a = w.get("ardopcf")
     if isinstance(a, dict) and isinstance(a.get("port"), int):
         taken[a["port"]] = taken[a["port"] + 1] = "winlink.ardopcf.port"
+    taken.update(_mercury_ports(h))
     for r in rs:
         p = r["js8_port"]
         if p in taken:
@@ -698,6 +705,143 @@ def _validate_xara(h, ports):
             raise HostError(f"{host}: port {p} is both {taken[p]} and {what}")
 
 
+VARA_MODEMS = ("xara", "mercury")
+
+
+def vara_modem(h):
+    """The modem behind Pat's varahf on this host (plan winlink-mercury 2.1):
+    winlink.vara_modem, "xara" when unset (as before Mercury)."""
+    return (h.get("winlink") or {}).get("vara_modem", "xara")
+
+
+def vara_active(h):
+    """The VARA block that runs now ("xara" or "mercury" and its block), or
+    (None, None) when the host has no VARA modem for the selected backend."""
+    w = h.get("winlink") or {}
+    m = vara_modem(h)
+    b = w.get("xara" if m == "xara" else "mercury")
+    return (m, b) if isinstance(b, dict) else (None, None)
+
+
+def _mercury_ports(h):
+    """{port: what} for winlink.mercury's listeners and lane (whatever the backend)."""
+    m = (h.get("winlink") or {}).get("mercury")
+    if not isinstance(m, dict):
+        return {}
+    out = {}
+    if isinstance(m.get("port"), int):
+        out[m["port"]] = "winlink.mercury.port"
+        out[m["port"] + 1] = "winlink.mercury.port + 1 (its data port)"
+    for k in ("broadcast_port", "lane_port"):
+        if isinstance(m.get(k), int):
+            out[m[k]] = f"winlink.mercury.{k}"
+    return out
+
+
+def host_listeners(h, ports):
+    """{port: what} for every listener this host runs besides Mercury: the
+    radios' ports (ports, from validate), the station (7300) and its rigctl
+    port, Pat's HTTP, the lanes, ardopcf (+1), xara (+1) and its lane, the
+    packet hub's (HTTP 7310, AGW 8000, KISS 8001, control 8002, or the host
+    file's url/agwpe) and the logbook sync's UDP intake."""
+    taken = dict(ports)
+    taken.setdefault(7300, "the station's page")
+    for r in h["radios"]:
+        if "rigctl" not in r:
+            taken.setdefault(4532, f"{r['id']}.rigctl (4532, the default)")
+    st = h.get("station") or {}
+    if isinstance(st.get("rigctl_port"), int) and st["rigctl_port"] > 0:
+        taken.setdefault(st["rigctl_port"], "station.rigctl_port")
+    w = h.get("winlink") or {}
+    if w:
+        taken.setdefault(w.get("pat_port", 8095) if isinstance(w.get("pat_port", 8095), int) else 8095,
+                         "winlink.pat_port (Pat's HTTP)")
+    for k in ("lane_port", "ardop_port"):
+        if isinstance(w.get(k), int):
+            taken.setdefault(w[k], f"winlink.{k}")
+            if k == "ardop_port":
+                taken.setdefault(w[k] + 1, "winlink.ardop_port + 1")
+    a = w.get("ardopcf")
+    if isinstance(a, dict) and isinstance(a.get("port"), int):
+        for p in (a["port"], a["port"] + 1):
+            taken.setdefault(p, "winlink.ardopcf.port")
+    x = w.get("xara")
+    if isinstance(x, dict):
+        for k, p in (("port", x.get("port")), ("lane_port", x.get("lane_port"))):
+            if isinstance(p, int):
+                taken.setdefault(p, f"winlink.xara.{k}")
+        if isinstance(x.get("port"), int):
+            taken.setdefault(x["port"] + 1, "winlink.xara.port + 1 (its data port)")
+    pk = h.get("packet") or {}
+    if pk.get("tnc"):
+        for p, what in ((7310, "the packet hub's HTTP"), (8000, "the packet hub's AGW"),
+                        (8001, "the packet hub's KISS"), (8002, "the packet hub's control")):
+            taken.setdefault(p, what)
+    for k in ("url", "agwpe"):
+        v = pk.get(k)
+        if isinstance(v, str):
+            tail = v.rstrip("/").rpartition(":")[2]
+            if tail.isdigit():
+                taken.setdefault(int(tail), f"packet.{k}")
+    u = (h.get("logsync") or {}).get("udp") or {}
+    if isinstance(u.get("port"), int):
+        taken.setdefault(u["port"], "logsync.udp.port")
+    return taken
+
+
+MERCURY_KEYS = ("bin", "call", "audio_in", "audio_out", "port", "broadcast_port", "lane_port", "ini", "log")
+
+
+def _validate_mercury(h, ports):
+    """winlink.mercury (Mercury HF, plan winlink-mercury M1) and
+    winlink.vara_modem: macOS only, a radio with a lane, its INI under the
+    home folder (render writes it), and ports that overlap nothing this host
+    listens on. Mercury replaces a -p outside 1..65534 or a -b outside
+    1..65535 with its defaults without failing (mercury_engine.c:177-181):
+    those are refused here, so the agent never listens where nobody looks."""
+    host = h["host"]
+    w = h.get("winlink") or {}
+    vm = w.get("vara_modem", "xara")
+    if vm not in VARA_MODEMS:
+        raise HostError(f"{host}: winlink.vara_modem = {vm!r}: one of {', '.join(VARA_MODEMS)}")
+    m = w.get("mercury")
+    if vm == "mercury" and not isinstance(m, dict):
+        raise HostError(f"{host}: winlink.vara_modem is mercury but winlink.mercury is not set up")
+    if m is None:
+        return
+    if not isinstance(m, dict):
+        raise HostError(f"{host}: winlink.mercury must be an object")
+    if h["os"] != "macos":
+        raise HostError(f"{host}: winlink.mercury (Mercury HF) ships on macOS only in this version")
+    if not any(r.get("lane") for r in h["radios"]):
+        raise HostError(f"{host}: winlink.mercury needs a radio with a Winlink lane (Pat's QSY goes through it)")
+    for k in MERCURY_KEYS:
+        if k not in m:
+            raise HostError(f"{host}: winlink.mercury is missing {k!r}")
+    unknown = set(m) - set(MERCURY_KEYS)
+    if unknown:
+        raise HostError(f"{host}: winlink.mercury: unknown key(s) {', '.join(sorted(unknown))}")
+    if not 1 <= m["port"] <= 65534:
+        raise HostError(f"{host}: winlink.mercury.port = {m['port']}: 1 to 65534 (its data port is +1); "
+                        f"Mercury would listen on 8300 instead, silently")
+    if not 1 <= m["broadcast_port"] <= 65535:
+        raise HostError(f"{host}: winlink.mercury.broadcast_port = {m['broadcast_port']}: 1 to 65535; "
+                        f"Mercury would listen on 8100 instead, silently")
+    if not str(m["ini"]).startswith("~/"):
+        raise HostError(f"{host}: winlink.mercury.ini must be under ~/ (render writes it there)")
+    mine = {}
+    for p, what in _mercury_ports(h).items():
+        if p in mine:
+            raise HostError(f"{host}: port {p} is both {mine[p]} and {what}")
+        mine[p] = what
+    if len(mine) < 4:
+        raise HostError(f"{host}: winlink.mercury's port, port + 1, broadcast_port and lane_port must be four ports")
+    taken = host_listeners(h, ports)
+    for p, what in mine.items():
+        if p in taken:
+            raise HostError(f"{host}: port {p} is both {taken[p]} and {what}")
+
+
 def listen_plan(h):
     """The host's Winlink listen window (winlink.listen), checked: VHF/UHF
     packet (ax25+agwpe) only, in a data sub-band, never 144.390, max_hours
@@ -726,8 +870,14 @@ def listen_hf_plan(h):
         raise HostError(f"{h['host']}: {e}") from None
     if not any(r.get("lane") for r in h.get("radios", [])):
         raise HostError(f"{h['host']}: winlink.listen_hf needs a radio with a Winlink lane")
-    if any(c.modem == "varahf" for c in plan.channels) and not isinstance(w.get("xara"), dict):
-        raise HostError(f"{h['host']}: winlink.listen_hf has a VARA HF channel but winlink.xara is not set up")
+    if any(c.modem == "varahf" for c in plan.channels):
+        if vara_modem(h) == "mercury":
+            # Mercury's station ID covers armed sessions (M0); an answered
+            # listen is not in this version.
+            raise HostError(f"{h['host']}: winlink.listen_hf has a VARA HF channel, and VARA HF is Mercury "
+                            f"on this host: listening over Mercury is not in this version")
+        if not isinstance(w.get("xara"), dict):
+            raise HostError(f"{h['host']}: winlink.listen_hf has a VARA HF channel but winlink.xara is not set up")
     return plan
 
 
@@ -878,8 +1028,17 @@ def server_args(h, r, pth):
         a += ["--winlink-rigctl-port", str(r["lane"])]
         x = (w or {}).get("xara")
         if isinstance(x, dict):                     # VARA HF: xara's own lane and log
+            # (also with Mercury selected: xara's lane then listens to refuse
+            # every key, plan winlink-mercury 2.1)
             a += ["--winlink-vara-log", pth(x["log"]), "--winlink-vara-rigctl-port", str(x["lane_port"]),
                   "--winlink-vara-port", str(x["port"]), "--winlink-vara-label", x["label"]]
+        m = (w or {}).get("mercury")
+        if isinstance(m, dict) and vara_modem(h) == "mercury":
+            # Mercury HF behind Pat's varahf: its own lane, the station's CW ID
+            # (Mercury sends none), and the ports its listeners are checked on.
+            a += ["--winlink-vara-modem", "mercury", "--winlink-mercury-rigctl-port", str(m["lane_port"]),
+                  "--winlink-mercury-call", m["call"].upper(), "--winlink-mercury-port", str(m["port"]),
+                  "--winlink-mercury-broadcast-port", str(m["broadcast_port"])]
         if r.get("codec_db"):
             a += ["--winlink-codec-db", r["codec_db"]]
         if r.get("codec_mixer"):
@@ -1123,7 +1282,8 @@ def station_json(h):
     set up on the host), and "vara_port" xara's command port, which Pat's
     varahf.addr must name before a VARA session is let through."""
     linux = h["os"] == "linux"
-    x = (h.get("winlink") or {}).get("xara")
+    backend, vb = vara_active(h)
+    has_mercury = isinstance((h.get("winlink") or {}).get("mercury"), dict)
     radios = []
     for r in h["radios"]:
         e = {"id": r["id"], "name": r["name"], "device": r["device"]}
@@ -1134,10 +1294,15 @@ def station_json(h):
                 e[k] = r[k]
         e.setdefault("rigctl", 4532)        # server.py's default when the host file names none
         if r.get("lane"):
-            e["modems"] = ["ardop"] + (["varahf"] if isinstance(x, dict) else [])
-            if isinstance(x, dict):
-                e["vara_port"] = x["port"]
-                e["vara_log"] = x["log"]           # the session record's speed level is read from it
+            e["modems"] = ["ardop"] + (["varahf"] if vb else [])
+            if vb:
+                e["vara_port"] = vb["port"]        # Pat's varahf.addr must name it
+            if backend == "xara":
+                e["vara_log"] = vb["log"]          # the session record's speed level is read from it
+            if has_mercury and vb:
+                # The page's label (and the RMS list's tag) follow the backend;
+                # a host without Mercury renders as before.
+                e["vara_backend"] = vara_modem(h)
         radios.append(e)
     d = {"name": h["host"], "radios": radios}
     if h.get("packet"):
@@ -1214,7 +1379,7 @@ def _macos(h, home):
             "StandardOutPath": f"{logs}/console.log"}))
 
     x = w.get("xara")
-    if isinstance(x, dict):
+    if isinstance(x, dict) and vara_modem(h) == "xara":
         # xara keys the radio through its own lane on the radio's server (it
         # may key only while a VARA session is armed there). KeepAlive: xara
         # exits on a refused key or a keyer fault and must come back;
@@ -1230,6 +1395,22 @@ def _macos(h, home):
                                  "--drive-db", f"{x['drive_db']:g}", "--log", pth(x["log"]), "--quiet",
                                  "--state-dir", pth(x["state"])],
             "StandardErrorPath": console, "StandardOutPath": console}))
+
+    m = w.get("mercury")
+    if isinstance(m, dict) and vara_modem(h) == "mercury":
+        # Mercury HF (plan winlink-mercury 2.4): the patched build's listeners
+        # on loopback only (MERCURY_BIND_ADDR), no websocket (no -G/-U), PTT
+        # through its own lane, pinned INI. KeepAlive and the throttle as xara.
+        mt = _feature("mercury_tnc")
+        console = pth("~/Library/Logs/ranch-radio-mercury-console.log")
+        arts.append(Artifact("mercury", f"{AGENTS}/{mt.LABEL}.plist", "plist", {
+            "KeepAlive": True, "Label": mt.LABEL, "ProcessType": "Interactive", "RunAtLoad": True,
+            "ThrottleInterval": 10, "EnvironmentVariables": dict(mt.BIND_ENV),
+            "ProgramArguments": mt.agent_argv(pth(m["bin"]), pth(m["ini"]), m["audio_in"], m["audio_out"],
+                                              m["port"], m["broadcast_port"], m["lane_port"], pth(m["log"])),
+            "StandardErrorPath": console, "StandardOutPath": console}))
+        arts.append(Artifact("mercury", m["ini"][2:], "text",
+                             mt.ini_text(m["call"].upper(), m["port"], m["broadcast_port"], m["lane_port"])))
 
     for r in js8_radios(h):
         # KeepAlive: a refused start (not the Ranch Radio build) exits and is
