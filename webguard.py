@@ -36,7 +36,19 @@ def _own_names():
     return names
 
 
-OWN_NAMES = _own_names()
+_own = None
+
+
+def own_names():
+    """This machine's own names, looked up on first need, never at import:
+    getfqdn() is a reverse DNS lookup, and a resolver that never answers holds
+    it ~35 s (the macOS CI runner, 2026-11-26), which every process that
+    imported this paid, needed or not. A Host that is an IP or a local name
+    never needs it."""
+    global _own
+    if _own is None:
+        _own = _own_names()
+    return _own
 
 
 def host_name(host):
@@ -58,7 +70,7 @@ def host_allowed(host, extra=()):
         return True
     except ValueError:
         pass
-    if name in OWN_NAMES or "." not in name or name.endswith(LOCAL_SUFFIXES):
+    if "." not in name or name.endswith(LOCAL_SUFFIXES) or name in own_names():
         return True
     return name in {n.lower().rstrip(".") for n in extra}
 

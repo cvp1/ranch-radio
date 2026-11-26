@@ -1,5 +1,8 @@
 """webguard.host_allowed: local names in, internet names out (DNS rebinding).
 
+Its own names are looked up on first need, never at import: getfqdn() is a
+reverse DNS lookup a dead resolver holds ~35 s (macOS CI runner, 2026-11-26).
+
     python3 tests/webguard_test.py
 """
 import os
@@ -7,9 +10,33 @@ import socket
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from webguard import host_allowed  # noqa: E402
 
 fails = 0
+
+
+def check(name, got, want):
+    global fails
+    ok = got == want
+    fails += not ok
+    print(f"{'ok  ' if ok else 'FAIL'}  {name:58} got {got!r}" + ("" if ok else f" want {want!r}"))
+
+
+lookups = []
+socket.getfqdn = lambda *a: lookups.append(1) or "station.example.org"
+socket.getfqdn()
+check("control: the stand-in getfqdn counts a call", len(lookups), 1)
+lookups.clear()
+from webguard import host_allowed  # noqa: E402
+check("import: no reverse lookup", len(lookups), 0)
+for h in ("127.0.0.1:7300", "[::1]", "linux-station", "linux-station.local", "radio.ts.net"):
+    host_allowed(h)
+check("IP and local names: still no lookup", len(lookups), 0)
+check("own dotted name (getfqdn) allowed", host_allowed("station.example.org:7300"), True)
+check("  looked up once", len(lookups), 1)
+check("control: another dotted name refused", host_allowed("other.example.org"), False)
+check("  and the lookup is kept, not repeated", len(lookups), 1)
+# The stand-in stays for the cases below: a real getfqdn() is the 35 s lookup
+# this file exists to keep out of the suite.
 cases = [
     ("192.168.1.20:7300", True), ("[::1]:7310", True), ("127.0.0.1", True), ("localhost:7300", True),
     ("linux-station:7300", True), ("linux-station.local", True), ("linux-station.lan:7300", True), ("linux-station.home", True),
