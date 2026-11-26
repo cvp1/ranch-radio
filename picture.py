@@ -64,18 +64,38 @@ class Discriminator:
 class Buffer:
     """The frequency stream from sample `base` on: append at the end, read any
     span by absolute sample index, drop what is behind you. Bounded by its
-    owner, who drops (each decoder keeps at most one picture's worth)."""
+    owner, who drops (each decoder keeps at most one picture's worth, the
+    headerless scan a few minutes). Appends are amortized (capacity doubles,
+    a drop moves an offset and compacts only when it pays): the scan keeps
+    ~5 minutes, and copying all of it on every 100 ms chunk would be ~200 MB/s."""
 
     def __init__(self):
-        self.base = 0
-        self.data = np.zeros(0, dtype=np.float32)
+        self.base = 0                   # the absolute index of _store[_off]
+        self._store = np.zeros(1 << 16, dtype=np.float32)
+        self._off = 0                   # first held sample in _store
+        self._n = 0                     # samples held
 
     @property
     def end(self):
-        return self.base + self.data.size
+        return self.base + self._n
+
+    @property
+    def data(self):
+        return self._store[self._off:self._off + self._n]
 
     def append(self, f):
-        self.data = np.concatenate([self.data, f]) if self.data.size else np.asarray(f, dtype=np.float32)
+        f = np.asarray(f, dtype=np.float32)
+        need = self._off + self._n + f.size
+        if need > self._store.size:
+            if self._n + f.size <= self._store.size // 2:          # room enough once compacted
+                self._store[:self._n] = self._store[self._off:self._off + self._n]
+            else:
+                new = np.zeros(max(self._store.size * 2, self._n + f.size), dtype=np.float32)
+                new[:self._n] = self._store[self._off:self._off + self._n]
+                self._store = new
+            self._off = 0
+        self._store[self._off + self._n:self._off + self._n + f.size] = f
+        self._n += f.size
 
     def span(self, a, b):
         """Samples [a, b) clipped to what is held; returns (array, first index)."""
@@ -86,11 +106,20 @@ class Buffer:
 
     def drop_before(self, i):
         i = min(max(int(i), self.base), self.end)
-        self.data = self.data[i - self.base:]
+        k = i - self.base
+        self._off += k
+        self._n -= k
         self.base = i
 
     def clear_to_end(self):
         self.drop_before(self.end)
+
+    def snapshot(self):
+        """A copy holding what this one holds (for a scan on another thread)."""
+        c = Buffer()
+        c._store = self.data.copy()
+        c._n, c.base = c._store.size, self.base
+        return c
 
 
 def mean(buf, a, b):
