@@ -13,7 +13,7 @@ transmits, nothing is decoded.
 Decoding is sstv.py and wefax.py (pure, numpy), fed by one
 picture.Discriminator. SSTV pictures start at their VIS header and are
 slant-corrected from their sync pulses. A fax chart starts at the start
-tone and is lined up and slant-corrected from its phasing lines; joined
+tone and is lined up from its phasing lines (its slant: `clock_ppm`); joined
 mid-chart, the panel's "Start fax" begins one now (its left edge lands
 where it lands). Stop saves what came in so far.
 
@@ -38,7 +38,7 @@ Options (the host file's addons block):
                 "sstv": true, "fax": true, # which decoders run
                 "sstv_modes": ["pd120", "martin1"],   # default: all
                 "fax_lpm": 120, "fax_ioc": 576,
-                "clock_ppm": 0,           # the sound card's clock error, for a fax joined mid-chart
+                "clock_ppm": 0,           # the sound card's clock error, for fax (SSTV measures its own)
                 "keep": 100}              # pictures kept
 """
 import asyncio

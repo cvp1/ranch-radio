@@ -158,10 +158,13 @@ def sstv(mode, img=None, ppm=0.0, noise=0.0, lines=None, parity_ok=True, seed=1)
     return tx.audio(noise=noise, seed=seed), img
 
 
-def fax(img, lpm=120, ioc=576, ppm=0.0, noise=0.0, start=True, phasing_s=30, stop=True, seed=1):
+def fax(img, lpm=120, ioc=576, ppm=0.0, noise=0.0, start=True, phasing_s=30, stop=True, seed=1,
+        pulse_level=255):
     """Radiofax audio of a grey picture (HxW, any W: it is resampled to the
-    line): start tone (5 s), phasing (white pulse 5 % of the line, on black),
-    the picture, the stop tone (5 s at 450 Hz), as WMO/NOAA HF fax sends it."""
+    line): start tone (5 s), phasing (a pulse 5 % of the line, on black),
+    the picture, the stop tone (5 s at 450 Hz), as WMO/NOAA HF fax sends it.
+    `pulse_level`: the phasing pulse's level, 0..255; NMC's measured ~70 off
+    the air (2026-11-26), not white."""
     line_ms = 60_000.0 / lpm
     tx = Tx(ppm)
     if start:
@@ -170,7 +173,7 @@ def fax(img, lpm=120, ioc=576, ppm=0.0, noise=0.0, start=True, phasing_s=30, sto
             tx.tone(2300, half)
             tx.tone(1500, half)
     for _ in range(int(phasing_s * 1000 / line_ms)):
-        tx.tone(2300, line_ms * 0.05)
+        tx.tone(1500 + pulse_level * 800 / 255, line_ms * 0.05)
         tx.tone(1500, line_ms * 0.95)
     for row in img:
         tx.scan(row, line_ms)
