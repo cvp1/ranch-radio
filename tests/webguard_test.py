@@ -22,12 +22,10 @@ def check(name, got, want):
 
 
 lookups = []
-real_getfqdn = socket.getfqdn
 socket.getfqdn = lambda *a: lookups.append(1) or "station.example.org"
 socket.getfqdn()
 check("control: the stand-in getfqdn counts a call", len(lookups), 1)
 lookups.clear()
-import webguard  # noqa: E402
 from webguard import host_allowed  # noqa: E402
 check("import: no reverse lookup", len(lookups), 0)
 for h in ("127.0.0.1:7300", "[::1]", "linux-station", "linux-station.local", "radio.ts.net"):
@@ -37,8 +35,8 @@ check("own dotted name (getfqdn) allowed", host_allowed("station.example.org:730
 check("  looked up once", len(lookups), 1)
 check("control: another dotted name refused", host_allowed("other.example.org"), False)
 check("  and the lookup is kept, not repeated", len(lookups), 1)
-socket.getfqdn = real_getfqdn
-webguard._own = None                       # the real names for the cases below
+# The stand-in stays for the cases below: a real getfqdn() is the 35 s lookup
+# this file exists to keep out of the suite.
 cases = [
     ("192.168.1.20:7300", True), ("[::1]:7310", True), ("127.0.0.1", True), ("localhost:7300", True),
     ("linux-station:7300", True), ("linux-station.local", True), ("linux-station.lan:7300", True), ("linux-station.home", True),
