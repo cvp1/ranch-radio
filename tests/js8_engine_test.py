@@ -1,6 +1,6 @@
 """The JS8 engine's launcher (js8_engine.py; the js8 module's render is js8_module_test).
 
-  - version gate: upstream 0.7.1 and +rr.1 refused, +rr.2 and later taken;
+  - version gate: upstream 0.7.1 and +rr.1..+rr.3 refused, +rr.4 and later taken;
     a missing or foreign binary is a refusal, never a start
   - a refused start touches nothing: no settings.json, no exec
   - settings put back over a hostile settings.json (TX armed, auto-reply,
@@ -50,9 +50,10 @@ def fake_bin(name, out):
 # ---------------------------------------------------------------- version gate
 check("upstream 0.7.1 refused", js8_engine.check_version("0.7.1") is not None, True)
 check("+rr.1 refused", js8_engine.check_version("0.7.1+rr.1") is not None, True)
-check("+rr.2 taken", js8_engine.check_version("0.7.1+rr.2"), None)
+check("+rr.3 refused (cut multi-frame messages)", js8_engine.check_version("0.7.1+rr.3") is not None, True)
+check("+rr.4 taken", js8_engine.check_version("0.7.1+rr.4"), None)
 check("a later +rr taken", js8_engine.check_version("0.8.0+rr.10"), None)
-check("version read from the binary", js8_engine.version(fake_bin("good", "JF8Call 0.7.1+rr.2")), "0.7.1+rr.2")
+check("version read from the binary", js8_engine.version(fake_bin("good", "JF8Call 0.7.1+rr.4")), "0.7.1+rr.4")
 for label, path in (("missing", str(tmp / "nothing")), ("not jf8call", fake_bin("other", "hello"))):
     try:
         js8_engine.version(path)
@@ -60,7 +61,7 @@ for label, path in (("missing", str(tmp / "nothing")), ("not jf8call", fake_bin(
     except js8_engine.EngineError:
         check(f"a {label} binary refused", "refused", "refused")
 
-GOOD, UPSTREAM = fake_bin("jf8call", "JF8Call 0.7.1+rr.2"), fake_bin("jf8call-up", "JF8Call 0.7.1")
+GOOD, UPSTREAM = fake_bin("jf8call", "JF8Call 0.7.1+rr.4"), fake_bin("jf8call-up", "JF8Call 0.7.1")
 
 
 def run(cfg, bin_path=GOOD, extra=()):

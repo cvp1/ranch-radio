@@ -94,7 +94,7 @@ XARA_FIX = ("brew install rust && cargo install --locked --git https://github.co
 ARDOP_FIX = "build it from this repo: ardop/build.sh (see ardop/README.md)"
 # The JS8 engine refuses any jf8call but the Ranch Radio build (js8_engine.MIN_RR):
 # upstream 0.7.1 transmits ACKs and relay notices by itself.
-JS8_FIX = ("build the Ranch Radio jf8call (0.7.1+rr.2 or later; see the README's JS8 section), install it "
+JS8_FIX = ("build the Ranch Radio jf8call (0.7.1+rr.4 or later; see the README's JS8 section), install it "
            "there, then `python3 js8_engine.py check --bin PATH`")
 # The benlink the UV-PRO bridge is tested against (CI and tests/ci/Dockerfile
 # pin the same commit; tests/modules_test.py checks they agree). A newer

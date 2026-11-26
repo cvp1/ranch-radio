@@ -45,7 +45,7 @@ import subprocess
 import sys
 import time
 
-MIN_RR = 2                # the Ranch Radio build: VERSION 0.7.1+rr.2 and up
+MIN_RR = 4                # the Ranch Radio build: VERSION 0.7.1+rr.4 and up (rr.4: whole multi-frame messages)
 VERSION_RE = re.compile(r"JF8Call\s+(\S+)")
 RR_RE = re.compile(r"\+rr\.(\d+)$")
 SETTINGS = "settings.json"
