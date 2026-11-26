@@ -116,6 +116,12 @@ async def good_listeners():
     return GOOD_LSOF
 
 
+async def any_client(owner):
+    """The lane clients here are in process (no socket to bind to a pid):
+    M1's per-client check is mercury_module_test's."""
+    return None
+
+
 def make(gate_s=600, bound_s=600, audio=None, sim_args=None):
     a = Args(no_tx=False, sim=True, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1,
              winlink_vara_modem="mercury", winlink_mercury_rigctl_port=2, winlink_mercury_call="N0CALL",
@@ -123,6 +129,8 @@ def make(gate_s=600, bound_s=600, audio=None, sim_args=None):
              winlink_mercury_test_gate_s=gate_s, winlink_mercury_test_bound_s=bound_s, **(sim_args or {}))
     st = server.Station(SimRadio(rigs.get("ic7300")), audio if audio is not None else Audio(), a)
     st.mercury_listen_probe = good_listeners
+    st.mercury_owner_refusal = any_client
+    st.cutover_fence_path = "/nonexistent/vara-cutover.json"   # never this machine's
     return st
 
 
@@ -634,6 +642,8 @@ def make_civ(gate_s=None):
              winlink_mercury_test_gate_s=gate_s)
     st = server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), a)
     st.mercury_listen_probe = good_listeners
+    st.mercury_owner_refusal = any_client
+    st.cutover_fence_path = "/nonexistent/vara-cutover.json"   # never this machine's
     return st
 
 

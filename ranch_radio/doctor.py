@@ -419,11 +419,9 @@ def _mercury_probe(h):
         except (OSError, subprocess.TimeoutExpired):
             out["loaded"][label] = None
     try:
-        r = subprocess.run(list(mercury_tnc.LSOF_ARGV), capture_output=True, text=True,
-                           timeout=mercury_tnc.LSOF_TIMEOUT_S)
-        out["lsof"] = r.stdout if r.returncode in (0, 1) else None
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        out["lsof"] = mercury_tnc.run_lsof()      # complete or nothing (panel M1 #1)
+    except OSError as e:
+        out["lsof_error"] = str(e)
     return out
 
 
@@ -462,7 +460,8 @@ def mercury_checks(h, probe=None):
             out.append(Check("mercury", WARN, f"{xl} (xara) is still loaded with Mercury selected",
                              "ranch-radio vara-backend mercury --apply"))
         if p["lsof"] is None:
-            out.append(Check("mercury", WARN, "Mercury's listeners could not be read (lsof)"))
+            out.append(Check("mercury", MISSING, f"Mercury's listeners could not be read "
+                                                 f"({p.get('lsof_error', 'lsof')}): sessions are refused"))
         else:
             why = mercury_tnc.listener_refusal(mercury_tnc.parse_lsof(p["lsof"]),
                                                mercury_tnc.ports(m.get("port", mercury_tnc.PORT),

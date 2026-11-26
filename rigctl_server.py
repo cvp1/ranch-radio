@@ -491,7 +491,16 @@ class RigctlSession:
         st = self.station
         ident = getattr(st, "mercury_ident", None)
         held = self.holds_ptt()
-        reply = await self._set_ptt(on)
+        # M1 (panel #2): a Mercury client keys only if its connection belongs
+        # to the Mercury instance the arm verified, and that instance still
+        # holds exactly its listeners. A refusal here is reported like any
+        # other below (its frame's audio may still play).
+        why = await st.mercury_owner_refusal(self.owner) if on and hasattr(st, "mercury_owner_refusal") else None
+        if why:
+            st.winlink_lane_refused(self.owner.peer, self.modem, why)
+            reply = (f"RPRT {RIG_ENAVAIL}\n", False)
+        else:
+            reply = await self._set_ptt(on)
         if ident is not None:
             if not on:
                 if not held:
@@ -755,6 +764,10 @@ async def serve(station, host, port, sock=None, adopted=(), lane=None, modem=Non
             station.rigctl_connected(True, name)
         sess = RigctlSession(station, f"{peer[0]}:{peer[1]}" if peer else "?", lane, modem)
         sess.hold_id = name
+        if modem == "mercury" and hasattr(station, "mercury_lane_connected"):
+            # A new Mercury lane client (a restarted or second Mercury): while
+            # a session is armed, its listeners are read again now (M1 #2).
+            asyncio.ensure_future(station.mercury_lane_connected(sess.owner))
         conn = _Conn(writer, name)
         conn.sess = sess
         if carried and saved:

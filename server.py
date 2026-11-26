@@ -96,6 +96,32 @@ def codec_levels(text):
         raise argparse.ArgumentTypeError(str(e)) from None
 
 
+# `ranch-radio vara-backend` writes this while it switches the VARA modem
+# (ranch_radio/vara_backend.py): {"scope": "all"|"varahf", "until": epoch s}.
+CUTOVER_FENCE = "~/.local/state/radio-remote/vara-cutover.json"
+
+
+def cutover_fenced(path, scheme):
+    """Why a session of this scheme may not arm while a backend switch is
+    under way (None: it may). An unreadable fence refuses; an expired one
+    (a switch that died) is ignored with its age in the log."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return "a VARA backend switch is under way (its fence file is unreadable)"
+    until = d.get("until") if isinstance(d, dict) else None
+    if not isinstance(until, (int, float)) or time.time() >= until:
+        log.warning("winlink: ignoring an expired VARA backend switch fence %s", path)
+        return None
+    if d.get("scope") == "varahf" and scheme != "varahf":
+        return None
+    return ("a VARA backend switch is under way (ranch-radio vara-backend)" if d.get("scope") != "varahf"
+            else "the VARA backend switch waits for Pat's settings (ranch-radio vara-backend --apply --finish)")
+
+
 def mercury_call(text):
     import cw_id
     try:
@@ -287,6 +313,12 @@ class Station(TxAudio):
         # Mercury's listeners, read before every Mercury arm (plan winlink-mercury
         # 2.4, M1): a coroutine function returning `lsof -F pcn` text. A test swaps it.
         self.mercury_listen_probe = self._mercury_lsof
+        self.mercury_lsof_bin = None     # None: mercury_tnc.lsof_bin() (a test points it at a fake)
+        self._mercury_first = None       # the arm's first probe: {"pid", "binds"}
+        self.mercury_armed_snap = None   # the verified instance this Mercury session keys through
+        # Arming stops while `ranch-radio vara-backend` switches the modem
+        # (plan winlink-mercury 2.6; panel M1 #4): its fence file.
+        self.cutover_fence_path = os.path.expanduser(CUTOVER_FENCE)
         if mercury:
             import mercury_id
             self.mercury_ident = mercury_id.MercuryIdent(
@@ -748,8 +780,9 @@ class Station(TxAudio):
             if scheme not in self.hf_modems:
                 self.notice(f"Winlink not armed: {scheme} is not set up on this station.", "warn", ws)
                 return
+            self._mercury_first = None
             if self.lane_modem_of(scheme) == "mercury":
-                why = await self.mercury_listener_refusal()
+                why, self._mercury_first = await self.mercury_snapshot()
                 if why:
                     # Mercury's control port keys the radio with no login: never
                     # arm while it (or anything in its place) is reachable off
@@ -770,6 +803,11 @@ class Station(TxAudio):
                 # Mercury sends no ID: no session without this server's own.
                 self.notice("Winlink not armed: Mercury HF needs the station's CW ID, which needs "
                             "the radio's audio (this server runs --no-audio).", "warn", ws)
+                return
+            fenced = cutover_fenced(self.cutover_fence_path, scheme)
+            if fenced:
+                log.warning("winlink: arm refused: %s", fenced)
+                self.notice(f"Winlink not armed: {fenced}.", "warn", ws)
                 return
             if self.args.no_tx:
                 self.notice("Transmit is disabled on this server (--no-tx); Winlink can't connect.",
@@ -795,37 +833,95 @@ class Station(TxAudio):
             await self.winlink_disarm()
 
     async def _mercury_lsof(self):
-        """`lsof -F pcn` of every TCP listener (mercury_tnc.LSOF_ARGV), or a
-        test's file (--winlink-mercury-test-listeners, --sim only)."""
+        """`lsof -nP -iTCP -F pcnT` (mercury_tnc), by absolute path, or a
+        test's file (--winlink-mercury-test-listeners, --sim only). Raises
+        unless the listing is complete (mercury_tnc.lsof_output)."""
         import mercury_tnc
         fake = getattr(self.args, "winlink_mercury_test_listeners", None)
         if fake:
             with open(fake) as f:
                 return f.read()
-        p = await asyncio.create_subprocess_exec(*mercury_tnc.LSOF_ARGV, stdin=asyncio.subprocess.DEVNULL,
+        exe = self.mercury_lsof_bin or mercury_tnc.lsof_bin()
+        if exe is None:
+            raise OSError(f"lsof not found (looked in {', '.join(mercury_tnc.LSOF_CANDIDATES)})")
+        p = await asyncio.create_subprocess_exec(exe, *mercury_tnc.LSOF_ARGS, stdin=asyncio.subprocess.DEVNULL,
                                                  stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            out, _ = await asyncio.wait_for(p.communicate(), mercury_tnc.LSOF_TIMEOUT_S)
+            out, err = await asyncio.wait_for(p.communicate(), mercury_tnc.LSOF_TIMEOUT_S)
         except asyncio.TimeoutError:
             p.kill()
             raise
-        if p.returncode not in (0, 1):            # 1: nothing matched (no listener at all)
-            raise OSError(f"lsof exited {p.returncode}")
-        return out.decode(errors="replace")
+        return mercury_tnc.lsof_output(p.returncode, out.decode(errors="replace"), err.decode(errors="replace"))
 
-    async def mercury_listener_refusal(self):
-        """Why a Mercury session may not be armed against the listeners
-        running now (None: every Mercury listener is 127.0.0.1 on exactly
-        its ports). Anything that can't be read refuses (fail closed)."""
+    def _mercury_expected(self):
         import mercury_tnc
-        expected = mercury_tnc.ports(getattr(self.args, "winlink_mercury_port", None) or mercury_tnc.PORT,
-                                     getattr(self.args, "winlink_mercury_broadcast_port", None)
-                                     or mercury_tnc.BROADCAST_PORT)
+        return mercury_tnc.ports(getattr(self.args, "winlink_mercury_port", None) or mercury_tnc.PORT,
+                                 getattr(self.args, "winlink_mercury_broadcast_port", None)
+                                 or mercury_tnc.BROADCAST_PORT)
+
+    async def mercury_snapshot(self):
+        """(why, info, rows): Mercury's listeners now. why None: one process
+        holds exactly its ports, every one of its listeners on 127.0.0.1;
+        info is that instance {"pid", "binds"}. Anything that can't be read
+        refuses (fail closed)."""
+        import mercury_tnc
         try:
             text = await self.mercury_listen_probe()
         except Exception as e:                     # noqa: BLE001 - any failure refuses
-            return f"Mercury HF's listeners could not be read ({type(e).__name__}: {e})"
-        return mercury_tnc.listener_refusal(mercury_tnc.parse_lsof(text), expected)
+            return f"Mercury HF's listeners could not be read ({type(e).__name__}: {e})", None
+        rows = mercury_tnc.parse_lsof(text)
+        self._mercury_rows = rows
+        return mercury_tnc.snapshot(rows, self._mercury_expected())
+
+    async def mercury_listener_refusal(self):
+        return (await self.mercury_snapshot())[0]
+
+    async def mercury_owner_refusal(self, owner):
+        """Before a Mercury lane client's first key in an armed session (and
+        whenever its verification is from an earlier arm): the listeners
+        must still be the instance the arm verified, and this client's
+        connection must belong to that process (panel M1 #2). A changed
+        instance disarms the session, loudly. None: it may go on to the gate."""
+        import mercury_tnc
+        ident = self.mercury_ident
+        if (ident is None or owner is ident.owner or not self.winlink_armed
+                or self.winlink_lane_modem != "mercury"):
+            return None
+        if getattr(owner, "mercury_ok", None) == ident.token:
+            return None
+        armed_tok, want = ident.token, self.mercury_armed_snap
+        why, info = await self.mercury_snapshot()
+        if ident.token != armed_tok or not self.winlink_armed:
+            return "the Mercury session ended while its listeners were read"
+        if why or info != want:
+            msg = (f"Mercury HF's listeners changed during the session ({why or 'another process or bind'}): "
+                   f"not keying; disarmed")
+            log.warning("winlink: %s", msg)
+            self.notice(f"Winlink: {msg}.", "warn")
+            asyncio.ensure_future(self.winlink_disarm("Mercury HF's listeners changed"))
+            return msg
+        _, _, port = str(owner.peer).rpartition(":")
+        rows = getattr(self, "_mercury_rows", [])
+        if getattr(self.args, "winlink_mercury_test_listeners", None) and not any(r[5] for r in rows):
+            pid = info["pid"]     # --sim fixture with no connection rows: the lane's peer is the fixture's
+        else:
+            pid = mercury_tnc.lane_client_pid(rows, int(port) if port.isdigit() else None,
+                                              getattr(self.args, "winlink_mercury_rigctl_port", 0))
+        if pid != info["pid"]:
+            msg = (f"lane client {owner.peer} is not the verified Mercury HF (pid {info['pid']}; "
+                   f"this connection's process: {pid if pid is not None else 'unknown'})")
+            log.warning("winlink: PTT refused: %s", msg)
+            return msg
+        owner.mercury_ok = armed_tok
+        return None
+
+    async def mercury_lane_connected(self, owner):
+        """A new client on Mercury's lane: while a Mercury session is armed,
+        re-read the listeners now (a replaced Mercury disarms the session)."""
+        try:
+            await self.mercury_owner_refusal(owner)
+        except Exception:                          # noqa: BLE001 - its first key re-checks
+            log.exception("winlink: checking a new Mercury lane client")
 
     def lane_modem_of(self, scheme):
         """The lane a session of this scheme keys through (plan winlink-mercury 2.1)."""
@@ -859,11 +955,30 @@ class Station(TxAudio):
             if self.codec is not None:
                 await self.codec.leave("winlink")
             return
+        snap, why = None, None
+        if self.lane_modem_of(scheme) == "mercury":
+            # The last step before the arm commits (panel M1 #2): the same
+            # Mercury, the same binds, as the first probe. No await between
+            # this result and the commit below.
+            why, snap = await self.mercury_snapshot()
+            if why is None and snap != self._mercury_first:
+                why = "Mercury HF's listeners changed while the session was being armed"
+        # A backend switch that began while this arm was being prepared wins
+        # (its idle check could not see an arm that had not committed yet).
+        why = why or cutover_fenced(self.cutover_fence_path, scheme)
+        if why:
+            log.warning("winlink: arm refused: %s", why)
+            self.notice(f"Winlink not armed: {why}.", "warn", ws)
+            await self._winlink_mode_leave()
+            if self.codec is not None:
+                await self.codec.leave("winlink")
+            return
         self.winlink_scheme = scheme
         self.winlink_lane_modem = self.lane_modem_of(scheme)
         self.id_ledger.new_generation()          # a new session: its keys are its own
         self.winlink_owner = ws
         if self.winlink_lane_modem == "mercury":
+            self.mercury_armed_snap = snap
             self.mercury_ident.armed()
         if qsy_hz is not None:
             # A station's session: Pat dials next. The radio goes to the
