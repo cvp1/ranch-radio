@@ -105,6 +105,9 @@ class Radio:
         # where xara is set up), and xara's command port for Pat's check.
         self.modems = tuple(cfg.get("modems") or ("ardop",))
         self.vara_port = cfg.get("vara_port")
+        # The modem behind varahf (plan winlink-mercury 2.1): "xara" or
+        # "mercury" on a host with Mercury set up, else None (xara, unnamed).
+        self.vara_backend = cfg.get("vara_backend")
         self.vara_log = _expand(cfg.get("vara_log"))
         # Winlink can use it: the station can put ardopcf on its sound card, or
         # ardopcf is already there (a Mac's launchd agent; Station sets this).
@@ -115,7 +118,8 @@ class Radio:
     def info(self, primary):
         return {"id": self.id, "name": self.name, "present": self.present,
                 "rigctl": self.rigctl, "shared": primary is self,
-                "winlink": bool(self.lane and self.audio_ok), "modems": list(self.modems)}
+                "winlink": bool(self.lane and self.audio_ok), "modems": list(self.modems),
+                **({"vara_backend": self.vara_backend} if self.vara_backend else {})}
 
 
 class RemoteLane:
@@ -727,9 +731,11 @@ class Station:
         path = getattr(self.winlink, "config_path", None)
         if not path:
             return "VARA HF: Pat's config file is not known here; not connecting."
+        backend = r.vara_backend or "xara"
         if not r.vara_port:
-            return f"VARA HF: the {r.name} has no xara port in the station's config; not connecting."
-        why = pat_config.vara_refusal(path, r.vara_port, r.lane)
+            return (f"VARA HF: the {r.name} has no {pat_config.MODEM_NAMES.get(backend, backend)} port in the "
+                    f"station's config; not connecting.")
+        why = pat_config.vara_refusal(path, r.vara_port, r.lane, backend=backend)
         return f"VARA HF not ready: {why}." if why else None
 
     # --- pages

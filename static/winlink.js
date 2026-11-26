@@ -19,6 +19,10 @@ const winlink = (() => {
   let modems = ["ardop"];   // HF modem schemes a peer session may use (the server's `modems`)
   const MODEM_LABEL = { ardop: "ARDOP", varahf: "VARA HF" };
   const isHF = (kind) => kind in MODEM_LABEL;
+  // The via's VARA backend ("mercury", "xara"; none on a host without Mercury).
+  const viaBackend = () => (vias.find((v) => v.id === viaSel()?.value) || {}).backend;
+  const modemLabel = (kind) => (kind !== "varahf" ? MODEM_LABEL[kind]
+    : viaBackend() === "mercury" ? "Mercury HF" : viaBackend() === "xara" ? "VARA HF (xara)" : MODEM_LABEL[kind]);
   const PLACEHOLDER = { ardop: "ardop:///CALL?bw=2000MAX&freq=kHz", varahf: "varahf:///CALL?bw=500&freq=kHz" };
   // The bandwidths Pat accepts in a peer URL's bw= (Hz); none: the modem's default.
   const PEER_BW = { varahf: [500, 2300, 2750], ardop: [200, 500, 1000, 2000] };
@@ -947,13 +951,24 @@ const winlink = (() => {
       if (band) q.set("band", band);
       const gws = await (await api(`${BASE}winlink/api/rmslist?${q}`)).json();
       el.innerHTML = gws.length ? "" : `<div class="wl-empty">No gateways for that band</div>`;
+      // Pat's /api/rmslist rows carry no service code (Pat v1.0.0
+      // app/rmslist.go: the CMS's ServiceCode is dropped), so a Mercury list
+      // can't tell a MERCURY channel from a VARA one: say so, never imply it.
+      const unknownSvc = kind === "varahf" && viaBackend() === "mercury";
+      if (unknownSvc && gws.length) {
+        const note = document.createElement("div");
+        note.className = "wl-empty wl-svc-unknown";
+        note.textContent = "Service code not known: any of these may be VARA, not Mercury. " +
+          "Mercury connects only to MERCURY gateways.";
+        el.append(note);
+      }
       for (const g of gws.slice(0, 40)) {
         const row = document.createElement("button");
         row.className = "wl-gw";
         row.dataset.url = g.url;
         row.innerHTML = `<span class="wl-who">${esc(g.callsign)}</span><span>${esc(g.dial?.khz)} kHz</span>` +
           `<span>${Math.round(g.distance)} km ${Math.round(g.azimuth)}°</span>` + QUICK;
-        row.title = [g.modes, g.url].filter(Boolean).join(" · ");
+        row.title = [g.modes, g.url, unknownSvc ? "service code not known: may be VARA" : ""].filter(Boolean).join(" · ");
         const pick = () => {
           $("#wl-url").value = g.url;
           for (const r of el.children) r.classList.toggle("on", r === row);
@@ -996,7 +1011,7 @@ const winlink = (() => {
       const to = peer ? ` · peer ${peerCall()}` : "";
       // With more than one HF modem, the confirm names the one this URL keys.
       const sch = url.split(":")[0];
-      const modem = perModem() && isHF(sch) ? ` (${MODEM_LABEL[sch]})` : "";
+      const modem = perModem() && isHF(sch) ? ` (${modemLabel(sch)})` : "";
       b.textContent = (via?.kind === "telnet" ? "Confirm: connect over the internet"
         : `Confirm: transmit${via ? ` on the ${via.name}${modem}` : ""} ${freqOf(url) || "now"}`) + to;
       b.classList.add("wl-confirm");

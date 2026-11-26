@@ -1229,11 +1229,16 @@ const station = (() => {
     return el;
   }
 
+  // VARA HF's label follows its backend (plan winlink-mercury 2.7): a host
+  // with Mercury set up names both; one without (no vara_backend) as before.
+  const varaLabel = (r) => (r.vara_backend === "mercury" ? "Mercury HF"
+    : r.vara_backend === "xara" ? "VARA HF (xara)" : "VARA HF");
+
   function radioCard(r) {
     const S = live[r.id]?.S || {};
     const ports = r.remote ? `on the <code>${esc(r.remote)}</code> station`
       : `rigctl <code>${r.rigctl}</code>${r.shared && (sharedPort ?? 0) > 0 ? ` and the shared <code>${sharedPort ?? 0}</code>` : ""}`;
-    const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? "VARA HF" : "ARDOP")).join(" and ")}` : "";
+    const lane = r.winlink ? `Winlink over ${(r.modems || ["ardop"]).map((m) => (m === "varahf" ? varaLabel(r) : "ARDOP")).join(" and ")}` : "";
     // Its ports and lane on one line (UX plan PR 3b, 2026-11-19): two lines
     // under the trace were the card's dead space, and the Shack has to
     // fit one screen.
@@ -1523,7 +1528,10 @@ const station = (() => {
     const list = [];
     for (const r of present().filter((r) => r.winlink)) {
       list.push({ id: r.id, name: r.name, kind: "ardop", label: `HF · ${r.name} (ARDOP)` });
-      if ((r.modems || []).includes("varahf")) list.push({ id: `${r.id}:varahf`, name: r.name, kind: "varahf", label: `HF · ${r.name} (VARA HF)` });
+      if ((r.modems || []).includes("varahf")) {
+        list.push({ id: `${r.id}:varahf`, name: r.name, kind: "varahf", label: `HF · ${r.name} (${varaLabel(r)})`,
+                    ...(r.vara_backend ? { backend: r.vara_backend } : {}) });
+      }
     }
     const packetLabel = packetName();
     if (packet.present) list.push({ id: "packet", name: packetLabel, kind: "packet", label: `VHF · ${packetLabel} (packet)` });
