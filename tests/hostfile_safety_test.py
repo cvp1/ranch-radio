@@ -128,7 +128,8 @@ mac_h = render.load(ROOT / "examples/hosts" / "mac-shack.json")
 art = Artifact("winlink", "Library/LaunchAgents/x;y.plist", "plist", {"Label": "x; reboot"})
 lines = cli.reload_commands(mac_h, [art])
 check("reload line quotes a label", lines[0], "launchctl bootout gui/$(id -u)/" + shlex.quote("x; reboot"))
-check("  and the plist path", lines[1].endswith(shlex.quote("Library/LaunchAgents/x;y.plist")), True)
+check("  and the wait for launchd to let go", shlex.quote("x; reboot") in lines[1] and "; reboot >" not in lines[1], True)
+check("  and the plist path", lines[2].endswith(shlex.quote("Library/LaunchAgents/x;y.plist")), True)
 
 # The CLI's --set takes only the template's own fields.
 out = io.StringIO()
