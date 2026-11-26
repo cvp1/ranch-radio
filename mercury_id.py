@@ -39,12 +39,17 @@ Only an ID played to the end and released with its own T 0 counts as on air
 (ledger source "station", IdLedger.id_done).
 
 Timing budget (worst_case_end_s, checked by mercury_id_test): from the moment
-the gate or the bound falls due, the ID waits at most WAIT_MAX_S (Mercury's
-key running to the 33 s cut, then a full 33 s window, the guard, 1 s), then
-lead + the longest CW call check_call accepts (twelve zeros, 17.4 s at
-18 WPM) + tail. 500 + 0.25 + 67.2 + 0.15 + 17.4 + 0.36 = 585.4 s <= 590 s for
-the gate; the bound (490 s from arming, which is no later than Mercury's
-first key) ends by 575.4 s.
+the gate or the bound falls due, the ID waits at most WAIT_MAX_S: Mercury's
+key, which lasts at most 33 s from key-down whatever it sends meanwhile
+(RigctlOwner.max_key_s, the hard cap in Station.safety_loop), then a full
+33 s window, the guard, 1 s. Then lead + the longest CW call check_call
+accepts (twelve zeros, 17.4 s at 18 WPM) + tail. 500 + 0.25 + 67.2 + 0.15 +
+17.4 + 0.36 = 585.4 s <= 590 s for the gate; the bound (490 s from arming,
+which is no later than Mercury's first key) ends by 575.4 s. If Mercury
+never goes quiet for that long (refused frame after refused frame, each
+renewing its window) the ID cannot start: the session is disarmed at
+due + WAIT_MAX_S (<= 567.5 s) with the ID owed and a WARNING, the fence
+latched; nothing keys for it later (panel pb34973ec68 F1).
 """
 import asyncio
 import json
@@ -71,7 +76,9 @@ END_MARGIN_S = 5.0
 ID_DEADLINE_S = 590.0        # every ID ends by here (10:00 less margin), from the first unidentified key
 GATE_S = 500.0               # 8:20 (derivation above)
 BOUND_S = 490.0              # 8:10: the first trial's cap on a Mercury session (plan 2.2 b)
-FULL_WINDOW_CAUSES = ("keepalive", "disconnect", "forced")   # a release that was not Mercury's own T 0
+FULL_WINDOW_CAUSES = ("keepalive", "cap", "disconnect", "forced")   # a release that was not Mercury's own T 0
+WINDOWS_MAX = 64             # Mercury clients tracked at once; past it, every new one is "open" (safe)
+COLLIDE_FLUSH_S = 1.0        # a collision's unkey must reach the radio within this before Mercury hears no
 
 
 def id_s_max(wpm=cw_id.DEFAULT_WPM):
@@ -91,8 +98,10 @@ END_WAIT_S = WAIT_MAX_S + id_s_max() + END_MARGIN_S
 
 
 class MercuryIdent:
-    def __init__(self, station, call, wpm=cw_id.DEFAULT_WPM, gate_s=GATE_S, bound_s=BOUND_S):
+    def __init__(self, station, call, wpm=cw_id.DEFAULT_WPM, gate_s=GATE_S, bound_s=BOUND_S,
+                 clock=time.monotonic):
         self.st = station
+        self.clock = clock          # the audio windows' clock (a test's fake one)
         self.call = cw_id.check_call(call)
         self.pcm = cw_id.render(self.call, wpm)
         self.id_s = cw_id.duration_s(self.call, wpm)
@@ -111,6 +120,7 @@ class MercuryIdent:
         # Mercury clients whose frame may be playing: owner -> monotonic until.
         # Kept across disarm and arm: a refused frame plays on regardless.
         self.windows = {}
+        self.overflow_until = 0.0   # past WINDOWS_MAX: a window nobody can close until then
         self.last_quiet = None      # (monotonic, cause): Mercury's last release or idle T 0
         self.playing = False
         self.collided = False
@@ -139,6 +149,7 @@ class MercuryIdent:
         self._stop_tasks()
         self.armed_at = None
         self.fence, self.latched = None, False
+        self._prune()
 
     def _stop_tasks(self):
         for t in (self._watch, self._backstop, self._task):
@@ -168,7 +179,7 @@ class MercuryIdent:
             if self.unid_since is None:
                 self.unid_since = now
         elif ev == "refused":
-            self.windows[owner] = now + WINDOW_S
+            self._open_window(owner, WINDOW_S)
             if self.playing:
                 self.collided = True
                 return True
@@ -176,6 +187,26 @@ class MercuryIdent:
             if self.windows.pop(owner, None) is not None:   # only its own frame is over
                 self.last_quiet = (now, "idle")
         return False
+
+    def _prune(self, now=None):
+        now = self.clock() if now is None else now
+        for o in [o for o, t in self.windows.items() if t <= now]:
+            del self.windows[o]
+
+    def _open_window(self, owner, length):
+        """owner's frame may play for `length` from now (panel pb34973ec68 F5:
+        pruned on every add and at disarm; at most WINDOWS_MAX owners)."""
+        now = self.clock()
+        until = now + length
+        self._prune(now)
+        if owner not in self.windows and len(self.windows) >= WINDOWS_MAX:
+            # Full and nothing expired: no owner is dropped, and this window
+            # counts as open regardless (the safe side).
+            self.overflow_until = max(self.overflow_until, until)
+            log.warning("station ID: more than %d Mercury clients with a frame in flight; "
+                        "treating the channel as busy until the newest is over", WINDOWS_MAX)
+            return
+        self.windows[owner] = max(self.windows.get(owner, 0.0), until)
 
     def released(self, owner, cause):
         """Station.unkey: a Mercury client's key ended. cause "normal" (its own
@@ -188,7 +219,7 @@ class MercuryIdent:
             # Not its own T 0: whatever it was playing (a TUNE-like key, a
             # frame past the cap) may still be playing; a T 0 from it later
             # says it is over.
-            self.windows[owner] = max(self.windows.get(owner, 0.0), now + WINDOW_S)
+            self._open_window(owner, WINDOW_S)
 
     async def collide(self):
         """Mercury asked to key during the ID: release the ID's key now."""
@@ -196,6 +227,15 @@ class MercuryIdent:
                     "into it; cutting the ID before it is told no")
         if self.st.ptt_owner is self.owner:
             await self.st.unkey("station ID stopped: Mercury asked to key during it")
+        # The unkey above is queued; Mercury hears no only once it is on the
+        # wire (CI-V's state is optimistic: panel pb34973ec68 F3). Bounded:
+        # past it Mercury is answered anyway, and nothing else keys.
+        wait = getattr(self.st.radio, "wait_tx_off_written", None)
+        if wait is not None and not await wait(COLLIDE_FLUSH_S):
+            self.latched = True
+            self.fence = self.fence or "a station ID collided"
+            log.warning("station ID: the unkey did not reach the radio within %g s of the collision; "
+                        "Mercury is refused now, the fence stays latched", COLLIDE_FLUSH_S)
 
     # --- views ---
 
@@ -203,17 +243,19 @@ class MercuryIdent:
         o = self.st.ptt_owner
         return o is not None and o is not self.owner
 
-    def windows_open(self, now=None):
-        now = time.monotonic() if now is None else now
-        for o in [o for o, t in self.windows.items() if t <= now]:
-            del self.windows[o]
-        return bool(self.windows)
+    def windows_open(self):
+        now = self.clock()
+        self._prune(now)
+        return bool(self.windows) or now < self.overflow_until
 
     def quiet(self, now=None):
         """The ID may key: no Mercury owner, no frame that may be playing,
         and the guard past Mercury's last release or T 0."""
+        # Not a strict own-release slot: panel pb34973ec68 F2 was reviewed and
+        # rejected (2026-11-26): a collision unkeys before Mercury hears no,
+        # and any forced release waits a full window.
         now = time.monotonic() if now is None else now
-        if self.mercury_keyed() or self.windows_open(now):
+        if self.mercury_keyed() or self.windows_open():
             return False
         return self.last_quiet is None or now - self.last_quiet[0] >= RELEASE_GUARD_S
 
@@ -305,12 +347,13 @@ class MercuryIdent:
         # Any ID that did not go out whole latches the fence: no retry, in
         # this path or the end-of-session one (2026-11-25, mercury_id_test:
         # an end-of-session ID cut by a collision was sent again).
+        # The session ends too, whichever path owed it (gate, bound, end): it
+        # must not stay armed unidentified (panel pb34973ec68 F1).
         self.latched = True
         self.fence = self.fence or "a station ID did not go out"
-        if gate:
-            # Cut or failed mid-session: the ID is owed, Mercury stays fenced,
-            # and the session ends: it must not keep transmitting unidentified.
-            await self.st.winlink_disarm("the station ID could not be sent; an ID is owed")
+        log.warning("station ID (%s) NOT sent: %s; disarming with the ID owed. Nothing will key "
+                    "for it later.", why, self.results[-1][2] if self.results else "it failed")
+        await self.st.winlink_disarm("the station ID could not be sent; an ID is owed")
 
     def _why_stop(self, tok):
         st = self.st

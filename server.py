@@ -1064,8 +1064,10 @@ class Station(TxAudio):
             # limit): a key-down it queued but the backend has not sent must
             # not reach the radio ahead of this unkey, as STOP TX already does
             # (panel p59d35d3ea8 #2: CI-V keeps transmit frames in order).
+            # Only the trailing, unpaired key-down: another client's queued
+            # ON/OFF pair is its own completed burst (panel pb34973ec68 F6).
             drop = getattr(self.radio, "drop_pending_keys", None)
-            dropped = drop() if drop else 0
+            dropped = drop(unpaired_only=True) if drop else 0
             if dropped:
                 log.warning("unkey: dropped %d queued key command(s) before they were sent", dropped)
         self.ptt_owner = None
@@ -1204,9 +1206,16 @@ class Station(TxAudio):
                 continue                      # preparing: not keyed; bounded by VOICE_PREP_S
             now = time.monotonic()
             keepalive = getattr(self.ptt_owner, "keepalive_s", PTT_KEEPALIVE_S)
+            cap = getattr(self.ptt_owner, "max_key_s", None)
             if now - self.ptt_seen > keepalive:
                 await self.unkey(getattr(self.ptt_owner, "lost_msg",
                                          "lost contact with the operator's browser"), cause="keepalive")
+            elif cap is not None and now - self.ptt_started > cap:
+                # Mercury's lane: one key lasts at most this long from key-down,
+                # whatever the client says meanwhile (panel pb34973ec68 F1: a
+                # get_ptt poll refreshed the keepalive and the key ran on).
+                await self.unkey(f"{getattr(self.ptt_owner, 'peer', 'the modem')}'s key reached its "
+                                 f"{cap:g} s limit", cause="cap")
             elif now - self.ptt_started > self.args.tx_timeout:
                 await self.unkey(f"{self.args.tx_timeout}s transmit time limit")
 

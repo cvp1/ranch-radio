@@ -68,6 +68,20 @@ END_WAIT_MAX_S = 300.0
 HOP = webguard.HOP
 
 
+def end_wait(v):
+    """A radio's end_wait_s: a finite number clamped to [END_WAIT_S,
+    END_WAIT_MAX_S], else END_WAIT_S. Never raises."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return END_WAIT_S
+    try:
+        f = float(v)
+    except (OverflowError, ValueError):
+        return END_WAIT_S
+    if f != f or f in (float("inf"), float("-inf")):
+        return END_WAIT_S
+    return min(max(f, END_WAIT_S), END_WAIT_MAX_S)
+
+
 def _expand(p):
     return os.path.expanduser(p) if isinstance(p, str) else p
 
@@ -137,6 +151,7 @@ class RemoteLane:
 
     async def arm(self, ws, url):
         st = self.station
+        self.end_wait_s, self._end_wait_bound = END_WAIT_S, False    # this arm's, set by its armed message
         self.page = ws                     # the session's page: the radio's notices are relayed to it
         scheme = urlsplit(url).scheme
         self.scheme = scheme if scheme in winlink.HF_MODEMS else "ardop"
@@ -190,11 +205,13 @@ class RemoteLane:
         for k in ("armed", "codec_db", "id"):
             if k in d:
                 self.radio_state[k] = d[k]
-        if d.get("armed") is True and "end_wait_s" in d:
-            try:
-                self.end_wait_s = min(max(float(d["end_wait_s"]), END_WAIT_S), END_WAIT_MAX_S)
-            except (TypeError, ValueError):
-                pass
+        if d.get("armed") is True and "end_wait_s" in d and not getattr(self, "_end_wait_bound", False):
+            # One allowance per arm, from the first armed message only; a
+            # finite number or nothing, clamped; never raises (panel
+            # pb34973ec68 F4: "nan", NaN and a 310-digit int got through, or
+            # killed the reader).
+            self._end_wait_bound = True
+            self.end_wait_s = end_wait(d.get("end_wait_s"))
 
     async def _read(self):
         try:
@@ -239,7 +256,7 @@ class RemoteLane:
                 await self.ws.send_str(json.dumps({"t": "winlink_end", "started": started, "ok": ok,
                                                    "reason": reason}))
                 try:
-                    await asyncio.wait_for(self._disarmed.wait(), getattr(self, "end_wait_s", END_WAIT_S))
+                    await asyncio.wait_for(self._disarmed.wait(), end_wait(getattr(self, "end_wait_s", END_WAIT_S)))
                 except TimeoutError:
                     log.warning("winlink: the %s did not disarm; closing its lane", self.radio.name)
         finally:

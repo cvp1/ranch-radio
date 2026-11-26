@@ -89,6 +89,11 @@ class RigctlOwner:
         self.modem = modem       # a Winlink lane's modem ("ardop", "varahf", "mercury"): whose bursts the ID ledger keeps
         if lane == "winlink":
             self.keepalive_s = KEEPALIVE_OF.get(modem, WINLINK_KEEPALIVE_S)
+        if lane == "winlink" and modem == "mercury":
+            # From key-down, not from the last traffic: a poll while keyed
+            # must not stretch Mercury's key past its 30 s cap + 3 s (the
+            # station ID's budget depends on it; Station.safety_loop).
+            self.max_key_s = WINLINK_MERCURY_KEEPALIVE_S
         self.lost_msg = f"rigctl client {peer} went quiet"
 
     async def send_str(self, _msg):   # Station.notice() targets the owner

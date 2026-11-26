@@ -22,6 +22,13 @@ Time limits are shortened per case (gate, bound, audio window).
     keyed again; a task from before a re-arm never keys in the new session
   - failed connect then a late retry: the end ID, then -11, no ID
   - the station's RemoteLane turns end_request into its winlink.abort
+  - panel pb34973ec68: on CI-V, Mercury's refusal waits for TX OFF on the
+    wire (bounded, then latched); a polling holder is cut at the 33 s cap;
+    an ID that can never start disarms the session, owed; codex's queue
+    trace (A's ON/OFF kept, B's trailing ON dropped; STOP TX drops all);
+    windows pruned and capped (fake clock); end_wait_s validated, bound
+    once per arm, the reader surviving bad values; the budget against the
+    constants as imported
   - panel p59d35d3ea8: TUNE refused on every Winlink lane (main port still
     tunes); a queued CI-V key-down dropped on disarm and owner loss; the
     rig's TX OFF before Mercury hears its refusal; a keepalive cut or a
@@ -49,6 +56,16 @@ import server  # noqa: E402
 from sim import SimRadio  # noqa: E402
 
 fails = 0
+# The production timing constants, as imported: some cases shorten them; every
+# case starts from these, and the budget is checked against these (panel
+# pb34973ec68 F7: a case's overwrite hid a too-long WAIT_MAX_S).
+TIMING = ("WINDOW_S", "WAIT_MAX_S", "BOUND_BACKSTOP_S", "RELEASE_GUARD_S", "GATE_S", "BOUND_S")
+PROD = {k: getattr(mercury_id, k) for k in TIMING}
+
+
+def restore():
+    for k, v in PROD.items():
+        setattr(mercury_id, k, v)
 
 
 def check(name, got, want):
@@ -248,8 +265,7 @@ async def audio_window():
     check("window, no T 0: on air", last(st), (True, True))
     w.cancel()
     await down(st)
-    mercury_id.WINDOW_S = rigctl_server.WINLINK_MERCURY_KEEPALIVE_S
-    mercury_id.WAIT_MAX_S = 2 * mercury_id.WINDOW_S + 1
+    restore()
 
 
 async def gate_busy_and_idle():
@@ -339,6 +355,27 @@ async def civ_queue_dropped():
     def frames(r):
         return [(k, f[-2]) for k, f in r._ordered if k == "tx"]
 
+    # codex's trace (pb34973ec68 F6): A keys and unkeys itself (main port), B
+    # keys and goes away before the pump runs: A's pair stays, B's ON goes.
+    st = server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), Args(
+        no_tx=False, sim=False, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1))
+    a, b = rigctl_server.RigctlSession(st, "a"), rigctl_server.RigctlSession(st, "b")
+    await T(a, True)
+    await T(a, False)
+    await T(b, True)
+    check("CI-V trace: queued A ON, A OFF, B ON", frames(st.radio), [("tx", 1), ("tx", 0), ("tx", 1)])
+    await b.release()
+    check("CI-V trace: B gone -> A's ON/OFF kept, B's trailing ON dropped",
+          frames(st.radio), [("tx", 1), ("tx", 0), ("tx", 0)])
+    st2 = server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), Args(
+        no_tx=False, sim=False, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1))
+    a, b = rigctl_server.RigctlSession(st2, "a"), rigctl_server.RigctlSession(st2, "b")
+    await T(a, True)
+    await T(a, False)
+    await T(b, True)
+    await st2.tx_stop(None, "STOP TX pressed")
+    check("CI-V trace, STOP TX: every queued key-down dropped (unchanged)",
+          [v for _, v in frames(st2.radio)], [0, 0])
     for how in ("disarm", "disconnect", "own T 0"):
         st = server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), Args(
             no_tx=False, sim=False, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1))
@@ -439,7 +476,7 @@ async def release_causes():
     check("re-arm: A's open window kept", a.owner in st.mercury_ident.windows, True)
     w.cancel()
     await down(st)
-    mercury_id.WINDOW_S = rigctl_server.WINLINK_MERCURY_KEEPALIVE_S
+    restore()
 
 
 async def replacement_arm():
@@ -467,8 +504,18 @@ async def replacement_arm():
 
 
 async def budget():
-    """Panel #8: the timing budget, from the constants."""
+    """Panel #8: the timing budget, from the production constants (PROD)."""
     import cw_id
+    restore()
+    check("budget: the constants are the ones imported", {k: getattr(mercury_id, k) for k in TIMING}, PROD)
+    cap = rigctl_server.RigctlOwner("x", "winlink", "mercury").max_key_s
+    check("Mercury's key cap from key-down is the 33 s keepalive (F1)", cap,
+          rigctl_server.WINLINK_MERCURY_KEEPALIVE_S)
+    check("the wait counts Mercury's capped key, not one refreshed by polls",
+          mercury_id.WAIT_MAX_S >= cap + mercury_id.WINDOW_S + mercury_id.RELEASE_GUARD_S, True)
+    give_up = mercury_id.GATE_S + mercury_id.TICK_S + mercury_id.WAIT_MAX_S
+    check(f"an ID that cannot start: the session disarms by {give_up:.1f} s (<= 590)",
+          give_up <= mercury_id.ID_DEADLINE_S, True)
     check("longest call check_call accepts: twelve zeros, 17.4 s at 18 WPM",
           (cw_id.longest_call(), round(cw_id.longest_s(), 2)), ("000000000000", 17.4))
     g = mercury_id.worst_case_end_s(mercury_id.GATE_S)
@@ -567,6 +614,194 @@ def ledger_exact():
     check("ledger: a log-timed (xara) ID keeps its slop (unchanged)", X.owed(), False)
 
 
+def make_civ():
+    from civ import CivRadio
+    a = Args(no_tx=False, sim=False, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1,
+             winlink_vara_modem="mercury", winlink_mercury_rigctl_port=2, winlink_mercury_call="N0CALL")
+    return server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), a)
+
+
+async def collide_waits_for_the_wire():
+    """pb34973ec68 F3: on CI-V, Mercury's RPRT -11 waits until TX OFF is written."""
+    for pump in (True, False):
+        st = make_civ()
+        await st.winlink_arm(WS(), True, scheme="varahf")
+        ident, r = st.mercury_ident, st.radio
+        rfd, wfd = os.pipe()
+        r.fd = wfd                                   # the "serial port"
+        # the ID on the air: its ON already written, the pump between frames
+        ident.fence, ident.playing = "test", True
+        st.ptt_owner, st.ptt_started, st.ptt_seen = ident.owner, time.monotonic(), time.monotonic()
+        r._ptt_sent_on = True
+        m = lane(st)
+        t0 = time.monotonic()
+        task = asyncio.ensure_future(T(m, True))
+        await asyncio.sleep(0.3)
+        queued = [(k, f[-2]) for k, f in r._ordered if k == "tx"]
+        name = "pump runs" if pump else "pump stuck"
+        check(f"wire ({name}): TX OFF queued, not yet written; Mercury's reply pending",
+              (queued, task.done()), ([("tx", 0)], False))
+        if pump:
+            while r._ordered:                        # the pump writes what is queued, OFF among it
+                _, frame = r._ordered.popleft()
+                r._write(frame)
+            written = time.monotonic()
+            reply = await asyncio.wait_for(task, 2)
+            check("wire (pump runs): RPRT -11 only after OFF is on the wire",
+                  (reply, time.monotonic() >= written), ("RPRT -11", True))
+            check("wire (pump runs): not latched", ident.latched, False)
+        else:
+            reply = await asyncio.wait_for(task, 3)
+            took = time.monotonic() - t0
+            check(f"wire (pump stuck): answered after the {mercury_id.COLLIDE_FLUSH_S:g} s bound anyway, latched",
+                  (reply, mercury_id.COLLIDE_FLUSH_S - 0.05 <= took < 2.0, ident.latched), ("RPRT -11", True, True))
+        os.close(rfd)
+        os.close(wfd)
+        await st.winlink_disarm("x")
+
+
+async def polling_holder_capped():
+    """pb34973ec68 F1: polls do not stretch Mercury's key past its cap."""
+    st = make()
+    await up(st)
+    await arm(st)
+    m = lane(st)
+    await T(m, True)
+    m.owner.max_key_s = 1.0                         # 33 s in production
+    t0 = time.monotonic()
+    while tx(st) and time.monotonic() - t0 < 4:
+        await m.handle("t")                         # get_ptt: keeps the keepalive fresh
+        await asyncio.sleep(0.2)
+    took = time.monotonic() - t0
+    check(f"polling holder: cut at its cap from key-down ({took:.2f} s), not kept alive",
+          (tx(st), 0.9 <= took < 1.6), (False, True))
+    check("polling holder: the cut opens a full window (cause cap)",
+          (st.mercury_ident.last_quiet[1], m.owner in st.mercury_ident.windows), ("cap", True))
+    await down(st)
+
+
+async def never_quiet_disarms():
+    """pb34973ec68 F1: refused frame after refused frame past WAIT_MAX_S: disarm, owed, no later key."""
+    mercury_id.WINDOW_S, mercury_id.WAIT_MAX_S = 0.5, 1.5
+    st = make(gate_s=0.6)
+    await up(st)
+    keys = []
+    w = asyncio.ensure_future(key_watch(st, keys))
+    await arm(st)
+    m = lane(st)
+    await T(m, True)
+    await asyncio.sleep(0.8)                         # the gate falls due under it
+    await T(m, False)
+    t0 = time.monotonic()
+    while st.winlink_armed and time.monotonic() - t0 < 5:
+        await T(m, True)                             # refused, never a T 0: its windows renew
+        await asyncio.sleep(0.3)
+    took = time.monotonic() - t0
+    # the ID's wait began when the gate tripped (~0.2 s before t0): WAIT_MAX_S 1.5 from there
+    check(f"never quiet: disarmed at WAIT_MAX_S ({took:.1f} s after Mercury's T 0)",
+          (st.winlink_armed, 0.9 <= took < 2.5), (False, True))
+    check("never quiet: the ID never keyed, owed",
+          ([k[1] for k in keys], st.id_ledger.owed(), st.mercury_ident.results[-1][2]),
+          (["mercury"], True, "Mercury never went quiet"))
+    await asyncio.sleep(1.5)
+    check("never quiet: nothing keys afterwards", ([k[1] for k in keys], tx(st)), (["mercury"], False))
+    w.cancel()
+    await down(st)
+    restore()
+
+
+async def windows_bounded():
+    """pb34973ec68 F5: expired windows are pruned on add and at disarm; at
+    most WINDOWS_MAX owners; past it the channel counts as busy."""
+    st = make()
+    ident = st.mercury_ident
+    clk = [1000.0]
+    ident.clock = lambda: clk[0]
+    owners = [object() for _ in range(80)]
+    for o in owners[:10]:
+        ident.lane_event(o, "refused")
+    clk[0] += mercury_id.WINDOW_S + 1
+    ident.lane_event(owners[10], "refused")
+    check("windows: expired ones pruned when one is added", len(ident.windows), 1)
+    for o in owners[11:80]:                      # 70 at once: past the cap
+        ident.lane_event(o, "refused")
+    check(f"windows: at most {mercury_id.WINDOWS_MAX} owners", len(ident.windows), mercury_id.WINDOWS_MAX)
+    check("windows: past the cap, still open (safe)", ident.windows_open(), True)
+    clk[0] += mercury_id.WINDOW_S + 1
+    check("windows: all expired -> closed, map empty", (ident.windows_open(), len(ident.windows)), (False, 0))
+    for o in owners[:5]:
+        ident.lane_event(o, "refused")
+    clk[0] += mercury_id.WINDOW_S + 1
+    ident.disarmed()
+    check("windows: pruned at disarm", len(ident.windows), 0)
+
+
+def end_wait_validation():
+    """pb34973ec68 F4: end_wait_s is a finite number in [35, 300], once per arm."""
+    import station as station_mod
+    lo, hi = station_mod.END_WAIT_S, station_mod.END_WAIT_MAX_S
+    big = int("1" + "0" * 309)
+    for v, want in (("nan", lo), (float("nan"), lo), (float("inf"), lo), (big, lo), ("90", lo), (True, lo),
+                    (None, lo), (90.1, 90.1), (5, lo), (1000, hi)):
+        lane_ = station_mod.RemoteLane.__new__(station_mod.RemoteLane)
+        lane_.radio_state = {"armed": False}
+        lane_.end_wait_s, lane_._end_wait_bound = lo, False
+        lane_._take({"armed": True, "end_wait_s": v})
+        check(f"end_wait_s {str(v)[:12]!s:>12}: {want:g}", lane_.end_wait_s, want)
+    lane_ = station_mod.RemoteLane.__new__(station_mod.RemoteLane)
+    lane_.radio_state = {"armed": False}
+    lane_.end_wait_s, lane_._end_wait_bound = lo, False
+    lane_._take({"armed": True, "end_wait_s": 90.1})
+    lane_._take({"armed": True, "end_wait_s": 35})
+    lane_._take({"armed": True, "end_wait_s": 300})
+    check("end_wait_s: a later armed message for the same arm changes nothing", lane_.end_wait_s, 90.1)
+
+
+async def reader_survives_bad_end_wait():
+    import station as station_mod
+
+    class Msg:
+        type = station_mod.WSMsgType.TEXT
+
+        def __init__(self, raw):
+            self.data = raw
+
+    class FakeWS:
+        close_code = None
+
+        def __init__(self, msgs):
+            self.msgs = msgs
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for m in self.msgs:
+                yield m
+                await asyncio.sleep(0.02)
+
+    aborts = []
+
+    class WL:
+        async def abort(self, why):
+            aborts.append(why)
+
+    lane_ = station_mod.RemoteLane.__new__(station_mod.RemoteLane)
+    lane_.station = type("S", (), {"winlink": WL(), "notice": lambda *a, **k: None})()
+    lane_.radio = type("R", (), {"name": "IC-7300"})()
+    lane_.radio_state = {"armed": False}
+    lane_._armed, lane_._disarmed = asyncio.Event(), asyncio.Event()
+    lane_._ending, lane_.end_wait_s, lane_._end_wait_bound = False, station_mod.END_WAIT_S, False
+    lane_.ws = FakeWS([Msg('{"t": "winlink", "armed": true, "end_wait_s": 1' + "0" * 309 + '}'),
+                       Msg('{"t": "winlink", "armed": true, "end_wait_s": NaN}'),
+                       Msg('{"t": "winlink", "end_request": "after the bad values"}')])
+    task = asyncio.ensure_future(lane_._read())
+    await asyncio.sleep(0.4)
+    task.cancel()
+    check("reader: a 310-digit int and NaN don't kill it; the next message is handled",
+          (aborts[:1], lane_.end_wait_s), (["after the bad values"], station_mod.END_WAIT_S))
+
+
 async def end_collision():
     """Regression (2026-11-25, this test): an end-of-session ID cut by a
     collision was sent a second time by end_of_session's next pass."""
@@ -658,7 +893,7 @@ async def bound():
     await until(lambda: not st.winlink_armed, 12)
     check("bound backstop: ID on air, then disarmed", (last(st), st.winlink_armed), ((True, True), False))
     await down(st)
-    mercury_id.BOUND_BACKSTOP_S = 20.0
+    restore()
 
 
 async def cut_mid_id(how):
@@ -715,8 +950,7 @@ async def stale_after_rearm():
           (st.winlink_armed, st.winlink_owner is ws2, st.mercury_ident.fence), (True, True, None))
     w.cancel()
     await down(st)
-    mercury_id.WINDOW_S = rigctl_server.WINLINK_MERCURY_KEEPALIVE_S
-    mercury_id.WAIT_MAX_S = 2 * mercury_id.WINDOW_S + 1
+    restore()
 
 
 async def failed_connect_late_retry():
@@ -794,30 +1028,23 @@ async def remote_lane_end_request():
 
 
 async def main():
-    await negative_controls()
-    await end_of_session()
-    await audio_window()
-    await gate_busy_and_idle()
+    cases = [negative_controls, end_of_session, audio_window, gate_busy_and_idle, budget, tune_refused,
+             civ_queue_dropped, collision, collision_order, collide_waits_for_the_wire, end_collision,
+             release_causes, replacement_arm, gate_mercury_persists, polling_holder_capped,
+             never_quiet_disarms, windows_bounded, reader_survives_bad_end_wait, play_raises,
+             latched_until_disarm, bound, stale_after_rearm, failed_connect_late_retry,
+             remote_lane_end_request]
     ledger_exact()
-    await budget()
-    await tune_refused()
-    await civ_queue_dropped()
-    await collision()
-    await collision_order()
-    await end_collision()
-    await release_causes()
-    await replacement_arm()
-    await gate_mercury_persists()
-    await play_raises()
-    await latched_until_disarm()
-    await bound()
+    end_wait_validation()
+    for case in cases:
+        restore()
+        await case()
     for how in ("stop", "owner", "audio"):
+        restore()
         await cut_mid_id(how)
-    await stale_after_rearm()
-    await failed_connect_late_retry()
-    await remote_lane_end_request()
 
 
-asyncio.run(main())
-print("\nPASS" if not fails else f"\n{fails} FAILED")
-sys.exit(1 if fails else 0)
+if __name__ == "__main__":
+    asyncio.run(main())
+    print("\nPASS" if not fails else f"\n{fails} FAILED")
+    sys.exit(1 if fails else 0)

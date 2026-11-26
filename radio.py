@@ -150,11 +150,16 @@ class Radio:
     async def set(self, key, value):
         await self._apply(key, self.validate(key, value))
 
-    def drop_pending_keys(self):
+    def drop_pending_keys(self, unpaired_only=False):
         """STOP TX: drop a key-down or tune start this backend queued but has
         not sent yet, so it can't reach the radio after the latch. Returns how
         many it dropped. Backends that write at once (no queue) have none."""
         return 0
+
+    async def wait_tx_off_written(self, timeout):
+        """True once an unkey has reached the radio. Backends that write at
+        once have nothing queued; CivRadio waits for its queue."""
+        return True
 
     async def swap_vfo(self):
         raise NotImplementedError
