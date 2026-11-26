@@ -107,12 +107,22 @@ class WS:
         pass
 
 
+# Mercury's listeners as the arm-time check wants them (127.0.0.1 on 8340,
+# 8341, 8342; mercury_tnc.listener_refusal): every case here arms past it.
+GOOD_LSOF = "p1\ncmercury\nf3\nn127.0.0.1:8340\nf4\nn127.0.0.1:8341\nf5\nn127.0.0.1:8342\n"
+
+
+async def good_listeners():
+    return GOOD_LSOF
+
+
 def make(gate_s=600, bound_s=600, audio=None, sim_args=None):
     a = Args(no_tx=False, sim=True, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1,
              winlink_vara_modem="mercury", winlink_mercury_rigctl_port=2, winlink_mercury_call="N0CALL",
              winlink_vara_log="/nonexistent/xara.log", winlink_vara_rigctl_port=3,
              winlink_mercury_test_gate_s=gate_s, winlink_mercury_test_bound_s=bound_s, **(sim_args or {}))
     st = server.Station(SimRadio(rigs.get("ic7300")), audio if audio is not None else Audio(), a)
+    st.mercury_listen_probe = good_listeners
     return st
 
 
@@ -622,7 +632,9 @@ def make_civ(gate_s=None):
     a = Args(no_tx=False, sim=False, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1,
              winlink_vara_modem="mercury", winlink_mercury_rigctl_port=2, winlink_mercury_call="N0CALL",
              winlink_mercury_test_gate_s=gate_s)
-    return server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), a)
+    st = server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), a)
+    st.mercury_listen_probe = good_listeners
+    return st
 
 
 def pump(r):
