@@ -502,6 +502,11 @@ class RigctlSession:
                 # released BEFORE Mercury hears its refusal, so the frame
                 # Mercury then plays never goes out under our PTT.
                 await ident.collide()
+            else:
+                # Any other refusal while that release is still on its way:
+                # the same wait (panel p84c693e4fa #1: a second connection,
+                # or one after the ID had disarmed, heard no first).
+                await ident.refusal_hold()
         return reply
 
     async def _set_ptt(self, on):

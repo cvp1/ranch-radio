@@ -22,6 +22,9 @@ Time limits are shortened per case (gate, bound, audio window).
     keyed again; a task from before a re-arm never keys in the new session
   - failed connect then a late retry: the end ID, then -11, no ID
   - the station's RemoteLane turns end_request into its winlink.abort
+  - panel p84c693e4fa: every refusal while a collision's TX OFF is unwritten
+    waits on it (a second connection, after the ID disarmed); a re-arm is not
+    latched by the old wait's timeout; the first armed message binds end_wait_s
   - panel pb34973ec68: on CI-V, Mercury's refusal waits for TX OFF on the
     wire (bounded, then latched); a polling holder is cut at the 33 s cap;
     an ID that can never start disarms the session, owed; codex's queue
@@ -614,11 +617,80 @@ def ledger_exact():
     check("ledger: a log-timed (xara) ID keeps its slop (unchanged)", X.owed(), False)
 
 
-def make_civ():
+def make_civ(gate_s=None):
     from civ import CivRadio
     a = Args(no_tx=False, sim=False, tx_timeout=60, tune_timeout=10, winlink_rigctl_port=1,
-             winlink_vara_modem="mercury", winlink_mercury_rigctl_port=2, winlink_mercury_call="N0CALL")
+             winlink_vara_modem="mercury", winlink_mercury_rigctl_port=2, winlink_mercury_call="N0CALL",
+             winlink_mercury_test_gate_s=gate_s)
     return server.Station(CivRadio(rigs.get("ic7300"), "/dev/null"), Audio(), a)
+
+
+def pump(r):
+    """The CI-V pump, by hand: write everything queued, in order."""
+    while r._ordered:
+        _, frame = r._ordered.popleft()
+        r._write(frame)
+
+
+async def id_on_air_civ(gate_s=0.4):
+    """A Mercury session on a CI-V radio whose pump is driven by hand: the
+    gate's ID keyed and its TX ON written, then the pump paused."""
+    st = make_civ(gate_s)
+    rfd, wfd = os.pipe()
+    st.radio.fd = wfd
+    await st.winlink_arm(WS(), True, scheme="varahf")
+    m1 = lane(st, peer="mercury-1")
+    await T(m1, True)
+    await asyncio.sleep(0.05)
+    await T(m1, False)
+    pump(st.radio)                                  # Mercury's own ON/OFF out
+    ok = await until(lambda: st.mercury_ident.playing and st.ptt_owner is st.mercury_ident.owner, 5)
+    pump(st.radio)                                  # the ID's TX ON on the wire; the pump pauses
+    return st, m1, (rfd, wfd), ok and st.radio._ptt_sent_on
+
+
+async def second_connection_waits():
+    """p84c693e4fa #1 (codex's trace): the first T 1 collides, the ID
+    disarms, a second connection's T 1: its RPRT -11 too waits for OFF."""
+    st, m1, fds, ready = await id_on_air_civ()
+    check("trace: the ID on the air, its TX ON written, the pump paused", ready, True)
+    first = asyncio.ensure_future(T(m1, True))
+    await until(lambda: not st.winlink_armed, 3)
+    check("trace: the ID saw the collision and disarmed; first reply pending",
+          (st.winlink_armed, first.done()), (False, False))
+    m2 = lane(st, peer="mercury-2")
+    second = asyncio.ensure_future(T(m2, True))
+    await asyncio.sleep(0.3)
+    check("trace: a second connection's reply is pending too (OFF not written)",
+          (second.done(), first.done(), st.radio._ptt_sent_on), (False, False, True))
+    pump(st.radio)                                  # TX OFF on the wire
+    written = time.monotonic()
+    r1, r2 = await asyncio.wait_for(asyncio.gather(first, second), 2)
+    check("trace: both answered RPRT -11 only after OFF was written",
+          (r1, r2, time.monotonic() >= written, st.radio._ptt_sent_on), ("RPRT -11", "RPRT -11", True, False))
+    check("trace: a refusal after the release answers at once",
+          await asyncio.wait_for(T(m2, True), 0.5), "RPRT -11")
+    for fd in fds:
+        os.close(fd)
+
+
+async def rearm_during_wait():
+    """p84c693e4fa #2: re-armed while the old collision's wait is pending;
+    its timeout must not latch or fence the new session."""
+    st, m1, fds, ready = await id_on_air_civ()
+    first = asyncio.ensure_future(T(m1, True))
+    await until(lambda: not st.winlink_armed, 3)
+    ws2 = WS()
+    await st.winlink_arm(ws2, True, scheme="varahf")
+    ident = st.mercury_ident
+    check("re-arm: a new session armed while the old wait is pending",
+          (st.winlink_owner is ws2, first.done()), (True, False))
+    r1 = await asyncio.wait_for(first, 3)           # the pump never runs: the 1 s bound
+    check("re-arm: the old request answered after its bound", r1, "RPRT -11")
+    check("re-arm: the new session's fence and latch untouched", (ident.fence, ident.latched), (None, False))
+    await st.winlink_disarm("x")
+    for fd in fds:
+        os.close(fd)
 
 
 async def collide_waits_for_the_wire():
@@ -755,6 +827,13 @@ def end_wait_validation():
     lane_._take({"armed": True, "end_wait_s": 35})
     lane_._take({"armed": True, "end_wait_s": 300})
     check("end_wait_s: a later armed message for the same arm changes nothing", lane_.end_wait_s, 90.1)
+    lane_ = station_mod.RemoteLane.__new__(station_mod.RemoteLane)
+    lane_.radio_state = {"armed": False}
+    lane_.end_wait_s, lane_._end_wait_bound = lo, False
+    lane_._take({"armed": True})
+    lane_._take({"armed": True, "end_wait_s": 300})
+    check("end_wait_s: a first armed message without it binds the default (p84c693e4fa #3)",
+          lane_.end_wait_s, lo)
 
 
 async def reader_survives_bad_end_wait():
@@ -1029,7 +1108,8 @@ async def remote_lane_end_request():
 
 async def main():
     cases = [negative_controls, end_of_session, audio_window, gate_busy_and_idle, budget, tune_refused,
-             civ_queue_dropped, collision, collision_order, collide_waits_for_the_wire, end_collision,
+             civ_queue_dropped, collision, collision_order, collide_waits_for_the_wire,
+             second_connection_waits, rearm_during_wait, end_collision,
              release_causes, replacement_arm, gate_mercury_persists, polling_holder_capped,
              never_quiet_disarms, windows_bounded, reader_survives_bad_end_wait, play_raises,
              latched_until_disarm, bound, stale_after_rearm, failed_connect_late_retry,

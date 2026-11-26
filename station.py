@@ -205,11 +205,11 @@ class RemoteLane:
         for k in ("armed", "codec_db", "id"):
             if k in d:
                 self.radio_state[k] = d[k]
-        if d.get("armed") is True and "end_wait_s" in d and not getattr(self, "_end_wait_bound", False):
-            # One allowance per arm, from the first armed message only; a
-            # finite number or nothing, clamped; never raises (panel
-            # pb34973ec68 F4: "nan", NaN and a 310-digit int got through, or
-            # killed the reader).
+        if d.get("armed") is True and not getattr(self, "_end_wait_bound", False):
+            # One allowance per arm, from the first armed message only, which
+            # binds it even without end_wait_s (the default: panel
+            # p84c693e4fa #3); a finite number or nothing, clamped; never
+            # raises (pb34973ec68 F4: "nan", NaN and a 310-digit int).
             self._end_wait_bound = True
             self.end_wait_s = end_wait(d.get("end_wait_s"))
 
