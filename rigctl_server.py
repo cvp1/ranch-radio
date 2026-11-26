@@ -302,7 +302,7 @@ class RigctlSession:
     async def release(self):
         """Client gone: never leave the transmitter keyed behind it."""
         if self.holds_ptt():
-            await self.station.unkey(f"rigctl client {self.owner.peer} disconnected")
+            await self.station.unkey(f"rigctl client {self.owner.peer} disconnected", cause="disconnect")
 
     @property
     def s(self):
@@ -492,8 +492,11 @@ class RigctlSession:
                     ident.lane_event(self.owner, "idle")
             elif reply[0].startswith(f"RPRT {RIG_OK}"):
                 ident.lane_event(self.owner, "keyed")
-            else:
-                ident.lane_event(self.owner, "refused")
+            elif ident.lane_event(self.owner, "refused"):
+                # Mid-ID (panel p59d35d3ea8 #3): the station's key is
+                # released BEFORE Mercury hears its refusal, so the frame
+                # Mercury then plays never goes out under our PTT.
+                await ident.collide()
         return reply
 
     async def _set_ptt(self, on):
@@ -592,6 +595,14 @@ class RigctlSession:
                 val = f"{(s.get('power') or 0) / 255:.6f}"
             return f"{val}\n", False
         if cmd in ("G", "vfo_op"):
+            if args and args[0] == "TUNE" and self.lane == "winlink":
+                # A Winlink lane never starts an ATU tune (panel p59d35d3ea8
+                # #1): the tune carrier went out with no armed-session, backend
+                # or station-ID fence check. Pat moves the dial with F only;
+                # apps tune through the main rigctl port.
+                log.warning("rigctl %s (%s lane): ATU tune refused: a Winlink lane does not tune",
+                            self.owner.peer, MODEM_NAMES.get(self.modem, self.modem))
+                return f"RPRT {RIG_ENAVAIL}\n", False
             if args and args[0] == "TUNE":
                 if not self.tx_allowed or "tuner" not in caps["features"]:
                     return f"RPRT {RIG_ENAVAIL}\n", False

@@ -38,12 +38,15 @@ MORSE = {
 }
 
 
+MAX_CALL_LEN = 12
+
+
 def check_call(call):
     """The callsign as sent (upper case), or ValueError naming what is wrong.
     Letters, digits and '/', 3 to 12 characters, at least one digit."""
     c = str(call or "").strip().upper()
-    if not 3 <= len(c) <= 12:
-        raise ValueError(f"callsign {call!r}: 3 to 12 characters")
+    if not 3 <= len(c) <= MAX_CALL_LEN:
+        raise ValueError(f"callsign {call!r}: 3 to {MAX_CALL_LEN} characters")
     bad = sorted({ch for ch in c if ch not in MORSE})
     if bad:
         raise ValueError(f"callsign {call!r}: no Morse for {''.join(bad)!r}")
@@ -79,6 +82,23 @@ def units(call):
 def duration_s(call, wpm=DEFAULT_WPM):
     _check_wpm(wpm)
     return units(call) * 1.2 / wpm
+
+
+def _char_units(ch):
+    code = MORSE[ch]
+    return sum(1 if e == "." else 3 for e in code) + len(code) - 1
+
+
+def longest_call():
+    """The longest-sounding call check_call accepts: its longest character
+    (by dit units; "0", a digit, so the call is valid) MAX_CALL_LEN times.
+    Timing budgets take this, not a guess."""
+    ch = max(MORSE, key=_char_units)
+    return check_call(ch * MAX_CALL_LEN)
+
+
+def longest_s(wpm=DEFAULT_WPM):
+    return duration_s(longest_call(), wpm)
 
 
 def render(call, wpm=DEFAULT_WPM, tone_hz=TONE_HZ, rate=RATE, edge_ms=EDGE_MS, peak=PEAK):

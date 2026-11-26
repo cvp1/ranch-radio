@@ -686,6 +686,13 @@ class Station(TxAudio):
             if scheme not in self.hf_modems:
                 self.notice(f"Winlink not armed: {scheme} is not set up on this station.", "warn", ws)
                 return
+            if self.winlink_lane_modem == "mercury" and self.winlink_armed:
+                # Never arm over a Mercury session (panel p59d35d3ea8 #6): the
+                # new arm would reset its clocks, its fence latch and its ID.
+                log.warning("winlink: arm refused: a Mercury HF session is armed")
+                self.notice("Winlink not armed: a Mercury HF session is armed here; disarm it first.",
+                            "warn", ws)
+                return False
             if self.lane_modem_of(scheme) == "mercury" and (self.mercury_ident is None or (
                     self.audio is None and not self.args.sim)):
                 # Mercury sends no ID: no session without this server's own.
@@ -768,7 +775,8 @@ class Station(TxAudio):
         self._codec_broadcast("winlink")
         self._broadcast(json.dumps({"t": "winlink", "armed": True, "scheme": scheme,
                                     "codec_db": self.codec and self.codec.current,
-                                    **({"backend": "mercury"} if lane == "mercury" else {})}))
+                                    **({"backend": "mercury", "end_wait_s": self.mercury_ident.end_wait_s}
+                                       if lane == "mercury" else {})}))
 
     async def _winlink_end(self, ws, started, ok, reason):
         import winlink_tail
@@ -1039,22 +1047,35 @@ class Station(TxAudio):
         await self.radio.set("tuner", 2)
         return True
 
-    async def unkey(self, reason=None, write=True, force=False, by=None, own=False):
+    async def unkey(self, reason=None, write=True, force=False, by=None, own=False, cause=None):
         """Release the key. write=False: the radio already stopped (unkeyed
         at the radio); only release ownership and restore RX. force: write
         OFF even if nobody holds PTT (a tune we started, F7). by: the client
         whose own key-up this is; any other release of a browser's PTT
         latches that browser off until it lets go (F17). own: this is the
         owner's own key-up (a rigctl client's T 0); every other release of a
-        Winlink lane's key is "forced" in the station-ID ledger."""
+        Winlink lane's key is "forced" in the station-ID ledger. cause: why a
+        lane key ended, for Mercury's station ID ("keepalive", "disconnect";
+        default "normal" for its own T 0, else "forced")."""
         owner = self.ptt_owner
         was = force or owner is not None or self.radio.state["tx"]
+        if owner is not None and not own and owner is not by:
+            # A release the owner did not ask for (a disarm, the owner gone, a
+            # limit): a key-down it queued but the backend has not sent must
+            # not reach the radio ahead of this unkey, as STOP TX already does
+            # (panel p59d35d3ea8 #2: CI-V keeps transmit frames in order).
+            drop = getattr(self.radio, "drop_pending_keys", None)
+            dropped = drop() if drop else 0
+            if dropped:
+                log.warning("unkey: dropped %d queued key command(s) before they were sent", dropped)
         self.ptt_owner = None
         if owner is not None and getattr(owner, "lane", None) == "winlink":
             # The one place a lane's transmission ends, whatever ended it (its
             # T 0, a disconnect, the keepalive or time limit, a disarm, the
             # radio): the ledger learns of it exactly once, with how.
             self.id_ledger.ptt_released(time.time(), owner.modem, "normal" if own else "forced")
+            if owner.modem == "mercury" and self.mercury_ident is not None:
+                self.mercury_ident.released(owner, cause or ("normal" if own else "forced"))
         if (owner is not None and owner is not by
                 and isinstance(owner, web.WebSocketResponse) and not owner.closed):
             # Only browsers: they repeat the key-down twice a second while the
@@ -1185,7 +1206,7 @@ class Station(TxAudio):
             keepalive = getattr(self.ptt_owner, "keepalive_s", PTT_KEEPALIVE_S)
             if now - self.ptt_seen > keepalive:
                 await self.unkey(getattr(self.ptt_owner, "lost_msg",
-                                         "lost contact with the operator's browser"))
+                                         "lost contact with the operator's browser"), cause="keepalive")
             elif now - self.ptt_started > self.args.tx_timeout:
                 await self.unkey(f"{self.args.tx_timeout}s transmit time limit")
 
@@ -1350,8 +1371,8 @@ class Station(TxAudio):
             # scheme: the session's modem (station.py's RemoteLane sends it
             # from PR B on); absent, ARDOP, as before.
             scheme = str(m.get("scheme") or "ardop")
-            await self.winlink_arm(ws, bool(m["v"]), freq, scheme, int(qsy) if qsy is not None else None)
-            if m["v"] and self.winlink_owner is ws:
+            ok = await self.winlink_arm(ws, bool(m["v"]), freq, scheme, int(qsy) if qsy is not None else None)
+            if m["v"] and ok is not False and self.winlink_owner is ws:
                 self.winlink_qsy_hz = int(qsy) if qsy is not None else None
         elif t == "winlink_end":
             # A session run by another process's Pat ended: hold the lane for

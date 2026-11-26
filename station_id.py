@@ -325,8 +325,16 @@ class IdLedger:
             return None
         if self.last_tx is None:
             return False
-        end = self.last_on_air_end()
-        return end is None or self.last_tx > end + SLOP_S
+        on_air = [i for i in self.ids if i["on_air"]]
+        if not on_air:
+            return True
+        last = max(on_air, key=lambda i: i["end"])
+        # SLOP_S is for a modem's log line against this process's lane; the
+        # station's own ID (mercury_id.py) is timed by this process's clock
+        # like the lane, so its order is exact (panel p59d35d3ea8 #10: a key
+        # within 0.5 s of an on-air station ID was not counted).
+        slop = 0.0 if last.get("source") == "station" else SLOP_S
+        return self.last_tx > last["end"] + slop
 
     def in_progress(self, source=None):
         """An ID (of that source, or any) started and not yet ended, and not stale."""

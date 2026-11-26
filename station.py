@@ -61,6 +61,10 @@ PRESENCE_EVERY_S = 1.0
 ARM_WAIT_S = 30.0              # an arm may wait for the radio's ATU tune (server.py WINLINK_TUNE_WAIT_S)
 WATCH_RETRY_S = 2.0            # a radio's watch socket, after it drops
 END_WAIT_S = winlink.ID_GRACE_S + 10
+# A radio may ask for longer (its armed message's end_wait_s): Mercury HF's
+# station ID waits out Mercury's longest key and frame first (mercury_id.py
+# END_WAIT_S, ~90 s). Never longer than this, whatever a radio says.
+END_WAIT_MAX_S = 300.0
 HOP = webguard.HOP
 
 
@@ -186,6 +190,11 @@ class RemoteLane:
         for k in ("armed", "codec_db", "id"):
             if k in d:
                 self.radio_state[k] = d[k]
+        if d.get("armed") is True and "end_wait_s" in d:
+            try:
+                self.end_wait_s = min(max(float(d["end_wait_s"]), END_WAIT_S), END_WAIT_MAX_S)
+            except (TypeError, ValueError):
+                pass
 
     async def _read(self):
         try:
@@ -230,7 +239,7 @@ class RemoteLane:
                 await self.ws.send_str(json.dumps({"t": "winlink_end", "started": started, "ok": ok,
                                                    "reason": reason}))
                 try:
-                    await asyncio.wait_for(self._disarmed.wait(), END_WAIT_S)
+                    await asyncio.wait_for(self._disarmed.wait(), getattr(self, "end_wait_s", END_WAIT_S))
                 except TimeoutError:
                     log.warning("winlink: the %s did not disarm; closing its lane", self.radio.name)
         finally:

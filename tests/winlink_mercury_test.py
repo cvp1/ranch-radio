@@ -9,8 +9,8 @@ plays the station's part (winlink_end). Nothing here transmits.
   - on: modems ARDOP and VARA HF, vara_backend mercury; unarmed Mercury
     T 1 -> RPRT -11, no PTT; armed -> backend mercury; xara's lane and
     ARDOP's lane refuse during it
-  - keepalive: a silent 30 s key holds, a 34 s one is cut at 33 s (negative
-    control), the lane disarms nothing by itself
+  - keepalive: a silent 30 s key holds, a 45 s one is cut at 33 s while its
+    fake is still silent (negative control), the lane disarms nothing by itself
   - end of session, F9: Mercury still keyed 10 s after winlink_end; the lane
     stays armed past ID_START_S (8 s), the station ID goes after the release,
     on air (source station), then disarm
@@ -18,8 +18,11 @@ plays the station's part (winlink_end). Nothing here transmits.
     release, Mercury keys again after it
   - collision: Mercury's next T 1 during the ID -> cut, owed, disarmed; the
     keys after it refused; no ID later
-  - the session bound (shortened): end_request to the arming page, Mercury
-    fenced, the page's winlink_end -> ID on air -> disarm
+  - the session bound (shortened): end_request to the arming page, the ID
+    once Mercury is quiet, Mercury fenced, the page's winlink_end -> disarm
+  - the station's real RemoteLane.end: a silent 30 s key, and one cut at
+    33 s, then the ID: the lane waits the radio's end_wait_s (not 35 s), and
+    the ID completes on air (panel p59d35d3ea8 #7)
 
     .venv/bin/python tests/winlink_mercury_test.py
 """
@@ -36,6 +39,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import testkit  # noqa: E402
 import winlink_test_lib as lib  # noqa: E402
+import mercury_id  # noqa: E402
 from rigctl_server import WINLINK_MERCURY_KEEPALIVE_S  # noqa: E402
 
 os.environ.pop("CC_OBS_TOKENS_FILE", None)
@@ -163,12 +167,11 @@ for argv, what in ((["--winlink-mercury-test-gate-s", "5"], "gate knob without -
     r = subprocess.run(base()[:2] + ["--host", "127.0.0.1", "--listen", str(testkit.free_port()), *argv],
                        cwd=ROOT, capture_output=True, text=True, timeout=30)
     check(f"{what}: refused at startup", (r.returncode, "is for tests: it needs --sim" in r.stderr), (2, True))
-r = subprocess.run(base() + ["--winlink-mercury-test-gate-s", "600"], cwd=ROOT, capture_output=True,
-                   text=True, timeout=30)
-check("gate knob above 9:00: refused (shorten only)", (r.returncode, "at most 540" in r.stderr), (2, True))
-r = subprocess.run(base() + ["--winlink-mercury-test-bound-s", "511"], cwd=ROOT, capture_output=True,
-                   text=True, timeout=30)
-check("bound knob above 8:30: refused (shorten only)", (r.returncode, "at most 510" in r.stderr), (2, True))
+for flag, top in (("--winlink-mercury-test-gate-s", mercury_id.GATE_S),
+                  ("--winlink-mercury-test-bound-s", mercury_id.BOUND_S)):
+    r = subprocess.run(base() + [flag, str(top + 1)], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    check(f"{flag} above {top:g} s: refused (shorten only)", (r.returncode, f"at most {top:g}" in r.stderr),
+          (2, True))
 
 # --- on: lanes, keepalive, end of session ----------------------------------------
 
@@ -189,8 +192,9 @@ try:
     check("Mercury session: ARDOP's lane T 1 -> RPRT -11", lane_t1(lib.LANE), "RPRT -11")
     check("Mercury session: no PTT from either", tx(), False)
 
-    # keepalive: one silent 34 s key; held at 30 s, cut by 34 s
-    m, ev = owner(key_s=34.0)
+    # keepalive: one silent 45 s key, its fake silent past the observation, so
+    # the cut is the watchdog's and not the fake's own T 0 (panel #11)
+    m, ev = owner(key_s=45.0)
     testkit.wait_for(lambda: events(ev, "key"), 10)
     check("keepalive: Mercury's key accepted", [e["reply"] for e in events(ev, "key")], ["RPRT 0"])
     t0 = events(ev, "key")[0]["t"]
@@ -198,9 +202,11 @@ try:
     check("keepalive: a silent key still held at 30 s", tx(), True)
     testkit.wait_for(lambda: not tx(), 6)
     cut = time.time() - t0
-    check(f"keepalive: cut at {WINLINK_MERCURY_KEEPALIVE_S:g} s (negative control: 34 s key)",
+    check(f"keepalive: cut at {WINLINK_MERCURY_KEEPALIVE_S:g} s (negative control: 45 s silent key)",
           (not tx(), WINLINK_MERCURY_KEEPALIVE_S <= cut < WINLINK_MERCURY_KEEPALIVE_S + 1.5), (True, True))
-    m.wait(10)
+    time.sleep(1.0)
+    check("keepalive: the fake was still silent (the watchdog cut it)", events(ev, "unkey"), [])
+    m.wait(20)                                 # its T 0 at 45 s: that frame is over
     check("keepalive: the session stays armed", page.wait(lambda e: e.get("armed") is False, 0.5), None)
 
     # F9: Mercury still keyed 10 s after the end; the ID after its release
@@ -277,14 +283,67 @@ try:
     m.wait(10)
     req = page.wait(lambda e: e.get("t") == "winlink" and e.get("end_request"), 8)
     check("bound: end_request to the arming page (Pat abort first)", bool(req), True)
-    check("bound: still armed for the ID", disarmed(page, 0.2), None)
+    on = page.wait(lambda e: e.get("t") == "winlink" and ((e.get("id") or {}).get("last") or {}).get("source")
+                   == "station" and e["id"]["last"].get("on_air") is True, 15)
+    check("bound: the ID on air (Mercury quiet), still armed", (bool(on), disarmed(page, 0.2)), (True, None))
     check("bound: Mercury fenced", lane_t1(MLANE), "RPRT -11")
     page.send({"t": "winlink_end", "started": time.time() - 30, "ok": False, "reason": "aborted"})
     d = disarmed(page, 20)
     last = d and d["id"]["last"]
-    check("bound: then the ID on air (station), then disarm",
+    check("bound: then disarm, the ID on air (station)",
           (bool(d), last and (last["source"], last["on_air"])), (True, ("station", True)))
     page.close()
+finally:
+    stop(p)
+
+# --- the station's real RemoteLane.end against a full-length Mercury key (panel #7) ----
+
+
+async def remote_end(key_s):
+    import asyncio
+    import types
+
+    import station as station_mod
+    aborts = []
+
+    class WL:
+        async def _ready(self):
+            return True
+
+        async def abort(self, why):
+            aborts.append(why)
+
+    st = types.SimpleNamespace(token=None, winlink=WL(), auth=types.SimpleNamespace(bearer_headers=lambda: {}),
+                               notice=lambda *a, **k: None)
+    radio = types.SimpleNamespace(name="IC-7300", present=True, web=lib.RWEB, vara_log=None)
+    lane = station_mod.RemoteLane(st, radio)
+    ok = await lane.arm(None, "varahf:///N0CALL?freq=3588.5")
+    wait = getattr(lane, "end_wait_s", None)
+    m, ev = owner(key_s=key_s)
+    for _ in range(100):
+        if events(ev, "key"):
+            break
+        await asyncio.sleep(0.1)
+    key = [e["reply"] for e in events(ev, "key")]
+    t0 = time.time()
+    await lane.end(time.time() - 5, True, None, lambda: False, lambda d: None)
+    took = time.time() - t0
+    last = (lane.radio_state.get("id") or {}).get("last") or {}
+    m.kill()
+    return ok, wait, key, took, (last.get("source"), last.get("on_air")), aborts
+
+
+p = start(*MERCURY)
+try:
+    import asyncio as _asyncio
+    for key_s, what in ((30.0, "a silent 30 s key"), (40.0, "a silent key cut at 33 s")):
+        ok, wait, key, took, last, aborts = _asyncio.run(remote_end(key_s))
+        check(f"RemoteLane ({what}): armed, the radio asks for {mercury_id.END_WAIT_S:.1f} s",
+              (ok, wait), (True, round(mercury_id.END_WAIT_S, 1)))
+        check(f"RemoteLane ({what}): Mercury keyed", key, ["RPRT 0"])
+        check(f"RemoteLane ({what}): end() outlived the old 35 s close ({took:.1f} s)", took > 35.0, True)
+        check(f"RemoteLane ({what}): the ID completed, on air (station)", last, ("station", True))
+        check(f"RemoteLane ({what}): no abort (the radio ended it)", aborts, [])
 finally:
     stop(p)
 
