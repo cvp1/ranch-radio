@@ -14,8 +14,20 @@ How it works:
   squares, outliers dropped): a sound card whose clock is a few hundred ppm
   off would otherwise slant the picture. Lines are drawn as they arrive;
   when the picture ends it is redrawn once with the final fit.
-- **Ends** after the mode's last line, or "lost" after LOST_LINES lines in a
-  row with no sync pulse where one belongs (the station stopped, or faded).
+- **Ends** after the mode's full length (or the operator's Stop): it does
+  not give up on missing sync pulses. Off the air (2026-11-26, 14.230, a
+  Martin M1 whose sender's clock ran +1460 ppm against ours) the sync dip
+  averaged 1450 Hz against a 1740 Hz picture: line by line only 3 syncs were
+  found and the old rule (10 misses: "lost") dropped a picture that kept
+  coming for all 114 s. None of three tests for "still coming" measured on
+  that audio (a fold of the missed lines, a normalized dip, line rhythm)
+  separated a picture from the band's other signals at 25 s, so, as slowrx
+  and MMSSTV do, the whole length is received and timed at the end.
+- **Timed at the end** from every line folded together: the clock error
+  (+-CLOCK_MAX) and phase where the folded sync dip is deepest. A whole
+  picture adds up where single lines don't (both halves of that Martin M1
+  agreed within 1.5 ms and 24 ppm). With syncs found on most lines, their
+  least-squares fit is used instead (it is exact on a clean signal).
 
 Modes (timings from the published SSTV mode specifications; VIS codes are
 the standard ones): Martin M1/M2, Scottie S1/S2/DX, Robot 36/72, PD 90,
@@ -31,7 +43,8 @@ MS = P.RATE / 1000.0
 BIN = int(10 * MS)                 # VIS hunt: 10 ms bins
 LEADER_BINS = 20                   # 200 ms of the 300 ms leader must read 1900 Hz
 SYNC_HZ = 1350                     # below this is sync (1200), above is picture (1500..2300)
-LOST_LINES = 10
+CLOCK_MAX = 0.003                  # +-3000 ppm: senders' PC sound cards run far off (+1460 measured)
+FOLD_MIN_DEPTH = 150.0             # Hz, folded sync dip under the fold's median: whole real picture 273..294; noise, see tests
 PROGRESS_EVERY = 8                 # lines between progress events
 HUNT_KEEP_S = 2.0
 
@@ -251,7 +264,7 @@ class SstvDecoder:
                 break
             keep = new
         b, a = np.polyfit(n[keep], t[keep], 1)
-        lo, hi = b0 * (1 - 0.002), b0 * (1 + 0.002)
+        lo, hi = b0 * (1 - CLOCK_MAX), b0 * (1 + CLOCK_MAX)
         if not lo <= b <= hi:
             b = min(max(b, lo), hi)
             a = float(np.median(t[keep] - n[keep] * b))
@@ -285,8 +298,6 @@ class SstvDecoder:
         t = self._find_sync(expect)
         if t is None:
             self.miss += 1
-            if self.miss >= LOST_LINES:
-                return self._finish("lost")
         else:
             self.miss = 0
             self.syncs.append((self.n, t))
@@ -339,26 +350,62 @@ class SstvDecoder:
         cr, cb = (c, other) if kind == "cr" else (other, c)
         self.img[r] = P.ycc_to_rgb(y, cr, cb)
 
+    def _fold_fit(self, lines, start=0):
+        """(a, b) from every line so far folded together, or None: the sync
+        pulse's start in line n is a + n*b. Searches the clock error over
+        +-CLOCK_MAX and the phase, scoring the folded sync dip (a box mean the
+        sync's length) against the folded picture's median. One weak sync per
+        line adds up over a whole picture where no single line shows it."""
+        m = self.mode
+        lines -= start
+        if lines < 8:
+            return None
+        dur = max(1, int(m.sync_dur * MS))
+        origin = self.a0 + (start - 0.5) * self.P            # fold from half a line before line `start`'s sync
+        x, first = self.buf.span(origin, origin + (lines + 1) * self.P * (1 + CLOCK_MAX))
+        if x.size < lines * self.P:
+            return None
+        c = np.concatenate([[0.0], np.cumsum(x, dtype=np.float64)])
+        box = (c[dur:] - c[:-dur]) / dur
+        o = origin - first
+
+        def score(ppm, step=1):
+            Lp = self.P * (1 + ppm * 1e-6)
+            N = int(Lp)
+            starts = [int(o + n * Lp) for n in range(lines) if 0 <= int(o + n * Lp) and int(o + n * Lp) + N <= box.size]
+            if len(starts) < 8:
+                return -1.0, 0
+            prof = np.mean([box[i:i + N:step] for i in starts], axis=0)
+            k = int(np.argmin(prof))
+            return float(np.median(prof) - prof[k]), k * step
+        coarse = max(range(-int(CLOCK_MAX * 1e6), int(CLOCK_MAX * 1e6) + 1, 40), key=lambda q: score(q, 4)[0])
+        best = max(range(coarse - 40, coarse + 41, 4), key=lambda q: score(q)[0])
+        depth, k = score(best)
+        if depth < FOLD_MIN_DEPTH:
+            return None
+        b = self.P * (1 + best * 1e-6)
+        a = first + o + k
+        a -= start * b                                        # back to line 0's sync
+        a += round((self.a0 - a) / b) * b
+        self.fold_depth = depth
+        return float(a), float(b)
+
     def _finish(self, status):
         m = self.mode
-        if self.syncs:
-            a, b = self._fit()
-            for n in range(self.n):                            # redraw with the final fit
-                self._draw(n, a, b)
-            slant = (b / self.P - 1) * 1e6
+        if len(self.syncs) >= max(8, self.n // 2):
+            a, b = self._fit()                                 # syncs on most lines: exact
+            timing = "syncs"
         else:
-            slant = 0.0
-        img = self.img
-        if status == "lost":
-            # The lines drawn while LOST_LINES ran out are noise: end the
-            # picture at the last line that had its sync pulse.
-            last = max(n for n, _ in self.syncs) + 1 if self.syncs else 0
-            self.rows_done = min(self.rows_done, last * (2 if m.model == "PD" else 1))
-        if status != "complete":
-            img = img[:self.rows_done]
+            folded = self._fold_fit(self.n)
+            a, b = folded if folded is not None else self._fit()
+            timing = "fold" if folded is not None else ("syncs" if self.syncs else "nominal")
+        for n in range(self.n):                                # redraw with the final timing
+            self._draw(n, a, b)
+        slant = (b / self.P - 1) * 1e6
+        img = self.img if status == "complete" else self.img[:self.rows_done]
         ev = {"event": "done", "mode": m.name, "label": m.label, "status": status,
               "lines": self.rows_done, "total": m.lines, "image": img.copy(),
-              "syncs": len(self.syncs), "clock_ppm": round(slant)}
+              "syncs": len(self.syncs), "clock_ppm": round(slant), "timing": timing}
         self.buf.clear_to_end()
         self._hunt_reset()
         return [ev]
