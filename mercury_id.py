@@ -124,6 +124,7 @@ class MercuryIdent:
         self.last_quiet = None      # (monotonic, cause): Mercury's last release or idle T 0
         self.playing = False
         self.collided = False
+        self._release = None        # a collision's TX OFF on its way to the wire (a task)
         self._allow = False         # the keyer's own T 1 is due now
         self._task = None
         self._watch = None
@@ -222,20 +223,42 @@ class MercuryIdent:
             self._open_window(owner, WINDOW_S)
 
     async def collide(self):
-        """Mercury asked to key during the ID: release the ID's key now."""
+        """Mercury asked to key during the ID: release the ID's key now, and
+        answer only once that release is on the wire."""
         log.warning("station ID: Mercury asked to key during the ID: its audio may be playing "
                     "into it; cutting the ID before it is told no")
+        # One release wait per collision, started before the unkey is queued
+        # (it waits for the wire, so the order does not matter to it), so a
+        # refusal arriving meanwhile on any connection waits on it too
+        # (panel p84c693e4fa #1).
+        if self._release is None or self._release.done():
+            self._release = asyncio.ensure_future(self._release_on_wire(self.token))
         if self.st.ptt_owner is self.owner:
             await self.st.unkey("station ID stopped: Mercury asked to key during it")
-        # The unkey above is queued; Mercury hears no only once it is on the
-        # wire (CI-V's state is optimistic: panel pb34973ec68 F3). Bounded:
-        # past it Mercury is answered anyway, and nothing else keys.
+        await asyncio.shield(self._release)
+
+    async def refusal_hold(self):
+        """Any refusal on Mercury's lane: while a collision's release is not
+        yet on the wire, the reply waits for it (bounded). Survives the ID's
+        own disarm: the release is the radio's, not the session's."""
+        r = self._release
+        if r is not None and not r.done():
+            await asyncio.shield(r)
+
+    async def _release_on_wire(self, tok):
+        # The unkey is queued; Mercury hears no only once it is on the wire
+        # (CI-V's state is optimistic: panel pb34973ec68 F3). Bounded: past
+        # it Mercury is answered anyway, and nothing else keys.
         wait = getattr(self.st.radio, "wait_tx_off_written", None)
-        if wait is not None and not await wait(COLLIDE_FLUSH_S):
+        if wait is None or await wait(COLLIDE_FLUSH_S):
+            return
+        log.warning("station ID: the unkey did not reach the radio within %g s of the collision; "
+                    "Mercury is refused now", COLLIDE_FLUSH_S)
+        if tok == self.token:
+            # Only the arm it came from (panel p84c693e4fa #2): a session
+            # armed since is not touched.
             self.latched = True
             self.fence = self.fence or "a station ID collided"
-            log.warning("station ID: the unkey did not reach the radio within %g s of the collision; "
-                        "Mercury is refused now, the fence stays latched", COLLIDE_FLUSH_S)
 
     # --- views ---
 
