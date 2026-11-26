@@ -331,6 +331,21 @@ MANIFESTS = {
         "ask": {},
         "needs": [],
     },
+    "imaging": {
+        "label": "Imaging (SSTV and weather fax)",
+        "family": "addon",
+        "block": ("addons", "imaging"),
+        "os": ["macos", "linux"],
+        # Listens to the first radio unless "radio" names one; receive only.
+        "template": {"any": {"enabled": True}},
+        "rules": {},
+        "ask": {},
+        # numpy in the station's own Python: the decoders' one package. The
+        # core never imports it (picture.py, sstv.py, wefax.py are loaded
+        # by this add-on only).
+        "needs": [{"pymod": "numpy", "fix": "pip install numpy (into the station's Python)",
+                   "auto": "{host_python} -m pip install -q numpy"}],
+    },
     # The logbook sync (logsync.py): a station module, not an add-on. doctor
     # adds its own checks (doctor.logsync_checks): TQSL answers -v, the
     # credential files exist with mode 600, the UDP intake can bind.

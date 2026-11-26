@@ -170,7 +170,21 @@ async def radio_server(port):
         i for i in (done or {}).get("items", []) if i["name"] == "core")["needs"]} if done else {}
     check("doctor ran the host file's python", core.get("python"), "ok")
     calls = sum(1 for _ in open(CALLS)) if os.path.exists(CALLS) else 0
-    check("Refresh during a run joined it (one python version + one aiohttp + sounddevice call)", calls <= 3, True)
+    # One run's calls to the host file's python: its version, the core
+    # packages, the macOS audio package, and every module's need that is
+    # importable by that same python (an add-on not on yet is checked too,
+    # for the Modules tab's "available"). Counted from the manifest, so a new
+    # add-on with such a need (Imaging's numpy, 2026-11-26) doesn't read as
+    # a second run: a Refresh that didn't join would double this.
+    sys.path.insert(0, ROOT)
+    from ranch_radio.manifest import CORE, MANIFESTS
+
+    def host_py(n, os_name="macos"):
+        return "pymod" in n and "key" not in n and "tnc" not in n and n.get("os", os_name) == os_name
+    one_run = (1 + len(CORE["pymods"]) + sum(host_py(n) for n in CORE["audio"]["macos"])
+               + sum(host_py(n) for m in MANIFESTS.values() if "macos" in m["os"] for n in m["needs"]))
+    check(f"Refresh during a run joined it (one run's {one_run} host-python calls, not two runs')",
+          0 < calls <= one_run, True)
     await a.close()
     await b.close()
 
