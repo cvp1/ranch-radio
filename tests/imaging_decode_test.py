@@ -6,7 +6,10 @@ transmitter clock off by hundreds of ppm. Offline; numpy.
   - Martin M1, Scottie S1, Robot 36, PD 120: whole pictures, every row,
     close to what was sent; the clock error measured within 15 ppm
   - every other mode: its VIS header names it, and a transmission cut short
-    ends "lost" with the rows that came
+    still runs the mode's full length, the rows that came right
+  - a weak picture from a sender whose clock runs +1460 ppm (as one did off
+    the air, 2026-11-26): few syncs line by line, timed by the whole-picture
+    fold, the clock error within 30 ppm, close to what was sent
   - the same picture however the audio is chunked (bit for bit)
   - negative controls: noise alone starts nothing; a VIS with bad parity
     starts nothing; a mode not allowed starts nothing; an unknown mode name
@@ -84,15 +87,26 @@ for mode, ppm in (("martin1", 300), ("scottie1", 0), ("robot36", -200), ("pd120"
 for mode in ("martin2", "scottie2", "scottiedx", "robot72", "pd90", "pd180"):
     audio, sent = S.sstv(mode, lines=24, noise=0.05)
     m = sstv.BY_NAME[mode]
-    audio = np.concatenate([audio, noise(m.period_ms / 1000 * (sstv.LOST_LINES + 3), sigma=0.05)])
+    audio = np.concatenate([audio, noise(m.seconds - 24 * m.period_ms / 1000 * (1 if m.model != "PD" else 0.5) + 2, sigma=0.05)])
     evs = run(sstv.SstvDecoder(), audio)
     start = next((x for x in evs if x["event"] == "start"), None)
     check(f"{mode}: the VIS header names it", start and start["mode"], mode)
     e = done(evs)
-    check(f"{mode}: cut short, it ends lost", e and e["status"], "lost")
+    check(f"{mode}: cut short, it still runs the mode's full length", (e and e["status"], e and e["lines"]),
+          ("complete", m.lines))
     if e:
-        check(f"{mode}: with the rows that came, and no more (22..24)", 22 <= e["lines"] <= 24 and len(e["image"]) == e["lines"], True)
-        check(f"{mode}: and they are right (mean error < 12)", err(e["image"][:22], sent[:22]) < 12, True)
+        check(f"{mode}: the rows that came are right (mean error < 12)", err(e["image"][:22], sent[:22]) < 12, True)
+
+# --- SSTV: weak, from a far-off clock (the 2026-11-26 off-air case)
+
+audio, sent = S.sstv("martin1", ppm=1460, noise=0.2, seed=4, sync_hz=1440)
+e = done(run(sstv.SstvDecoder(), audio))
+check("weak Martin M1 at +1460 ppm: a whole picture", (e and e["status"], e and e["lines"]), ("complete", 256))
+if e:
+    check("  syncs found line by line are few (the case the fold is for)", e["syncs"] < 128, True)
+    check("  timed by the whole-picture fold", e["timing"], "fold")
+    check("  the clock error within 30 ppm", abs(e["clock_ppm"] - 1460) <= 30, True)
+    check("  close to what was sent (mean error < 30 of 255 at this noise)", err(e["image"], sent) < 30, True)
 
 # --- SSTV: chunking
 

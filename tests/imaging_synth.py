@@ -97,9 +97,11 @@ SPEC = {
 }
 
 
-def sstv(mode, img=None, ppm=0.0, noise=0.0, lines=None, parity_ok=True, seed=1):
+def sstv(mode, img=None, ppm=0.0, noise=0.0, lines=None, parity_ok=True, seed=1, sync_hz=1200.0):
     """(audio int16, the picture sent). `lines`: send only that many rows (a
-    transmission cut short)."""
+    transmission cut short). `sync_hz`: Martin's line sync tone; off the air
+    (2026-11-26) a station's folded to ~1450 Hz, not 1200, while its VIS
+    header read clean."""
     code, w, h, fam, c = SPEC[mode]
     img = test_card(h, w) if img is None else img
     tx = Tx(ppm)
@@ -107,7 +109,7 @@ def sstv(mode, img=None, ppm=0.0, noise=0.0, lines=None, parity_ok=True, seed=1)
     rows = h if lines is None else lines
     if fam == "martin":
         for r in range(rows):
-            tx.tone(1200, 4.862)
+            tx.tone(sync_hz, 4.862)
             tx.tone(1500, 0.572)
             for ch in (1, 2, 0):                           # G, B, R
                 tx.scan(img[r, :, ch], c)
