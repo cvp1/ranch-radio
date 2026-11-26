@@ -176,8 +176,26 @@ def cmd_install(a):
         print("\nDry run. Pass --apply to write these files (old ones kept as .bak-<time>).")
         return 0
     changed, backups = write_installed(h, home, todo)
-    print(f"\nWritten; old files in {backups}. Nothing was restarted. To load the changes"
-          f" (or: ranch-radio update {h['host']} --apply, which restarts only idle radios):")
+    # The update this points to restarts by what DIFFERS, and these files no
+    # longer do: so it found nothing to restart and the station kept its old
+    # station.json (2026-11-26, an add-on added by hand). Record what reads
+    # them as pending, the list update already restarts when idle.
+    # Only a file that was there and changed leaves a running process on the
+    # old one (a missing file was never read: a first install starts nothing,
+    # and marking it pending would make --check report an update).
+    ids = restart_ids(h, [art for art, p, s in todo if s != "missing"])
+    if ids:
+        # And only what is running holds it.
+        up = {k for k, on in updater.serving(h).items() if on}
+        ids = {i for i in ids if i in up or (i == "packet" and "station" in up)}
+    if ids:
+        st = updater.load_state(home)
+        st["pending"] = sorted(set(st["pending"]) | ids)
+        updater.save_state(home, st)
+    print(f"\nWritten; old files in {backups}. Nothing was restarted yet."
+          + (f" To load the changes: ranch-radio update {h['host']} --apply restarts "
+             f"{', '.join(sorted(ids))} (idle ones; a radio in use is left for later). Or by hand:" if ids
+             else " To load the changes:"))
     if h["os"] == "macos":
         # Over SSH the bootstrap fails ("5: Input/output error") after the
         # bootout has already stopped the agent (mac-shack, 2026-10-18).
@@ -186,6 +204,16 @@ def cmd_install(a):
     for line in reload_commands(h, changed):
         print("  " + line)
     return 0
+
+
+def restart_ids(h, arts):
+    """The modules whose running process reads these files: a radio server,
+    the station (its unit, or station.json, read at start) or the packet hub."""
+    ours = {r["id"] for r in h["radios"]} | {"station", "packet"}
+    ids = {art.module for art in arts if art.module in ours}
+    if any(art.path == render.STATION_JSON or art.path.endswith("station.json") for art in arts):
+        ids.add("station")
+    return ids
 
 
 def reload_commands(h, arts):
@@ -200,7 +228,12 @@ def reload_commands(h, arts):
             # bootstrap fails outside the Mac's GUI session ("5: Input/output
             # error") after bootout has stopped the agent; the legacy load
             # works there, so it is the fallback (mac-shack, 2026-10-21).
+            # bootout returns before launchd lets go of the old instance; a
+            # bootstrap in that window fails too ("5: Input/output error",
+            # 2026-11-26), so wait for it to be gone, as service._mac_down does.
             out += [f"launchctl bootout gui/$(id -u)/{shlex.quote(label)}",
+                    f"for i in $(seq 40); do launchctl print gui/$(id -u)/{shlex.quote(label)} "
+                    f">/dev/null 2>&1 || break; sleep 0.25; done",
                     f"launchctl bootstrap gui/$(id -u) ~/{shlex.quote(path)} "
                     f"|| launchctl load -w ~/{shlex.quote(path)}"]
         return out
