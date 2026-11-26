@@ -683,6 +683,8 @@ try:
               isinstance(titles, list) and [("may be VARA" in t) for t in titles], [True, True, True])
         check("Mercury: the strip names Mercury HF", bool(b.wait(f"({TEXT})('#wl-m-state').startsWith('Mercury HF · ')", 5)),
               True)
+        check("Mercury: the strip reads the mercury slot (none: 'no status'), not xara's varahf record",
+              (b.js(f"({TEXT})('#wl-m-state')"), b.js(f"({TEXT})('#wl-m-speed')")), ("Mercury HF · no status", "—"))
         b.js("winlink.event({ t: 'winlink', id: { tracked: true, tracked_modems: ['ardop', 'mercury'], owed: true,"
              " last: { source: 'station', on_air: false, reason: 'cut by a collision' } } })")
         check("Mercury: an owed station ID shows as owed, not 'not tracked'", b.js(f"({TEXT})('#wl-id')"), "ID owed")

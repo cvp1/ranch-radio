@@ -481,6 +481,13 @@ def r3_lsof_path():
     check("#3 lsof resolves by absolute path under that PATH", got, want)
     check("#3   (a bare 'lsof' under that PATH would not find /usr/sbin/lsof)",
           shutil.which("lsof", path=agent_path) != "/usr/sbin/lsof", True)
+    import re as _re
+    bare = {}
+    for f in ["server.py", "mercury_tnc.py", *(str(x.relative_to(ROOT)) for x in (ROOT / "ranch_radio").glob("*.py"))]:
+        n = len(_re.findall(r"""[\[(]\s*["']lsof["']\s*,""", (ROOT / f).read_text()))
+        if n:
+            bare[f] = n
+    check("#3 no call site runs a bare 'lsof' (PATH-dependent)", bare, {})
 
 
 CONN = (lsof(("mercury", ["127.0.0.1:8340", "127.0.0.1:8341", "127.0.0.1:8342"]))
@@ -541,14 +548,19 @@ async def r2_instance():
 
 async def r4_fence():
     """#4: the radio server refuses arms while a backend switch runs."""
-    for scope, scheme, until, want, name in [
-            ("all", "varahf", 60, False, "a switch under way refuses a Mercury arm"),
-            ("all", "ardop", 60, False, "  and an ARDOP arm"),
-            ("varahf", "varahf", 60, False, "waiting for Pat's edits refuses a VARA (Mercury) arm"),
-            ("varahf", "ardop", 60, True, "  but not an ARDOP arm"),
-            ("all", "varahf", -1, True, "an expired fence (a switch that died) is ignored")]:
+    for until, pend, scheme, want, name in [
+            (60, False, "varahf", False, "a switch under way refuses a Mercury arm"),
+            (60, False, "ardop", False, "  and an ARDOP arm"),
+            (None, True, "varahf", False, "waiting for Pat's edits refuses a VARA (Mercury) arm"),
+            (None, True, "ardop", True, "  but not an ARDOP arm"),
+            (-1, False, "varahf", True, "an expired switch fence (a switch that died) is ignored"),
+            (-9 * 3600, True, "varahf", False, "C7 overnight: the switch fence long expired, Pat still pending "
+                                                "-> VARA still refused")]:
         st, _ = make(probe=GOOD)
-        Path(st.cutover_fence_path).write_text(json.dumps({"scope": scope, "until": time.time() + until}))
+        if until is not None:
+            Path(st.cutover_fence_path).write_text(json.dumps({"until": time.time() + until}))
+        if pend:
+            Path(st.cutover_fence_path + ".pending").write_text(json.dumps({"to": "mercury"}))
         await st.radio.start()
         try:
             armed, warn = await arm_st(st, scheme)
@@ -581,6 +593,9 @@ def r4_idle():
     r = mon["radios"][0]
     for name, ans, want in [("hello times out (may be keyed)", {"up": False, "why": "TimeoutError"}, False),
                             ("not running (refused)", {"up": False, "why": "ClientConnectorError"}, False),
+                            ("C2 answers, STOP TX latched but not saved",
+                             {"up": True, "stopped": True, "stop_saved": False}, False),
+                            ("C2 answers, a rigctl client (JTDX) connected", {"up": True, "rigctl": 1}, False),
                             ("answers, idle", {"up": True}, True),
                             ("answers, armed", {"up": True, "armed": True}, False)]:
         f = d / "probe.py"
@@ -620,6 +635,123 @@ def r11_uid():
     check("#11   a leading '-' still refused", "audio_in" in pl.errors, True)
 
 
+async def c2_key_fence():
+    """C2: with the switch's fence up, nothing new keys or tunes here."""
+    home = Path(tempfile.mkdtemp(prefix="rr-c2-"))
+    st, _ = make(probe=GOOD)
+    st.cutover_fence_path = str(home / ".local/state/radio-remote/vara-cutover.json")
+    await st.radio.start()
+    st._safety = asyncio.ensure_future(st.safety_loop())
+    try:
+        app = rigctl_server.RigctlSession(st, "127.0.0.1:50001")      # JTDX on the main rigctl port
+        r, _ = await app.handle("T 1")
+        check("C2 no fence: an app's T 1 keys", r.strip(), "RPRT 0")
+        await app.handle("T 0")
+        await asyncio.sleep(0.2)
+        fence = home / ".local/state/radio-remote/vara-cutover.json"   # what the cutover writes
+        fence.parent.mkdir(parents=True, exist_ok=True)
+        fence.write_text(json.dumps({"until": time.time() + 60}))
+        r, _ = await app.handle("T 1")
+        check("C2 the switch's fence up (after its idle check): an app's T 1 -> RPRT -11", r.strip(), "RPRT -11")
+        check("C2   and an ATU tune is refused", await st.start_tune(), False)
+        await app.handle("T 0")                                       # (nobody else holds PTT)
+        await asyncio.sleep(0.2)
+        check("C2   and browser PTT is refused", "switch" in (await st.can_key(WS()) or ""), True)
+    finally:
+        st._safety.cancel()
+        await st.radio.stop()
+
+
+class Gate:
+    """A probe whose answers the test releases one by one, in any order."""
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self):
+        f = asyncio.get_running_loop().create_future()
+        self.calls.append(f)
+        return await f
+
+    async def wait(self, n):
+        for _ in range(200):
+            if len(self.calls) >= n:
+                return True
+            await asyncio.sleep(0.01)
+        return False
+
+
+async def c4_overlap():
+    """C4: the first probe is the arming request's own, not the station's."""
+    for other_scheme, other_text, want, name in [
+            ("ardop", None, True, "an ARDOP request during Mercury's preparation does not spoil its baseline"),
+            ("varahf", GOOD.replace("p100", "p200"), False,
+             "a second Mercury request that saw pid 200 does not become the first's baseline")]:
+        st, _ = make(probe=GOOD)
+        g = Gate()
+        st.mercury_listen_probe = g
+        await st.radio.start()
+        try:
+            a = asyncio.ensure_future(st.winlink_arm(WS(), True, scheme="varahf"))
+            await g.wait(1)
+            g.calls[0].set_result(GOOD)                  # A's first: pid 100
+            await g.wait(2)                              # A is in preparation, its re-probe pending
+            b = asyncio.ensure_future(st.winlink_arm(WS(), True, scheme=other_scheme))
+            if other_text:
+                await g.wait(3)
+                g.calls[2].set_result(other_text)        # B's first: pid 200
+            await asyncio.wait_for(b, 5)
+            g.calls[1].set_result(other_text or GOOD)    # A's re-probe
+            await asyncio.wait_for(a, 5)
+            check(f"C4 {name}", st.winlink_armed and st.winlink_lane_modem == "mercury", want)
+        finally:
+            await st.winlink_disarm("x")
+            await st.radio.stop()
+
+
+def c5_ops_probes():
+    """C5: real Ops probes, subprocess outcomes mocked: unreadable is never
+    ready or gone; listeners must be the agent's own process."""
+    real_run, real_bin = vara_backend.subprocess.run, mercury_tnc.lsof_bin
+    script = {}
+
+    def run(argv, **kw):
+        key = "launchctl" if "launchctl" in argv[0] or argv[1:2] == ["print"] else "lsof"
+        r = script[key](argv)
+        if isinstance(r, Exception):
+            raise r
+        rc, out, err = r
+        return subprocess.CompletedProcess(argv, rc, out, err)
+    vara_backend.subprocess.run = run
+    mercury_tnc.lsof_bin = lambda *a: "/usr/sbin/lsof"
+    try:
+        ops = vara_backend.Ops()
+        script["lsof"] = lambda a: subprocess.TimeoutExpired(a, 10)
+        check("C5 lsof times out -> unreadable (not absent)", ops.listening(8300), "unreadable")
+        script["lsof"] = lambda a: (2, "", "lsof: status error on /dev/x")
+        check("C5 exit 2 with stderr -> the old port's connection is unreadable (not gone)",
+              ops.connected(8300), "unreadable")
+        script["lsof"] = lambda a: (1, "", "")
+        check("C5 exit 1, nothing printed -> absent", ops.listening(8300), "absent")
+        script["launchctl"] = lambda a: (0, "state = running\n\tpid = 999\n", "")
+        script["lsof"] = lambda a: subprocess.TimeoutExpired(a, 10)
+        check("C5 xara's listeners unreadable -> not ready", ops.modem_refusal(xh_c5, "xara") is not None, True)
+        script["lsof"] = lambda a: (0, "p123\n", "")
+        w = ops.modem_refusal(xh_c5, "xara")
+        check("C5 xara's ports held by another process (pid 123, agent 999) -> not ready",
+              "pid 123" in (w or ""), True)
+        script["launchctl"] = lambda a: (0, "\tpid = 123\n", "")
+        check("C5 held by the agent's own process -> ready", ops.modem_refusal(xh_c5, "xara"), None)
+    finally:
+        vara_backend.subprocess.run, mercury_tnc.lsof_bin = real_run, real_bin
+
+
+xh_c5 = copy.deepcopy(both)
+xh_c5["winlink"]["vara_modem"] = "xara"
+
+
+section("C2 key fence", c2_key_fence)
+section("C4 overlap", c4_overlap)
+section("C5 ops probes", c5_ops_probes)
 section("#1 exit codes", r1_exit_codes)
 section("#3 lsof path", r3_lsof_path)
 section("#2 instance", r2_instance)
@@ -636,17 +768,20 @@ ST_LABEL = "org.ranch-radio.station"
 
 
 class FakeOps:
-    """launchd, processes and sockets as sets. stuck: labels bootout can't
-    stop; stale: a connection to the old modem's port that the station
-    restart clears unless stale_clears is False; pat: Pat's config refusal."""
+    """launchd, processes and sockets as sets. The radio server's lanes come
+    up only when it restarts (lane_up), and a modem listens only after it is
+    loaded with its lane up (Mercury exits without it, C1). busy: radio ids
+    (or "station") that are not idle; stuck: labels bootout can't stop;
+    stale: the old modem's port still connected; pat: Pat's config refusal."""
 
-    def __init__(self, loaded, procs, listening, busy=False, stuck=(), stale=False, stale_clears=True,
-                 up_fails=False, modem_down=False, pat=None, pid_fixed=False, reappear=None):
+    def __init__(self, loaded, procs, listening, busy=(), stuck=(), stale=False, stale_clears=True,
+                 up_fails=False, modem_dies=False, pat=None, pid_fixed=False, reappear=None, pat_fails=False):
         self.loaded_set, self.procs, self.listen = set(loaded), set(procs), set(listening)
-        self.busy, self.stuck = busy, set(stuck)
+        self.busy, self.stuck = set(busy), set(stuck)
         self.stale, self.stale_clears = stale, stale_clears
-        self.up_fails, self.modem_down, self.pat = up_fails, modem_down, pat
-        self.pid_fixed, self.reappear = pid_fixed, reappear
+        self.up_fails, self.modem_dies, self.pat = up_fails, modem_dies, pat
+        self.pid_fixed, self.reappear, self.pat_fails = pid_fixed, reappear, pat_fails
+        self.lane_up, self.modem_up = False, set()
         self.pids, self.calls, self.fence_seen, self.home, self.t_first = {ST_LABEL: 1000}, [], {}, None, None
 
     def _note(self, what):
@@ -656,8 +791,9 @@ class FakeOps:
         self.fence_seen.setdefault(what[0], (Path(self.home) / FENCE_REL).exists())
 
     def idle(self, h, r):
-        self._note(("idle", r["id"]))
-        return (False, "the IC-7300 did not answer") if self.busy else (True, "idle")
+        rid = r["id"] if r else "station"
+        self._note(("idle", rid))
+        return (False, f"{rid} is not idle") if rid in self.busy else (True, "idle")
 
     def loaded(self, label):
         return label in self.loaded_set
@@ -669,6 +805,7 @@ class FakeOps:
         self.loaded_set.discard(label)
         name = "mercury" if "mercury" in label else "xara"
         self.procs.discard(name)
+        self.modem_up.discard(name)
         self.listen -= set(PORTS[name])
         return 0
 
@@ -677,6 +814,9 @@ class FakeOps:
         if self.up_fails:
             return 1
         self.loaded_set.add(label)
+        name = "mercury" if "mercury" in label else "xara"
+        if self.lane_up:                     # it opens its lane, then listens
+            self.modem_up.add(name)
         return 0
 
     def pid(self, label):
@@ -689,21 +829,32 @@ class FakeOps:
                 self.pids[label] += 1
             if self.stale_clears:
                 self.stale = False
-        elif self.reappear:
-            self.loaded_set.add(self.reappear)
+        else:
+            self.lane_up = True
+            if self.reappear:
+                self.loaded_set.add(self.reappear)
         return 0
 
     def proc_alive(self, name):
         return name in self.procs
 
     def listening(self, port):
-        return port in self.listen
+        return "present" if port in self.listen else "absent"
 
     def connected(self, port):
-        return self.stale
+        return "present" if self.stale else "absent"
+
+    def lane_refusal(self, h, r, backend):
+        return None if self.lane_up else "port 4535: absent"
 
     def modem_refusal(self, h, backend):
-        return "Mercury is not listening on its control 8340 port" if self.modem_down else None
+        if backend not in self.modem_up or (self.modem_dies and ("restart", ST_LABEL) not in self.calls
+                                            and any(c[0] == "idle" and c[1] == "station" for c in self.calls)):
+            return f"{backend} is not listening on its control port"
+        return None
+
+    def pat_ready(self, h):
+        return not self.pat_fails
 
     def pat_refusal(self, h, to):
         return self.pat
@@ -741,6 +892,11 @@ def fence_file(home):
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def pending(home):
+    p = Path(home) / (FENCE_REL + ".pending")
+    return json.loads(p.read_text()) if p.exists() else None
+
+
 xh = copy.deepcopy(both)
 xh["winlink"]["vara_modem"] = "xara"
 RADIO = xh["radios"][0]["label"]
@@ -759,13 +915,15 @@ def c_dry():
 def c_both_ways():
     ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, stale=True)
     rc, home, newh, inst, out = cutover(xh, "mercury", ops, plists=["ranch-radio.xara"])
-    check("to mercury: done", rc, 0)
-    check("to mercury: idle, xara out, Mercury up, the radio server, then the station",
-          ops.calls, [("idle", "ic7300"), ("bootout", "ranch-radio.xara"), ("up", "ranch-radio.mercury"),
-                      ("restart", RADIO), ("restart", ST_LABEL)])
+    check("to mercury: done", (rc, out[-200:] if rc else ""), (0, ""))
+    check("C1 to mercury: the radio server (its lane) BEFORE Mercury, then the station once all is idle",
+          ops.calls, [("idle", "ic7300"), ("bootout", "ranch-radio.xara"), ("restart", RADIO),
+                      ("up", "ranch-radio.mercury"), ("idle", "station"), ("idle", "ic7300"),
+                      ("restart", ST_LABEL)])
     check("#4 the fence is up before the idle check and the bootout",
           (ops.fence_seen.get("idle"), ops.fence_seen.get("bootout")), (True, True))
-    check("#4 the fence is lifted at the end", fence_file(home), None)
+    check("#4 the fence and the pending state are lifted at the end", (fence_file(home), pending(home)),
+          (None, None))
     trash = sorted(p.name for p in (home / ".Trash").iterdir())
     check("to mercury: xara's plist in ~/.Trash, dated (not removed)",
           (len(trash), trash[0].startswith("ranch-radio.xara-2") if trash else False,
@@ -782,9 +940,9 @@ def c_both_ways():
 
 
 def c_refusals():
-    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, busy=True)
+    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, busy={"ic7300"})
     rc, home, newh, inst, out = cutover(xh, "mercury", ops, plists=["ranch-radio.xara"])
-    check("#4 a radio that doesn't answer: refused, nothing booted out, files untouched, fence lifted",
+    check("#4 a radio that isn't idle: refused, nothing booted out, files untouched, fence lifted",
           (rc, ops.calls, newh["winlink"]["vara_modem"], (home / render.AGENTS / "ranch-radio.xara.plist").exists(),
            inst, fence_file(home)), (1, [("idle", "ic7300")], "xara", True, [], None))
     lh2 = copy.deepcopy(xh)
@@ -801,15 +959,11 @@ def c_refusals():
     ops = FakeOps(set(), {"xara"}, {8301})
     rc, home, newh, inst, out = cutover(xh, "mercury", ops)
     check("a xara process still listening with no agent: stopped, says what is left",
-          (rc, "something still listens on 8301" in out, any(c[0] == "up" for c in ops.calls)), (1, True, False))
+          (rc, "port 8301: present" in out, any(c[0] == "up" for c in ops.calls)), (1, True, False))
     ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, up_fails=True)
     rc, home, newh, inst, out = cutover(xh, "mercury", ops)
-    check("#8 Mercury's agent fails to load: stopped, the radio server NOT restarted",
-          (rc, any(c[0] == "restart" for c in ops.calls)), (1, False))
-    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, modem_down=True)
-    rc, home, newh, inst, out = cutover(xh, "mercury", ops)
-    check("#8 loaded but not listening (crash-looping on audio): stopped, radio server NOT restarted",
-          (rc, any(c[0] == "restart" for c in ops.calls), "not listening" in out), (1, False, True))
+    check("#8 Mercury's agent fails to load: stopped, Pat NOT restarted, VARA left pending",
+          (rc, ("restart", ST_LABEL) in ops.calls, (pending(home) or {}).get("to")), (1, False, "mercury"))
     ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, reappear="ranch-radio.xara")
     rc, home, newh, inst, out = cutover(xh, "mercury", ops)
     check("#7 the old agent back after the restart: final check stops it, Pat not restarted",
@@ -826,17 +980,38 @@ def c_refusals():
 def c_pat():
     ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, pat="set varahf.addr to localhost:8340")
     rc, home, newh, inst, out = cutover(xh, "mercury", ops)
-    f = fence_file(home)
     check("#9 Pat's config not yet edited: stopped after the modem switch (2), Pat NOT restarted",
           (rc, ("restart", ST_LABEL) in ops.calls, newh["winlink"]["vara_modem"]), (2, False, "mercury"))
     check("#9   prints the two edits and the --finish command",
           ('varahf.addr = "localhost:8340"' in out, '"MERCURY"' in out,
            "vara-backend mercury --apply --finish" in out), (True, True, True))
-    check("#9   VARA arms stay fenced (ARDOP not)", (f or {}).get("scope"), "varahf")
-    ops.pat, ops.calls = None, []
+    check("C7   VARA pending (durable), the switch fence lifted (ARDOP may run)",
+          ((pending(home) or {}).get("to"), fence_file(home)), ("mercury", None))
+    # C7: a retry that finds a radio busy must not lift the pending state
+    ops2 = FakeOps({"ranch-radio.mercury"}, {"mercury"}, {8340, 8341, 8342}, busy={"ic7300"})
+    cutover(newh, "mercury", ops2, home=home)
+    check("C7 a busy retry over a pending switch: still pending", (pending(home) or {}).get("to"), "mercury")
+    # C3: an ARDOP session is running when --finish comes
+    ops.pat, ops.calls, ops.busy = None, [], {"station"}
+    rc, home, _, _, out = cutover(newh, "mercury", ops, finish=True, home=home)
+    check("C3 --finish with an ARDOP session on: refused, zero restarts, still pending",
+          (rc, [c for c in ops.calls if c[0] == "restart"], (pending(home) or {}).get("to")), (1, [], "mercury"))
+    check("C3   the fence was up while it looked", ops.fence_seen.get("idle"), True)
+    # C6: the modem died during the edit interval
+    ops.busy, ops.calls, ops.modem_dies = set(), [], True
+    rc, home, _, _, out = cutover(newh, "mercury", ops, finish=True, home=home)
+    check("C6 --finish: the modem stopped listening meanwhile -> refused, Pat not restarted, still pending",
+          (rc, ("restart", ST_LABEL) in ops.calls, (pending(home) or {}).get("to")), (1, False, "mercury"))
+    # C6: a fresh station whose Pat fails
+    ops.modem_dies, ops.calls, ops.pat_fails = False, [], True
+    rc, home, _, _, out = cutover(newh, "mercury", ops, finish=True, home=home)
+    check("C6 --finish: the new station's Pat does not come up -> not done, still pending",
+          (rc, ("restart", ST_LABEL) in ops.calls, (pending(home) or {}).get("to")), (1, True, "mercury"))
+    ops.pat_fails, ops.calls = False, []
     rc, home, newh2, inst, out = cutover(newh, "mercury", ops, finish=True, home=home, h_arg=xh)
-    check("#9 --finish after the edits: the station restarted, fence lifted (host re-read under the lock)",
-          (rc, ops.calls, fence_file(home)), (0, [("restart", ST_LABEL)], None))
+    check("#9 --finish after the edits: idle checks, the station restarted, pending lifted (host re-read)",
+          (rc, [c for c in ops.calls if c[0] == "restart"], pending(home), fence_file(home)),
+          (0, [("restart", ST_LABEL)], None, None))
 
 
 def c_lock():
