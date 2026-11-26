@@ -48,6 +48,10 @@ RULES = {
     "node_link": (str, re.compile(r"(/dev/[A-Za-z0-9._-]+|usb:[A-Za-z0-9]{1,40}|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)"
                                   r"(,(/dev/[A-Za-z0-9._-]+|usb:[A-Za-z0-9]{1,40}|ble:[A-Za-z0-9_-]{1,40}|tcp:[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)){0,3}")),
     "audio_name": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}")),
+    # A CoreAudio device UID (mercury -z), e.g. "AppleUSBAudioEngine:Burr-Brown
+    # from TI:USB Audio CODEC:14200000:2,1": colons and commas, and the vendor
+    # names inside USB UIDs have spaces (panel M1 #11).
+    "coreaudio_uid": (str, re.compile(r"[A-Za-z0-9][A-Za-z0-9 :,._()-]{0,127}")),
     "http_url": (str, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]{0,200})?")),
     "origin_list": (list, re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")),
     "net_host": (str, re.compile(r"[A-Za-z0-9.-]{1,253}")),
@@ -174,7 +178,7 @@ MANIFESTS = {
                                "port": 8340, "broadcast_port": 8342, "lane_port": 4535,
                                "ini": "~/Library/Application Support/ranch-radio/mercury/mercury.ini",
                                "log": "~/Library/Logs/ranch-radio-mercury.log"}},
-        "rules": {"audio_in": "audio_name", "audio_out": "audio_name", "call": "callsign"},
+        "rules": {"audio_in": "coreaudio_uid", "audio_out": "coreaudio_uid", "call": "callsign"},
         "ask": {"audio_in": "the radio's sound card for Mercury to listen on: its CoreAudio id (mercury -z)",
                 "audio_out": "the radio's sound card for Mercury to play into: its CoreAudio id (mercury -z)",
                 "call": "your callsign (the radio server sends it as Mercury's CW ID; Mercury sends none)"},

@@ -789,6 +789,20 @@ def host_listeners(h, ports):
     return taken
 
 
+def mercury_ini_rel(ini):
+    """winlink.mercury.ini as a path relative to the home folder, or None
+    when it isn't one: "~/" then a normalized relative path (no "..", ".",
+    empty part or trailing "/"). Install writes there and -C names the same
+    file (panel M1 #10: "~//x" rendered as /x)."""
+    if not isinstance(ini, str) or not ini.startswith("~/"):
+        return None
+    rel = ini[2:]
+    parts = rel.split("/")
+    if not rel or any(p in ("", ".", "..") for p in parts) or os.path.normpath(rel) != rel or os.path.isabs(rel):
+        return None
+    return rel
+
+
 MERCURY_KEYS = ("bin", "call", "audio_in", "audio_out", "port", "broadcast_port", "lane_port", "ini", "log")
 
 
@@ -813,8 +827,14 @@ def _validate_mercury(h, ports):
         raise HostError(f"{host}: winlink.mercury must be an object")
     if h["os"] != "macos":
         raise HostError(f"{host}: winlink.mercury (Mercury HF) ships on macOS only in this version")
-    if not any(r.get("lane") for r in h["radios"]):
+    lanes = [r["id"] for r in h["radios"] if r.get("lane")]
+    if not lanes:
         raise HostError(f"{host}: winlink.mercury needs a radio with a Winlink lane (Pat's QSY goes through it)")
+    if len(lanes) > 1:
+        # One Mercury, one lane on 127.0.0.1:lane_port: only one radio server
+        # could bind it (panel M1 #5).
+        raise HostError(f"{host}: winlink.mercury runs one Mercury on one radio, but {', '.join(lanes)} all have a "
+                        f"Winlink lane; this version takes one")
     for k in MERCURY_KEYS:
         if k not in m:
             raise HostError(f"{host}: winlink.mercury is missing {k!r}")
@@ -827,8 +847,9 @@ def _validate_mercury(h, ports):
     if not 1 <= m["broadcast_port"] <= 65535:
         raise HostError(f"{host}: winlink.mercury.broadcast_port = {m['broadcast_port']}: 1 to 65535; "
                         f"Mercury would listen on 8100 instead, silently")
-    if not str(m["ini"]).startswith("~/"):
-        raise HostError(f"{host}: winlink.mercury.ini must be under ~/ (render writes it there)")
+    if mercury_ini_rel(m["ini"]) is None:
+        raise HostError(f"{host}: winlink.mercury.ini = {m['ini']!r}: a file under ~/ (render writes it there), "
+                        f"no '..', '.', or '//' in it")
     mine = {}
     for p, what in _mercury_ports(h).items():
         if p in mine:
@@ -1406,10 +1427,11 @@ def _macos(h, home):
         arts.append(Artifact("mercury", f"{AGENTS}/{mt.LABEL}.plist", "plist", {
             "KeepAlive": True, "Label": mt.LABEL, "ProcessType": "Interactive", "RunAtLoad": True,
             "ThrottleInterval": 10, "EnvironmentVariables": dict(mt.BIND_ENV),
-            "ProgramArguments": mt.agent_argv(pth(m["bin"]), pth(m["ini"]), m["audio_in"], m["audio_out"],
+            "ProgramArguments": mt.agent_argv(pth(m["bin"]), pth("~/" + mercury_ini_rel(m["ini"])),
+                                              m["audio_in"], m["audio_out"],
                                               m["port"], m["broadcast_port"], m["lane_port"], pth(m["log"])),
             "StandardErrorPath": console, "StandardOutPath": console}))
-        arts.append(Artifact("mercury", m["ini"][2:], "text",
+        arts.append(Artifact("mercury", mercury_ini_rel(m["ini"]), "text",
                              mt.ini_text(m["call"].upper(), m["port"], m["broadcast_port"], m["lane_port"])))
 
     for r in js8_radios(h):
