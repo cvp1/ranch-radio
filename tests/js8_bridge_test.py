@@ -281,7 +281,7 @@ async def main():
     # ------------------------------------------------------------ bounds
     for i in range(js8_bridge.MAX_FRAMES + 10):
         await eng.push({"type": "event", "event": "message.frame",
-                        "data": {"frame_text": f"N{i % 10}ABC: " + "X" * 500, "snr_db": "loud", "freq_hz": i}})
+                        "data": {"frame_text": f"N{i % 10}ABC: " + "X" * (js8_bridge.MAX_TEXT + 500), "snr_db": "loud", "freq_hz": i}})
     check("frames capped", await until(lambda: len(e.frames) == js8_bridge.MAX_FRAMES
                                        and e.frames[-1]["freq_hz"] == js8_bridge.MAX_FRAMES + 9), True)
     check("text capped", len(e.frames[-1]["text"]), js8_bridge.MAX_TEXT)

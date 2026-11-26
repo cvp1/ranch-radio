@@ -67,7 +67,7 @@ log = logging.getLogger("js8")
 
 MAX_FRAMES = 300            # per radio: about an hour of a busy band
 MAX_HEARD = 200
-MAX_TEXT = 200              # characters kept of one frame or message
+MAX_TEXT = 1000             # characters kept of one frame or message (a long JS8 over runs ~300)
 BACKOFF_S = (1, 2, 5, 10, 30)
 STATUS_EVERY_S = 30
 FRAME_CALL = re.compile(r"^\s*([A-Z0-9]{1,3}[0-9][A-Z0-9/]{0,8}):")

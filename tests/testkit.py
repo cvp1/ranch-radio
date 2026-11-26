@@ -1,26 +1,39 @@
-"""Shared test plumbing: OS-assigned ports, waiting on a condition instead of a
-fixed sleep (CI's two-CPU runners are slower than any guess), and a clean Pat."""
+"""Shared test plumbing: free ports out of the OS's way, waiting on a condition
+instead of a fixed sleep (CI's two-CPU runners are slower than any guess), and
+a clean Pat."""
+import random
 import socket
 import time
 
 
 _handed_out = set()
+# Ports come from below every OS's ephemeral range (Linux 32768+, macOS and
+# the BSDs 49152+). bind(0) picks from that range, and so does every outbound
+# connection, so a port found that way and released could be taken by any
+# client socket before the server bound it: a Winlink rigctl listener and the
+# station's web server both got 51425 (CI, 2026-11-15); a rigctl listener lost
+# 50067 to another run's socket (three concurrent runs, 2026-11-26). The OS
+# assigns nothing here unasked. PORT_HI stays under station_test's blocks
+# (20000+), and pair_port's PORT+1 under PORT_HI.
+PORT_LO, PORT_HI = 10000, 20000
+_rng = random.Random()   # seeded from os.urandom: concurrent runs pick apart
 
 
 def free_port():
-    """A TCP port the OS says is free (bind to port 0), never one this process
-    was already given. The socket is closed before the caller binds, so the
-    OS may offer the same port to the next call: a Winlink rigctl listener and
-    the station's web server both got 51425 and the station failed to start
-    (CI, 2026-11-15)."""
+    """A TCP port nothing listens on, from PORT_LO..PORT_HI-2, never one this
+    process was already given."""
     for _ in range(1000):
+        p = _rng.randrange(PORT_LO, PORT_HI - 1)
+        if p in _handed_out:
+            continue
         with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            p = s.getsockname()[1]
-        if p not in _handed_out:
-            _handed_out.add(p)
-            return p
-    raise RuntimeError("free_port: the OS kept offering ports already handed out")
+            try:
+                s.bind(("127.0.0.1", p))
+            except OSError:
+                continue
+        _handed_out.add(p)
+        return p
+    raise RuntimeError("free_port: no free port found in 1000 tries")
 
 
 def pair_port(taken=()):

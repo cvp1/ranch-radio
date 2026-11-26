@@ -33,9 +33,17 @@ jobs:
         run: python tests/xss_hygiene_test.py
   # The documented minimum (README, install.sh: Python 3.12+): the TX safety
   # tests and the ops units on 3.12, so nothing newer slips in unnoticed.
+  # Two halves by measured time (~4 min each), so this lane is never the one
+  # every pull request waits on.
   py312:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        tests:
+          - civ_safety_test update_test tx_level_test installer_test tx_state_test affected_test modules_apply_test inventory_test modules_test hostfile_safety_test scaffold_test security_headers_test webguard_test
+          - winlink_lane_test tx_stop_test codec_level_test
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -47,15 +55,22 @@ jobs:
         run: python -m venv .venv && .venv/bin/pip install -q -r requirements.txt -c constraints.txt
       - name: Safety and ops tests
         shell: bash
-        run: bash tests/ci/run_list.sh civ_safety_test tx_stop_test tx_state_test winlink_lane_test webguard_test security_headers_test hostfile_safety_test modules_test modules_apply_test inventory_test scaffold_test tx_level_test codec_level_test update_test installer_test affected_test
+        run: bash tests/ci/run_list.sh ${{ matrix.tests }}
   # macOS is half the hosts (launchd, CoreAudio): Darwin rendering, the
   # installer and update paths, and the audio import. No real launchctl
   # bootstrap: it needs a GUI session a runner does not have (service.py).
   # Every process starts ~35 s slow on the runner, so the TX tests stay on
   # Linux (shards, py312), where they run at speed.
+  # Two halves by measured time (~4.5 min each).
   macos:
     runs-on: macos-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        tests:
+          - mac_station_test update_test hostfile_safety_test webguard_test inventory_test modules_test scaffold_test
+          - modules_apply_test station_audio_test installer_test security_headers_test
     steps:
       # The runner's host name is a 60-character id that does not resolve:
       # socket.getfqdn() (webguard, at import) waits ~70 s on it, so servers
@@ -75,16 +90,20 @@ jobs:
         run: python -m venv .venv && .venv/bin/pip install -q -r requirements.txt -c constraints.txt
       - name: macOS tests
         shell: bash
-        run: bash tests/ci/run_list.sh mac_station_test station_audio_test installer_test update_test hostfile_safety_test modules_test modules_apply_test inventory_test scaffold_test webguard_test security_headers_test
-  # The suite split four ways by measured duration (tests/ci/shard.py), each
-  # shard on its own runner, so the serial-only tests never share ports.
+        run: bash tests/ci/run_list.sh ${{ matrix.tests }}
+  # The suite split eight ways by measured duration (tests/ci/shard.py), each
+  # shard on its own runner, so the serial-only tests never share ports or
+  # CPU. The runs wait on real radio timers (tune, TX and session limits), not
+  # on the CPU, so time comes down by adding runners, never by shortening
+  # those waits or running two on one runner (2026-11-26: three at once on
+  # one host stretched winlink_listen_test 114 s -> 192 s).
   shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 15   # the slowest shard takes ~10 min; a hang fails fast
+    timeout-minutes: 12   # the slowest shard takes ~6 min; a hang fails fast
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
