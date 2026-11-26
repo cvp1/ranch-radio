@@ -62,7 +62,20 @@ WINLINK_KEEPALIVE_S = 12.0
 # QRT frame's key (~1.4 s + 6.6 s). xara's own --ptt-max-s (30) and its
 # 500 ms stall guard stay below this as xara's limits; --tx-timeout bounds all.
 WINLINK_VARA_KEEPALIVE_S = 21.0
-MODEM_NAMES = {"ardop": "ARDOP", "varahf": "VARA HF"}
+# Mercury HF (plan winlink-mercury, v1.9.25 source, not built) also sends one
+# T 1 per key and nothing until its T 0: headless Mercury never talks to
+# rigctld while keyed (the frequency poll runs only from the UI publisher,
+# which starts only with the UI on, and bails while g_ptt_active:
+# radio_io.c:998, common/mercury_engine.c:389-405). Its longest key is the
+# protocol's 30 s cap; the longest frame it cannot avoid is the MFSK floor
+# frame at BW500, 27 s, never split (a peer at BW500 forces the session there,
+# TNC.md:162, CAROUSEL-ARQ.md:81-90), so the lane must hold a silent 27-30 s
+# key and cannot refuse BW500 away. 30 s + 3 s margin = 33 s. TUNE (up to
+# 60 s, TNC.md:794) is not a supported path: Pat never sends it; this cuts it
+# at 33 s and --tx-timeout bounds everything.
+WINLINK_MERCURY_KEEPALIVE_S = 33.0
+MODEM_NAMES = {"ardop": "ARDOP", "varahf": "VARA HF", "mercury": "Mercury HF"}
+KEEPALIVE_OF = {"varahf": WINLINK_VARA_KEEPALIVE_S, "mercury": WINLINK_MERCURY_KEEPALIVE_S}
 
 
 class RigctlOwner:
@@ -73,9 +86,9 @@ class RigctlOwner:
     def __init__(self, peer, lane=None, modem=None):
         self.peer = peer
         self.lane = lane
-        self.modem = modem       # a Winlink lane's modem ("ardop", "varahf"): whose bursts the ID ledger keeps
+        self.modem = modem       # a Winlink lane's modem ("ardop", "varahf", "mercury"): whose bursts the ID ledger keeps
         if lane == "winlink":
-            self.keepalive_s = WINLINK_VARA_KEEPALIVE_S if modem == "varahf" else WINLINK_KEEPALIVE_S
+            self.keepalive_s = KEEPALIVE_OF.get(modem, WINLINK_KEEPALIVE_S)
         self.lost_msg = f"rigctl client {peer} went quiet"
 
     async def send_str(self, _msg):   # Station.notice() targets the owner
@@ -459,48 +472,80 @@ class RigctlSession:
             return ("1\n" if s.get("tx") else "0\n"), False
         if cmd in ("T", "set_ptt"):
             on = bool(args) and args[-1] != "0"
+            if self.modem == "mercury":
+                return await self._mercury_ptt(on)
+            return await self._set_ptt(on)
+        return await self._dispatch_rest(cmd, args)
+
+    async def _mercury_ptt(self, on):
+        """Mercury's lane: the same PTT path, plus what the station's own ID
+        must know (mercury_id.py). Mercury plays its frame's audio even when
+        its key is refused (tcp_interfaces.c:2496-2508), so a refused T 1 is
+        reported too: that audio may be in the codec for up to a frame."""
+        st = self.station
+        ident = getattr(st, "mercury_ident", None)
+        held = self.holds_ptt()
+        reply = await self._set_ptt(on)
+        if ident is not None:
             if not on:
-                # Only the sender's own PTT: another client's (or the radio's
-                # own) transmission is not this client's to end.
-                if self.holds_ptt():
-                    await self.station.unkey(own=True)
-                return ok, False
-            st = self.station
-            if self.lane == "winlink":
-                # Armed, and for this lane's modem: ardopcf (through Pat) can't
-                # key during a VARA session nor xara during an ARDOP one.
-                why = st.winlink_lane_gate(self.modem)
-                if why:
-                    st.winlink_lane_refused(self.owner.peer, self.modem, why)
-                    return f"RPRT {RIG_ENAVAIL}\n", False
-            why = await st.can_key(self.owner)
-            if why:
-                # Refused before the split hop: the dial never moves.
-                log.warning("rigctl %s: PTT refused: %s", self.owner.peer, why)
-                return f"RPRT {RIG_ENAVAIL}\n", False
-            tx = st.emu_split_tx if (st.emu_split and not self.real_split) else None
-            if (tx is not None and tx != s["freq"] and st.split_restore is None
-                    and not st.split_hop_ok(s["freq"], tx)):
-                log.warning("rigctl %s: PTT refused: split TX %d is not on RX %d's band",
-                            self.owner.peer, tx, s["freq"])
-                return f"RPRT {RIG_ENAVAIL}\n", False
-            if tx is not None and tx != s["freq"] and st.split_restore is None:
-                # Dial the TX frequency in first; the key command queues after it.
-                st.split_restore = s["freq"]
-                log.info("split: TX on %d (RX %d)", tx, s["freq"])
-                await self.radio.set("freq", tx)
-            await st.key(self.owner, True)
-            if not self.holds_ptt():
-                # Refused after all (a race): undo the hop, never leave
-                # split_restore set (it would hold the hold busy forever).
-                rx, st.split_restore = st.split_restore, None
-                if rx is not None:
-                    await self.radio.set("freq", rx)
-                return f"RPRT {RIG_ENAVAIL}\n", False
-            log.info("rigctl: PTT ON from %s", self.owner.peer)
-            if self.lane == "winlink":
-                st.id_ledger.ptt(True, modem=self.modem)
+                if not held:
+                    ident.lane_event(self.owner, "idle")
+            elif reply[0].startswith(f"RPRT {RIG_OK}"):
+                ident.lane_event(self.owner, "keyed")
+            else:
+                ident.lane_event(self.owner, "refused")
+        return reply
+
+    async def _set_ptt(self, on):
+        ok = f"RPRT {RIG_OK}\n"
+        s = self.s
+        if not on:
+            # Only the sender's own PTT: another client's (or the radio's
+            # own) transmission is not this client's to end.
+            if self.holds_ptt():
+                await self.station.unkey(own=True)
             return ok, False
+        st = self.station
+        if self.lane == "winlink":
+            # Armed, and for this lane's modem: ardopcf (through Pat) can't
+            # key during a VARA session nor xara during an ARDOP one (nor
+            # either during a Mercury one, which is a VARA HF session too).
+            why = st.winlink_lane_gate(self.modem, self.owner)
+            if why:
+                st.winlink_lane_refused(self.owner.peer, self.modem, why)
+                return f"RPRT {RIG_ENAVAIL}\n", False
+        why = await st.can_key(self.owner)
+        if why:
+            # Refused before the split hop: the dial never moves.
+            log.warning("rigctl %s: PTT refused: %s", self.owner.peer, why)
+            return f"RPRT {RIG_ENAVAIL}\n", False
+        tx = st.emu_split_tx if (st.emu_split and not self.real_split) else None
+        if (tx is not None and tx != s["freq"] and st.split_restore is None
+                and not st.split_hop_ok(s["freq"], tx)):
+            log.warning("rigctl %s: PTT refused: split TX %d is not on RX %d's band",
+                        self.owner.peer, tx, s["freq"])
+            return f"RPRT {RIG_ENAVAIL}\n", False
+        if tx is not None and tx != s["freq"] and st.split_restore is None:
+            # Dial the TX frequency in first; the key command queues after it.
+            st.split_restore = s["freq"]
+            log.info("split: TX on %d (RX %d)", tx, s["freq"])
+            await self.radio.set("freq", tx)
+        await st.key(self.owner, True)
+        if not self.holds_ptt():
+            # Refused after all (a race): undo the hop, never leave
+            # split_restore set (it would hold the hold busy forever).
+            rx, st.split_restore = st.split_restore, None
+            if rx is not None:
+                await self.radio.set("freq", rx)
+            return f"RPRT {RIG_ENAVAIL}\n", False
+        log.info("rigctl: PTT ON from %s", self.owner.peer)
+        if self.lane == "winlink":
+            st.id_ledger.ptt(True, modem=self.modem)
+        return ok, False
+
+    async def _dispatch_rest(self, cmd, args):
+        s, caps = self.s, self.caps
+        ok = f"RPRT {RIG_OK}\n"
         if cmd in ("s", "get_split_vfo"):
             on = s.get("split") if self.real_split else self.station.emu_split
             return ("1\nVFOB\n" if on else "0\nVFOA\n"), False

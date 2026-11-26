@@ -28,7 +28,17 @@ async def id_tail(station, started, closing=lambda: False, notify=None, scheme="
     Untracked (no log for this modem): armed until the lane is quiet for
     TAIL_QUIET_S. xara's blanks before its call are inside the keyed burst
     (crates/xara-phy/src/cwid.rs synth), so no quiet gap opens mid-ID; and a
-    VARA lane exists only with xara's log, so VARA is always tracked."""
+    VARA lane exists only with xara's log, so VARA is always tracked.
+
+    Mercury HF (scheme: the session's lane modem, "mercury") sends no ID:
+    this server sends it (mercury_id.py), so the tail is that ID itself,
+    fence -> Mercury quiet -> CW ID, bounded by its own limits and never by
+    ID_START_S (the 8 s give-up would disarm before the ID: plan F9)."""
+    if scheme == "mercury":
+        ident = getattr(station, "mercury_ident", None)
+        if ident is not None:
+            await ident.end_of_session(closing, notify)
+        return
     import station_id
     st, led = station, station.id_ledger
     source = station_id.SOURCE_OF.get(scheme, "ardopcf")

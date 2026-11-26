@@ -24,6 +24,10 @@ own lane and sends a CW ID at every close for a US call. Its --log
 VARA lane's own record of that burst (accepted T 1, how it was released)
 says whether it went out whole. Each ID carries its source ("ardopcf",
 "xara"), and an ID of one source is never completed by the other's lane.
+
+Mercury HF (plan winlink-mercury M0) sends no ID; the radio server keys its
+own CW ID on Mercury's lane (mercury_id.py), source "station", recorded by
+id_done() with how it ended.
 """
 
 import asyncio
@@ -122,8 +126,9 @@ class ArdopLogParser:
 
 
 # Which modem's log tells of which lane's IDs: the lane a modem keys through
-# is named after its URL scheme; its log after the program.
-SOURCE_OF = {"ardop": "ardopcf", "varahf": "xara"}
+# is named after its URL scheme; its log after the program. Mercury HF sends
+# no ID: the radio server sends it ("station", mercury_id.py) on Mercury's lane.
+SOURCE_OF = {"ardop": "ardopcf", "varahf": "xara", "mercury": "station"}
 MODEM_OF = {v: k for k, v in SOURCE_OF.items()}
 
 
@@ -224,6 +229,16 @@ class IdLedger:
                      "refused its PTT (no session armed)" if ref
                      else "released it before it ended (a disconnect, a limit or a disarm)" if cut
                      else "never saw it key")
+        return cur
+
+    def id_done(self, wall, on_air, why=None, source="station"):
+        """The station's own ID (mercury_id.py) ended: on air only if it was
+        played to the end and released with its own T 0. Its PTT went through
+        the Mercury lane like any burst; the keyer knows how it ended."""
+        cur = self._open(source)
+        if cur is None:
+            return None
+        self._finish(cur, wall, bool(on_air), why or "released it before it ended")
         return cur
 
     def tick(self, wall=None):

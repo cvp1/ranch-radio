@@ -96,6 +96,14 @@ def codec_levels(text):
         raise argparse.ArgumentTypeError(str(e)) from None
 
 
+def mercury_call(text):
+    import cw_id
+    try:
+        return cw_id.check_call(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 def winlink_mode(text):
     """argparse type for --winlink-mode: USB, USB+DATA, LSB ..."""
     mode, _, data = text.upper().partition("+")
@@ -242,7 +250,19 @@ class Station(TxAudio):
         self.winlink_scheme = None
         vara = bool(getattr(args, "winlink_vara_log", None) and getattr(args, "winlink_vara_rigctl_port", 0)
                     and getattr(args, "winlink_rigctl_port", 0))
-        self.hf_modems = ("ardop",) + (("varahf",) if vara else ())
+        # VARA HF's backend (plan winlink-mercury 2.1): Pat's scheme stays
+        # varahf; the modem behind it is xara (the default, as before) or
+        # Mercury HF, which keys through a lane of its own and whose station
+        # ID this server sends (mercury_id.py). The armed session's lane modem
+        # ("ardop", "varahf" = xara, "mercury") is what the lane gate, the PTT
+        # owner, the ID ledger and the keepalive go by.
+        self.vara_backend = getattr(args, "winlink_vara_modem", None) or "xara"
+        mercury = bool(self.vara_backend == "mercury" and getattr(args, "winlink_mercury_rigctl_port", 0)
+                       and getattr(args, "winlink_mercury_call", None) and getattr(args, "winlink_rigctl_port", 0))
+        self.xara_lane = vara            # xara's lane listens whenever xara is set up (it refuses a Mercury session)
+        self.mercury = mercury
+        self.winlink_lane_modem = None
+        self.hf_modems = ("ardop",) + (("varahf",) if (vara and self.vara_backend == "xara") or mercury else ())
         self.vara_tail = None            # station_id.VaraLogTail while xara is set up here
         self._lane_refused_warned = {}   # modem -> monotonic time of its last refusal WARNING
         self.codec = None                # codec_level.CodecProfile when --winlink-codec-db is set
@@ -253,8 +273,15 @@ class Station(TxAudio):
         # and whether one is owed. Tracked per modem from its log:
         # --winlink-ardop-log (ardopcf), --winlink-vara-log (xara).
         tracked = ({"ardop"} if getattr(args, "winlink_ardop_log", None) else set()) | (
-            {"varahf"} if vara else set())
+            {"varahf"} if vara else set()) | ({"mercury"} if mercury else set())
         self.id_ledger = station_id.IdLedger(tracked, on_change=self._id_changed)
+        self.mercury_ident = None        # mercury_id.MercuryIdent: the station's own CW ID on Mercury's lane
+        if mercury:
+            import mercury_id
+            self.mercury_ident = mercury_id.MercuryIdent(
+                self, args.winlink_mercury_call,
+                gate_s=getattr(args, "winlink_mercury_test_gate_s", None) or mercury_id.GATE_S,
+                bound_s=getattr(args, "winlink_mercury_test_bound_s", None) or mercury_id.BOUND_S)
         # What each modem is doing, from the logs the ID ledger already reads
         # (modem_status): the Winlink panel's strip. Coalesced: during a
         # session ardopcf changes PTT and S/N on every frame.
@@ -599,15 +626,21 @@ class Station(TxAudio):
 
     LANE_WARN_EVERY_S = 10.0             # Hamlib retries a refused PTT; one WARNING per burst
 
-    def winlink_lane_gate(self, modem):
-        """Why a Winlink lane of this modem may not key now (None: it may)."""
+    def winlink_lane_gate(self, modem, owner=None):
+        """Why a Winlink lane of this modem may not key now (None: it may).
+        owner: the lane client asking (Mercury's lane: Mercury, or this
+        server's own station ID)."""
         if self.tx_stopped:
             return "transmit is stopped (STOP TX)"
         if not self.winlink_armed:
             return "no Winlink session is armed"
-        if (self.winlink_scheme or "ardop") != modem:
-            return (f"the armed Winlink session is {rigctl_server.MODEM_NAMES.get(self.winlink_scheme, self.winlink_scheme)}"
+        lane = self.winlink_lane_modem or self.winlink_scheme or "ardop"
+        if lane != modem:
+            return (f"the armed Winlink session is {rigctl_server.MODEM_NAMES.get(lane, lane)}"
                     f", not {rigctl_server.MODEM_NAMES.get(modem, modem)}")
+        if modem == "mercury":
+            # Mercury's lane: the station ID's fence and its 10-minute gate.
+            return self.mercury_ident.gate(owner) if self.mercury_ident else "Mercury HF is not set up here"
         return None
 
     def winlink_lane_refused(self, peer, modem="ardop", why="no Winlink session is armed"):
@@ -628,6 +661,10 @@ class Station(TxAudio):
         if not why.startswith("no Winlink"):
             log.warning("rigctl %s (%s lane): PTT refused: %s; this transmission is NOT going on air%s",
                         peer, rigctl_server.MODEM_NAMES.get(modem, modem), why, tail)
+        elif modem == "mercury":
+            log.warning("rigctl %s: PTT refused: no Winlink session is armed. Between sessions "
+                        "Mercury HF keys only for a connect Pat dialed on its own (or a late "
+                        "retry): it is NOT going on air%s; nothing sends an ID for it", peer, tail)
         elif modem == "varahf":
             log.warning("rigctl %s: PTT refused: no Winlink session is armed. Between sessions xara "
                         "keys only for its CW station ID (or a connect Pat dialed on its own): "
@@ -648,6 +685,12 @@ class Station(TxAudio):
         if on:
             if scheme not in self.hf_modems:
                 self.notice(f"Winlink not armed: {scheme} is not set up on this station.", "warn", ws)
+                return
+            if self.lane_modem_of(scheme) == "mercury" and (self.mercury_ident is None or (
+                    self.audio is None and not self.args.sim)):
+                # Mercury sends no ID: no session without this server's own.
+                self.notice("Winlink not armed: Mercury HF needs the station's CW ID, which needs "
+                            "the radio's audio (this server runs --no-audio).", "warn", ws)
                 return
             if self.args.no_tx:
                 self.notice("Transmit is disabled on this server (--no-tx); Winlink can't connect.",
@@ -671,6 +714,10 @@ class Station(TxAudio):
                 self._winlink_arming = None
         else:
             await self.winlink_disarm()
+
+    def lane_modem_of(self, scheme):
+        """The lane a session of this scheme keys through (plan winlink-mercury 2.1)."""
+        return "mercury" if scheme == "varahf" and self.vara_backend == "mercury" else scheme
 
     def _winlink_arm_blocked(self):
         s = self.radio.state
@@ -701,8 +748,11 @@ class Station(TxAudio):
                 await self.codec.leave("winlink")
             return
         self.winlink_scheme = scheme
+        self.winlink_lane_modem = self.lane_modem_of(scheme)
         self.id_ledger.new_generation()          # a new session: its keys are its own
         self.winlink_owner = ws
+        if self.winlink_lane_modem == "mercury":
+            self.mercury_ident.armed()
         if qsy_hz is not None:
             # A station's session: Pat dials next. The radio goes to the
             # session's frequency now and its tune ends before the station hears
@@ -713,16 +763,18 @@ class Station(TxAudio):
                 self.notice(f"Winlink not armed: {why}", "warn", ws)
                 await self.winlink_disarm(why)
                 return
-        log.info("winlink: session armed (%s)", rigctl_server.MODEM_NAMES.get(scheme, scheme))
+        lane = self.winlink_lane_modem
+        log.info("winlink: session armed (%s)", rigctl_server.MODEM_NAMES.get(lane, lane))
         self._codec_broadcast("winlink")
         self._broadcast(json.dumps({"t": "winlink", "armed": True, "scheme": scheme,
-                                    "codec_db": self.codec and self.codec.current}))
+                                    "codec_db": self.codec and self.codec.current,
+                                    **({"backend": "mercury"} if lane == "mercury" else {})}))
 
     async def _winlink_end(self, ws, started, ok, reason):
         import winlink_tail
         await winlink_tail.id_tail(self, started, lambda: self.winlink_owner is not ws,
                               lambda d: self._broadcast(json.dumps({"t": "winlink", **d})),
-                              scheme=self.winlink_scheme or "ardop")
+                              scheme=self.winlink_lane_modem or self.winlink_scheme or "ardop")
         if self.winlink_owner is ws:
             await self.winlink_disarm(None if ok else (str(reason) if reason else "session failed"))
 
@@ -829,9 +881,12 @@ class Station(TxAudio):
     async def winlink_disarm(self, reason=None):
         if self.winlink_owner is None:
             return
+        if self.winlink_lane_modem == "mercury":
+            self.mercury_ident.disarmed()        # first: its ID stops, no task of this arm keys again
         self.winlink_owner = None
         self.winlink_qsy_hz = None
         self.winlink_scheme = None
+        self.winlink_lane_modem = None
         self.id_ledger.new_generation()          # disarmed: no later key belongs to that session
         log.info("winlink: disarmed%s", f" ({reason})" if reason else "")
         if self._winlink_keying():
@@ -1147,7 +1202,8 @@ class Station(TxAudio):
                                                   "codec_db": self.codec and self.codec.current,
                                                   "id": self.id_ledger.snapshot(),
                                                   "modem": self.modem.snapshot(),
-                                                  "modems": list(self.hf_modems)},
+                                                  "modems": list(self.hf_modems),
+                                                  **({"vara_backend": "mercury"} if self.mercury else {})},
                                       "mesh": self.addons.own_snapshot("mesh") if self.addons else None,
                                       "addons": self.addons.snapshot() if self.addons else {},
                                       "role": getattr(ws, "rr_role", "operator")}))
@@ -1473,8 +1529,18 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
             # Pat's private lane: this machine only, whatever --rigctl-host says.
             app["winlink_rigctl"] = await rigctl_server.serve(
                 station, "127.0.0.1", args.winlink_rigctl_port, lane="winlink", modem="ardop")
-        app["winlink_vara_rigctl"] = app["vara_log"] = None
-        if "varahf" in station.hf_modems:
+        app["winlink_vara_rigctl"] = app["vara_log"] = app["winlink_mercury_rigctl"] = None
+        if station.mercury:
+            # Mercury HF's own lane (its -P hamlib -R 2 -A 127.0.0.1:PORT): keys
+            # only while a Mercury session is armed, behind the station ID's
+            # fence and 10-minute gate (mercury_id.py).
+            app["winlink_mercury_rigctl"] = await rigctl_server.serve(
+                station, "127.0.0.1", args.winlink_mercury_rigctl_port, lane="winlink", modem="mercury")
+            log.info("station ID: this server sends Mercury HF's CW ID for %s", station.mercury_ident.call)
+        elif getattr(args, "winlink_mercury_rigctl_port", 0) or getattr(args, "winlink_mercury_call", None):
+            log.warning("Mercury HF is off: it needs --winlink-vara-modem mercury, "
+                        "--winlink-mercury-rigctl-port, --winlink-mercury-call and --winlink-rigctl-port")
+        if station.xara_lane:
             # xara's own lane (its --ptt rigctld:127.0.0.1:PORT): keys only
             # while a VARA HF session is armed. Without VARA set up here it
             # does not listen, so a leftover xara can't key at all.
@@ -1504,6 +1570,8 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
             await rigctl_server.shutdown(app["winlink_rigctl"])
         if app.get("winlink_vara_rigctl"):
             await rigctl_server.shutdown(app["winlink_vara_rigctl"])
+        if app.get("winlink_mercury_rigctl"):
+            await rigctl_server.shutdown(app["winlink_mercury_rigctl"])
         closes = [ws.close(code=WSCloseCode.GOING_AWAY, message=b"server restarting")
                   for ws in list(sockets) if not ws.closed]
         if closes:
@@ -1520,6 +1588,8 @@ def make_app(station, args, rigctl_sock=None, rigctl_adopted=()):
             app["winlink_rigctl"].close()
         if app.get("winlink_vara_rigctl"):
             app["winlink_vara_rigctl"].close()
+        if app.get("winlink_mercury_rigctl"):
+            app["winlink_mercury_rigctl"].close()
         app["safety"].cancel()
         app["logcap"].cancel()
         # Release only a transmission an app or browser started here; the
@@ -1742,6 +1812,17 @@ def main():
     p.add_argument("--winlink-vara-port", type=int, default=8300,
                    help="xara's command port (data = +1), which Pat's varahf.addr must name on this "
                         "machine before a VARA session is let through (default 8300)")
+    p.add_argument("--winlink-vara-modem", choices=("xara", "mercury"), default="xara",
+                   help="the modem behind Pat's varahf: xara (default) or Mercury HF (plan "
+                        "winlink-mercury); a Mercury session keys only through "
+                        "--winlink-mercury-rigctl-port and xara's lane refuses it")
+    p.add_argument("--winlink-mercury-rigctl-port", type=int, default=0,
+                   help="rigctl port for Mercury HF's -A on 127.0.0.1; it may key only while a Mercury "
+                        "session is armed, behind this server's own station ID. 0 = off")
+    p.add_argument("--winlink-mercury-call", type=mercury_call, metavar="CALL",
+                   help="the callsign this server sends as Mercury HF's CW ID (Mercury sends none)")
+    p.add_argument("--winlink-mercury-test-gate-s", type=float, help=argparse.SUPPRESS)
+    p.add_argument("--winlink-mercury-test-bound-s", type=float, help=argparse.SUPPRESS)
     p.add_argument("--winlink-mode", type=winlink_mode, metavar="MODE[+DATA]",
                    help="mode for a Winlink session, set on arming and put back on disarm "
                         "(QMX: USB; its DiGi mode, USB+DATA, can't send ARDOP)")
@@ -1783,6 +1864,17 @@ def main():
                    help="keep STOP TX here, so a restart comes back stopped (default: memory only)")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
+    import mercury_id
+    for flag, top in (("winlink_mercury_test_gate_s", mercury_id.GATE_S),
+                      ("winlink_mercury_test_bound_s", mercury_id.BOUND_S)):
+        v = getattr(args, flag)
+        if v is None:
+            continue
+        # Tests only: shorter, never longer, and never on a real radio.
+        if not args.sim:
+            p.error(f"--{flag.replace('_', '-')} is for tests: it needs --sim")
+        if not 0 < v <= top:
+            p.error(f"--{flag.replace('_', '-')} must be above 0 and at most {top:g}")
     rigctl_sock, rigctl_adopted = systemd_rigctl_socket()
     if args.list_rigs:
         print(rigs.describe())

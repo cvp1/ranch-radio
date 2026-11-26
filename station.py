@@ -199,6 +199,12 @@ class RemoteLane:
                         self._armed.set()
                     elif m.get("armed") is False:
                         self._disarmed.set()
+                    if m.get("end_request") and self._armed.is_set() and not self._ending:
+                        # The radio ends the session but stays armed for its
+                        # station ID (Mercury HF's session bound): Pat is
+                        # aborted the usual way; its return ends the session
+                        # (end() -> winlink_end), and the radio IDs, then disarms.
+                        asyncio.ensure_future(self.station.winlink.abort(str(m["end_request"])))
                     # the station-ID ledger reaches the pages through the radio's watch
                 elif m.get("t") == "notice":
                     if m.get("level") == "warn" and not self._armed.is_set():
