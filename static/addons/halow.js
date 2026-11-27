@@ -21,6 +21,16 @@
 (() => {
   let body = null, main = null, map = null, snap = {}, api = null, plan = null, last = null;
   const BRIDGE = "bridge";
+  // An OpenMANET mesh beside the bridge (snap.mesh, halow_mesh.py; 2026-11-27:
+  // "that doesn't track the manet radios"): every node any read view names,
+  // the gate as "you". Each link to the gate in the same colours, read from
+  // both ends where both were read: green it hears the gate, blue the gate
+  // hears it, purple both, labelled "it hears / gate hears" in dBm. Links
+  // between other nodes are grey, with what each end reported. The gate's
+  // badge is how it is being received: who hears it, and the best dBm.
+  const mesh = () => (snap.mesh && snap.mesh.configured ? snap.mesh : null);
+  const meId = () => (mesh()?.gate ? mesh().gate : BRIDGE);
+  const dB = (v) => (v == null ? "?" : `${v}`);
 
   const dbm = (v) => (v == null ? "" : `${v} dBm`);
   const sigCls = (v) => (v == null ? "" : v >= -65 ? "hl-good" : v >= -78 ? "hl-fair" : "hl-poor");
@@ -84,7 +94,7 @@
     const pos = snap.position, places = snap.places || {}, list = stationsOnMap();
     const heardBy = list.filter((x) => x.live && (x.dir === "in" || x.dir === "both")).length;
     const h = snap.host || {};
-    const nodes = [{ id: BRIDGE, me: true, shortName: h.hostname || "bridge", longName: h.model || "",
+    const nodes = [{ id: BRIDGE, me: meId() === BRIDGE, shape: meId() === BRIDGE ? "" : "diamond", shortName: h.hostname || "bridge", longName: h.model || "",
       lat: pos?.lat, lon: pos?.lon, last_heard: snap.at || 0,
       badge: snap.at ? `heard by ${heardBy}` : "", badgeCls: heardBy ? "h0" : "",
       tip: `${h.hostname || snap.target} ${h.model || ""}\nthe HaLow bridge · ${(snap.stations || []).length} joined · ` +
@@ -100,18 +110,103 @@
           x.live ? why(x) : v != null ? `the bridge last heard it at ${dbm(v)}` : "",
           p ? "" : "no place set: drawn beside the bridge (the halow block's places)"].filter(Boolean).join("\n") });
     }
-    return nodes;
+    return [...nodes, ...meshMapNodes()];
   }
 
-  function mapLinks() {
-    return stationsOnMap().filter((x) => x.live && x.dir).map((x) => {
-      const v = sigOf(x);
-      return { from: BRIDGE, to: x.mac, cls: x.dir, label: x.dir === "in" ? "ACKs" : dbm(v),
-        title: `${nameOf(x)}: ${why(x)}` };
+  // ---------- the OpenMANET mesh on the map
+
+  const meshName = (n) => n?.name || n?.hostname || (n?.mac || "").slice(-5);
+  function meshNodesAll() {
+    const m = mesh();
+    if (!m) return [];
+    const out = new Map();
+    for (const r of m.seen || []) out.set(r.mac, { ...r, live: false });
+    for (const n of m.nodes || []) out.set(n.mac, { ...(out.get(n.mac) || {}), ...n, live: n.hops != null, last: m.at });
+    return [...out.values()];
+  }
+  const meshFind = (mac) => meshNodesAll().find((y) => y.mac === mac);
+  function meshWhy(n) {
+    return [n.dir === "out" || n.dir === "both" ? `the gate hears it at ${dbm(n.gate_hears) || "? dBm"}` : "",
+      n.dir === "in" || n.dir === "both" ? `it hears the gate at ${dbm(n.hears_gate) || "? dBm"}` : ""].filter(Boolean).join("; ");
+  }
+  function meshMapNodes() {
+    const m = mesh();
+    if (!m) return [];
+    const places = snap.places || {}, pos = snap.position, gate = m.gate;
+    const heard = m.heard_by || [];
+    const best = heard.map((x) => x.signal).filter((v) => v != null);
+    return meshNodesAll().map((n) => {
+      const p = places[n.mac], at = p || pos, isGate = n.mac === gate, name = meshName(n);
+      const base = { id: n.mac, shortName: name, longName: n.mac, lat: at?.lat, lon: at?.lon, me: isGate,
+        last_heard: n.live ? m.at || 0 : n.last || 0, kind: p || (isGate && pos) ? "manet" : "unplaced", pin: !!n.live };
+      if (isGate) {
+        return { ...base, badge: heard.length ? `heard by ${heard.length}${best.length ? ` · best ${Math.max(...best)} dBm` : ""}` : "heard by 0",
+          badgeCls: heard.length ? badgeCls(best.length ? Math.max(...best) : null) || "h0" : "",
+          tip: `${name} ${n.mac}\nthe mesh gate · ${n.model || ""} ${n.release || ""}\n` +
+            (heard.length ? `heard by ${heard.map((x) => `${meshName(meshFind(x.mac))} at ${dbm(x.signal) || "? dBm"}`).join(", ")}`
+              : "no node reports hearing it right now") };
+      }
+      return { ...base, ring: n.live ? n.dir || "" : "", glyph: n.hops > 1 ? String(Math.min(n.hops, 9)) : "",
+        badge: n.live ? (n.gate_hears != null ? dbm(n.gate_hears) : n.hops > 1 ? `${n.hops} hops` : "") : "left",
+        badgeCls: n.live ? badgeCls(n.gate_hears) : "",
+        tip: [`${name} ${n.mac}${n.read ? "" : " (its own view not read)"}`,
+          n.live ? (n.hops === 1 ? "a neighbour of the gate" : n.hops ? `${n.hops} hops, via ${meshName(meshFind(n.via))}` : "")
+            : `left the mesh; last seen ${n.last ? ago(n.last) : "?"}`,
+          n.live ? meshWhy(n) : "", p ? "" : "no place set (the halow block's places)"].filter(Boolean).join("\n") };
+    });
+  }
+  function meshLinks() {
+    const m = mesh();
+    if (!m) return [];
+    return (m.links || []).map((l) => {
+      const A = meshName(meshFind(l.a)), B = meshName(meshFind(l.b));
+      if (l.a === m.gate || l.b === m.gate) {
+        const g = l.a === m.gate, other = g ? l.b : l.a, O = g ? B : A;
+        const hasG = g ? "ab" in l : "ba" in l, gateHears = g ? l.ab : l.ba;
+        const hasI = g ? "ba" in l : "ab" in l, itHears = g ? l.ba : l.ab;
+        return { from: m.gate, to: other, cls: hasG && hasI ? "both" : hasI ? "in" : "out",
+          label: hasG && hasI ? `${dB(itHears)} / ${dB(gateHears)} dBm` : `${dB(hasI ? itHears : gateHears)} dBm`,
+          title: [hasI ? `${O} hears the gate at ${dbm(itHears) || "? dBm"}` : "",
+            hasG ? `the gate hears ${O} at ${dbm(gateHears) || "? dBm"}` : ""].filter(Boolean).join("; ") };
+      }
+      return { from: l.a, to: l.b, cls: "mesh-other",
+        label: ["ab" in l ? dB(l.ab) : "", "ba" in l ? dB(l.ba) : ""].filter(Boolean).join(" / ") + " dBm",
+        title: ["ab" in l ? `${A} hears ${B} at ${dbm(l.ab) || "? dBm"}` : "", "ba" in l ? `${B} hears ${A} at ${dbm(l.ba) || "? dBm"}` : ""]
+          .filter(Boolean).join("; ") };
     });
   }
 
+  function mapLinks() {
+    return [...stationsOnMap().filter((x) => x.live && x.dir).map((x) => {
+      const v = sigOf(x);
+      return { from: BRIDGE, to: x.mac, cls: x.dir, label: x.dir === "in" ? "ACKs" : dbm(v),
+        title: `${nameOf(x)}: ${why(x)}` };
+    }), ...meshLinks()];
+  }
+
+  function meshPopup(id) {
+    const m = mesh(), n = meshFind(id);
+    if (!m || !n) return null;
+    const row = (k, val) => (val ? `<div class="mm-pop-r"><span>${esc(k)}</span><b>${esc(val)}</b></div>` : "");
+    if (n.mac === m.gate) {
+      return `<div class="mm-pop-h"><b>${esc(meshName(n))}</b> ${esc(n.model || "")}</div>` +
+        `<div class="wl-dim mm-pop-id">the mesh gate · ${esc(n.mac)} · ${esc(m.gate_host || "")}</div>` +
+        ((m.heard_by || []).map((x) => row(`${meshName(meshFind(x.mac))} hears it`, dbm(x.signal) || "yes, no dBm")).join("")
+          || `<div class="wl-dim">No node reports hearing the gate right now.</div>`);
+    }
+    const via = n.via && meshFind(n.via);
+    return `<div class="mm-pop-h"><b>${esc(meshName(n))}</b></div>` +
+      `<div class="wl-dim mm-pop-id">${esc(n.mac)}${n.model ? ` · ${esc(n.model)}` : ""}</div>` +
+      row("it hears the gate", "hears_gate" in n ? dbm(n.hears_gate) || "yes, no dBm" : n.live && n.read ? "not in its view" : n.live ? "not read" : "") +
+      row("the gate hears it", "gate_hears" in n ? dbm(n.gate_hears) || "yes, no dBm" : n.live ? "not a neighbour" : "") +
+      row("link", n.live ? (DIRS[n.dir] || "").replace(/bridge/g, "gate") || (n.hops > 1 ? `${n.hops} hops${via ? `, via ${meshName(via)}` : ""}` : "") : "") +
+      row(n.live ? "its view" : "left", n.live ? (n.read ? "read" : (m.unread || {})[n.name] ? `not read: ${m.unread[n.name]}` : "not read (not in mesh.nodes)")
+        : n.last ? `last seen ${ago(n.last)}` : "") +
+      row("place", (snap.places || {})[n.mac] ? "" : "not set");
+  }
+
   function popupHtml(id) {
+    if (mesh() && meshFind(id)) return meshPopup(id);
     if (id === BRIDGE) {
       const h = snap.host || {};
       return `<div class="mm-pop-h"><b>${esc(h.hostname || snap.target || "bridge")}</b> ${esc(h.model || "")}</div>` +
@@ -135,10 +230,12 @@
 
   function drawMap() {
     if (!map) return;
-    map.setNodes(mapNodes(), BRIDGE);
+    map.setNodes(mapNodes(), meId());
     const n = (snap.stations || []).length;
-    map.setLinks(mapLinks(), `green hears the bridge, blue the bridge hears it, purple both · beside a name: how the bridge hears it` +
-      (n ? "" : " · nothing joined right now"));
+    map.setLinks(mapLinks(), mesh()
+      ? "green hears the gate, blue the gate hears it, purple both (it hears / gate hears, dBm) · grey: between other nodes · beside a name: how the gate hears it" +
+        (mesh().error ? ` · ${mesh().error}` : "")
+      : "green hears the bridge, blue the bridge hears it, purple both · beside a name: how the bridge hears it" + (n ? "" : " · nothing joined right now"));
     map.refreshPopup();
   }
 
@@ -146,7 +243,7 @@
     const el = body.querySelector(".hl-map");
     if (!el || typeof meshMap === "undefined") { el?.remove(); return; }
     map = meshMap.create(el, { onSelect: (id) => map.select(id), rings: true, labels: true, popup: popupHtml,
-      fanNote: (names) => `${names.join(", ")}: no place set for some of these, so they are drawn around the bridge`,
+      fanNote: (names) => `${names.join(", ")}: no place set for some of these, so they are drawn around one spot`,
       onPopup: (id, act) => {
         const x = stationsOnMap().find((s) => s.mac === id);
         if (act === "ping" && x?.ip) { api.send("ping", { ip: x.ip }); toast(`HaLow: pinging ${x.ip} from the bridge…`); }
@@ -218,6 +315,7 @@
           ${last.out ? `<pre class="hl-cmd">${esc(last.out)}</pre>` : ""}</div>` : ""}
       <h4>Radios</h4><table class="hl-t"><tr><th>Radio</th><th>Type</th><th>Channel</th><th>Power</th><th>Country</th><th></th></tr>${radios}</table>
       <h4>Networks</h4><table class="hl-t"><tr><th>Name</th><th>Radio</th><th>Mode</th><th>Interface</th><th>Security</th><th>Bridge</th><th></th><th></th></tr>${ifaces}</table>
+      ${meshTable()}
       <h4>Stations (${(s.stations || []).length})</h4>
       ${st ? `<table class="hl-t"><tr><th>MAC</th><th>Name</th><th>Address</th><th>On</th><th>Signal</th><th>TX</th><th>RX</th><th>Retries</th><th>Joined</th><th></th></tr>${st}</table>`
            : `<div class="st-empty">Nothing is joined to the bridge.</div>`}
@@ -227,6 +325,25 @@
              : `<div class="hl-ok-line">No connections from the bridge to anywhere off the LAN right now.</div>`}
       <details><summary>Log (last ${(s.log || []).length} lines)</summary><pre class="hl-log">${esc((s.log || []).join("\n"))}</pre></details>`;
     wire();
+  }
+
+  function meshTable() {
+    const m = mesh();
+    if (!m) return "";
+    const rows = meshNodesAll().filter((n) => n.mac !== m.gate).sort((a, b) => (b.live - a.live) || ((a.hops ?? 99) - (b.hops ?? 99))).map((n) => `<tr>
+        <td><b>${esc(meshName(n))}</b></td><td class="hl-mac">${esc(n.mac)}</td>
+        <td>${n.live ? (n.hops === 1 ? "neighbour" : n.hops ? `${n.hops} hops` : "?") : `left ${n.last ? esc(ago(n.last)) : ""}`}</td>
+        <td class="${sigCls(n.hears_gate)}">${"hears_gate" in n ? esc(dbm(n.hears_gate) || "yes") : ""}</td>
+        <td class="${sigCls(n.gate_hears)}">${"gate_hears" in n ? esc(dbm(n.gate_hears) || "yes") : ""}</td>
+        <td>${n.live ? esc((DIRS[n.dir] || "").replace(/bridge/g, "gate")) : ""}</td>
+        <td>${n.live ? (n.read ? "read" : esc((m.unread || {})[n.name] ? `not read: ${m.unread[n.name]}` : "not read")) : ""}</td></tr>`).join("");
+    const gate = (m.nodes || []).find((n) => n.mac === m.gate);
+    const unread = Object.entries(m.unread || {}).filter(([name]) => !meshNodesAll().some((n) => n.name === name))
+      .map(([name, why]) => `<div class="hl-warn">${esc(name)}: not read (${esc(why)})</div>`).join("");
+    return `<h4>Mesh (OpenMANET)${gate ? ` · gate ${esc(meshName(gate))}` : ""}</h4>
+      ${m.error ? `<div class="hl-alarm">${esc(m.error)}</div>` : ""}
+      ${rows ? `<table class="hl-t hl-mesh"><tr><th>Node</th><th>MAC</th><th>Hops</th><th>Hears the gate</th><th>Gate hears it</th><th>Link</th><th>Its view</th></tr>${rows}</table>`
+             : m.at ? `<div class="st-empty">The gate has no mesh peers right now.</div>` : ""}${unread}`;
   }
 
   function wire() {
@@ -274,6 +391,12 @@
       return { dot: "ok", badge: n, title: `${n} on the HaLow bridge` };
     },
     card() {
+      const m = mesh();
+      if (m && m.at && snap.at) {
+        const peers = (m.nodes || []).filter((n) => n.mac !== m.gate && n.hops != null);
+        return { state: `${peers.length} on the mesh · ${(snap.stations || []).length} on the bridge`,
+                 lines: peers.slice(0, 3).map((n) => `${esc(meshName(n))} ${n.gate_hears != null ? dbm(n.gate_hears) : ""}`) };
+      }
       if (!snap.at) return { state: "off", lines: [esc(snap.error || "not read yet")] };
       const n = (snap.stations || []).length;
       return { state: snap.stale ? "stale" : `${n} joined`,

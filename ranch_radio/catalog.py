@@ -124,11 +124,11 @@ MODULES = [
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block; needs the logbook sync (logsync) in unicast relay mode"},
     {"name": "halow", "kind": "addon", "title": "An OpenWrt Wi-Fi HaLow bridge (cameras on long-range Wi-Fi): who is on it and how well, "
-                                                "on a map with which way each link is proven, "
+                                                "on a map with which way each link is proven, and an OpenMANET mesh's nodes with the dBm each end hears the other at, "
                                                 "the box's health, its DHCP guard, and its settings, changed by confirmed plans",
-     "code": "addons/halow.py, halow_ap.py, static/addons/halow.js (over SSH; nothing installed on the bridge)",
+     "code": "addons/halow.py, halow_ap.py, halow_mesh.py, static/addons/halow.js (over SSH; nothing installed on the bridge)",
      "platforms": ["macos", "linux"],
-     "ships": "the host file's addons block: \"host\" and \"key\"; \"position\" and \"places\" for the map"},
+     "ships": "the host file's addons block: \"host\" and \"key\"; \"position\" and \"places\" for the map; \"mesh\" (gate, nodes) for an OpenMANET mesh"},
     {"name": "imaging", "kind": "addon", "title": "Pictures off the air: SSTV (hams, the ISS) and HF weather fax, "
                                                   "decoded from a radio's receive audio; receive only",
      "code": "addons/imaging.py, static/addons/imaging.js; sstv.py, wefax.py and picture.py (the decoders, numpy)",
