@@ -6,3 +6,5 @@
   "it hears / gate hears" in dBm. Nodes further out carry their hops; links between other nodes are grey.
   The gate is this node on the map, and its badge says who hears it and the best dBm. A Mesh table lists
   each node; a node that leaves is noticed and kept on the map (`halow-mesh-seen.json`).
+- The mesh takes its own SSH key (`mesh.key`): OpenMANET 1.8's dropbear accepts RSA keys only, and refuses
+  the ed25519 key a bridge may use.

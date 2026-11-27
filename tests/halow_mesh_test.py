@@ -9,7 +9,8 @@ against fake nodes (tests/fake_halow_ssh.py answering each by name):
     path has its hops and next hop and no direction; each link once, with the
     sides that were reported; the gate's own "heard by", strongest first
   - the add-on reads the gate direct and each named node through the gate (a
-    ProxyCommand naming the gate and the same key), at once
+    ProxyCommand naming the gate and the same key), at once; the mesh's own
+    key (mesh.key: OpenMANET's dropbear takes RSA only), not the bridge's
   - a named node that doesn't answer is listed as unread, with why; the mesh
     still shows it from the others' views
   - a node leaving the mesh is noticed once; the seen list keeps it
@@ -109,7 +110,7 @@ os.environ["FAKE_HALOW_DIR"] = str(tmp)
 fake = str(ROOT / "tests" / "fake_halow_ssh.py")
 os.chmod(fake, 0o755)
 BLOCK = {"enabled": True, "host": "192.168.1.65", "key": str(tmp / "key"), "ssh": fake, "poll": 3600,
-         "mesh": {"gate": "192.168.1.197", "nodes": ["node2", "node3"]}}
+         "mesh": {"gate": "192.168.1.197", "nodes": ["node2", "node3"], "key": str(tmp / "mesh_rsa")}}
 
 for bad, field in (({"host": "h", "mesh": {"nodes": []}}, "mesh.gate"),
                    ({"host": "h", "mesh": {"gate": "g", "nodes": "node2"}}, "mesh.nodes"),
@@ -135,11 +136,16 @@ def mesh_log():
 async def main():
     await a.read_mesh()
     s = a.snapshot()["mesh"]
-    log = {r["target"]: r["proxy"] for r in mesh_log()}
+    rows = mesh_log()
+    log = {r["target"]: r["proxy"] for r in rows}
+    check("the mesh's own key on every read (OpenMANET's dropbear takes RSA only)",
+          sorted({r["key"] for r in rows}), [str(tmp / "mesh_rsa")])
     check("the gate is read direct", log.get("root@192.168.1.197"), None)
     check("each named node is read through the gate, with the same key and known hosts",
-          all(p and "root@192.168.1.197" in p and "-W %h:%p" in p and str(tmp / "key") in p and "halow_known_hosts" in p
+          all(p and "root@192.168.1.197" in p and "-W %h:%p" in p and str(tmp / "mesh_rsa") in p and "halow_known_hosts" in p
               for t, p in log.items() if t != "root@192.168.1.197"), True)
+    check("the mesh's own key is used, on both hops, never the bridge's",
+          all(str(tmp / "mesh_rsa") in p and str(tmp / "key") + " " not in p for t, p in log.items() if p), True)
     check("  both named nodes were asked", sorted(log), ["root@192.168.1.197", "root@node2", "root@node3"])
     check("the mesh view in the snapshot", (s["gate"], s["error"], sorted(n["mac"] for n in s["nodes"])), (G, None, [G, N2, N3, N4]))
     check("a named node that doesn't answer is listed as unread, with why",

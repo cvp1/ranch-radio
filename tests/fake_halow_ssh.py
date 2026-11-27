@@ -8,7 +8,7 @@ it). FAKE_HALOW_DIR holds:
   cmds.log     every command run, one JSON string per line (appended)
   mesh-<host>.txt  what an OpenMANET node of that name prints for the mesh
                read (halow_mesh.MESH_READ); a node with no file doesn't answer
-  mesh.log     each mesh read: {"target": user@host, "proxy": the ProxyCommand or null}
+  mesh.log     each mesh read: {"target": user@host, "proxy": the ProxyCommand or null, "key": its -i}
 """
 import json
 import os
@@ -23,7 +23,7 @@ if cmd.startswith("echo @@board"):
     target = sys.argv[-2]
     proxy = next((a[len("ProxyCommand="):] for a in sys.argv if a.startswith("ProxyCommand=")), None)
     with open(os.path.join(d, "mesh.log"), "a") as f:
-        f.write(json.dumps({"target": target, "proxy": proxy}) + "\n")
+        f.write(json.dumps({"target": target, "proxy": proxy, "key": sys.argv[sys.argv.index("-i") + 1]}) + "\n")
     path = os.path.join(d, f"mesh-{target.split('@')[-1]}.txt")
     if not os.path.exists(path):
         print(f"ssh: connect to host {target.split('@')[-1]} port 22: No route to host", file=sys.stderr)

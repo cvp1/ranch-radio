@@ -36,11 +36,13 @@ Options (the host file's addons block):
 
 `mesh` reads an OpenMANET HaLow mesh as well (halow_mesh.py): its gate on
 the LAN, and the nodes behind it, by name or address on the mesh, reached
-through the gate. The same `key` must be in each node's
-/etc/dropbear/authorized_keys. A node not named is still shown, from the
-views of the nodes that were read.
+through the gate. Its `key` (default: the bridge's) must be in each node's
+/etc/dropbear/authorized_keys. OpenMANET 1.8's dropbear takes RSA keys only
+(server-sig-algs rsa-sha2-256, ssh-rsa; an ed25519 key is refused, found
+2026-11-27), so the mesh usually needs its own. A node not named is still
+shown, from the views of the nodes that were read.
 
-    "mesh": {"gate": "192.168.1.197", "nodes": ["node2"]}
+    "mesh": {"gate": "192.168.1.197", "nodes": ["node2"], "key": "~/.config/radio-remote/manet_rsa"}
 
 `position` (where the bridge is) and `places` (where each station is, by MAC)
 put them on the tab's map; both are optional. A station with no place is
@@ -150,7 +152,8 @@ class Halow(Addon):
             user = str(mesh.get("user", "root"))
             if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user):
                 raise ValueError("halow: 'mesh.user' is not a user name")
-            self.mesh_cfg = {"gate": str(mesh["gate"]), "nodes": list(dict.fromkeys(nodes)), "user": user}
+            self.mesh_cfg = {"gate": str(mesh["gate"]), "nodes": list(dict.fromkeys(nodes)), "user": user,
+                             "key": os.path.expanduser(str(mesh.get("key") or self.key))}
         self.mesh = {}            # the last mesh view: halow_mesh.mesh_view + at, error, unread
         self.mesh_seen = {}       # mac -> {mac, hostname, last, hops} (halow-mesh-seen.json)
         self.view = {}
@@ -165,7 +168,7 @@ class Halow(Addon):
 
     # --- SSH
 
-    def _argv(self, cmd, target=None, user=None, via=None):
+    def _argv(self, cmd, target=None, user=None, via=None, key=None):
         """ssh to the bridge, or to TARGET; through VIA (a mesh node behind its gate).
         A jump host takes no -i/-o from the command line, so the hop is a
         ProxyCommand that spells them out (the same key and known hosts)."""
@@ -175,16 +178,16 @@ class Halow(Addon):
                 "-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR"]
         hop = []
         if via:
-            inner = [self.ssh, "-i", self.key, *opts, "-W", "%h:%p", f"{user or self.user}@{via}"]
+            inner = [self.ssh, "-i", key or self.key, *opts, "-W", "%h:%p", f"{user or self.user}@{via}"]
             hop = ["-o", "ProxyCommand=" + " ".join(shlex.quote(x) for x in inner)]
         port = ["-p", str(self.port)] if target is None else []
-        return [self.ssh, "-i", self.key, *port, *opts, *hop, f"{user or self.user}@{target or self.target}", cmd]
+        return [self.ssh, "-i", key or self.key, *port, *opts, *hop, f"{user or self.user}@{target or self.target}", cmd]
 
-    async def _run(self, cmd, target=None, user=None, via=None):
+    async def _run(self, cmd, target=None, user=None, via=None, key=None):
         """(exit code, output) of one command on the bridge (or TARGET); never raises for the box's sake."""
         async with (self._lock if target is None else contextlib.nullcontext()):
             try:
-                p = await asyncio.create_subprocess_exec(*self._argv(cmd, target, user, via), stdout=asyncio.subprocess.PIPE,
+                p = await asyncio.create_subprocess_exec(*self._argv(cmd, target, user, via, key), stdout=asyncio.subprocess.PIPE,
                                                          stderr=asyncio.subprocess.PIPE,
                                                          stdin=asyncio.subprocess.DEVNULL)
             except OSError as e:
@@ -307,7 +310,7 @@ class Halow(Addon):
         if not c:
             return
         was = self.mesh.get("error")
-        rc, out = await self._run(halow_mesh.MESH_READ, c["gate"], c["user"])
+        rc, out = await self._run(halow_mesh.MESH_READ, c["gate"], c["user"], key=c["key"])
         gate = halow_mesh.parse_mesh_read(out) if rc == 0 else None
         if gate is None:
             tail = out.strip().splitlines()[-1:] or [f"exit {rc}"]
@@ -316,7 +319,7 @@ class Halow(Addon):
                 self.notice(f"HaLow mesh: {self.mesh['error']}", "warn")
             return
         reads, unread = {gate["mac"]: gate}, {}
-        results = await asyncio.gather(*(self._run(halow_mesh.MESH_READ, n, c["user"], c["gate"]) for n in c["nodes"]))
+        results = await asyncio.gather(*(self._run(halow_mesh.MESH_READ, n, c["user"], c["gate"], c["key"]) for n in c["nodes"]))
         for name, (nrc, nout) in zip(c["nodes"], results):
             r = halow_mesh.parse_mesh_read(nout) if nrc == 0 else None
             if r is None:
