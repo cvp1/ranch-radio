@@ -174,7 +174,7 @@
     body.querySelector(".qso").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) logIt(); });
     $(".qso-log").onclick = logIt;
     $(".qso-clear").onclick = clear;
-    $(".qso-login-link").onclick = (e) => { e.preventDefault(); showLogin = !showLogin; paintLogin(); };
+    $(".qso-login-link").onclick = toggleLogin;
   }
 
   function lookup() {
@@ -273,11 +273,20 @@
       <div class="stat">The logbook sync sends them on; each one's state is on the Logbook tab.</div>` : "";
   }
 
+  // The login form: always open while there is no working login (no password,
+  // or QRZ refused it), and then the link is hidden, since it would toggle
+  // nothing (2026-11-27: the link did nothing while the form was forced open).
+  // With a working login the form is closed and the link opens it to change
+  // the login, with the cursor in the password box.
   function paintLogin(err) {
-    const el = $(".qso-login");
+    const el = $(".qso-login"), link = $(".qso-login-link");
     if (!el) return;
     const q = snap.qrz || {};
     const need = !q.set || q.state === "no_login" || q.state === "bad_login";
+    if (link) {
+      link.hidden = need;
+      link.textContent = showLogin ? "Close QRZ login" : "Change QRZ login";
+    }
     el.hidden = !(need || showLogin || err);
     if (el.hidden) return;
     const state = q.state === "ok" ? `<span class="qso-ok">Logged in as ${esc(q.user)}.</span>`
@@ -290,11 +299,21 @@
         ${err ? `<span class="cc-err">${esc(err)}</span>` : ""}
       </div>
       <div class="stat">The password is kept on this station only (mode 600) and never shown again.</div></div>`;
-    el.querySelector(".qso-qgo").onclick = () => {
+    const go = () => {
       const p = el.querySelector(".qso-qp"), password = p.value;
       p.value = "";
       api.send("login", { user: el.querySelector(".qso-qu").value.trim(), password });
     };
+    el.querySelector(".qso-qgo").onclick = go;
+    el.querySelector(".qso-qp").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } };
+  }
+
+  function toggleLogin(e) {
+    e.preventDefault();
+    showLogin = !showLogin;
+    paintLogin();
+    const p = showLogin && $(".qso-qp");
+    if (p) { p.scrollIntoView({ block: "nearest" }); p.focus(); }
   }
 
   addons.register("qso", {

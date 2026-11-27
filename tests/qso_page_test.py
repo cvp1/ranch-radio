@@ -98,6 +98,14 @@ def typein(sel, value):
          " e.dispatchEvent(new Event('input', {bubbles: true})); })()")
 
 
+def click(sel):
+    """A real mouse click at the element's centre, as the operator's would land."""
+    x, y = json.loads(b.js(f"(() => {{ const r = document.querySelector({json.dumps(sel)}).getBoundingClientRect(); "
+                           "return JSON.stringify([r.x + r.width / 2, r.y + r.height / 2]); })()"))
+    for t in ("mousePressed", "mouseReleased"):
+        b.call("Input.dispatchMouseEvent", type=t, x=x, y=y, button="left", clickCount=1)
+
+
 def event(m):
     b.js(f"__impl.qso.event({json.dumps(m)})")
 
@@ -133,6 +141,8 @@ try:
     event({"event": "rigs", "rigs": SNAP["rigs"]})
 
     check("login: no QRZ password, the form shows", b.js("document.querySelector('.qso-login').hidden"), False)
+    check("login: and the link that would toggle nothing is not shown",
+          b.js("document.querySelector('.qso-login-link').offsetParent === null"), True)
     check("my station: the sticky ref is there", v('.qso-my-f[data-k="my_pota"]'), "US-0001")
 
     typein(".qso-call", "n9a")
@@ -187,6 +197,19 @@ try:
     check("login: the box is cleared as it is sent", v(".qso-qp"), "")
     event({"event": "login", "qrz_login": {"user": "N0CALL", "set": True, "state": "ok"}})
     check("login: logged in, the form goes away", b.js("document.querySelector('.qso-login').hidden"), True)
+    check("login: the link to change it shows", (b.js("document.querySelector('.qso-login-link').offsetParent !== null"),
+                                                 text(".qso-login-link")), (True, "Change QRZ login"))
+    click(".qso-login-link")
+    check("login: a real click on the link opens the form, cursor in the password",
+          (b.js("document.querySelector('.qso-login').hidden"), b.js("document.activeElement.className"),
+           text(".qso-login-link")), (False, "qso-qp", "Close QRZ login"))
+    b.js("document.querySelector('.qso-qp').value = 'newpass'")
+    b.call("Input.dispatchKeyEvent", type="keyDown", key="Enter", code="Enter", windowsVirtualKeyCode=13)
+    li = [m for m in sent() if m["do"] == "login"]
+    check("login: Enter in the password box sends it", (len(li), li[-1]["password"]), (2, "newpass"))
+    click(".qso-login-link")
+    check("login: a second click closes it", b.js("document.querySelector('.qso-login').hidden"), True)
+    check("login: the page did not navigate", b.js("location.hash"), "")
     check("tab: ok, a badge for the QSO logged", json.loads(b.js("JSON.stringify(__impl.qso.tab())")),
           {"dot": "ok", "title": "Log a contact", "badge": 1})
 
