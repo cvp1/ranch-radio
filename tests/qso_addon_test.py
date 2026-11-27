@@ -150,6 +150,7 @@ LOGIN_403 = ('<QRZDatabase xmlns="http://xml.qrz.com" version="1.36">\n<Session>
 f = FakeQrz([(403, LOGIN_403)])
 q = Q.Qrz("N0CALL", pwfile, f.get)
 check("a refused login as QRZ sends it (403 + XML): bad_login", run(q.login()), "bad_login")
+check("refused: QRZ's own words are kept for the page", q.says, "Username / password required")
 f = FakeQrz([(503, "<html>down</html>")])
 q = Q.Qrz("N0CALL", pwfile, f.get)
 check("a non-QRZ error page: error", run(q.login()), "error")
@@ -291,7 +292,7 @@ def make(opts=None):
 a = make({"radio": "g90"})
 run(a.start())
 a.spots, a.spots_at = spots, NOW - 60
-a.qrz.get = FakeQrz([LOGIN_OK, CALL_OK]).get
+a.qrz.post = FakeQrz([LOGIN_OK, CALL_OK]).get
 snap = a.snapshot()
 check("snapshot: the radio's dial, the logbook, QRZ set",
       (snap["rigs"][0]["freq"], snap["logsync"], snap["qrz"]["set"], snap["qrz"]["user"]), (14_285_000, True, True, "N0CALL"))
@@ -327,7 +328,7 @@ pw2 = os.path.join(tmp, "fresh", "qrz")
 e = make({"qrz_password_file": pw2})
 run(e.start())
 check("no password yet: the tab is asked for a login", (e.snapshot()["qrz"]["set"], e.snapshot()["qrz"]["state"]), (False, "no_login"))
-e.qrz.get = FakeQrz([LOGIN_OK]).get
+e.qrz.post = FakeQrz([LOGIN_OK]).get
 out = run(e.login({"user": "n0call", "password": "  hunter2  "}))
 check("login: written, mode 600, and tried",
       (open(pw2).read(), stat.S_IMODE(os.stat(pw2).st_mode), out["qrz_login"]["state"]), ("hunter2\n", 0o600, "ok"))

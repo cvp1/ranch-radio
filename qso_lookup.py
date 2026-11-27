@@ -5,6 +5,10 @@ Stdlib only, apart from the aiohttp session the add-on hands in.
 
 QRZ XML (xmldata.qrz.com, a QRZ subscription): a login with the QRZ username
 and password answers a session key; each lookup sends the key and a callsign.
+Every request is a form POST: QRZ ignores credentials in a GET's query string
+and answers "Username / password required" (read live 2026-11-27: the same
+login refused as GET, read as POST), and a POST also keeps the password out
+of any URL.
 The key lasts until QRZ says "Session Timeout" or "Invalid session key"; then
 one fresh login and one retry. The password is read from its file at each
 login and is never logged, returned, or put in an error: a failed request is
@@ -106,8 +110,9 @@ class Qrz:
     """One QRZ XML account. `get(url, params)` is a coroutine returning
     (status, text): the add-on's aiohttp call, or a test's fake."""
 
-    def __init__(self, user, password_file, get, clock=time.time):
-        self.user, self.password_file, self.get, self.clock = user, password_file, get, clock
+    def __init__(self, user, password_file, post, clock=time.time):
+        self.user, self.password_file, self.post, self.clock = user, password_file, post, clock
+        self.says = None                 # QRZ's own words for the last refusal or error (never carries a secret)
         self.key = None
         self.state = "no_login" if not self._password() else "unknown"
         self.down_until = 0.0
@@ -124,7 +129,7 @@ class Qrz:
 
     async def _ask(self, params):
         try:
-            status, text = await self.get(QRZ_URL, {**params, "agent": QRZ_AGENT})
+            status, text = await self.post(QRZ_URL, {**params, "agent": QRZ_AGENT})
         except Exception as e:                   # never str(e): it carries the URL, and the URL the password
             self.down_until = self.clock() + QRZ_OFFLINE_S
             return None, f"offline ({type(e).__name__})"
@@ -163,12 +168,13 @@ class Qrz:
             self.state = "offline" if err.startswith("offline") else "error"
             return self.state
         if not doc["key"]:
-            e = (doc["error"] or "").lower()
+            self.says = clean(doc["error"])[:120] or None
+            e = (self.says or "").lower()
             self.key = None
             self.state = "bad_login" if ("password" in e or "username" in e or "incorrect" in e) else "error"
             self.refused = self._pw_mark() if self.state == "bad_login" else None
             return self.state
-        self.key = doc["key"]
+        self.key, self.says = doc["key"], None
         self.state = "no_subscription" if (doc["sub"] or "").lower().startswith("non") else "ok"
         return self.state
 

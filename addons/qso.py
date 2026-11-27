@@ -101,7 +101,7 @@ class Qso(Addon):
             import aiohttp
             self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
                                               headers={"User-Agent": Q.QRZ_AGENT})
-        self.qrz = Q.Qrz(self._user(), self.password_file, self._get)
+        self.qrz = Q.Qrz(self._user(), self.password_file, self._post)
         if self.http is not None and self.want_pota:
             self._tasks.append(asyncio.ensure_future(self._pota_loop()))
 
@@ -120,10 +120,11 @@ class Qso(Addon):
                 pass
             self.http = None
 
-    async def _get(self, url, params):
+    async def _post(self, url, form):
+        """A form POST (qso_lookup: QRZ reads credentials only from a POST body)."""
         if self.http is None:
             raise ConnectionError("offline")
-        async with self.http.get(url, params=params) as r:
+        async with self.http.post(url, data=form) as r:
             return r.status, (await r.content.read(1 << 17)).decode("utf-8", "replace")
 
     def _load(self):
@@ -190,7 +191,8 @@ class Qso(Addon):
 
     def _qrz_view(self):
         q = self.qrz
-        return {"user": self._user(), "set": bool(q and q._password()), "state": q.state if q else "no_login"}
+        return {"user": self._user(), "set": bool(q and q._password()), "state": q.state if q else "no_login",
+                "says": q.says if q else None}
 
     def snapshot(self):
         ls = getattr(self.host, "logsync", None)
