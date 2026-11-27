@@ -52,7 +52,10 @@ def ephemeral_first():
 
 real_rng = testkit._rng
 try:
-    a, b, c = (real_rng.randrange(testkit.PORT_LO, testkit.PORT_HI - 1) for _ in range(3))
+    # Three ports that were free a moment ago (free_port binds each), not three
+    # random ones: a random port busy on the runner made free_port draw again
+    # and run the stand-in's list dry (IndexError, CI shard 5, 2026-11-27).
+    a, b, c = (testkit.free_port() for _ in range(3))
     # negative control: the stand-in really repeats
     stub = RepeatingRng([a, a])
     check("control: the stand-in offers the same port twice", stub.randrange() == stub.randrange(), True)
