@@ -652,6 +652,44 @@ try:
         check("VARA peer from the ARDOP via: ardop:///CALL?freq= (2300 isn't an ARDOP width: back to default)",
               b.js("document.querySelector('#wl-url').value"), "ardop:///N0XYZ?freq=3588.5")
         b.js("document.querySelector('#wl-mode [data-v=gateway]').click()")
+        # --- Mercury HF behind varahf (plan winlink-mercury M1, panel #12): the via's
+        # backend names the modem, picks the ID ledger's and strip's slot, and tags the
+        # gateway list, whose rows carry no service code (Pat v1.0.0).
+        set_via("ic7300:varahf")
+        b.wait(f"({TEXT})('#wl-gateways').includes('N0CALL')")
+        check("no Mercury block: the VARA list has no service-code note",
+              b.js("!!document.querySelector('.wl-svc-unknown')"), False)
+        check("no Mercury block: the strip still says VARA HF", b.js(f"({TEXT})('#wl-m-state')").startswith("VARA HF · "),
+              True)
+        rows = [{"callsign": c, "gridsquare": "DM42AA", "distance": d, "azimuth": 20, "modes": mo,
+                 "freq": {"khz": k}, "dial": {"khz": k - 1.5}, "url": f"varahf:///{c}?bw={bw}&freq={k - 1.5}"}
+                for c, d, mo, k, bw in (("N0PUB", 100, "VARA 2300", 7103.0, 2300),
+                                        ("N0MER", 200, "VARA 2300", 7105.0, 2300),
+                                        ("N0NAR", 300, "VARA 500", 3590.0, 500))]
+        b.js("(() => { const rows = " + json.dumps(rows) + "; const f = window.fetch; window.__realFetch = f;"
+             " window.fetch = (u, o) => String(u).includes('rmslist') ? Promise.resolve(new Response("
+             "JSON.stringify(rows), { headers: { 'Content-Type': 'application/json' } })) : f(u, o);"
+             " winlink.setVias([{ id: 'ic7300', name: 'IC-7300', kind: 'ardop', label: 'HF · IC-7300 (ARDOP)' },"
+             " { id: 'ic7300:varahf', name: 'IC-7300', kind: 'varahf', backend: 'mercury',"
+             " label: 'HF · IC-7300 (Mercury HF)' },"
+             " { id: 'telnet', name: 'internet', kind: 'telnet', label: 'Telnet (internet, no radio)' }]); })()")
+        set_via("ic7300:varahf")
+        note = b.wait("document.querySelector('.wl-svc-unknown')?.textContent", 5)
+        check("Mercury: the gateway list says the service code is not known", bool(note) and
+              "Service code not known" in note and "may be VARA" in note, True)
+        titles = b.wait("(() => { const t = [...document.querySelectorAll('#wl-gateways .wl-gw')].map((r) => r.title);"
+                        " return t.length === 3 ? t : null; })()", 5)
+        check("Mercury: all three rows (2300, 2300, BW500), each tagged 'may be VARA'",
+              isinstance(titles, list) and [("may be VARA" in t) for t in titles], [True, True, True])
+        check("Mercury: the strip names Mercury HF", bool(b.wait(f"({TEXT})('#wl-m-state').startsWith('Mercury HF · ')", 5)),
+              True)
+        check("Mercury: the strip reads the mercury slot (none: 'no status'), not xara's varahf record",
+              (b.js(f"({TEXT})('#wl-m-state')"), b.js(f"({TEXT})('#wl-m-speed')")), ("Mercury HF · no status", "—"))
+        b.js("winlink.event({ t: 'winlink', id: { tracked: true, tracked_modems: ['ardop', 'mercury'], owed: true,"
+             " last: { source: 'station', on_air: false, reason: 'cut by a collision' } } })")
+        check("Mercury: an owed station ID shows as owed, not 'not tracked'", b.js(f"({TEXT})('#wl-id')"), "ID owed")
+        b.js("window.fetch = window.__realFetch")
+        set_via("ic7300")
         check("no JS errors in the VARA cases", b.js("window.__errs"), [])
     finally:
         stop(server)

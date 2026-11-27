@@ -1,0 +1,53 @@
+diff --git a/data_interfaces/tcp_interfaces.c b/data_interfaces/tcp_interfaces.c
+index 8ba6394..2e31e3c 100644
+--- a/data_interfaces/tcp_interfaces.c
++++ b/data_interfaces/tcp_interfaces.c
+@@ -54,6 +54,7 @@
+ #include "modem.h"
+ #include "mercury_cli.h"
+ #include "framer.h"
++
+ #include "hermes_log.h"
+ #include "radio_io.h"
+ #include "modem.h"
+@@ -352,6 +353,22 @@ static int set_nonblocking(int fd)
+     return sock_set_nonblocking(fd);
+ }
+ 
++/* ranch-radio local patch: MERCURY_BIND_ADDR (IPv4 dotted quad) sets the
++ * address the TNC control/data and broadcast listeners bind to. Unset: the
++ * upstream INADDR_ANY. Set but not a valid IPv4 address: 127.0.0.1 and an
++ * error, so a typo fails toward loopback, never toward every interface. */
++static in_addr_t mercury_listen_addr(const char *tag)
++{
++    const char *env = getenv("MERCURY_BIND_ADDR");
++    struct in_addr a;
++    if (env == NULL || env[0] == '\0')
++        return INADDR_ANY;
++    if (inet_pton(AF_INET, env, &a) == 1)
++        return a.s_addr;
++    HLOGE(tag, "MERCURY_BIND_ADDR=\"%s\" is not an IPv4 address; binding 127.0.0.1", env);
++    return htonl(INADDR_LOOPBACK);
++}
++
+ static int open_listener_socket(int port, int port_type, const char *tag)
+ {
+     int fd;
+@@ -370,7 +387,7 @@ static int open_listener_socket(int port, int port_type, const char *tag)
+ 
+     memset(&local_addr, 0, sizeof(local_addr));
+     local_addr.sin_family = AF_INET;
+-    local_addr.sin_addr.s_addr = INADDR_ANY;
++    local_addr.sin_addr.s_addr = mercury_listen_addr(tag);
+     local_addr.sin_port = htons(port);
+ 
+     if (bind(fd, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0)
+@@ -2359,7 +2376,7 @@ void *tcp_server_thread(void *port_ptr)
+ 
+     memset(&local_addr, 0, sizeof(local_addr));
+     local_addr.sin_family = AF_INET;
+-    local_addr.sin_addr.s_addr = INADDR_ANY;
++    local_addr.sin_addr.s_addr = mercury_listen_addr("tcp-bcast");
+     local_addr.sin_port = htons(tcp_port);
+ 
+     if (bind(tcp_socket, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0)

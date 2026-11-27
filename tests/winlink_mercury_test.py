@@ -48,6 +48,11 @@ lib.APPS, lib.LANE, lib.RWEB = (testkit.free_port() for _ in range(3))
 MLANE, VLANE = testkit.free_port(), testkit.free_port()
 XLOG = os.path.join(tempfile.mkdtemp(prefix="xara-"), "xara.log")
 open(XLOG, "w").close()
+# Mercury's listeners as the arm-time check wants them (M1): 127.0.0.1 on
+# 8340, 8341 and 8342, in lsof -F pcn form (--winlink-mercury-test-listeners).
+LSOF = os.path.join(os.path.dirname(XLOG), "lsof.txt")
+with open(LSOF, "w") as f:
+    f.write("p1\ncmercury\nf3\nn127.0.0.1:8340\nf4\nn127.0.0.1:8341\nf5\nn127.0.0.1:8342\n")
 
 
 def check(name, got, want):
@@ -64,7 +69,7 @@ def base():
 
 
 MERCURY = ["--winlink-vara-modem", "mercury", "--winlink-mercury-rigctl-port", str(MLANE),
-           "--winlink-mercury-call", "N0CALL",
+           "--winlink-mercury-call", "N0CALL", "--winlink-mercury-test-listeners", LSOF,
            "--winlink-vara-log", XLOG, "--winlink-vara-rigctl-port", str(VLANE)]
 
 

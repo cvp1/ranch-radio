@@ -276,8 +276,12 @@ def machine(h, budget_s=None, include_available=False):
                 out += _need(name, n, block, py, sp, h["os"])
     if "winlink" in present and h["os"] in MANIFESTS["winlink"]["os"] and not late("winlink", "Pat's config"):
         out.append(pat_config_check(block_of(h, "winlink") or {}))
-    if "vara" in present and h["os"] in MANIFESTS["vara"]["os"] and not late("vara", "Pat's VARA settings"):
+    from .render import vara_modem
+    if ("vara" in present and vara_modem(h) == "xara" and h["os"] in MANIFESTS["vara"]["os"]
+            and not late("vara", "Pat's VARA settings")):
         out.append(vara_config_check(h))
+    if "mercury" in present and h["os"] in MANIFESTS["mercury"]["os"] and not late("mercury", "Mercury HF's build, agent and listeners"):
+        out += mercury_checks(h)
     if "vara" not in present and h["os"] == "macos" and not late("vara", "a leftover xara"):
         out += xara_leftover_checks(h)
     if "logsync" in present and not late("logsync", "TQSL, credential files, the UDP intake"):
@@ -359,24 +363,127 @@ def logsync_checks(b, tqsl_timeout_s=10):
     return out
 
 
-def vara_config_check(h):
-    """Pat's varahf settings, checked as the server checks them at every arm
-    (pat_config.vara_refusal): the modem is xara here, Pat's QSY goes through
-    this radio's lane, Pat never keys. Names the field; nothing else."""
+def _pat_path(h):
     import shlex
     from types import SimpleNamespace
 
-    from pat_config import pat_config_path, vara_refusal
+    from pat_config import pat_config_path
     w = block_of(h, "winlink") or {}
-    x = w.get("xara") or {}
-    lane = next((r.get("lane") for r in h["radios"] if r.get("lane")), None)
     cmd = [_expand(p) for p in shlex.split(str(w.get("pat") or "pat"))]
-    path = pat_config_path(SimpleNamespace(winlink_pat_config=w.get("pat_config")), cmd)
-    why = vara_refusal(path, x.get("port"), lane)
+    return pat_config_path(SimpleNamespace(winlink_pat_config=w.get("pat_config")), cmd)
+
+
+def vara_config_check(h):
+    """Pat's varahf settings, checked as the station checks them at every arm
+    (pat_config.vara_refusal): the modem is the selected VARA backend here
+    (xara, or Mercury HF: varahf.addr its port), Pat's QSY goes through this
+    radio's lane, Pat never keys. Names the field; nothing else."""
+    from pat_config import MODEM_NAMES, vara_refusal
+
+    from .render import vara_modem
+    backend = vara_modem(h)
+    w = block_of(h, "winlink") or {}
+    b = w.get(backend) or {}
+    module = "mercury" if backend == "mercury" else "vara"
+    lane = next((r.get("lane") for r in h["radios"] if r.get("lane")), None)
+    path = _pat_path(h)
+    why = vara_refusal(path, b.get("port"), lane, backend=backend)
     if why:
-        return Check("vara", WARN, f"VARA sessions will be refused: {why}",
+        return Check(module, WARN, f"VARA sessions will be refused: {why}",
                      "set it by hand in Pat's config (ranch-radio never writes it)")
-    return Check("vara", OK, f"Pat's VARA settings in {path}: xara here, QSY through the lane, Pat never keys")
+    return Check(module, OK, f"Pat's VARA settings in {path}: {MODEM_NAMES[backend]} here, "
+                             f"QSY through the lane, Pat never keys")
+
+
+def _mercury_probe(h):
+    """What doctor reads about Mercury HF on this machine, read-only: its
+    -V line, whether the binary carries the bind patch (its bytes, never
+    run for it), which agents are loaded (launchctl print) and the TCP
+    listeners (lsof). Never connects to a port; never runs -Q."""
+    import mercury_tnc
+    m = (h.get("winlink") or {}).get("mercury") or {}
+    exe = _expand(m.get("bin", "~/.local/bin/mercury"))
+    out = {"version": None, "patched": None, "loaded": {}, "lsof": None}
+    if os.path.isfile(exe):
+        try:
+            r = subprocess.run([exe, "-V"], capture_output=True, text=True, timeout=10,
+                               stdin=subprocess.DEVNULL, cwd="/")
+            out["version"] = next((x for x in (r.stdout + r.stderr).splitlines() if "Version" in x), "").strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            with open(exe, "rb") as f:
+                out["patched"] = mercury_tnc.PATCH_MARK in f.read()
+        except OSError:
+            pass
+    x = (h.get("winlink") or {}).get("xara") or {}
+    for label in (mercury_tnc.LABEL, x.get("label", XARA_LABEL)):
+        try:
+            out["loaded"][label] = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                                                  capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            out["loaded"][label] = None
+    try:
+        out["lsof"] = mercury_tnc.run_lsof()      # complete or nothing (panel M1 #1)
+    except OSError as e:
+        out["lsof_error"] = str(e)
+    return out
+
+
+def mercury_checks(h, probe=None):
+    """Mercury HF on this machine (plan winlink-mercury 2.5): the pinned
+    version with the bind patch, its agent loaded when it is the backend
+    (and the other backend's not), its listeners loopback-only on exactly
+    its ports, Pat's varahf.addr on the backend's port, and MERCURY in Pat's
+    service_codes (a warn: only the gateway list needs it)."""
+    import mercury_tnc
+    from pat_config import mercury_service_codes_refusal, read_pat_config
+
+    from .render import vara_modem
+    m = (h.get("winlink") or {}).get("mercury") or {}
+    x = (h.get("winlink") or {}).get("xara") or {}
+    backend = vara_modem(h)
+    p = (probe or _mercury_probe)(h)
+    out = []
+    from .manifest import MERCURY_FIX
+    if p["version"] is not None:
+        good = f"Version {mercury_tnc.VERSION}" in p["version"]
+        out.append(Check("mercury", OK if good else MISSING,
+                         f"mercury -V: {p['version'] or 'no version line'}" +
+                         ("" if good else f" (this repo pins v{mercury_tnc.VERSION})"), "" if good else MERCURY_FIX))
+    if p["patched"] is not None:
+        out.append(Check("mercury", OK, "the binary carries the bind patch (MERCURY_BIND_ADDR)") if p["patched"] else
+                   Check("mercury", MISSING, "the binary has no bind patch: Mercury would listen on every interface "
+                                             "and sessions are refused", MERCURY_FIX))
+    xl = x.get("label", XARA_LABEL)
+    loaded = p["loaded"]
+    if backend == "mercury":
+        out.append(Check("mercury", OK, f"{mercury_tnc.LABEL} is loaded") if loaded.get(mercury_tnc.LABEL) else
+                   Check("mercury", WARN, f"{mercury_tnc.LABEL} is not loaded (VARA HF is Mercury here)",
+                         "ranch-radio vara-backend mercury --apply"))
+        if loaded.get(xl):
+            out.append(Check("mercury", WARN, f"{xl} (xara) is still loaded with Mercury selected",
+                             "ranch-radio vara-backend mercury --apply"))
+        if p["lsof"] is None:
+            out.append(Check("mercury", MISSING, f"Mercury's listeners could not be read "
+                                                 f"({p.get('lsof_error', 'lsof')}): sessions are refused"))
+        else:
+            why = mercury_tnc.listener_refusal(mercury_tnc.parse_lsof(p["lsof"]),
+                                               mercury_tnc.ports(m.get("port", mercury_tnc.PORT),
+                                                                 m.get("broadcast_port", mercury_tnc.BROADCAST_PORT)))
+            out.append(Check("mercury", OK, "Mercury's listeners: 127.0.0.1 only, on its ports") if why is None else
+                       Check("mercury", MISSING, f"Mercury sessions will be refused: {why}",
+                             "ranch-radio vara-backend mercury --apply (the patched build, loopback only)"))
+        out.append(vara_config_check(h))
+        fields, err = read_pat_config(_pat_path(h))
+        why = err or mercury_service_codes_refusal(fields, _pat_path(h))
+        out.append(Check("mercury", OK, "Pat's service_codes include MERCURY") if why is None else
+                   Check("mercury", WARN, f"no Mercury gateways in the RMS list: {why}",
+                         "set it by hand in Pat's config (ranch-radio never writes it)"))
+    elif loaded.get(mercury_tnc.LABEL):
+        out.append(Check("mercury", WARN, f"{mercury_tnc.LABEL} is loaded but VARA HF is xara here",
+                         "ranch-radio vara-backend xara --apply"))
+    return out
 
 
 XARA_LABEL = "ranch-radio.xara"
@@ -394,7 +501,13 @@ def _xara_probe(label, port):
         except (OSError, subprocess.TimeoutExpired):
             return False
     return (ok(["launchctl", "print", f"gui/{os.getuid()}/{label}"]), plist if os.path.exists(plist) else None,
-            ok(["pgrep", "-x", "xara"]), ok(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"]))
+            ok(["pgrep", "-x", "xara"]), ok([_lsof(), "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"]))
+
+
+def _lsof():
+    """The system lsof by absolute path (a launchd agent's PATH lacks /usr/sbin)."""
+    import mercury_tnc
+    return mercury_tnc.lsof_bin() or "/usr/sbin/lsof"
 
 
 def xara_leftover_checks(h, probe=None):
