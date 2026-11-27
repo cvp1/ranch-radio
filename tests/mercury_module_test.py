@@ -621,8 +621,10 @@ def r4_idle():
     for name, answers, loaded, want in [
             ("hello times out (may be keyed)", [T], True, False),
             ("not running (refused), its agent loaded", [{"up": False, "why": "ClientConnectorError"}], True, False),
-            ("R6 not running (refused) and its agent not loaded -> idle (can't transmit)",
-             [{"up": False, "why": "ClientConnectorError"}], False, True),
+            ("Q1 refused and its agent not loaded -> still busy (no positive hello)",
+             [{"up": False, "why": "ClientConnectorError"}], False, False),
+            ("Q5 the station admitting a connect", [{"up": True, "admitting": True}], True, False),
+            ("Q5 a listen window open or starting", [{"up": True, "listen_open": True}], True, False),
             ("R6 not loaded but the hello times out -> busy", [T], False, False),
             ("C2 answers, STOP TX latched but not saved", [{"up": True, "stopped": True, "stop_saved": False}],
              True, False),
@@ -808,13 +810,13 @@ class FakeOps:
 
     def __init__(self, loaded, procs, listening, busy=(), stuck=(), stale=False, stale_clears=True,
                  up_fails=False, modem_dies=False, pat=None, pid_fixed=False, reappear=None, pat_fails=False,
-                 radio_down=False, raise_at=None):
+                 radio_down=False, raise_at=None, radio_stuck=False):
         self.loaded_set, self.procs, self.listen = set(loaded), set(procs), set(listening)
         self.busy, self.stuck = set(busy), set(stuck)
         self.stale, self.stale_clears = stale, stale_clears
         self.up_fails, self.modem_dies, self.pat = up_fails, modem_dies, pat
         self.pid_fixed, self.reappear, self.pat_fails = pid_fixed, reappear, pat_fails
-        self.radio_down, self.raise_at = radio_down, raise_at
+        self.radio_down, self.raise_at, self.radio_stuck = radio_down, raise_at, radio_stuck
         self.lane_up, self.modem_up = False, set()
         self.pids, self.calls, self.fence_seen, self.home, self.t_first = {ST_LABEL: 1000}, [], {}, None, None
 
@@ -866,6 +868,9 @@ class FakeOps:
             if self.stale_clears:
                 self.stale = False
         else:
+            if self.radio_stuck:
+                self.loaded_set.add(label)         # its bootout failed: still loaded
+                return 1
             if self.radio_down:
                 self.loaded_set.discard(label)
                 return 1
@@ -1128,9 +1133,41 @@ def c_r3():
           (rc, ops.calls.count(("up", RADIO)), f"launchctl bootstrap gui/$(id -u) ~/{render.AGENTS}/{RADIO}.plist"
            in out, "vara-backend mercury --apply" in out, (pending(home) or {}).get("to")),
           (1, 1, True, True, "mercury"))
+    check("Q2   not loaded: the bootstrap line, no kickstart", "kickstart" in out, False)
     ops.radio_down = False                       # the operator brought it back; retry
     rc, home, _, _, out = cutover(newh, "mercury", ops, home=home)
     check("R6 the retry then completes", (rc, pending(home)), (0, None))
+    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, radio_stuck=True)
+    rc, home, newh, _, out = cutover(xh, "mercury", ops)
+    check("Q2 the radio's bootout failed (still loaded): says so, kickstart, no bootstrap line, no second load",
+          (rc, "still loaded" in out, f"launchctl kickstart -k gui/$(id -u)/{RADIO}" in out,
+           "launchctl bootstrap" in out, ops.calls.count(("up", RADIO))), (1, True, True, False, 0))
+    # Q1 through a cutover: refused connection, label absent -> busy, zero bootouts
+    class RealIdleQ1(FakeOps):
+        idle = vara_backend.Ops.idle
+    d = Path(tempfile.mkdtemp(prefix="rr-probe-"))
+    f = d / "probe.py"
+    f.write_text("import json\nprint(json.dumps({'up': False, 'why': 'ClientConnectorError'}))\n")
+    os.environ["RANCH_RADIO_PROBE"] = f"{sys.executable} {f}"
+    try:
+        ops = RealIdleQ1({"ranch-radio.xara"}, {"xara"}, {8300, 8301})
+        rc, home, _, _, out = cutover(xh, "mercury", ops, plists=["ranch-radio.xara"])
+    finally:
+        os.environ.pop("RANCH_RADIO_PROBE", None)
+    check("Q1 a refused radio whose label is absent: refused, zero bootouts, no pending",
+          (rc, [c for c in ops.calls if c[0] == "bootout"], pending(home)), (1, [], None))
+    # Q3: --finish with the radio off its lane (modem and Pat healthy) -> refused, pending survives
+    ops = FakeOps({"ranch-radio.xara"}, {"xara"}, {8300, 8301}, pat="set varahf.addr")
+    rc, home, newh, _, out = cutover(xh, "mercury", ops)
+    ops.pat, ops.lane_up, ops.calls = None, False, []
+    rc, home, _, _, out = cutover(newh, "mercury", ops, finish=True, home=home)
+    check("Q3 --finish with the radio not on Mercury's lane: refused, station not restarted, still pending",
+          (rc, ("restart", ST_LABEL) in ops.calls, (pending(home) or {}).get("to")), (1, False, "mercury"))
+    # Q4: a standalone --finish refused at preflight (busy) leaves pending as it came in
+    ops = FakeOps({"ranch-radio.mercury"}, {"mercury"}, {8340, 8341, 8342}, busy={"ic7300"})
+    rc, home, _, _, out = cutover(mh, "mercury", ops, finish=True)
+    check("Q4 a busy --finish with no pending before: refused, and still no pending file", (rc, pending(home)),
+          (1, None))
 
 
 async def r2_voice():
@@ -1222,6 +1259,92 @@ def fence_reader():
         return server.cutover_fenced
 
 
+async def q5_admission():
+    """Q5: a real telnet admission suspended in _outbox(): the snapshot says
+    admitting, and a fence installed meanwhile refuses it before it arms."""
+    import types
+
+    import winlink as wm
+    fence = Path(tempfile.mkdtemp(prefix="rr-q5-")) / "vara-cutover.json"
+    notes, armed = [], []
+    gate, inside = asyncio.Event(), asyncio.Event()
+
+    async def outbox():
+        inside.set()
+        await gate.wait()
+        return []
+
+    async def arm(ws, url):
+        armed.append(url)
+        return False
+
+    async def yes():
+        return True
+
+    async def zero(box):
+        return 0
+    e = object.__new__(wm.PatEngine)
+    e.station = types.SimpleNamespace(notice=lambda *a, **k: notes.append(a[0]), band_of=lambda f: None,
+                                      tx_stopped=False, cutover_fence_path=str(fence))
+    e._admitting, e.session, e.listening, e._listen_busy, e._outbox_lock = False, None, None, None, asyncio.Lock()
+    e.inbound, e._closing, e._admit_stop = None, False, False
+    e.lane_for = lambda url, via: (types.SimpleNamespace(arm=arm, name="telnet"), None)
+    e._ready, e._busy_why, e._outbox, e._sizes = yes, lambda: None, outbox, zero
+    real_check = wm.check_url
+    wm.check_url = lambda url, band_of: None
+    try:
+        t = asyncio.ensure_future(e.connect(WS(), "telnet:///N0CALL"))
+        await asyncio.wait_for(inside.wait(), 5)
+        check("Q5 while a telnet admission is suspended, the engine is admitting", e._admitting, True)
+        fence.write_text(json.dumps({"until": time.time() + 60}))
+        gate.set()
+        await asyncio.wait_for(t, 5)
+        check("Q5 the fence installed meanwhile refuses it before it arms (no dial)",
+              (armed, any("switch" in str(n) for n in notes)), ([], True))
+    finally:
+        wm.check_url = real_check
+    check("Q5 the station snapshot publishes admitting; the probe projects it and listen windows",
+          ('"admitting": bool(self._admitting)' in (ROOT / "winlink.py").read_text(),
+           'wl.get("admitting")' in service.IDLE_SCRIPT, '"listen_open"' in service.IDLE_SCRIPT), (True, True, True))
+    # packet listen admission
+    class Idle(wm.PatEngine):
+        pat_busy = False                         # (a property on the real engine)
+    e2 = object.__new__(Idle)
+    e2.station, e2.listen_plan, e2.running = e.station, types.SimpleNamespace(max_hours=2), True
+    e2.listening, e2._listen_busy, e2._admitting, e2.inbound, e2.blocked = None, None, False, None, None
+    e2._our_session, e2.listen_path = (lambda: False), None
+    notes.clear()
+    await e2.listen_start(WS())
+    check("Q5 a packet listen window is refused while the switch's fence is up",
+          any("switch" in str(n) for n in notes), True)
+
+
+async def r2_hello_wire():
+    """R2 on the wire: the hello a page (and the cutover's probe) reads while
+    voice preparation is paused says ptt_held."""
+    st, _ = make(probe=GOOD)
+    await st.radio.start()
+
+    class HelloWS(WS):
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+    try:
+        st.ptt_owner = WS()                       # reserved, not keyed (as voice prep holds it)
+        ws = HelloWS()
+        await asyncio.wait_for(st.handle(ws), 5)
+        hello = next((m for m in ws.sent if m.get("t") == "hello"), {})
+        check("R2 the serialized hello says ptt_held while PTT is only reserved",
+              (hello.get("ptt_held"), st.radio.state.get("tx")), (True, False))
+    finally:
+        st.ptt_owner = None
+        await st.radio.stop()
+
+
+section("Q5 admission", q5_admission)
+section("R2 hello wire", r2_hello_wire)
 section("R2 voice", r2_voice)
 section("R3 telnet, R4 Pat", r3_telnet_and_pat)
 section("small", small_r3)
