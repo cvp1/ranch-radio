@@ -34,6 +34,14 @@ Options (the host file's addons block):
               "position": {"lat": 40.0, "lon": -105.0},
               "places": {"aa:bb:cc:dd:ee:01": {"name": "Gate cam", "lat": 40.01, "lon": -105.01}}}
 
+`mesh` reads an OpenMANET HaLow mesh as well (halow_mesh.py): its gate on
+the LAN, and the nodes behind it, by name or address on the mesh, reached
+through the gate. The same `key` must be in each node's
+/etc/dropbear/authorized_keys. A node not named is still shown, from the
+views of the nodes that were read.
+
+    "mesh": {"gate": "192.168.1.197", "nodes": ["node2"]}
+
 `position` (where the bridge is) and `places` (where each station is, by MAC)
 put them on the tab's map; both are optional. A station with no place is
 drawn beside the bridge and says its position isn't set. Every station the
@@ -52,9 +60,12 @@ import logging
 import os
 import re
 import secrets
+import shlex
+import contextlib
 import time
 
 import halow_ap
+import halow_mesh
 
 from . import Addon
 
@@ -127,6 +138,21 @@ class Halow(Addon):
                 raise ValueError(f"halow: 'places.{mac}.name' must be 1-32 plain characters")
             self.places[m] = {"lat": lat, "lon": lon, "name": name}
         self.seen = {}            # mac -> the last reading of a station that has joined (halow-seen.json)
+        self.mesh_cfg = None
+        mesh = opts.get("mesh")
+        if mesh is not None:
+            if not isinstance(mesh, dict) or not HOST.match(str(mesh.get("gate", ""))):
+                raise ValueError("halow: 'mesh.gate' must be the mesh gate's address or name")
+            nodes = mesh.get("nodes") or []
+            if not isinstance(nodes, list) or len(nodes) > halow_mesh.MAX_NODES \
+                    or not all(isinstance(n, str) and HOST.match(n) for n in nodes):
+                raise ValueError(f"halow: 'mesh.nodes' must be a list of at most {halow_mesh.MAX_NODES} names or addresses")
+            user = str(mesh.get("user", "root"))
+            if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user):
+                raise ValueError("halow: 'mesh.user' is not a user name")
+            self.mesh_cfg = {"gate": str(mesh["gate"]), "nodes": list(dict.fromkeys(nodes)), "user": user}
+        self.mesh = {}            # the last mesh view: halow_mesh.mesh_view + at, error, unread
+        self.mesh_seen = {}       # mac -> {mac, hostname, last, hops} (halow-mesh-seen.json)
         self.view = {}
         self.at = None            # when the last good read was
         self.error = None         # why the last read failed, or None
@@ -139,18 +165,26 @@ class Halow(Addon):
 
     # --- SSH
 
-    def _argv(self, cmd):
+    def _argv(self, cmd, target=None, user=None, via=None):
+        """ssh to the bridge, or to TARGET; through VIA (a mesh node behind its gate).
+        A jump host takes no -i/-o from the command line, so the hop is a
+        ProxyCommand that spells them out (the same key and known hosts)."""
         known = os.path.join(self.state_dir or os.path.expanduser("~/.local/state/radio-remote"), "halow_known_hosts")
-        return [self.ssh, "-i", self.key, "-p", str(self.port),
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=5",
+        opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=5",
                 "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={known}",
-                "-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR", f"{self.user}@{self.target}", cmd]
+                "-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR"]
+        hop = []
+        if via:
+            inner = [self.ssh, "-i", self.key, *opts, "-W", "%h:%p", f"{user or self.user}@{via}"]
+            hop = ["-o", "ProxyCommand=" + " ".join(shlex.quote(x) for x in inner)]
+        port = ["-p", str(self.port)] if target is None else []
+        return [self.ssh, "-i", self.key, *port, *opts, *hop, f"{user or self.user}@{target or self.target}", cmd]
 
-    async def _run(self, cmd):
-        """(exit code, output) of one command on the bridge; never raises for the box's sake."""
-        async with self._lock:
+    async def _run(self, cmd, target=None, user=None, via=None):
+        """(exit code, output) of one command on the bridge (or TARGET); never raises for the box's sake."""
+        async with (self._lock if target is None else contextlib.nullcontext()):
             try:
-                p = await asyncio.create_subprocess_exec(*self._argv(cmd), stdout=asyncio.subprocess.PIPE,
+                p = await asyncio.create_subprocess_exec(*self._argv(cmd, target, user, via), stdout=asyncio.subprocess.PIPE,
                                                          stderr=asyncio.subprocess.PIPE,
                                                          stdin=asyncio.subprocess.DEVNULL)
             except OSError as e:
@@ -265,10 +299,98 @@ class Halow(Addon):
             self._note_seen(self.view["stations"], self.at)
         self.emit({"snapshot": self.snapshot()})
 
+    # --- the OpenMANET mesh
+
+    async def read_mesh(self):
+        """The gate's view, then every named node's through the gate, at once."""
+        c = self.mesh_cfg
+        if not c:
+            return
+        was = self.mesh.get("error")
+        rc, out = await self._run(halow_mesh.MESH_READ, c["gate"], c["user"])
+        gate = halow_mesh.parse_mesh_read(out) if rc == 0 else None
+        if gate is None:
+            tail = out.strip().splitlines()[-1:] or [f"exit {rc}"]
+            self.mesh = {**self.mesh, "error": f"can't read the mesh gate at {c['gate']}: {tail[0][:200]}"}
+            if was is None:
+                self.notice(f"HaLow mesh: {self.mesh['error']}", "warn")
+            return
+        reads, unread = {gate["mac"]: gate}, {}
+        results = await asyncio.gather(*(self._run(halow_mesh.MESH_READ, n, c["user"], c["gate"]) for n in c["nodes"]))
+        for name, (nrc, nout) in zip(c["nodes"], results):
+            r = halow_mesh.parse_mesh_read(nout) if nrc == 0 else None
+            if r is None:
+                unread[name] = (nout.strip().splitlines()[-1:] or [f"exit {nrc}"])[0][:200]
+            else:
+                r["name"] = name
+                reads[r["mac"]] = r
+        now = time.time()
+        view = halow_mesh.mesh_view(gate["mac"], reads)
+        for n in view["nodes"]:
+            n["name"] = (reads.get(n["mac"]) or {}).get("name", "")
+        if was is not None:
+            self.notice("HaLow mesh: the gate answers again.", "info")
+        self._note_mesh(view, now)
+        self.mesh = {**view, "at": now, "error": None, "unread": unread, "gate_host": c["gate"]}
+
+    def _mesh_path(self):
+        return os.path.join(self.state_dir, "halow-mesh-seen.json") if self.state_dir else None
+
+    def _load_mesh_seen(self):
+        path = self._mesh_path()
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        for r in data if isinstance(data, list) else []:
+            if isinstance(r, dict) and halow_ap.MAC.match(str(r.get("mac", ""))) \
+                    and isinstance(r.get("last"), (int, float)) and now - r["last"] < SEEN_KEEP_S:
+                self.mesh_seen[r["mac"]] = {k: r.get(k) for k in ("mac", "hostname", "name", "last", "hops")}
+
+    def _note_mesh(self, view, now):
+        """Notice nodes joining and leaving (edges only), and keep every node seen."""
+        live = {n["mac"] for n in view["nodes"] if n["hops"] is not None}
+        before = {m for m, r in self.mesh_seen.items() if r.get("live")}
+        known = {n["mac"]: n for n in view["nodes"]}
+        if self.mesh.get("at"):             # not before the first good read after a start
+            for m in sorted(live - before):
+                self.notice(f"HaLow mesh: {known[m].get('hostname') or m} joined the mesh.", "info")
+            for m in sorted(before - live):
+                self.notice(f"HaLow mesh: {self.mesh_seen[m].get('hostname') or m} left the mesh.", "warn")
+        for r in self.mesh_seen.values():
+            r["live"] = False
+        for n in view["nodes"]:
+            if n["mac"] in live:
+                old = self.mesh_seen.get(n["mac"], {})
+                self.mesh_seen[n["mac"]] = {"mac": n["mac"], "hostname": n["hostname"] or old.get("hostname", ""),
+                                            "name": n.get("name") or old.get("name", ""), "last": now,
+                                            "hops": n["hops"], "live": True}
+        for m in [m for m, r in self.mesh_seen.items() if now - r["last"] >= SEEN_KEEP_S]:
+            del self.mesh_seen[m]
+        for m in sorted(self.mesh_seen, key=lambda m: self.mesh_seen[m]["last"])[:max(0, len(self.mesh_seen) - SEEN_MAX)]:
+            del self.mesh_seen[m]
+        path = self._mesh_path()
+        if not path:
+            return
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+            with open(path + ".tmp", "w") as f:
+                json.dump(sorted(self.mesh_seen.values(), key=lambda r: -r["last"]), f)
+            os.replace(path + ".tmp", path)
+        except OSError as e:
+            log.warning("halow: mesh seen list not written: %s", e)
+
     async def _loop(self):
         while True:
             try:
                 await self.read()
+                if self.mesh_cfg:
+                    await self.read_mesh()
+                    self.emit({"snapshot": self.snapshot()})
             except asyncio.CancelledError:
                 raise
             except Exception as e:      # a parse surprise must not end the polling
@@ -287,6 +409,7 @@ class Halow(Addon):
 
     async def start(self):
         self._load_seen()
+        self._load_mesh_seen()
         self._task = asyncio.create_task(self._loop(), name="halow-poll")
 
     async def stop(self):
@@ -303,7 +426,9 @@ class Halow(Addon):
         return {"target": self.target, "at": self.at, "error": self.error, "poll": self.poll,
                 "stale": self.error is not None and self.at is not None, **self.view,
                 "position": self.position, "places": self.places,
-                "seen": sorted(self.seen.values(), key=lambda r: -r["last"])}
+                "seen": sorted(self.seen.values(), key=lambda r: -r["last"]),
+                "mesh": ({**self.mesh, "configured": True, "seen": sorted(self.mesh_seen.values(), key=lambda r: -r["last"])}
+                         if self.mesh_cfg else None)}
 
     # --- changes: plan, then apply
 

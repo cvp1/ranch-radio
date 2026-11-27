@@ -6,6 +6,9 @@ it). FAKE_HALOW_DIR holds:
   read.txt     what the read script prints (the test writes it)
   down         if present: the bridge doesn't answer (exit 255)
   cmds.log     every command run, one JSON string per line (appended)
+  mesh-<host>.txt  what an OpenMANET node of that name prints for the mesh
+               read (halow_mesh.MESH_READ); a node with no file doesn't answer
+  mesh.log     each mesh read: {"target": user@host, "proxy": the ProxyCommand or null}
 """
 import json
 import os
@@ -16,6 +19,18 @@ d = os.environ["FAKE_HALOW_DIR"]
 cmd = sys.argv[-1]
 with open(os.path.join(d, "cmds.log"), "a") as f:
     f.write(json.dumps(cmd) + "\n")
+if cmd.startswith("echo @@board"):
+    target = sys.argv[-2]
+    proxy = next((a[len("ProxyCommand="):] for a in sys.argv if a.startswith("ProxyCommand=")), None)
+    with open(os.path.join(d, "mesh.log"), "a") as f:
+        f.write(json.dumps({"target": target, "proxy": proxy}) + "\n")
+    path = os.path.join(d, f"mesh-{target.split('@')[-1]}.txt")
+    if not os.path.exists(path):
+        print(f"ssh: connect to host {target.split('@')[-1]} port 22: No route to host", file=sys.stderr)
+        sys.exit(255)
+    with open(path) as f:
+        sys.stdout.write(f.read())
+    sys.exit(0)
 if os.path.exists(os.path.join(d, "down")):
     print("ssh: connect to host 192.168.1.65 port 22: Connection refused", file=sys.stderr)
     sys.exit(255)

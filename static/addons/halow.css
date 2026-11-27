@@ -26,3 +26,5 @@
 .halow .mm-link.out { stroke: #60a5fa; stroke-width: 2; stroke-dasharray: 5 4; }
 .halow .mm-link.both { stroke: #c084fc; stroke-width: 3; }
 .halow .mm-node.k-unplaced .mm-mark { stroke-dasharray: 2 2; }
+/* Links between two mesh nodes, neither of them the gate. */
+.halow .mm-link.mesh-other { stroke: var(--dim, #888); stroke-width: 1.5; }

@@ -15,6 +15,13 @@ registry, and api.send() recorded.
             panel's tables are rebuilt on every read)
   popup     a station's card says both directions, the downlink as not
             measured, and its Ping asks the bridge to ping it
+  manet     with an OpenMANET mesh (halow_mesh.mesh_view): the gate is this
+            node, with who hears it and the best dBm; a neighbour read on both
+            ends is purple, labelled "it hears / gate hears"; one only the
+            gate hears is blue; one two hops out carries its hops; a link
+            between other nodes is grey; the bridge stays, as a diamond; the
+            Mesh table lists each node with both directions; a node's card
+            says both numbers
 
     python3 tests/halow_map_page_test.py [screenshot-dir]
 """
@@ -31,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 import halow_ap  # noqa: E402
+import halow_mesh  # noqa: E402
 import testkit  # noqa: E402
 from cdp_browser import Browser  # noqa: E402
 
@@ -145,7 +153,7 @@ try:
 
     check("the map sits above the tables",
           b.js("[...document.querySelector('#hl .halow').children].map((e) => e.className)"), ["mesh-map hl-map", "hl-main"])
-    NODES = ("Object.fromEntries([...document.querySelectorAll('#hl .mm-node')].map((g) => [g.querySelector('text:not(.mm-badge)')?.textContent, "
+    NODES = ("Object.fromEntries([...document.querySelectorAll('#hl .mm-node')].map((g) => [g.querySelector('text:not(.mm-badge):not(.mm-glyph)')?.textContent, "
              "{cls: g.getAttribute('class'), badge: g.querySelector('.mm-badge')?.textContent || '', "
              "badgeCls: g.querySelector('.mm-badge')?.getAttribute('class') || '', ring: g.querySelector('.mm-ring')?.getAttribute('class') || ''}]))")
     nodes = b.js(NODES)
@@ -192,6 +200,56 @@ try:
     b.js("document.querySelector('#hl .mm-pop [data-act=ping]').click()")
     check("  its Ping asks the bridge to ping it", json.loads(b.js("JSON.stringify(window.__sent)")),
           [["ping", {"ip": "192.168.1.120"}]])
+
+    # ---- an OpenMANET mesh beside the bridge
+    G, N2, N3, N4 = "02:00:00:00:0a:01", "02:00:00:00:0a:02", "02:00:00:00:0a:03", "02:00:00:00:0a:04"
+    gate = {"mac": G, "hostname": "ranch01", "model": "Heltec HT-HD01 V2", "release": "", "peer_count": 2,
+            "neighbors": [{"mac": N2, "signal": -41}, {"mac": N4, "signal": -80}],
+            "paths": [{"dest": N3, "next_hop": N2, "hops": 2}]}
+    node2 = {"mac": N2, "hostname": "node2", "model": "", "release": "", "peer_count": 2, "name": "node2",
+             "neighbors": [{"mac": G, "signal": -39}, {"mac": N3, "signal": -70}], "paths": []}
+    view = halow_mesh.mesh_view(G, {G: gate, N2: node2})
+    for n in view["nodes"]:
+        n["name"] = "node2" if n["mac"] == N2 else ""
+    places = {**snap["places"], G: {"name": "", "lat": 40.0, "lon": -105.0}, N2: {"name": "", "lat": 40.02, "lon": -105.03}}
+    snap3 = {**snap, "places": places, "mesh": {**view, "configured": True, "at": now, "error": None, "unread": {"node3": "No route to host"},
+                              "gate_host": "192.168.1.197", "seen": []}}
+    setup("__impl.halow.event({snapshot: " + json.dumps(snap3) + "})")
+    b.wait("document.querySelectorAll('#hl .hl-map .mm-node').length === 8", 10)
+    b.js("document.querySelector('#hl [data-labels]').click()")      # Names: all (eight nodes on one spot overlap)
+    nodes = b.js(NODES)
+    check("manet: the gate is this node, with who hears it and the best dBm",
+          ("me" in nodes["ranch01"]["cls"], nodes["ranch01"]["badge"]), (True, "heard by 1 · best -39 dBm"))
+    check("  the bridge stays, as a diamond, no longer this node",
+          ("s-diamond" in nodes["HT-H7608"]["cls"], " me" in nodes["HT-H7608"]["cls"]), (True, False))
+    check("  rings by direction to the gate: node2 both, node4 out, node3 (2 hops) none",
+          {k: nodes[k]["ring"] for k in ("node2", "0a:04", "0a:03")},
+          {"node2": "mm-ring both", "0a:04": "mm-ring out", "0a:03": ""})
+    check("  beside a name, how the gate hears it; two hops out, its hops",
+          {k: nodes[k]["badge"] for k in ("node2", "0a:04", "0a:03")}, {"node2": "-41 dBm", "0a:04": "-80 dBm", "0a:03": "2 hops"})
+    ML = ("[...document.querySelectorAll('#hl .mm-link')].filter((l) => !/hears the bridge|bridge hears/.test(l.querySelector('title')?.textContent || ''))"
+          ".map((l) => [l.getAttribute('class'), l.querySelector('title')?.textContent])")
+    check("  links: purple both ways with both numbers, blue one way, grey between others",
+          sorted(b.js(ML)), sorted([["mm-link both", "node2 hears the gate at -39 dBm; the gate hears node2 at -41 dBm"],
+                                    ["mm-link out", "the gate hears 0a:04 at -80 dBm"],
+                                    ["mm-link mesh-other", "node2 hears 0a:03 at -70 dBm"]]))
+    check("  the purple link's label: it hears / gate hears",
+          b.js("[...document.querySelectorAll('#hl .mm-link-label')].map((t) => t.textContent).includes('-39 / -41 dBm')"), True)
+    TABLE = "[...document.querySelectorAll('#hl .hl-mesh tr')].slice(1).map((r) => [...r.children].map((c) => c.textContent.trim()))"
+    check("  the Mesh table: each node, its hops, both directions, whether its view was read",
+          b.js(TABLE), [["node2", N2, "neighbour", "-39 dBm", "-41 dBm", "both ways", "read"],
+                        ["0a:04", N4, "neighbour", "", "-80 dBm", "the gate hears it", "not read"],
+                        ["0a:03", N3, "2 hops", "", "", "", "not read"]])
+    check("  a named node that didn't answer says why",
+          b.js("[...document.querySelectorAll('#hl .hl-warn')].map((e) => e.textContent)"), ["node3: not read (No route to host)"])
+    b.js("(() => { const g = [...document.querySelectorAll('#hl .mm-node')].find((n) => n.querySelector('text:not(.mm-glyph)')?.textContent === 'node2'); "
+         "g.dispatchEvent(new MouseEvent('click', {bubbles: true})); })()")
+    b.wait("document.querySelector('#hl .mm-pop .mm-pop-h')?.textContent === 'node2'", 5)
+    rows = b.js(ROWS)
+    check("  node2's card: both numbers", (rows.get("it hears the gate"), rows.get("the gate hears it"), rows.get("link")),
+          ("-39 dBm", "-41 dBm", "both ways"))
+    if SHOTS:
+        b.screenshot(os.path.join(SHOTS, "halow-manet.png"))
 finally:
     b.close()
     web.shutdown()
