@@ -30,7 +30,16 @@ Options (the host file's addons block):
 
     "halow": {"enabled": true, "host": "192.168.1.65",
               "key": "~/.config/radio-remote/halow_ed25519",
-              "user": "root", "port": 22, "poll": 30}
+              "user": "root", "port": 22, "poll": 30,
+              "position": {"lat": 40.0, "lon": -105.0},
+              "places": {"aa:bb:cc:dd:ee:01": {"name": "Gate cam", "lat": 40.01, "lon": -105.01}}}
+
+`position` (where the bridge is) and `places` (where each station is, by MAC)
+put them on the tab's map; both are optional. A station with no place is
+drawn beside the bridge and says its position isn't set. Every station the
+bridge has had joined is kept (halow-seen.json beside the add-on state, at most
+SEEN_MAX, for SEEN_KEEP_S), so the map still shows a camera that has dropped
+off, fading with age as on the Mesh map.
 
 `key` is a private key whose public half is in the bridge's
 /etc/dropbear/authorized_keys. Its host key is pinned on first contact in
@@ -55,13 +64,30 @@ HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 PLAN_TTL = 120          # seconds a plan waits for its confirm, then expires
 SSH_TIMEOUT = 25        # seconds any one SSH call may take
 MAX_PLANS = 8
+SEEN_MAX = 64           # stations kept in the seen list (the oldest go first)
+SEEN_KEEP_S = 30 * 86400
+NAME = re.compile(r"^[\x20-\x7e]{1,32}$")
+SEEN_FIELDS = ("mac", "name", "ip", "ifname", "signal", "signal_avg", "tx_rate_text", "rx_rate_text", "dir")
+
+
+def _latlon(v, what):
+    """{"lat", "lon"} -> (lat, lon), or ValueError naming WHAT."""
+    if not isinstance(v, dict):
+        raise ValueError(f"halow: '{what}' must be {{\"lat\": .., \"lon\": ..}}")
+    try:
+        lat, lon = float(v["lat"]), float(v["lon"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"halow: '{what}' needs numeric lat and lon")
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError(f"halow: '{what}' is off the Earth")
+    return lat, lon
 
 
 class Halow(Addon):
     name = "halow"
     label = "HaLow"
     title = "The HaLow bridge: who's on it, how well, its settings"
-    group = "tools"
+    group = "mesh"          # with Meshtastic and MeshCore: the ranch's other long-range network (2026-11-27)
     css = True
 
     def __init__(self, host, opts):
@@ -83,6 +109,24 @@ class Halow(Addon):
             raise ValueError("halow: 'poll' must be 10-3600 seconds")
         self.key = os.path.expanduser(str(opts.get("key", "~/.config/radio-remote/halow_ed25519")))
         self.ssh = str(opts.get("ssh", "ssh"))          # tests point this at a fake
+        self.position = None
+        if opts.get("position") is not None:
+            lat, lon = _latlon(opts["position"], "position")
+            self.position = {"lat": lat, "lon": lon}
+        places = opts.get("places") or {}
+        if not isinstance(places, dict):
+            raise ValueError("halow: 'places' must map a station's MAC to its place")
+        self.places = {}
+        for mac, v in places.items():
+            m = str(mac).lower()
+            if not halow_ap.MAC.match(m):
+                raise ValueError(f"halow: 'places' key {mac!r} is not a MAC address")
+            lat, lon = _latlon(v, f"places.{mac}")
+            name = str(v.get("name", ""))
+            if name and not NAME.match(name):
+                raise ValueError(f"halow: 'places.{mac}.name' must be 1-32 plain characters")
+            self.places[m] = {"lat": lat, "lon": lon, "name": name}
+        self.seen = {}            # mac -> the last reading of a station that has joined (halow-seen.json)
         self.view = {}
         self.at = None            # when the last good read was
         self.error = None         # why the last read failed, or None
@@ -137,6 +181,54 @@ class Halow(Addon):
                 text += err.decode("utf-8", "replace")
             return p.returncode, text
 
+    # --- the stations seen (kept across restarts, bounded)
+
+    def _seen_path(self):
+        return os.path.join(self.state_dir, "halow-seen.json") if self.state_dir else None
+
+    def _load_seen(self):
+        path = self._seen_path()
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return              # none yet, or unreadable: start empty; the next read rebuilds it
+        now = time.time()
+        for r in data if isinstance(data, list) else []:
+            if isinstance(r, dict) and halow_ap.MAC.match(str(r.get("mac", ""))) \
+                    and isinstance(r.get("last"), (int, float)) and now - r["last"] < SEEN_KEEP_S:
+                self.seen[r["mac"]] = {k: r.get(k) for k in (*SEEN_FIELDS, "first", "last")}
+        self._trim_seen(now)
+
+    def _trim_seen(self, now):
+        for m in [m for m, r in self.seen.items() if now - r["last"] >= SEEN_KEEP_S]:
+            del self.seen[m]
+        for m in sorted(self.seen, key=lambda m: self.seen[m]["last"])[:max(0, len(self.seen) - SEEN_MAX)]:
+            del self.seen[m]
+
+    def _note_seen(self, stations, now):
+        for st in stations:
+            # last: when it was last heard (its inactive time back from now), not just when we read.
+            heard = now - (st.get("inactive_ms") or 0) / 1000
+            old = self.seen.get(st["mac"], {})
+            self.seen[st["mac"]] = {**{k: st.get(k) for k in SEEN_FIELDS}, "name": st.get("name") or old.get("name", ""),
+                                    "ip": st.get("ip") or old.get("ip", ""),
+                                    "first": old.get("first", now), "last": max(heard, old.get("last", 0))}
+        self._trim_seen(now)
+        path = self._seen_path()
+        if not path or not stations:
+            return
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(sorted(self.seen.values(), key=lambda r: -r["last"]), f)
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("halow: seen list not written: %s", e)
+
     # --- reading
 
     async def read(self):
@@ -170,6 +262,7 @@ class Halow(Addon):
                 for m in sorted(macs - self._known):
                     self.notice(f"HaLow: {m} joined the bridge.", "info")
             self._known = macs
+            self._note_seen(self.view["stations"], self.at)
         self.emit({"snapshot": self.snapshot()})
 
     async def _loop(self):
@@ -193,6 +286,7 @@ class Halow(Addon):
             self._wake.set()
 
     async def start(self):
+        self._load_seen()
         self._task = asyncio.create_task(self._loop(), name="halow-poll")
 
     async def stop(self):
@@ -207,7 +301,9 @@ class Halow(Addon):
 
     def snapshot(self):
         return {"target": self.target, "at": self.at, "error": self.error, "poll": self.poll,
-                "stale": self.error is not None and self.at is not None, **self.view}
+                "stale": self.error is not None and self.at is not None, **self.view,
+                "position": self.position, "places": self.places,
+                "seen": sorted(self.seen.values(), key=lambda r: -r["last"])}
 
     # --- changes: plan, then apply
 
