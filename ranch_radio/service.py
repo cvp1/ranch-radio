@@ -62,6 +62,8 @@ async def main(url):
                       # the station's Pat: its exchanges, and whether it is up now (live
                       # child, this generation's Status, live WebSocket: PatEngine.pat_ready)
                       "inbound": bool(wl.get("inbound")), "pat_busy": bool(wl.get("pat_busy")),
+                      "admitting": bool(wl.get("admitting")),
+                      "listen_open": bool((wl.get("listen") or {}).get("window") or (wl.get("listen") or {}).get("busy")),
                       "pat_ready": wl.get("pat_ready") is True and not wl.get("blocked")}))
 asyncio.run(main(sys.argv[1]))
 """

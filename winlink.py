@@ -327,6 +327,14 @@ class TunedLane(NoLane):
                         "check the radio.", "warn", None)
 
 
+def _cutover_why(st, scheme=None):
+    """Why no session or listen window may start now because a VARA backend
+    switch is running (vara_fence.py), or None."""
+    import vara_fence
+    path = getattr(st, "cutover_fence_path", None) or os.path.expanduser(vara_fence.CUTOVER_FENCE)
+    return vara_fence.cutover_fenced(path, scheme)
+
+
 class PatEngine:
     def __init__(self, station, args, lane_for=None, hf_modems=None):
         """station: what pages are reached through (notice, _send,
@@ -807,7 +815,7 @@ class PatEngine:
 
     def snapshot(self):
         return {**self.lane_state(), "modem": self.modem_state(), "session": self.session_url, "peer": self.session_peer,
-                "pat_ready": self.pat_ready(),
+                "pat_ready": self.pat_ready(), "admitting": bool(self._admitting),
                 "via": self.lane.name if self.lane else None,
                 "modems": list(self.hf_modems), "blocked": self.blocked,
                 "inbound": self.inbound, "pat_busy": self.pat_busy, "listen": self.listen_state(),
@@ -865,6 +873,13 @@ class PatEngine:
             return
         if self._busy_why():
             st.notice(self._busy_why(), "warn", ws)
+            return
+        # A VARA backend switch that began during the awaits above (it may
+        # restart this station and Pat) wins: checked last, no await between
+        # this and arming (M1 r4 Q5). The radios check the same fence.
+        why = _cutover_why(st, "varahf" if urlsplit(url).scheme == "varahf" else None)
+        if why:
+            st.notice(f"Not connecting: {why}.", "warn", ws)
             return
         try:
             armed = await lane.arm(ws, url)
@@ -1445,6 +1460,9 @@ class PatEngine:
                           else "Pat's state is not known (no status from it)")
         if self.blocked:
             return refuse(self.blocked)
+        why = _cutover_why(st)
+        if why:
+            return refuse(why)
         if not self.listen_path:
             return refuse("this server keeps no state (--addons-state), so a window could not be undone "
                           "after a crash")
