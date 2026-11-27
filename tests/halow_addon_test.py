@@ -1,7 +1,12 @@
 """The HaLow add-on (addons/halow.py, halow_ap.py) against a fake bridge
 (tests/fake_halow_ssh.py, standing in for ssh):
 
-  - a good block loads, on, in the tools group; bad blocks don't load, with the field named
+  - a good block loads, on, in the mesh group; bad blocks don't load, with the field named
+    (a bad place: a key that is no MAC, a position off the Earth, a name with control characters)
+  - each station's direction, as on the Mesh map: the bridge hears it (a measured
+    signal), it hears the bridge (our frames ACKed), both, or neither shown
+  - every station that has joined is kept in halow-seen.json, read back on start,
+    bounded (SEEN_MAX, SEEN_KEEP_S); the snapshot carries it with position and places
   - the read is parsed: host health, radios (the HaLow one marked), networks,
     stations with signal/rates and their address from the neighbour table
   - the HaLow network's channel is the radio's S1G one, not the driver's 5 GHz stand-in;
@@ -128,6 +133,7 @@ Station 02:00:00:00:aa:01 (on wlan0)
 	rx bytes:	88123456
 	tx bytes:	1234567
 	tx retries:	41
+	tx packets:	5021
 	tx failed:	2
 	signal:  	-71 dBm
 	signal avg:	-70 dBm
@@ -174,7 +180,9 @@ os.environ["FAKE_HALOW_DIR"] = str(tmp)
 (tmp / "read.txt").write_text(READ)
 fake = str(ROOT / "tests" / "fake_halow_ssh.py")
 os.chmod(fake, 0o755)
-BLOCK = {"enabled": True, "host": "192.168.1.65", "key": str(tmp / "key"), "ssh": fake, "poll": 3600}
+BLOCK = {"enabled": True, "host": "192.168.1.65", "key": str(tmp / "key"), "ssh": fake, "poll": 3600,
+         "position": {"lat": 40.0, "lon": -105.0},
+         "places": {"02:00:00:00:AA:01": {"name": "Gate cam", "lat": 40.01, "lon": -105.01}}}
 
 
 def cmds():
@@ -186,8 +194,11 @@ def cmds():
 host = Host()
 reg = Addons(host, {"halow": BLOCK}, state_path=str(tmp / "state" / "addons.json"))
 d = {x["name"]: x for x in reg.describe()}["halow"]
-check("loads, on, in its group, no error", (d["label"], d["group"], d["on"], d["error"]), ("HaLow", "tools", True, None))
-for bad, field in (({"host": "a b"}, "'host'"), ({"host": "h", "poll": 1}, "'poll'"), ({"host": "h", "user": "r;oot"}, "'user'")):
+check("loads, on, in its group, no error", (d["label"], d["group"], d["on"], d["error"]), ("HaLow", "mesh", True, None))
+for bad, field in (({"host": "a b"}, "'host'"), ({"host": "h", "poll": 1}, "'poll'"), ({"host": "h", "user": "r;oot"}, "'user'"),
+                   ({"host": "h", "position": {"lat": 95, "lon": 0}}, "'position'"),
+                   ({"host": "h", "places": {"gate": {"lat": 1, "lon": 1}}}, "'places'"),
+                   ({"host": "h", "places": {"02:00:00:00:aa:01": {"lat": 1, "lon": 1, "name": "x\x1b[2J"}}}, "name")):
     r = Addons(Host(), {"halow": bad}, state_path=None)
     err = r.items["halow"]["error"] or ""
     check(f"a bad block doesn't load, naming {field}", (err.startswith("not loaded"), field in err), (True, True))
@@ -215,6 +226,14 @@ async def main():
     check("one station, its signal, rates, retries, joined time, address",
           [(x["mac"], x["signal"], x["signal_avg"], x["tx_rate"], x["tx_retries"], x["connected_s"], x["ip"]) for x in st],
           [("02:00:00:00:aa:01", -71, -70, 6.5, 41, 86012, "192.168.1.120")])
+    check("the station is proven both ways: a signal measured, its ACKs back", st[0]["dir"], "both")
+    check("direction: a signal only is the bridge hearing it", halow_ap.direction({"signal": -80}), "out")
+    check("direction: ACKed frames only is it hearing the bridge", halow_ap.direction({"tx_packets": 9, "tx_failed": 1}), "in")
+    check("direction: every frame failed, no signal: neither", halow_ap.direction({"tx_packets": 4, "tx_failed": 4}), "")
+    check("position and places (MAC lower-cased) in the snapshot", (s["position"], s["places"]),
+          ({"lat": 40.0, "lon": -105.0}, {"02:00:00:00:aa:01": {"lat": 40.01, "lon": -105.01, "name": "Gate cam"}}))
+    check("the joined station is in the seen list", [(r["mac"], r["signal_avg"], r["dir"]) for r in s["seen"]],
+          [("02:00:00:00:aa:01", -70, "both")])
     check("no Wi-Fi key in the snapshot", "leaked-if-the-box-filter-failed" in json.dumps(s), False)
     check("the box-side filter drops keys too", "grep -v -E" in halow_ap.READ_SCRIPT and "sae_password" in halow_ap.READ_SCRIPT, True)
     check("DHCP guard clean", s["dhcp"]["serving"], [])
@@ -233,6 +252,25 @@ async def main():
     check("station left and joined, noticed once each",
           sorted(m for _, m in host.notices if "the bridge." in m),
           ["HaLow: 02:00:00:00:aa:01 left the bridge.", "HaLow: 02:00:00:00:aa:02 joined the bridge."])
+    seen = a.snapshot()["seen"]
+    check("one that left stays in the seen list, the newest first", [r["mac"] for r in seen],
+          ["02:00:00:00:aa:02", "02:00:00:00:aa:01"])
+    b = halow_mod.Halow(Host(), BLOCK)
+    b.state_dir = a.state_dir
+    b._load_seen()
+    check("the seen list is read back on start (halow-seen.json)", sorted(b.seen), ["02:00:00:00:aa:01", "02:00:00:00:aa:02"])
+    import time as _t
+    now = _t.time()
+    b.seen = {f"02:00:00:00:{i // 256:02x}:{i % 256:02x}": {"mac": "", "last": now - i, "first": now} for i in range(halow_mod.SEEN_MAX + 5)}
+    b.seen["02:00:00:00:ff:ff"] = {"mac": "", "last": now - halow_mod.SEEN_KEEP_S - 1, "first": 0}
+    b._trim_seen(now)
+    check("the seen list is bounded: at most SEEN_MAX, the oldest dropped",
+          (len(b.seen), "02:00:00:00:00:00" in b.seen, "02:00:00:00:ff:ff" in b.seen), (halow_mod.SEEN_MAX, True, False))
+    (Path(a.state_dir) / "halow-seen.json").write_text("not json")
+    c = halow_mod.Halow(Host(), BLOCK)
+    c.state_dir = a.state_dir
+    c._load_seen()
+    check("an unreadable seen file starts empty, never raises", c.seen, {})
 
     # --- plan, then apply
     before = len(cmds())

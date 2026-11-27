@@ -5,7 +5,7 @@
 //
 //   Radios     the HF radios, the UV-PRO, the MD-UV390
 //   Messaging  Winlink, Packet (APRS)
-//   Mesh       Meshtastic, MeshCore
+//   Mesh       Meshtastic, MeshCore, HaLow
 //   Tools      Propagation, and any add-on that names no group
 //
 // The bar grew a flat tab per add-on and got crowded (2026-11-05). A group

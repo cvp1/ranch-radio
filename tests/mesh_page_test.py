@@ -208,8 +208,10 @@ try:
               ["BASE", "RDG", "TEST"])
         BADGES = ("Object.fromEntries([...document.querySelectorAll('#mesh-map .mm-node')].filter((g) => g.querySelector('.mm-badge'))"
                   ".map((g) => [g.querySelector('text').textContent, [g.querySelector('.mm-badge').textContent, g.querySelector('.mm-badge').getAttribute('class')]]))")
-        check("  beside each name: the SNR of a node heard direct; this node has none",
-              b.js(BADGES), {"RDG": ["+3.25 dB", "mm-badge h0"], "BASE": ["+7.5 dB", "mm-badge h0"]})
+        # This node's own badge is how it is received (2026-11-27): RDG's NeighborInfo lists us at 7.25.
+        check("  beside each name: the SNR of a node heard direct; this node, who hears it and the best SNR",
+              b.js(BADGES), {"RDG": ["+3.25 dB", "mm-badge h0"], "BASE": ["+7.5 dB", "mm-badge h0"],
+                             "TEST": ["heard by 1 · best +7.25 dB", "mm-badge h0"]})
         check("  says how many", b.js(f"({TEXT})('#mesh-map .mm-note')").split(" · ")[0], "2 of 3 nodes on the map")
         # Nothing selected: this node's own links, coloured by direction (RDG's NeighborInfo
         # lists us; packets from RDG and BASE arrived with no hop used).

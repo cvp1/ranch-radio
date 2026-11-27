@@ -125,7 +125,8 @@ def parse_stations(ifname, lines):
     out, cur = [], None
     keys = {"signal": "signal", "signal avg": "signal_avg", "tx bitrate": "tx_rate", "rx bitrate": "rx_rate",
             "inactive time": "inactive_ms", "connected time": "connected_s", "tx retries": "tx_retries",
-            "tx failed": "tx_failed", "rx bytes": "rx_bytes", "tx bytes": "tx_bytes"}
+            "tx failed": "tx_failed", "rx bytes": "rx_bytes", "tx bytes": "tx_bytes",
+            "tx packets": "tx_packets", "rx packets": "rx_packets"}
     for line in lines:
         m = re.match(r"^Station ([0-9a-fA-F:]{17})", line.strip())
         if m:
@@ -142,6 +143,20 @@ def parse_stations(ifname, lines):
             if k in ("tx bitrate", "rx bitrate"):
                 cur[keys[k] + "_text"] = v.strip()
     return out
+
+
+def direction(s):
+    """Which way a joined station's link is proven, from what the bridge holds:
+    "out" the bridge hears it (a signal measured on its frames), "in" it hears
+    the bridge (our frames to it were ACKed: tx packets beyond tx failed),
+    "both", or "" when neither is shown. The same words and colours as the Mesh
+    map (mesh.js reach). How strongly it hears the bridge is not measured here:
+    an AP's station dump has only its own receive side, so that dBm needs the
+    station's own reading and is never filled in from the other side."""
+    hears_it = s.get("signal") is not None or s.get("signal_avg") is not None
+    sent, failed = s.get("tx_packets"), s.get("tx_failed") or 0
+    hears_us = sent is not None and sent - failed > 0
+    return "both" if hears_it and hears_us else "out" if hears_it else "in" if hears_us else ""
 
 
 def parse_neigh(lines):
@@ -266,6 +281,7 @@ def parse_read(text):
         lease = leases.get(s["mac"], {})
         s["ip"] = neigh.get(s["mac"]) or lease.get("ip", "")
         s["name"] = lease.get("name", "")
+        s["dir"] = direction(s)
     radios = []
     for sec_name, d in wireless.items():
         if d.get(".type") == "wifi-device":

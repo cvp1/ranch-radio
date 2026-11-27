@@ -6,9 +6,21 @@
 // server answers with the exact command and what it will do, and only the
 // Confirm button in that dialog runs it. A plan not confirmed expires on the
 // server. Uses common.js (esc, toast).
+//
+// Above the tables, a map (meshmap.js, as on the Mesh tab; 2026-11-27: "a map
+// visualization for all the nodes we can see and what their signal strength
+// is"): the bridge, and every station it has had joined, at its place from the
+// host file (one with no place is drawn beside the bridge, and says so). Each
+// joined station's line to the bridge says which way it is proven, in the Mesh
+// map's colours: green it hears the bridge (its ACKs came back), blue the
+// bridge hears it (a measured signal), purple both; beside its name, the dBm
+// the bridge hears it at. The bridge says how many hear it. How strongly a
+// station hears the bridge is not measured from the bridge, so the map never
+// shows a number for it. A station that has left keeps its place, fading.
 
 (() => {
-  let body = null, snap = {}, api = null, plan = null, last = null;
+  let body = null, main = null, map = null, snap = {}, api = null, plan = null, last = null;
+  const BRIDGE = "bridge";
 
   const dbm = (v) => (v == null ? "" : `${v} dBm`);
   const sigCls = (v) => (v == null ? "" : v >= -65 ? "hl-good" : v >= -78 ? "hl-fair" : "hl-poor");
@@ -41,12 +53,119 @@
       </div>`;
   }
 
+  // ---------- the map
+
+  const DIRS = { both: "both ways", in: "it hears the bridge", out: "the bridge hears it" };
+  const sigOf = (x) => x.signal_avg ?? x.signal;
+  const badgeCls = (v) => (v == null ? "" : v >= -65 ? "h0" : v >= -78 ? "h2" : "h3");
+  const nameOf = (x) => (snap.places || {})[x.mac]?.name || x.name || x.ip || x.mac.slice(-5);
+  const ago = (t) => { const s = Date.now() / 1000 - t; return s < 90 ? "just now" : `${dur(s)} ago`; };
+
+  // Every station the bridge has had joined (snap.seen), the joined ones from this read on top.
+  function stationsOnMap() {
+    const now = new Map((snap.stations || []).map((x) => [x.mac, x]));
+    const out = new Map();
+    for (const r of snap.seen || []) out.set(r.mac, { ...r, live: false });
+    for (const [mac, x] of now) {
+      out.set(mac, { ...(out.get(mac) || {}), ...x, live: true,
+        last: snap.at ? snap.at - (x.inactive_ms || 0) / 1000 : out.get(mac)?.last });
+    }
+    return [...out.values()];
+  }
+
+  function why(x) {
+    const v = sigOf(x);
+    return [x.dir === "out" || x.dir === "both" ? `the bridge hears it at ${dbm(v)}${x.signal_avg != null && x.signal != null ? ` (now ${x.signal})` : ""}` : "",
+      x.dir === "in" || x.dir === "both" ? "it hears the bridge (its ACKs come back; how strongly isn't measured from the bridge)" : ""]
+      .filter(Boolean).join("; ");
+  }
+
+  function mapNodes() {
+    const pos = snap.position, places = snap.places || {}, list = stationsOnMap();
+    const heardBy = list.filter((x) => x.live && (x.dir === "in" || x.dir === "both")).length;
+    const h = snap.host || {};
+    const nodes = [{ id: BRIDGE, me: true, shortName: h.hostname || "bridge", longName: h.model || "",
+      lat: pos?.lat, lon: pos?.lon, last_heard: snap.at || 0,
+      badge: snap.at ? `heard by ${heardBy}` : "", badgeCls: heardBy ? "h0" : "",
+      tip: `${h.hostname || snap.target} ${h.model || ""}\nthe HaLow bridge · ${(snap.stations || []).length} joined · ` +
+        `heard by ${heardBy} (their ACKs; how strongly isn't measured from the bridge)` + (pos ? "" : "\nno position set (the halow block's position)") }];
+    for (const x of list) {
+      const p = places[x.mac], v = sigOf(x), name = nameOf(x);
+      const at = p || pos;
+      nodes.push({ id: x.mac, shortName: name, longName: x.mac, lat: at?.lat, lon: at?.lon, last_heard: x.last || 0,
+        ring: x.live ? x.dir || "" : "", kind: p ? "" : "unplaced", pin: !!x.live,
+        badge: v != null ? (x.live ? dbm(v) : `${dbm(v)} last`) : "", badgeCls: x.live ? badgeCls(v) : "",
+        tip: [`${name} ${x.mac}${x.ip ? ` · ${x.ip}` : ""}`,
+          x.live ? `joined (${x.ifname || ""}) ${dur(x.connected_s)}` : `left; last heard ${x.last ? ago(x.last) : "?"}`,
+          x.live ? why(x) : v != null ? `the bridge last heard it at ${dbm(v)}` : "",
+          p ? "" : "no place set: drawn beside the bridge (the halow block's places)"].filter(Boolean).join("\n") });
+    }
+    return nodes;
+  }
+
+  function mapLinks() {
+    return stationsOnMap().filter((x) => x.live && x.dir).map((x) => {
+      const v = sigOf(x);
+      return { from: BRIDGE, to: x.mac, cls: x.dir, label: x.dir === "in" ? "ACKs" : dbm(v),
+        title: `${nameOf(x)}: ${why(x)}` };
+    });
+  }
+
+  function popupHtml(id) {
+    if (id === BRIDGE) {
+      const h = snap.host || {};
+      return `<div class="mm-pop-h"><b>${esc(h.hostname || snap.target || "bridge")}</b> ${esc(h.model || "")}</div>` +
+        `<div class="wl-dim">the HaLow bridge · ${esc(snap.target || "")}</div>`;
+    }
+    const x = stationsOnMap().find((s) => s.mac === id);
+    if (!x) return null;
+    const p = (snap.places || {})[x.mac], v = sigOf(x);
+    const row = (k, val) => (val ? `<div class="mm-pop-r"><span>${k}</span><b>${esc(val)}</b></div>` : "");
+    return `<div class="mm-pop-h"><b>${esc(nameOf(x))}</b></div>` +
+      `<div class="wl-dim mm-pop-id">${esc(x.mac)}${x.ip ? ` · ${esc(x.ip)}` : ""}</div>` +
+      row("bridge hears it", x.dir === "out" || x.dir === "both" ? dbm(v) : !x.live && v != null ? `${dbm(v)} (last)` : "") +
+      row("it hears the bridge", x.live && (x.dir === "in" || x.dir === "both") ? "yes, its ACKs (not measured)" : "") +
+      row("link", x.live ? DIRS[x.dir] || "not proven either way" : "") +
+      row("rates", x.live ? [x.tx_rate_text && `TX ${x.tx_rate_text}`, x.rx_rate_text && `RX ${x.rx_rate_text}`].filter(Boolean).join(" · ") : "") +
+      row("retries", x.live && x.tx_retries != null ? `${x.tx_retries}${x.tx_failed ? `, ${x.tx_failed} failed` : ""}` : "") +
+      row(x.live ? "joined" : "left", x.live ? dur(x.connected_s) : x.last ? `last heard ${ago(x.last)}` : "") +
+      row("place", p ? "" : "not set (drawn beside the bridge)") +
+      (x.live && x.ip ? `<div class="mm-pop-acts"><button class="chip chip-mini" data-act="ping">Ping from the bridge</button></div>` : "");
+  }
+
+  function drawMap() {
+    if (!map) return;
+    map.setNodes(mapNodes(), BRIDGE);
+    const n = (snap.stations || []).length;
+    map.setLinks(mapLinks(), `green hears the bridge, blue the bridge hears it, purple both · beside a name: how the bridge hears it` +
+      (n ? "" : " · nothing joined right now"));
+    map.refreshPopup();
+  }
+
+  function mountMap() {
+    const el = body.querySelector(".hl-map");
+    if (!el || typeof meshMap === "undefined") { el?.remove(); return; }
+    map = meshMap.create(el, { onSelect: (id) => map.select(id), rings: true, labels: true, popup: popupHtml,
+      fanNote: (names) => `${names.join(", ")}: no place set for some of these, so they are drawn around the bridge`,
+      onPopup: (id, act) => {
+        const x = stationsOnMap().find((s) => s.mac === id);
+        if (act === "ping" && x?.ip) { api.send("ping", { ip: x.ip }); toast(`HaLow: pinging ${x.ip} from the bridge…`); }
+      } });
+  }
+
   function render() {
     if (!body) return;
+    if (!main) {
+      body.innerHTML = `<div class="halow"><div class="mesh-map hl-map"></div><div class="hl-main"></div></div>`;
+      main = body.querySelector(".hl-main");
+      mountMap();
+    }
+    drawMap();
     const s = snap;
-    if (!s.target) { body.innerHTML = `<div class="st-empty">Waiting for the bridge…</div>`; return; }
+    if (!s.target) { main.innerHTML = `<div class="st-empty">Waiting for the bridge…</div>`; return; }
     if (!s.at) {
-      body.innerHTML = `<div class="halow">${renderPlan()}<div class="hl-bad">${esc(s.error || "Reading the bridge…")}</div></div>`;
+      main.innerHTML = `${renderPlan()}<div class="hl-bad">${esc(s.error || "Reading the bridge…")}</div>`;
+      wire();
       return;
     }
     const h = s.host || {}, mem = h.mem_kb, ov = (h.disk_kb || {})["/overlay"];
@@ -93,7 +212,7 @@
         ${v.running ? `<button class="chip chip-mini hl-svc-btn" data-n="${esc(v.name)}" data-a="stop">stop…</button>` : ""}
         <button class="chip chip-mini hl-svc-btn" data-n="${esc(v.name)}" data-a="${v.enabled ? "disable" : "enable"}">${v.enabled ? "off at boot…" : "on at boot…"}</button></span>`).join("");
     const outb = (s.outbound || []).map((c) => `<tr><td>${esc(c.proto)}</td><td>${esc(c.remote)}</td><td>${esc(c.state)}</td><td>${esc(c.local)}</td></tr>`).join("");
-    body.innerHTML = `<div class="halow">${renderPlan()}${head}${guard}
+    main.innerHTML = `${renderPlan()}${head}${guard}
       ${last ? `<div class="${last.ok ? "hl-ok-line" : "hl-alarm"}">${esc(last.title)}: ${last.ok ? "done" : "failed"}
           ${last.undo ? `<button class="chip chip-mini hl-undo">Undo…</button>` : ""}
           ${last.out ? `<pre class="hl-cmd">${esc(last.out)}</pre>` : ""}</div>` : ""}
@@ -106,13 +225,12 @@
       <h4>Outbound (off the LAN)</h4>
       ${outb ? `<table class="hl-t"><tr><th>Proto</th><th>Remote</th><th>State</th><th>Local</th></tr>${outb}</table>`
              : `<div class="hl-ok-line">No connections from the bridge to anywhere off the LAN right now.</div>`}
-      <details><summary>Log (last ${(s.log || []).length} lines)</summary><pre class="hl-log">${esc((s.log || []).join("\n"))}</pre></details>
-    </div>`;
+      <details><summary>Log (last ${(s.log || []).length} lines)</summary><pre class="hl-log">${esc((s.log || []).join("\n"))}</pre></details>`;
     wire();
   }
 
   function wire() {
-    const q = (sel, fn) => { for (const el of body.querySelectorAll(sel)) el.onclick = () => fn(el.dataset, el); };
+    const q = (sel, fn) => { for (const el of main.querySelectorAll(sel)) el.onclick = () => fn(el.dataset, el); };
     q(".hl-refresh", () => api.send("refresh"));
     q(".hl-reboot", () => ask("reboot"));
     q(".hl-dhcp", () => ask("dhcp_off"));
@@ -134,15 +252,15 @@
   setInterval(() => {
     if (!plan || !body) return;
     if (Date.now() > plan.expires) { plan = null; render(); return; }
-    const t = body.querySelector(".hl-ttl");
+    const t = main?.querySelector(".hl-ttl");
     if (t) t.textContent = `expires in ${Math.max(0, Math.round((plan.expires - Date.now()) / 1000))}s`;
   }, 1000);
 
   addons.register("halow", {
-    mount(b, a) { body = b; api = a; render(); },
+    mount(b, a) { body = b; api = a; main = null; map = null; render(); },
     hello(s) { snap = s || {}; render(); },
     event(m) {
-      if (m.snapshot) { snap = m.snapshot; if (!plan) render(); return; }
+      if (m.snapshot) { snap = m.snapshot; if (!plan) render(); else drawMap(); return; }
       if (m.event === "plan") { plan = { ...m, expires: Date.now() + m.ttl * 1000 }; render(); return; }
       if (m.event === "applied") { last = m; render(); return; }
       if (m.event === "ping") toast(`HaLow: ${m.ip} ${m.ok ? "answers" : "doesn't answer"} from the bridge`, m.ok ? "info" : "warn");

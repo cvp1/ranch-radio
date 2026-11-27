@@ -652,7 +652,12 @@ const mesh = (() => {
   function mapNodes() {
     const r = reach(), db = (v) => (v != null ? `${v} dB` : "an SNR it didn't give");
     return nodes.map((n) => {
-      if (n.me) return { ...n, tip: `${n.longName || ""} (${n.shortName || "?"}) ${n.id}\nthis node` };
+      if (n.me) {
+        const hb = heardBy();
+        return { ...n, tip: `${n.longName || ""} (${n.shortName || "?"}) ${n.id}\nthis node` +
+          (hb.list.length ? `\nheard by ${hb.list.map((h) => `${short(h.id)} ${db(h.snr)}`).join(", ")}` : "\nno node has said it hears us yet"),
+          ...hb.badge };
+      }
       const x = r.get(n.id) || {}, w = where(n), inn = "inn" in x, outw = "out" in x;
       const how = n.hops == null ? "" : n.hops === 0 ? `direct${n.snr != null ? `, ${n.snr} dB` : ""}` : hopsText(n);
       const heard = n.last_heard ? (ago(n.last_heard) === "now" ? "heard just now" : `heard ${ago(n.last_heard)} ago`) : "never heard";
@@ -663,6 +668,18 @@ const mesh = (() => {
       return { ...n, tip, shape: ROUTERS.has(n.role) ? "diamond" : "", ring: inn && outw ? "both" : inn ? "in" : outw ? "out" : "",
         glyph: n.hops > 0 ? String(Math.min(n.hops, 9)) : "", pin: !!(n.fav || inn || outw), kind: n.mqtt ? "mqtt" : "", ...badge(n) };
     });
+  }
+
+  // This node's own badge: how it is being received (2026-11-27: "the local
+  // client that you are connected to should show the signal it is being
+  // received as"). The nodes that vouch they hear us direct (reach()'s "inn":
+  // a NeighborInfo that lists us, a traceroute's first hop; a DM's ACK may be
+  // relayed, so it doesn't count) and the best SNR any of them gives.
+  function heardBy() {
+    const list = [...reach()].filter(([, r]) => "inn" in r).map(([id, r]) => ({ id, snr: r.inn }));
+    const snrs = list.map((h) => h.snr).filter((v) => v != null);
+    const best = snrs.length ? Math.max(...snrs) : null;
+    return { list, best, badge: list.length ? { badge: `heard by ${list.length}${best != null ? ` · best ${signed(best)} dB` : ""}`, badgeCls: "h0" } : {} };
   }
 
   // What a signal report needs beside a node's name on the map (2026-11-24):
@@ -695,7 +712,12 @@ const mesh = (() => {
   function popupHtml(id) {
     const n = byId(id);
     if (!n) return null;
-    if (n.me) return `<div class="mm-pop-h"><b>${esc(n.shortName || "?")}</b> ${esc(n.longName || "")}</div><div class="wl-dim">this node · ${esc(n.id)}</div>`;
+    if (n.me) {
+      const hb = heardBy();
+      return `<div class="mm-pop-h"><b>${esc(n.shortName || "?")}</b> ${esc(n.longName || "")}</div><div class="wl-dim">this node · ${esc(n.id)}</div>` +
+        (hb.list.length ? hb.list.map((h) => `<div class="mm-pop-r"><span>${esc(short(h.id))} hears us</span><b>${h.snr != null ? `${signed(h.snr)} dB SNR` : "yes"}</b></div>`).join("")
+          : `<div class="wl-dim">No node has said it hears us yet (NeighborInfo or a traceroute).</div>`);
+    }
     const r = reach().get(n.id) || {}, w = where(n), tr = traces[n.id];
     const reqs = requests[n.id] || {}, busy = Object.values(reqs).some((x) => x.state === "running");
     const row = (k, v) => (v ? `<div class="mm-pop-r"><span>${k}</span><b>${esc(v)}</b></div>` : "");

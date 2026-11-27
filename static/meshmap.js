@@ -38,8 +38,10 @@ const meshMap = (() => {
   // the page for more room (the page resizes the map; it redraws itself); with
   // it, a click on the small map (not a drag, not a node) asks too, and the
   // page says which it is with setBig (2026-11-19: "click it to drive around").
+  // fanNote(names): the hover text of a shared position's ring (the HaLow tab:
+  // stations with no place, drawn around the bridge).
   function create(el, { onSelect, meSelectable = false, rings = false, onExpand = null, labels = false,
-                       popup = null, onPopup = null }) {
+                       popup = null, onPopup = null, fanNote = null }) {
     el.innerHTML = `<div class="mm-tiles"></div><svg class="mm-svg"><g class="mm-world">` +
       `<g class="mm-rings"></g><g class="mm-boxes"></g><g class="mm-links"></g><g class="mm-track"></g><g class="mm-trace"></g><g class="mm-nodes"></g><g class="mm-pulses"></g></g></svg>` +
       `<div class="mm-note"></div><div class="mm-side" hidden></div><div class="mm-pop" hidden></div>` +
@@ -264,7 +266,8 @@ const meshMap = (() => {
       for (const n of placed()) if (fan.has(n.id)) rings.set(key(n), [...(rings.get(key(n)) || []), n]);
       for (const g of rings.values()) {
         linksG.innerHTML += `<circle class="mm-fan" cx="${px(g[0].lon)}" cy="${py(g[0].lat)}" r="${FAN_PX}">` +
-          `<title>${esc(`${g.map((n) => n.shortName || n.id).join(", ")} report the same position ` +
+          `<title>${esc(fanNote ? fanNote(g.map((n) => n.shortName || n.id))
+            : `${g.map((n) => n.shortName || n.id).join(", ")} report the same position ` +
           "(a channel shares positions only to a grid cell); drawn apart so each can be seen")}</title></circle>`;
       }
       for (const l of links || []) {
