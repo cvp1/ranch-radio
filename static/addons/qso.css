@@ -1,0 +1,19 @@
+/* The QSO tab (static/addons/qso.js). */
+.qso { display: flex; flex-direction: column; gap: 8px; }
+.qso-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.qso-row label { display: flex; flex-direction: column; gap: 2px; font-size: 0.85em; }
+.qso-row label.qso-chk { flex-direction: row; align-items: center; gap: 4px; }
+.qso-row label.qso-wide { flex: 1 1 20em; }
+.qso-row label.qso-wide input { width: 100%; }
+.qso-call { font-size: 1.4em; width: 9em; text-transform: uppercase; font-family: ui-monospace, monospace; }
+.qso-card { min-height: 1.4em; }
+.qso-sp { flex: 1; }
+.qso-warn { color: #d9534f; }
+.qso-park.qso-on { border-color: #3c9a5f; }
+.qso-spots { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.qso-my summary { cursor: pointer; }
+.qso-done table { margin-top: 4px; }
+.qso-q { border-collapse: collapse; font-size: 0.85em; }
+.qso-q td, .qso-q th { padding: 2px 8px; text-align: left; }
+.qso-grp { border: 1px solid rgba(127,127,127,0.35); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
+.qso-ok { color: #3c9a5f; }

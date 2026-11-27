@@ -315,6 +315,18 @@ MANIFESTS = {
         "ask": {"url": "the logbook's address, e.g. https://192.168.1.20:8087/"},
         "needs": [],
     },
+    "qso": {
+        "label": "QSO (log a contact by hand: dial from the radio, QRZ lookup, POTA from the spots)",
+        "family": "addon",
+        "block": ("addons", "qso"),
+        "os": ["macos", "linux"],
+        # Logs into the logbook sync (the host's logsync block); without it the
+        # tab says so and logs nothing. The QRZ login is set from the tab.
+        "template": {"any": {"enabled": True}},
+        "rules": {},
+        "ask": {},
+        "needs": [],
+    },
     "map": {
         "label": "Map (who you hear, who hears you, what is on the air; grids, gray line, POTA)",
         "family": "addon",
