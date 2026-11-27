@@ -107,15 +107,12 @@ class Ops:
     def idle(self, h, r):
         """(ok, why) for a radio (r) or the station (r None), decided on ONE
         hello (panel M1 r3 R1): restart_blocker() on that answer. No answer
-        is busy, except an agent that is not loaded and refuses connections
-        (it isn't running, so it can't transmit: R6's retry after a failed
-        restart)."""
+        is busy, always: a refused connection and an absent label do not prove
+        nothing runs (M1 r4 Q1). A radio that is down is brought back by hand
+        first (the printed bootstrap line), then the switch is run again."""
         st = service.probe(h, r)
         name = r["name"] if r else "the station"
         if not st.get("up"):
-            label = r["label"] if r else (h.get("station") or {}).get("label", render.STATION_LABEL)
-            if st.get("why") in service.NOT_LISTENING and not self.loaded(label):
-                return True, f"{name} is not running ({label} not loaded)"
             return False, f"{name} did not answer ({st.get('why', '?')}): it can't be shown idle"
         why = restart_blocker(st, name)
         return (False, why) if why else (True, "idle")
@@ -237,6 +234,10 @@ def restart_blocker(st, name):
         return f"{name} is in a Winlink session"
     if st.get("inbound") or st.get("pat_busy"):
         return f"{name}'s Pat is in an exchange (inbound or busy)"
+    if st.get("admitting"):
+        return f"{name} is admitting a Winlink connect"
+    if st.get("listen_open"):
+        return f"{name} has a listen window open or starting"
     if st.get("stopped") and not st.get("stop_saved"):
         return f"{name} has STOP TX latched but not saved; a restart would clear it"
     n = int(st.get("rigctl") or 0)
@@ -376,11 +377,22 @@ def _finish(h, to, ops, home, log, wait_s):
         _unfence(home)
         log(msg)
         return rc
-    for r in [None] + [r for r in h["radios"] if r.get("lane")]:
+    lane_radios = [r for r in h["radios"] if r.get("lane")]
+    for r in [None] + lane_radios:
         ok, why = ops.idle(h, r)
         if not ok:
-            return stop(1, f"stopped before restarting Pat: {why}; nothing was restarted. "
-                           f"Run `ranch-radio vara-backend {to} --apply --finish` when it is idle")
+            # A preflight refusal: nothing changed, so the pending state stays
+            # as it came in (absent stays absent, M1 r4 Q4).
+            _unfence(home)
+            log(f"stopped before restarting Pat: {why}; nothing was restarted. "
+                f"Run `ranch-radio vara-backend {to} --apply --finish` when it is idle")
+            return 1
+    for r in lane_radios:
+        why = ops.lane_refusal(h, r, to)
+        if why:
+            # The modem keys through this lane: no finish without it (Q3).
+            return stop(1, f"stopped before restarting Pat: the radio server {r['label']} is not on "
+                           f"{to}'s lane ({why}). Run `ranch-radio vara-backend {to} --apply` again")
     why = ops.pat_refusal(h, to)
     if why:
         _pend(home, to)
@@ -518,17 +530,22 @@ def _switch(h, target, path, to, ops, home, log, install, wait_s):
         out = []
         if ops.restart(r["label"], f"{render.AGENTS}/{r['label']}.plist", out):
             _say_out(out, log)
-            # Its old modem is gone and the new one can't start without it:
-            # try once more to bring the radio back, and say exactly how (R6).
-            again = []
-            back = not ops.loaded(r["label"]) and ops.up(r["label"], f"{render.AGENTS}/{r['label']}.plist", again) == 0
-            _say_out(again, log)
-            log(f"stopped: the radio server {r['label']} did not restart; {to} was NOT loaded. "
-                + (f"A second load brought {r['label']} back. " if back else
-                   f"It is still down: launchctl bootstrap gui/$(id -u) ~/{render.AGENTS}/{r['label']}.plist "
-                   f"(or start it from the menu-bar widget). ")
-                + f"Then run `ranch-radio vara-backend {to} --apply` again (a radio that is not loaded "
-                  f"counts as idle for it)")
+            # Its old modem is gone and the new one can't start without it.
+            # Say what actually happened (M1 r4 Q2): still loaded means its
+            # bootout failed; not loaded: one more load, then the exact line.
+            lab, plist = r["label"], f"{render.AGENTS}/{r['label']}.plist"
+            if ops.loaded(lab):
+                fix = (f"{lab} is still loaded (its bootout failed): restart it with "
+                       f"launchctl kickstart -k gui/$(id -u)/{lab}")
+            else:
+                again = []
+                back = ops.up(lab, plist, again) == 0
+                _say_out(again, log)
+                fix = (f"a second load brought {lab} back" if back else
+                       f"{lab} is not loaded: launchctl bootstrap gui/$(id -u) ~/{plist} "
+                       f"(or start it from the menu-bar widget)")
+            log(f"stopped: the radio server {lab} did not restart; {to} was NOT loaded. {fix}. Then, once "
+                f"the radio answers, run `ranch-radio vara-backend {to} --apply` again")
             return 1
         if not ops.wait(lambda r=r: ops.lane_refusal(target, r, to) is None, wait_s):
             log(f"stopped: the radio server {r['label']} is not listening on {to}'s lane "
