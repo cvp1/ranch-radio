@@ -290,7 +290,8 @@
     el.hidden = !(need || showLogin || err);
     if (el.hidden) return;
     const state = q.state === "ok" ? `<span class="qso-ok">Logged in as ${esc(q.user)}.</span>`
-      : `<span>${esc(QRZ_SAYS[q.state] || "Not checked yet.")}</span>`;
+      : `<span>${esc(QRZ_SAYS[q.state] || "Not checked yet.")}</span>`
+        + (q.says ? ` <span class="cc-err">QRZ says: “${esc(q.says)}”</span>` : "");
     el.innerHTML = `<div class="qso-grp"><div class="stat">QRZ lookup (name, QTH and grid; needs a QRZ XML subscription). ${state}</div>
       <div class="qso-row">
         <label>Username <input class="qso-qu" autocomplete="username" value="${esc(q.user || "")}" size="10"></label>

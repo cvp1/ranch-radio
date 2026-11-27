@@ -191,6 +191,11 @@ try:
     event({"event": "logged", "id": "l9", "error": "frequency: a number in MHz"})
     check("log: an error is shown", text(".qso-status"), "frequency: a number in MHz")
 
+    event({"event": "login", "qrz_login": {"user": "N0CALL", "set": True, "state": "bad_login",
+                                           "says": "Username/password incorrect <b id=pwn2>"}})
+    check("login: refused, QRZ's own words shown as text",
+          ("QRZ says: “Username/password incorrect <b id=pwn2>”" in text(".qso-login"), b.js("!!document.getElementById('pwn2')")),
+          (True, False))
     b.js("document.querySelector('.qso-qp').value = 'hunter2'; document.querySelector('.qso-qgo').click()")
     li = [m for m in sent() if m["do"] == "login"]
     check("login: sent with the password", (len(li), li[0]["user"], li[0]["password"]), (1, "N0CALL", "hunter2"))
