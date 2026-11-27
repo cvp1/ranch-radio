@@ -78,7 +78,7 @@ class Qso(Addon):
         self.spots, self.spots_at, self.spots_error = [], 0.0, None
         self.my = {}                       # sticky: my_pota, my_sota, my_grid, and a qrz_user set from the tab
         self.qrz = None
-        self.http = None
+        self.session = None
         self._tasks = []
         self._rig_handle = None
 
@@ -99,10 +99,10 @@ class Qso(Addon):
         self._load()
         if os.environ.get("RANCH_RADIO_OFFLINE") != "1":          # tests: never the internet
             import aiohttp
-            self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
                                               headers={"User-Agent": Q.QRZ_AGENT})
         self.qrz = Q.Qrz(self._user(), self.password_file, self._post)
-        if self.http is not None and self.want_pota:
+        if self.session is not None and self.want_pota:
             self._tasks.append(asyncio.ensure_future(self._pota_loop()))
 
     async def stop(self):
@@ -113,18 +113,18 @@ class Qso(Addon):
         if self._rig_handle is not None:
             self._rig_handle.cancel()
             self._rig_handle = None
-        if self.http is not None:
+        if self.session is not None:
             try:
-                await self.http.close()
+                await self.session.close()
             except Exception:                     # noqa: BLE001 — stop must not raise
                 pass
-            self.http = None
+            self.session = None
 
     async def _post(self, url, form):
         """A form POST (qso_lookup: QRZ reads credentials only from a POST body)."""
-        if self.http is None:
+        if self.session is None:
             raise ConnectionError("offline")
-        async with self.http.post(url, data=form) as r:
+        async with self.session.post(url, data=form) as r:
             return r.status, (await r.content.read(1 << 17)).decode("utf-8", "replace")
 
     def _load(self):
@@ -159,7 +159,7 @@ class Qso(Addon):
         import qso_lookup as Q
         while True:
             try:
-                async with self.http.get(POTA_URL) as r:
+                async with self.session.get(POTA_URL) as r:
                     if r.status != 200:
                         raise ValueError(f"HTTP {r.status}")
                     raw = await r.content.read(POTA_MAX_BYTES + 1)
