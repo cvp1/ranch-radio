@@ -291,6 +291,14 @@ def make(opts=None):
 
 a = make({"radio": "g90"})
 run(a.start())
+# The HTTP session once lived in self.http, hiding Addon.http (the registry's
+# route hook): every station start logged "add-on qso: routes not added".
+try:
+    a.http(None, None)
+    hook = "ok"
+except TypeError as e:
+    hook = f"TypeError: {e}"
+check("the add-on's route hook is not shadowed by its HTTP session", hook, "ok")
 a.spots, a.spots_at = spots, NOW - 60
 a.qrz.post = FakeQrz([LOGIN_OK, CALL_OK]).get
 snap = a.snapshot()
