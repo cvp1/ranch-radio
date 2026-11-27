@@ -137,6 +137,12 @@ MODULES = [
      "code": "addons/logbook.py, static/addons/logbook.js (the browser frames the logbook; the server never talks to it)",
      "platforms": ["macos", "linux"],
      "ships": "the host file's addons block: \"url\", or \"port\" for a logbook on the radio's own machine"},
+    {"name": "qso", "kind": "addon", "title": "Log a phone or CW contact by hand: frequency and mode from the radio, "
+                                              "the call looked up on QRZ, the POTA park filled from the spots; "
+                                              "QSOs wait in the logbook sync until Wavelog and QRZ can be reached",
+     "code": "addons/qso.py, qso_lookup.py, static/addons/qso.js",
+     "platforms": ["macos", "linux"],
+     "ships": "the host file's addons block; the QRZ login is set from the tab (a QRZ XML subscription)"},
 
     # --- desktop integrations
     {"name": "macos-widget", "kind": "integration", "title": "Menu bar on/off for the radio agent",

@@ -280,6 +280,7 @@ is `~/Library/Logs/ranch-radio-update.log`; on Linux,
 | `opengd77` | A TYT MD-UV390 on OpenGD77 firmware: front panel, channels, codeplug editor | `dmrconf` (qdmr) |
 | `propagation` | Space weather (K index, X-ray, solar flux) under the band buttons; per-band decodes heard, who heard you and the next forecast openings, as badges and a Propagation tab | Internet for NOAA; optional skywatch InfluxDB and PSKReporter callsign |
 | `logbook` | Your web logbook (Wavelog, Cloudlog) in a Logbook tab beside Propagation | a logbook with a web page |
+| `qso` | Log a phone or CW contact by hand: frequency and mode from the radio, the call looked up on QRZ, the POTA park filled from the spots; QSOs wait in the logbook sync until Wavelog and QRZ can be reached | the logbook sync (`logsync`); a QRZ XML subscription for name and QTH (login set from the tab) |
 | `logsync` | Every QSO JTDX logs, to Wavelog, QRZ and LoTW, with receipts and confirmations back; status on the Logbook tab | Wavelog's API key; QRZ's logbook key; TQSL with a password-free certificate |
 | `grids` | The grid squares you still need, by mode and band: the 488 Lower-48 squares (ARRL's FFMA set) worked, confirmed and missing, the missing ones on the air now, grids worked worldwide | the logbook sync (`logsync`) |
 | `wavelog_cat` | Each radio's frequency and mode to Wavelog's live QSO form; Wavelog's spot clicks tune the radio (replaces WaveLogGate) | Wavelog's API key (the logsync one by default) |

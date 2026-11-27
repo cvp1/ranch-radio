@@ -1159,14 +1159,15 @@ class Station:
 
     def rig_changed(self):
         """A radio keyed, unkeyed or moved, or JTDX's Status changed: to the Map
-        tab, if on, and to Wavelog (wavelog_cat), if set up."""
+        and QSO tabs, if on, and to Wavelog (wavelog_cat), if set up."""
         if self.wavelog_cat is not None:
             self.wavelog_cat.kick()
-        if self.addons and self.addons.is_on("map"):
-            try:
-                self.addons.get("map").push_rig()
-            except Exception as e:           # a broken add-on must not stop a radio's watch
-                log.error("map: on-the-air push: %s", type(e).__name__)
+        for name in ("map", "qso"):
+            if self.addons and self.addons.is_on(name):
+                try:
+                    self.addons.get(name).push_rig()
+                except Exception as e:       # a broken add-on must not stop a radio's watch
+                    log.error("%s: on-the-air push: %s", name, type(e).__name__)
 
     def logsync_changed(self, status):
         self._broadcast(json.dumps({"t": "addon", "addon": "logbook", "logsync": status}))
